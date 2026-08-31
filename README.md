@@ -1,10 +1,19 @@
 # Fugal Subnet
 
-A Bittensor subnet that continuously produces the best LLM router.
+[![CI](https://github.com/fugal-ai/fugal-subnet/actions/workflows/ci.yml/badge.svg)](https://github.com/fugal-ai/fugal-subnet/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/fugal-ai/fugal-subnet/actions/workflows/codeql.yml/badge.svg)](https://github.com/fugal-ai/fugal-subnet/actions/workflows/codeql.yml)
+[![Python 3.10–3.12](https://img.shields.io/badge/python-3.10%E2%80%933.12-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/fugal-ai/fugal-subnet)](https://github.com/fugal-ai/fugal-subnet/releases)
+
+A Bittensor subnet for continuously improving cost-aware LLM routing.
+
+> [!IMPORTANT]
+> **Project status: experimental and pre-launch.** The default `test` network and netuid `1` are development defaults, not an announced mainnet deployment. APIs, schemas, and economics may change before launch.
 
 **Validators** build ground truth matrices — calling frontier models on benchmark questions, grading responses with mechanical checkers. **Miners** submit trained router heads — small linear layers (~10K-73K params) on a frozen Qwen3-0.6B backbone — that route any question to the optimal model for the cheapest price.
 
-The subnet's core value is the continuously-refreshed ground truth matrix. Everything downstream (training, architecture, optimization) is a known-solved step.
+The subnet's core output is a continuously refreshed ground-truth matrix that miners can use to train and improve routing policies.
 
 ## Architecture
 
@@ -39,11 +48,24 @@ python neurons/miner.py --netuid 1 --head-path data/my_head.npz
 python neurons/validator.py --netuid 1 --mock
 ```
 
+The commands above do not call OpenRouter. Running a validator without `--mock` makes paid API requests and uses a default maximum epoch budget of `$50`; review `FUGAL_EPOCH_BUDGET` and the [Validator Guide](docs/VALIDATOR_GUIDE.md) first.
+
+### Requirements
+
+- Linux or WSL2 and Python 3.10–3.12
+- Docker for the full local-chain testnet
+- CPU execution is supported; CUDA is optional and accelerates backbone inference
+- Model, benchmark, and Docker storage requirements vary; hardware sizing has not yet been formally benchmarked
+
 ## Project Structure
 
 ```
 fugal-subnet/
+├── .github/                   # CI, security scanning, and contribution templates
 ├── AGENTS.md                   # AI agent instructions for working on this codebase
+├── CHANGELOG.md                # Release history
+├── CONTRIBUTING.md             # Development and consensus-change policy
+├── SECURITY.md                 # Private vulnerability reporting
 ├── LICENSE                     # MIT
 ├── docker-compose.yml          # Local testnet (subtensor v432)
 ├── pyproject.toml
@@ -77,6 +99,8 @@ fugal-subnet/
 │   ├── bt_mock.py              # Bittensor mock for unit tests
 │   └── test_integration.py     # End-to-end + security/incentive tests
 ├── docs/
+│   ├── CONSENSUS.md            # Versioning and coordinated-upgrade policy
+│   ├── THREAT_MODEL.md         # Security boundaries, controls, and limitations
 │   ├── MINER_GUIDE.md          # Train a head, register, run the miner
 │   └── VALIDATOR_GUIDE.md      # API keys, sandboxing, run the validator
 └── data/
@@ -123,15 +147,15 @@ on the question.
 **Routers rot.** New models ship monthly, prices change, fine-tunes appear. A static router
 has a shelf life. The subnet makes the router self-sustaining through economic incentives.
 
-**The training method is solved.** Sakana's TRINITY (ICLR 2026) proved the frozen backbone +
-lightweight head architecture and the SFT + sep-CMA-ES training pipeline. Fugu surpassed
-GPT-5.5, Claude Opus 4.8, and Gemini 3.1 Pro through routing alone. The bottleneck is
-producing fresh ground truth — which is exactly what this subnet does every epoch.
+**The design is deliberately narrow.** Fugal freezes the backbone and trains only a small
+router head, keeping miner artifacts inexpensive to transfer and evaluate. The repository
+does not claim production benchmark superiority; performance should be evaluated from
+published epoch artifacts and reproducible releases.
 
 ## Evolution Path
 
 - **v1** — Single-model routing (current). Head picks one model per question.
-- **v2** — Role-augmented routing (TRINITY-style). Head picks model AND role.
+- **v2** — Role-augmented routing. Head picks model and role.
 - **v3** — Multi-step orchestration (Conductor-style). Full agentic workflows.
 - **v4** — Recursive orchestration. Orchestrator calls itself as a worker.
 
@@ -139,6 +163,14 @@ producing fresh ground truth — which is exactly what this subnet does every ep
 
 - **[Miner Guide](docs/MINER_GUIDE.md)** — train a router head, register, commit, run the miner
 - **[Validator Guide](docs/VALIDATOR_GUIDE.md)** — set up API keys, sandboxing, run the validator, monitor epochs
+- **[Consensus Governance](docs/CONSENSUS.md)** — versioning and coordinated protocol upgrades
+- **[Threat Model](docs/THREAT_MODEL.md)** — trust boundaries, controls, and known limitations
+
+## Contributing and Security
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing consensus-critical behavior. Report vulnerabilities privately according to [SECURITY.md](SECURITY.md); never include API keys or wallet material in a public issue.
+
+Release history is recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

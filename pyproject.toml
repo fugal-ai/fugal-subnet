@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,8 +7,19 @@ name = "fugal-subnet"
 version = "0.1.0"
 description = "Bittensor subnet for continuous LLM router optimization"
 readme = "README.md"
-license = {file = "LICENSE"}
-requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.13"
+keywords = ["bittensor", "decentralized-ai", "llm-routing", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "bittensor>=10.0.0,<11.0.0",
     "pydantic>=2.0.0",
@@ -24,6 +35,9 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/fugal-ai/fugal-subnet"
+Documentation = "https://github.com/fugal-ai/fugal-subnet/tree/main/docs"
+Issues = "https://github.com/fugal-ai/fugal-subnet/issues"
+Changelog = "https://github.com/fugal-ai/fugal-subnet/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [

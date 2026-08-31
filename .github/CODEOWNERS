@@ -1,7 +1,0 @@
-* @jtdoherty
-
-# Consensus-critical surfaces require maintainer review.
-/fugal_subnet/graders.py @jtdoherty
-/fugal_subnet/protocol.py @jtdoherty
-/fugal_subnet/rewards.py @jtdoherty
-/fugal_subnet/commit_reveal.py @jtdoherty

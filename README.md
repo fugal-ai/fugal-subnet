@@ -57,56 +57,6 @@ The commands above do not call OpenRouter. Running a validator without `--mock` 
 - CPU execution is supported; CUDA is optional and accelerates backbone inference
 - Model, benchmark, and Docker storage requirements vary; hardware sizing has not yet been formally benchmarked
 
-## Project Structure
-
-```
-fugal-subnet/
-├── .github/                   # CI, security scanning, and contribution templates
-├── AGENTS.md                   # AI agent instructions for working on this codebase
-├── CHANGELOG.md                # Release history
-├── CONTRIBUTING.md             # Development and consensus-change policy
-├── SECURITY.md                 # Private vulnerability reporting
-├── LICENSE                     # MIT
-├── docker-compose.yml          # Local testnet (subtensor v432)
-├── pyproject.toml
-├── fugal_subnet/
-│   ├── config.py               # Env-overridable constants
-│   ├── protocol.py             # FugalSynapse wire format
-│   ├── backbone.py             # Qwen3-0.6B hidden state extraction
-│   ├── graders.py              # 7 mechanical checkers (consensus-critical)
-│   ├── api.py                  # OpenRouter API client + spend tracking
-│   ├── matrix.py               # Ground truth matrix construction
-│   ├── soft_targets.py         # Softmax distributions for KL training
-│   ├── head_eval.py            # Head evaluation (accuracy, cost, KL)
-│   ├── scoring.py              # Raw epoch composite scoring
-│   ├── rewards.py              # Single-pool weight computation
-│   ├── dedup.py                # Behavioral dedup (cosine clustering)
-│   ├── commitments.py          # On-chain head-hash commitments
-│   ├── commit_reveal.py        # Commit-reveal epoch integrity + artifacts
-│   ├── consensus.py            # Multi-validator consensus audit tool
-│   ├── epoch_logger.py         # Structured JSONL epoch logs
-│   ├── benchmarks/             # 8 benchmark loaders (pinned HF revisions)
-│   └── attacks/                # 22-case adversarial grader test suite
-├── neurons/
-│   ├── validator.py            # Epoch loop, head eval, weight-setting
-│   └── miner.py                # Axon server, head commitment + submission
-├── scripts/
-│   ├── train_head.py           # SFT + sep-CMA-ES head trainer
-│   ├── launch_testnet.py       # End-to-end local testnet (Docker chain)
-│   ├── setup_local_testnet.py  # docker-compose entrypoint
-│   └── test_real_api.py        # Real-API proof-of-concept (budget-capped)
-├── tests/
-│   ├── bt_mock.py              # Bittensor mock for unit tests
-│   └── test_integration.py     # End-to-end + security/incentive tests
-├── docs/
-│   ├── CONSENSUS.md            # Versioning and coordinated-upgrade policy
-│   ├── THREAT_MODEL.md         # Security boundaries, controls, and limitations
-│   ├── MINER_GUIDE.md          # Train a head, register, run the miner
-│   └── VALIDATOR_GUIDE.md      # API keys, sandboxing, run the validator
-└── data/
-    └── models.json             # Fallback price sheet (live prices from OpenRouter)
-```
-
 ## How It Works
 
 1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks) — every honest validator gets the identical slice.
@@ -137,27 +87,6 @@ Two-stage:
 | LiveCodeBench | optional | exec_io (local JSON cache, see `fugal_subnet/benchmarks/livecode.py`) |
 
 All HuggingFace datasets are loaded at **pinned revisions** so every validator builds a byte-identical pool.
-
-## Why This Works
-
-**Model specialization is real.** Different models excel at different tasks — math, code,
-reasoning, creative writing. A single "best model" doesn't exist. The best model depends
-on the question.
-
-**Routers rot.** New models ship monthly, prices change, fine-tunes appear. A static router
-has a shelf life. The subnet makes the router self-sustaining through economic incentives.
-
-**The design is deliberately narrow.** Fugal freezes the backbone and trains only a small
-router head, keeping miner artifacts inexpensive to transfer and evaluate. The repository
-does not claim production benchmark superiority; performance should be evaluated from
-published epoch artifacts and reproducible releases.
-
-## Evolution Path
-
-- **v1** — Single-model routing (current). Head picks one model per question.
-- **v2** — Role-augmented routing. Head picks model and role.
-- **v3** — Multi-step orchestration (Conductor-style). Full agentic workflows.
-- **v4** — Recursive orchestration. Orchestrator calls itself as a worker.
 
 ## Guides
 

@@ -9,6 +9,11 @@ updates:
       timezone: America/New_York
     open-pull-requests-limit: 5
     labels: [dependencies, python]
+    ignore:
+      # Bittensor v11 changes runtime contracts used by Axon/Dendrite. Upgrade
+      # only through a deliberate compatibility release, never an automated PR.
+      - dependency-name: bittensor
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"

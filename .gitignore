@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Data caches
+data/benchmarks/*.json
+data/benchmarks/*.parquet
+data/*.npz
+results/
+
+# Environment
+.env
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

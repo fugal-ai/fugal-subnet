@@ -1,0 +1,40 @@
+services:
+  subtensor:
+    # Pin to v432 — :latest has a Drand txpool crash ~18 blocks in
+    image: ghcr.io/raofoundation/subtensor-localnet:v432
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    ports:
+      - "9944:9944"
+      - "9946:9946"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9944/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+
+  fugal:
+    build: .
+    depends_on:
+      subtensor:
+        condition: service_healthy
+    environment:
+      - CHAIN_ENDPOINT=ws://subtensor:9946
+      - FUGAL_NETUID=2
+      - FUGAL_SLICE_SIZE=50
+      # In-container demo runs the miner in-process without on-chain commitments
+      - FUGAL_REQUIRE_COMMITMENT=0
+      - LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - fugal-wallets:/root/.bittensor
+      - ./fugal_subnet:/app/fugal_subnet
+      - ./scripts:/app/scripts
+      - ./neurons:/app/neurons
+    command: ["bash", "-c", "python -u scripts/setup_local_testnet.py 2>&1"]
+    entrypoint: []
+
+volumes:
+  fugal-wallets:

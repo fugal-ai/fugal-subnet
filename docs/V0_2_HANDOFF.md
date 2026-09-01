@@ -1,6 +1,6 @@
 # Fugal v0.2 engineering handoff
 
-Last updated: 2026-09-01 19:16 America/New_York
+Last updated: 2026-09-01 19:25 America/New_York
 
 This is the short operational handoff for continuing the v0.2 hardening work.
 The design decisions and phase-by-phase implementation record are in
@@ -74,16 +74,47 @@ Evidence before the last fix:
   sandbox tests pass, Ruff passes, mypy passes on 29 checked sources, and the
   safety invariant scanner passes.
 
-At the time this handoff was written, the final rerun was active with:
+The final8 rerun used:
 
 ```bash
 uv run python scripts/test_v2_local_chain.py \
   --run-root /tmp/fugal-v2-final8 --timeout 1200
 ```
 
-If no process remains, inspect `/tmp/fugal-v2-final8` and rerun that exact
-command with a new empty `/tmp/fugal-v2-finalN` directory. Confirm no stale
-chain exists first:
+It completed the protocol path but the acceptance harness returned nonzero in
+its final chain-weight assertion with:
+
+```text
+index 1 is out of bounds for axis 0 with size 0
+```
+
+This was after all five validators had finalized their reveal. Retained
+evidence under `/tmp/fugal-v2-final8` proves:
+
+- 5/5 byte-identical reveal files, SHA-256
+  `f9a73ed9de0c2537a2b155c4162817eb7d922a02ecf183e71c00e124d7f29efd`;
+- four independently committed builder reports and all four report artifacts
+  received by every validator;
+- two historically committed miner heads evaluated and assigned exact weights
+  `0.421043989700` and `0.578956010300`;
+- `set_weights: true` in the independently verified reveal;
+- all five journals terminally `complete` with actual spend `0`;
+- the offline reveal verifier returned success before the failing assertion.
+
+The remaining failure is in `_verify_acceptance()`: it indexes
+`subtensor.metagraph(netuid).W[validator_uid]`, but Bittensor 10.5 returned an
+empty `metagraph.W` matrix on this local chain even though finalized
+`set_weights()` calls succeeded. `fugal_subnet/v2/chain.py` also uses
+`metagraph.W` in `_chain_weights_match()`, so the same SDK representation can
+defeat restart idempotency by causing an unnecessary repeat submission. The
+next implementation step is to read the finalized `SubtensorModule.Weights`
+storage directly through `subtensor.weights(netuid, block=finalized_block)`,
+normalize its u16 row, and use that shared adapter in both places. Add unit
+coverage for an empty `metagraph.W` with a populated direct storage row, then
+rerun final acceptance in a new empty `/tmp/fugal-v2-finalN` directory.
+
+The disposable chain was cleaned up normally; diagnostics remain at
+`/tmp/fugal-v2-final8`. Confirm no stale chain exists before rerunning:
 
 ```bash
 docker ps -a --filter name=fugal_local_chain

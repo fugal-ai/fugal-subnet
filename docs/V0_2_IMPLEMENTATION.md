@@ -400,6 +400,14 @@ reports it as unauditable rather than vulnerable. The local v1 chain run proves
 the launcher, wallet isolation, graceful SDK cleanup, miner/validator path, and
 weight cadence; it is not a substitute for the still-gated v2 committee test.
 
+The latest real v2 happy-path run produced five byte-identical, offline-verified
+reveals with four builder reports, two accepted committed heads, complete
+zero-spend journals, and derived weights. Its harness still returned nonzero
+because Bittensor 10.5 exposed an empty `metagraph.W` during the final weight
+assertion. Exact evidence and the direct finalized-storage remediation are
+recorded in `docs/V0_2_HANDOFF.md`; the v2 local-chain checklist remains open
+until that adapter is corrected and the harness exits successfully.
+
 ### 12. Remaining rollout gates (not implementation shortcuts)
 
 The authoritative checklist is `docs/RELEASE_CHECKLIST.md`. In summary:

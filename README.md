@@ -1,7 +1,6 @@
 # Fugal Subnet
 
 [![CI](https://github.com/fugal-ai/fugal-subnet/actions/workflows/ci.yml/badge.svg)](https://github.com/fugal-ai/fugal-subnet/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/fugal-ai/fugal-subnet/actions/workflows/codeql.yml/badge.svg)](https://github.com/fugal-ai/fugal-subnet/actions/workflows/codeql.yml)
 [![Python 3.10–3.12](https://img.shields.io/badge/python-3.10%E2%80%933.12-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/fugal-ai/fugal-subnet)](https://github.com/fugal-ai/fugal-subnet/releases)
@@ -9,7 +8,7 @@
 A Bittensor subnet for continuously improving cost-aware LLM routing.
 
 > [!IMPORTANT]
-> **Project status: experimental and pre-launch.** The default `test` network and netuid `1` are development defaults, not an announced mainnet deployment. APIs, schemas, and economics may change before launch.
+> **Project status: live on testnet.** The subnet is running on the Bittensor test network (netuid 552). APIs, schemas, and economics may change before mainnet launch.
 
 **Validators** build ground truth matrices — calling frontier models on benchmark questions, grading responses with mechanical checkers. **Miners** submit trained router heads — small linear layers (~10K-73K params) on a frozen Qwen3-0.6B backbone — that route any question to the optimal model for the cheapest price.
 
@@ -92,8 +91,6 @@ All HuggingFace datasets are loaded at **pinned revisions** so every validator b
 
 - **[Miner Guide](docs/MINER_GUIDE.md)** — train a router head, register, commit, run the miner
 - **[Validator Guide](docs/VALIDATOR_GUIDE.md)** — set up API keys, sandboxing, run the validator, monitor epochs
-- **[Consensus Governance](docs/CONSENSUS.md)** — versioning and coordinated protocol upgrades
-- **[Threat Model](docs/THREAT_MODEL.md)** — trust boundaries, controls, and known limitations
 
 ## Contributing and Security
 

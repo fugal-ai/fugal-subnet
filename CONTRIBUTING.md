@@ -38,14 +38,23 @@ Never run real OpenRouter tests as part of automated validation. Any intentional
 
 ## Consensus changes
 
-`fugal_subnet/graders.py` defines consensus behavior. Do not make a semantic grader change as an ordinary bug fix. Open an issue first and include:
+Validators must derive identical grades and compatible scores from the same epoch inputs. The following are consensus-critical:
+
+- Grader semantics and dispatch in `fugal_subnet/graders.py`
+- Benchmark identity, normalization, revision pins, and slicing
+- Epoch nonce derivation and boundary selection
+- Head artifact schema and validation
+- Matrix, soft-target, evaluation, scoring, deduplication, and reward formulas
+- Commitment eligibility and reveal artifact schema
+
+Do not make a semantic change to any of these as an ordinary bug fix. Open an issue first and include:
 
 1. The proposed grader version and activation epoch.
 2. Compatibility and validator-coordination impact.
 3. New adversarial cases and the complete attack-suite result.
-4. A migration note in `CHANGELOG.md` and `docs/CONSENSUS.md`.
+4. A migration note in `CHANGELOG.md`.
 
-See [Consensus Governance](docs/CONSENSUS.md) for the full policy.
+Completed epoch artifacts are immutable. A new grader version applies no earlier than its declared activation epoch. Missing or mismatched consensus metadata is an error, not an invitation to guess.
 
 ## Non-negotiable safety rules
 

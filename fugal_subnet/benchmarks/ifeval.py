@@ -1,6 +1,8 @@
 """IFEval benchmark loader — 541 instruction-following tasks."""
 from __future__ import annotations
+
 import json as _json
+
 from datasets import load_dataset
 
 from fugal_subnet.benchmarks.loader import DATASET_REVISIONS

@@ -16,29 +16,15 @@ import types
 from dataclasses import dataclass, field
 from typing import Any
 
+import pydantic
+from bittensor_wallet import Keypair
 
 # --- Synapse base ---
 
-class Synapse:
-    """Minimal bt.Synapse stand-in."""
+class Synapse(pydantic.BaseModel):
+    """Pydantic-backed bt.Synapse stand-in with real field-bound validation."""
 
-    def __init__(self, **kwargs):
-        for cls in reversed(type(self).__mro__):
-            for attr, annotation in getattr(cls, "__annotations__", {}).items():
-                if attr in kwargs:
-                    continue
-                val = getattr(type(self), attr, None)
-                if val is not None and hasattr(val, "default_factory"):
-                    if val.default_factory is not None:
-                        kwargs.setdefault(attr, val.default_factory())
-                        continue
-                if val is not None and hasattr(val, "default"):
-                    from pydantic_core import PydanticUndefined
-                    if val.default is not PydanticUndefined:
-                        kwargs.setdefault(attr, val.default)
-                        continue
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    model_config = pydantic.ConfigDict(validate_assignment=True)
 
     def deserialize(self) -> "Synapse":
         # Mirrors the real contract: deserialize() MUST return self —
@@ -152,6 +138,7 @@ _bt.Subtensor = Subtensor
 _bt.Dendrite = Dendrite
 _bt.Axon = Axon
 _bt.Metagraph = Metagraph
+_bt.Keypair = Keypair
 _bt.__version__ = "mock-dev"
 
 sys.modules["bittensor"] = _bt

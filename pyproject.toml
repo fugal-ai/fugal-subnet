@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=77.0"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "fugal-subnet"
-version = "0.1.0"
+version = "0.2.0"
 description = "Bittensor subnet for continuous LLM router optimization"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10,<3.13"
 keywords = ["bittensor", "decentralized-ai", "llm-routing", "pytorch"]
 classifiers = [
@@ -21,16 +21,21 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "bittensor>=10.0.0,<11.0.0",
-    "pydantic>=2.0.0",
-    "torch>=2.0.0",
-    "transformers>=4.51.0",
-    "numpy>=1.24.0",
-    "httpx>=0.27.0",
-    "click>=8.1.0",
-    "datasets>=2.18.0",
-    "cmaes>=0.10.0",
-    "math-verify>=0.7.0",
+    "bittensor==10.5.0",
+    "pydantic==2.13.5",
+    "torch==2.14.0",
+    "transformers==5.16.1",
+    "numpy==2.2.6",
+    "httpx==0.28.1",
+    "click==8.5.0",
+    "datasets==5.0.1",
+    "cmaes==0.13.1",
+    "math-verify==0.9.0",
+    # Consensus-relevant IFEval runtime; exact versions are intentional.
+    "absl-py==2.3.1",
+    "immutabledict==4.2.2",
+    "langdetect==1.0.9",
+    "nltk==3.10.3",
 ]
 
 [project.urls]
@@ -41,16 +46,58 @@ Changelog = "https://github.com/fugal-ai/fugal-subnet/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "mypy==1.18.2",
+    "pip-audit==2.10.1",
+    "ruff==0.16.5",
 ]
 
 [project.scripts]
 fugal-validator = "neurons.validator:main"
+fugal-validator-v2 = "neurons.validator_v2:main"
 fugal-miner = "neurons.miner:main"
+fugal-train = "fugal_subnet.training:main"
+fugal-verify-epoch = "fugal_subnet.verify_epoch:main"
 
 [tool.setuptools.packages.find]
 include = ["fugal_subnet*", "neurons*"]
 
+[tool.setuptools.package-data]
+fugal_subnet = [
+    "consensus-manifest.json",
+    "model-registry-v1.json",
+    "model-registry-v2.json",
+    "human-eval-cases-v2.json",
+    "benchmark-registry-v2.json",
+    "vendored/ifeval/NOTICE.md",
+    "vendored/ifeval/punkt-english.tar.gz.b64",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+select = ["F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"fugal_subnet/graders.py" = ["I001"]
+
+[tool.mypy]
+ignore_missing_imports = true
+follow_imports = "skip"
+warn_unused_ignores = true
+check_untyped_defs = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

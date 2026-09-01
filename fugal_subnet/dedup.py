@@ -5,8 +5,8 @@ Heads producing nearly identical routing decisions are clustered; only the
 earliest-committed (by block timestamp / commit hash) survives.
 """
 from __future__ import annotations
+
 import logging
-from collections import defaultdict
 
 import numpy as np
 

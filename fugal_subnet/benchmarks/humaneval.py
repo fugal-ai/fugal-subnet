@@ -1,6 +1,6 @@
 """HumanEval benchmark loader — 164 code generation problems."""
 from __future__ import annotations
-import json
+
 from datasets import load_dataset
 
 from fugal_subnet.benchmarks.loader import DATASET_REVISIONS
@@ -21,7 +21,6 @@ def load() -> list[dict]:
             f"Complete the function. Return only the code."
         )
         canonical = row.get("canonical_solution", "")
-        func_lines = (prompt_code + canonical).strip()
         test_inputs, test_outputs = _extract_io_from_tests(
             test_code, entry, prompt_code + canonical
         )

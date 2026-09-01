@@ -13,7 +13,9 @@ and the subnet sets on-chain weights proportional to routing quality.
 
 These are non-negotiable. Violating any of them breaks the subnet:
 
-1. **NO `from __future__ import annotations` in `neurons/miner.py` or `fugal_subnet/protocol.py`.**
+1. **NO `from __future__ import annotations` in `neurons/miner.py`,
+   `fugal_subnet/protocol.py`, or any Axon-attached protocol module (currently
+   including `fugal_subnet/v2/protocol.py`).**
    Bittensor SDK v10.x `bt.Axon.attach()` inspects type annotations at runtime.
    Deferred annotations (PEP 563) break this introspection and the axon silently
    fails to register the forward function. Other files are fine.
@@ -23,7 +25,7 @@ These are non-negotiable. Violating any of them breaks the subnet:
    code execution. Grep for `np.load` before committing — every instance must
    have `allow_pickle=False`.
 
-3. **`FugalSynapse.deserialize()` MUST return `self`, not a dict.**
+3. **Every Axon-attached Synapse `deserialize()` MUST return `self`, not a dict.**
    Bittensor's `dendrite.call()` calls `synapse.deserialize()`. If it returns a
    dict, the validator receives dicts instead of Synapse objects and attribute
    access breaks silently. The mock in `tests/bt_mock.py` mirrors this contract.
@@ -44,7 +46,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 - `dendrite.query()` returns a list of Synapse objects (one per axon)
 - `subtensor.set_weights()` auto-uses commit-reveal-weights when the chain enables it
 - `subtensor.query_map()` for reading on-chain storage (used by commitments.py)
-- Wallet creation: `bt.Wallet(name=coldkey, hotkey=hotkey)`
+- Wallet creation: `bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)`
 
 ## Architecture — What Each File Does
 
@@ -52,6 +54,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 1. `benchmarks/loader.py` + individual loaders → load question pool (pinned HF revisions)
 2. `benchmarks/slicer.py` → HMAC-seeded stratified question selection
 3. `protocol.py` → FugalSynapse wire format for miner queries
+   - `v2/protocol.py` → manifest-gated bounded MatrixReportSynapse/chunk transport
 4. `commitments.py` → read/write on-chain head commitments (Commitments pallet)
 5. `api.py` → call models via OpenRouter (thread-safe SpendTracker)
 6. `matrix.py` → build N×M ground truth matrix (concurrent API, sequential grading)
@@ -63,8 +66,26 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 12. `dedup.py` → behavioral dedup (cosine similarity on routing decisions)
 13. `commit_reveal.py` → commit-reveal integrity + publish epoch artifacts
 
+### Manifest-gated v2 implementation
+
+- `consensus_manifest.py` → strict packaged protocol selection/activation gates
+- `v2/benchmarks.py` + `graders_v2.py` → hash-verified pool and corrected graders
+- `sandbox/` → permission-restricted networkless OCI grading service
+- `v2/matrix.py` + `v2/journal.py` → cached matrix work and crash-safe epoch state
+- `v2/committee.py`, `v2/reports.py`, `v2/report_server.py` → committee quorum and Axon exchange
+- `v2/orchestrator.py` → injectable fail-closed/resumable epoch state machine
+- `v2/chain.py` + `v2/validator_state.py` → exact Bittensor adapters and UID/hotkey liveness state
+- `v2/reveal.py` + `verify_epoch.py` → canonical reveal and offline verification
+- `training.py` → installed reveal-native trainer
+- `v2/golden.py` → cross-Python consensus golden vector
+- `neurons/validator_v2.py` → separately installed, manifest-gated v2 runtime
+
+V2 is deliberately disabled and has no activation block. Do not wire it into a
+live network until every gate in `docs/RELEASE_CHECKLIST.md` is satisfied.
+
 ### Orchestrators
 - `neurons/validator.py` → main epoch loop (block-aligned, state-persistent)
+- `neurons/validator_v2.py` → manifest-gated v2 committee/report/reveal runtime
 - `neurons/miner.py` → axon server with blacklist + on-chain commitment
 
 ### Support
@@ -80,7 +101,8 @@ validator must produce byte-identical grades. A grader change is a consensus for
 
 - Never "improve" a grader casually
 - A semantic change requires a new grader version (applies from next epoch only)
-- The grader version is `sha256(graders.py bytes)` via `grader_hash()`
+- V1 is `sha256(graders.py bytes)`; v2 hashes its complete packaged grading
+  bundle (dispatcher, sandbox protocol/client/launcher, IFEval, and Punkt data)
 - Run `python -m fugal_subnet.attacks.run_attacks` after any grader change — all 22 cases must pass with 0 surprises
 
 ## Testing
@@ -96,7 +118,8 @@ python -m fugal_subnet.attacks.run_attacks
 python scripts/launch_testnet.py --mock --epochs 3
 
 # Full local testnet (real API — costs money, needs OPENROUTER_API_KEY)
-OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py --epochs 2
+OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py \
+  --live --epoch-budget 30 --epochs 2
 ```
 
 ## Common Gotchas

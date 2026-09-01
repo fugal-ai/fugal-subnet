@@ -5,7 +5,9 @@
 # expect 0; KNOWN residuals expect 1 with a note on why it's acceptable and
 # where it's mitigated. Run: python -m fugal_subnet.attacks.run_attacks
 from __future__ import annotations
+
 import time
+
 from fugal_subnet import graders as g
 
 BIG = 10 ** 7

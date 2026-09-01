@@ -20,7 +20,7 @@ Better heads earn more emissions.
 
 - Linux or WSL2
 - Python 3.10-3.12
-- GPU recommended for training (CPU works but slower)
+- CPU for the consensus-pinned backbone and reference trainer
 - ~4GB disk for dependencies + backbone model
 - TAO for subnet registration
 
@@ -69,11 +69,10 @@ Replace `<NETUID>` with the Fugal subnet's netuid (announced on launch).
 ### Quick start (synthetic data, no API cost)
 
 ```bash
-python scripts/train_head.py \
+fugal-train \
   --synthetic --n-questions 300 \
-  --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
-  --output data/my_head.npz \
-  --device cuda
+  --models openai/gpt-5.4-mini,anthropic/claude-haiku-4.5,deepseek/deepseek-v4-flash \
+  --output data/my_head.npz
 ```
 
 This trains on synthetic data to verify everything works. For a competitive head,
@@ -81,26 +80,25 @@ you'll want to train on real matrix data.
 
 ### Competitive training (with matrix data)
 
-Once the subnet is running, validators publish ground truth matrices. Download one
-and train against it:
+Once v2 is running, validators publish canonical reveal artifacts. Download one,
+verify its exact-block chain receipts, and train directly from it:
 
 ```bash
-python scripts/train_head.py \
-  --matrix data/matrix.npz \
-  --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
+fugal-train \
+  --reveal data/reveal.json \
+  --network test --netuid <NETUID> \
+  --grader-socket /run/fugal-grader/launcher.sock \
+  --models openai/gpt-5.4-mini,anthropic/claude-haiku-4.5,deepseek/deepseek-v4-flash \
   --output data/my_head.npz \
-  --device cuda \
-  --use-backbone \
-  --sft-epochs 100 \
-  --cma-generations 50
+  --epochs 200
 ```
 
-### Training stages
-
-1. **SFT (Stage 1)** — KL divergence loss against soft target distributions. AdamW
-   optimizer on W and b only. Takes seconds to minutes.
-2. **sep-CMA-ES (Stage 2)** — Derivative-free evolutionary refinement on actual routing
-   fitness. Takes minutes. Skip with `--skip-cma` for faster iteration.
+The trainer verifies the reveal's committee signatures and strict-majority
+matrix, regrades every published response, recomputes submitted head routing,
+dedup, scores, and weights, then uses the pinned CPU backbone embeddings. An
+isolated grader socket is required when the slice contains code or symbolic
+math. `--allow-unverified-chain` exists only for an explicit offline inspection
+where no historical node is available; it does not claim chain verification.
 
 ### Model selection strategy
 
@@ -110,10 +108,9 @@ Your head declares which models it can route to. This is a strategic choice:
 - **Cheaper models** = better cost efficiency score (35% of composite weight)
 - **Expensive models** = better accuracy on hard questions (55% of composite weight)
 - All miners compete in a single pool ranked by composite score (accuracy 55%, cost efficiency 35%, KL divergence 10%)
-- Declare only models that exist on OpenRouter **with a listed price** — the
-  validator fetches prices at runtime and will not call (or score routes to)
-  unpriced models. Models above the per-query cost cap (default $0.10) are
-  also excluded, and each miner's declared pool is capped (default 30 models).
+- V2 heads may use only a unique subset of the versioned active registry (at
+  most eight models). Live prices protect the paid budget; the versioned
+  canonical price snapshot alone controls routing and scoring.
 
 ### Head format
 
@@ -135,6 +132,7 @@ python neurons/miner.py \
   --network finney \
   --coldkey fugal_miner \
   --hotkey default \
+  --wallet-path /path/to/.bittensor/wallets \
   --head-path data/my_head.npz \
   --port 8091
 ```
@@ -199,6 +197,7 @@ sudo systemctl enable --now fugal-miner
 | `--netuid` | `1` | Subnet netuid |
 | `--coldkey` | `default` | Wallet coldkey name |
 | `--hotkey` | `default` | Hotkey name |
+| `--wallet-path` | SDK default | Optional explicit Bittensor wallet root |
 | `--port` | `8091` | Axon port |
 | `--head-path` | (required) | Path to `.npz` head file |
 | `--log-level` | `INFO` | Logging level |
@@ -211,8 +210,9 @@ scored from the next epoch boundary after the commitment lands.
 
 Training data: every epoch the validator publishes
 `results/epochs/<epoch_id>/reveal.json` containing the full question slice,
-the N×M ground truth matrix, the model list, and the cost snapshot — exactly
-what `scripts/train_head.py --matrix` consumes.
+the N×M ground truth matrix, builder reports, model/price registry, submitted
+heads, routing, dedup, scores, and weights — exactly what `fugal-train --reveal`
+verifies and consumes.
 
 ## Scoring Details
 

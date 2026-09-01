@@ -31,10 +31,12 @@ python -m fugal_subnet.attacks.run_attacks
 These commands do not require a chain or paid API calls. Use mock mode for local testnet work:
 
 ```bash
-python scripts/launch_testnet.py --mock --epochs 3
+python scripts/launch_testnet.py --epochs 3
 ```
 
-Never run real OpenRouter tests as part of automated validation. Any intentional paid run must be initiated manually, have an explicit budget, and be documented with a `[PAID ~$X]` comment.
+Never run real OpenRouter tests as part of automated validation. Any intentional
+paid run must be initiated manually with both `--live` and an explicit positive
+budget, and be documented with a `[PAID ~$X]` comment.
 
 ## Consensus changes
 

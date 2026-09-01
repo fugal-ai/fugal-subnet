@@ -1,5 +1,6 @@
 """AIME benchmark loader — competition math with integer answers (0-999)."""
 from __future__ import annotations
+
 from datasets import load_dataset
 
 from fugal_subnet.benchmarks.loader import DATASET_REVISIONS

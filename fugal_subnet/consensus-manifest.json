@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "manifest_id": "fugal-consensus",
+  "serialization": {
+    "json_encoding": "utf-8",
+    "json_key_order": "lexicographic",
+    "json_separators": [",", ":"],
+    "hash_algorithm": "sha256",
+    "line_endings": "lf"
+  },
+  "protocols": [
+    {
+      "id": "v1",
+      "protocol_version": 1,
+      "package_version": "0.1.0",
+      "status": "historical_experimental",
+      "enabled": true,
+      "complete": true,
+      "activation_blocks": {
+        "local": 0,
+        "test": 0,
+        "finney": null
+      },
+      "consensus": {
+        "grader": {
+          "module": "fugal_subnet.graders",
+          "sha256": "895809dedf0d14c45d9ec046bcbec2f50a09fcf7d31d9996a178e35f3539c55f"
+        },
+        "benchmarks": {
+          "policy": "legacy_operator_dependent",
+          "canonical": false,
+          "dataset_hashes": {}
+        },
+        "model_registry": {
+          "policy": "miner_declared_union",
+          "snapshot_sha256": "26b54ef396d5a92f3a03e6c1bb5a87011eb40ec007803addce0c65ac5bcb7e4a"
+        },
+        "prices": {
+          "policy": "live_with_packaged_fallback",
+          "snapshot_sha256": "26b54ef396d5a92f3a03e6c1bb5a87011eb40ec007803addce0c65ac5bcb7e4a"
+        },
+        "backbone": {
+          "model_id": "Qwen/Qwen3-0.6B",
+          "model_revision": null,
+          "tokenizer_revision": null,
+          "inference_policy": "cpu_float32_or_cuda_float16"
+        },
+        "dependencies": {
+          "uv_lock_sha256": "2f2e7cedb97b8736353ea269e4fbf745b811dbdd8a35fd51578cd1a571ab23c1"
+        },
+        "worker": {
+          "isolation": "same_validator_process_subprocess",
+          "image_digest": null
+        },
+        "committee": {
+          "maximum_builders": 1,
+          "minimum_reports": 1
+        },
+        "rounding": {
+          "policy": "legacy_platform_default"
+        }
+      }
+    },
+    {
+      "id": "v2",
+      "protocol_version": 2,
+      "package_version": "0.2.0",
+      "status": "development_disabled",
+      "enabled": false,
+      "complete": false,
+      "activation_blocks": {
+        "local": null,
+        "test": null,
+        "finney": null
+      },
+      "consensus": {
+        "grader": {
+          "id": "fugal-graders-v2",
+          "module": "fugal_subnet.graders_v2",
+          "sha256": "0142b66ce2901eae197a55eb0e8d525cfecb50ddcda869b1052e4ba21cc3bdd4"
+        },
+        "benchmarks": {
+          "registry_resource_sha256": "28228303b55aa5183faa5e0d17ee417afbd8fc6b0454fd0fa2742dafb4b0b44b",
+          "pool_sha256": "1a3adcfb8784bb7ad9d14f80b53db620f586086ce0973598b5f8a880f94b74cd",
+          "pool_count": 21878,
+          "members": ["aime", "gsm8k", "humaneval", "ifeval", "math", "mmlu"],
+          "rollout_blockers": ["aime_redistribution_review", "math_redistribution_review"]
+        },
+        "model_registry": {
+          "registry_id": "fugal-models-v2-candidate-1",
+          "canonical_sha256": "8c18c2509d140b8daf64d763660d9412a6bf263d34f79cd995eabb750cdc5f7a",
+          "resource_sha256": "f52b17a3ad0e1f8ddadfb46bb28c72a154348ea5d6e4ba3c94e485b809a73a49",
+          "maximum_active_models": 8,
+          "active_models": [],
+          "status": "owner_approval_required"
+        },
+        "prices": {
+          "policy": "versioned_canonical_for_scoring_greater_of_live_for_spend",
+          "snapshot_sha256": "8c18c2509d140b8daf64d763660d9412a6bf263d34f79cd995eabb750cdc5f7a",
+          "routing_reference_input_tokens": 500,
+          "routing_reference_output_tokens": 500
+        },
+        "backbone": {
+          "model_id": "Qwen/Qwen3-0.6B",
+          "model_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+          "tokenizer_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+          "spec_sha256": "a50f1533391b48c180cef57f6d6a22ce24d349bcf2a3ce8f0dc8335beb44cc3f",
+          "host": "linux_x86_64",
+          "device": "cpu",
+          "dtype": "float32",
+          "threads": 1,
+          "attention": "eager",
+          "max_length": 512,
+          "batch_size": 8,
+          "golden_prompts_sha256": "28ecc589d4bfefdf9dcd16b7d752b479f732a8341d21e0b7ca401c1d4c7d42cd",
+          "golden_embeddings_sha256": "db07be511930164602fb74cc6cce8f1aa369fe146a7448eacc6c17f5b17221cd"
+        },
+        "dependencies": {
+          "uv_lock_sha256": "06f6c9e21b41324c625ded4208a8071709b73ee654ced5c87ea302c0d924dfb0",
+          "python": ">=3.10,<3.13",
+          "absl-py": "2.3.1",
+          "bittensor": "10.5.0",
+          "datasets": "5.0.1",
+          "immutabledict": "4.2.2",
+          "langdetect": "1.0.9",
+          "math-verify": "0.9.0",
+          "nltk": "3.10.3",
+          "numpy": "2.2.6",
+          "torch_linux": "2.14.0+cpu",
+          "transformers": "5.16.1"
+        },
+        "worker": {
+          "image_digest": null,
+          "status": "local_image_verified_registry_digest_pending",
+          "dockerfile_sha256": "ba252addfc39cdb52ad933d88cb65f2273a266b694985c02051bd987d66ae4db",
+          "requirements_sha256": "5d2a14db275c41014d897fd0c0a933f97b6b02e453211e1f1e77894f6292fcb1",
+          "runner_sha256": "b52b597fa0b7e277964718ce1ac8be7c87f0c73d063114037350df919646778c",
+          "isolation": "rootless_networkless_ephemeral_oci"
+        },
+        "committee": {
+          "maximum_builders": 5,
+          "minimum_reports": 3,
+          "maximum_questions": 512,
+          "maximum_models": 8,
+          "maximum_report_chunks": 64,
+          "maximum_chunk_bytes": 262144,
+          "maximum_response_bytes": 4096,
+          "maximum_output_tokens": 1024,
+          "maximum_retries": 3,
+          "epoch_blocks": null,
+          "precommit_deadline_offset_blocks": null,
+          "report_deadline_offset_blocks": null,
+          "slice_size": 300,
+          "api_concurrency": 4
+        },
+        "rounding": {
+          "embedding_decimals": 8,
+          "routing_decimals": 12,
+          "score_decimals": 12,
+          "weight_decimals": 12,
+          "tie_break": "canonical_model_then_uid_hotkey",
+          "evaluation": {
+            "accuracy_weight": "0.55",
+            "cost_weight": "0.35",
+            "kl_weight": "0.1",
+            "routing_lambda": "2.0",
+            "soft_target_tau": "1.0",
+            "dedup_decision_threshold": "0.99",
+            "dedup_distribution_threshold": "0.999",
+            "max_weight_delta": "0.3",
+            "liveness_miss_limit": 3
+          }
+        }
+      }
+    }
+  ]
+}

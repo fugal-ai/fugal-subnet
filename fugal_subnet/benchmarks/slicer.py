@@ -9,6 +9,7 @@ questions are ranked by HMAC-SHA256 keyed on the nonce — unpredictable without
 knowing the nonce.
 """
 from __future__ import annotations
+
 import hashlib
 import hmac
 

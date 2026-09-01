@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from fugal_subnet.config import BACKBONE_MODEL, ROUTER_SYSTEM_PROMPT, HEAD_HIDDEN_DIM
+from fugal_subnet.config import BACKBONE_MODEL, HEAD_HIDDEN_DIM, ROUTER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def get_backbone(
     if cache_key in _model_cache:
         return _model_cache[cache_key]
 
-    from transformers import AutoTokenizer, AutoModel
+    from transformers import AutoModel, AutoTokenizer
 
     if dtype is None:
         dtype = torch.float16 if device.startswith("cuda") else torch.float32

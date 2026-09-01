@@ -5,6 +5,7 @@ via softmax with temperature. These distributions are the training signal
 for router heads (KL divergence loss) and the oracle for scoring.
 """
 from __future__ import annotations
+
 import numpy as np
 
 from fugal_subnet.config import SOFT_TARGET_TAU

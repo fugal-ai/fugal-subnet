@@ -8,7 +8,10 @@
 A Bittensor subnet for continuously improving cost-aware LLM routing.
 
 > [!IMPORTANT]
-> **Project status: live on testnet.** The subnet is running on the Bittensor test network (netuid 552). APIs, schemas, and economics may change before mainnet launch.
+> **Project status: v0.2 development package; live v2 is disabled.** The
+> packaged manifest deliberately has no v2 activation block and no approved
+> active model registry. Historical v0.1 remains experimental and is not
+> suitable for funded production validation or mainnet.
 
 **Validators** build ground truth matrices — calling frontier models on benchmark questions, grading responses with mechanical checkers. **Miners** submit trained router heads — small linear layers (~10K-73K params) on a frozen Qwen3-0.6B backbone — that route any question to the optimal model for the cheapest price.
 
@@ -33,11 +36,11 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 
 # Local testnet (Docker chain + full epoch pipeline, no API spend)
-python scripts/launch_testnet.py --mock --epochs 3
+python scripts/launch_testnet.py --epochs 3
 
-# Train a reference head (synthetic data, no API spend)
-python scripts/train_head.py --synthetic --n-questions 200 \
-  --models deepseek/deepseek-v4-flash meta-llama/llama-4-maverick openai/gpt-5.4-nano \
+# Train a local/mock reference head (synthetic data, no API spend)
+fugal-train --synthetic --n-questions 200 \
+  --models deepseek/deepseek-v4-flash,meta-llama/llama-4-maverick,openai/gpt-5.4-nano \
   --output data/my_head.npz
 
 # Run the miner (commits the head hash on-chain, then serves it)
@@ -47,18 +50,28 @@ python neurons/miner.py --netuid 1 --head-path data/my_head.npz
 python neurons/validator.py --netuid 1 --mock
 ```
 
-The commands above do not call OpenRouter. Running a validator without `--mock` makes paid API requests and uses a default maximum epoch budget of `$50`; review `FUGAL_EPOCH_BUDGET` and the [Validator Guide](docs/VALIDATOR_GUIDE.md) first.
+The commands above do not call OpenRouter. Mock mode is the default. Paid
+operation requires both `--live` and an explicitly configured positive
+`--epoch-budget` (or `FUGAL_EPOCH_BUDGET`); there is no implicit budget or paid
+default. Review the [Validator Guide](docs/VALIDATOR_GUIDE.md) first.
 
 ### Requirements
 
 - Linux or WSL2 and Python 3.10–3.12
 - Docker for the full local-chain testnet
-- CPU execution is supported; CUDA is optional and accelerates backbone inference
+- V2 consensus requires Linux x86-64 CPU float32 inference; the historical v1
+  development path can optionally use CUDA
 - Model, benchmark, and Docker storage requirements vary; hardware sizing has not yet been formally benchmarked
 
 ## How It Works
 
-1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks) — every honest validator gets the identical slice.
+The sequence below describes the historical v0.1 implementation. It is retained
+for development and historical verification. The v0.2 primitives, resumable
+orchestrator, report transport, concrete `fugal-validator-v2` entry point,
+reveal verifier, and trainer are implemented, but the manifest prevents v2 from
+starting on any network until the remaining rollout gates are resolved.
+
+1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks).
 2. Miners respond to the validator's query with their `.npz` head artifact (W, b, model list). A head is only scoreable if its SHA256 was **committed on-chain at or before the boundary block** — heads swapped after the nonce is knowable are rejected.
 3. The validator calls all models in the (priced, capped, budget-checked) union pool on those questions, grades responses with mechanical checkers, and builds an N×M binary matrix.
 4. Each head is evaluated: routing accuracy, cost efficiency (capped at 1.0 — the oracle's cheapest-correct routing is the ceiling), and KL divergence against soft targets. Questions no model answered correctly are excluded for everyone.
@@ -67,10 +80,12 @@ The commands above do not call OpenRouter. Running a validator without `--mock` 
 
 ## Training Pipeline
 
-Two-stage:
-
-- **Stage 1 — SFT**: KL divergence loss against soft target distributions (AdamW on W, b only)
-- **Stage 2 — sep-CMA-ES**: Derivative-free evolutionary refinement on actual routing fitness
+The installed `fugal-train` command accepts a canonical v2 `reveal.json`,
+verifies report signatures/quorum, regrades responses, recomputes heads/scores/
+weights, and trains against the revealed canonical matrix and prices. Historical
+NPZ import requires explicit `--legacy-npz --allow-legacy-npz`; synthetic input
+is local/mock-only. V2 training uses KL divergence plus the same canonical
+routing-cost term and evaluates the result with validator routing rules.
 
 ## Benchmarks
 
@@ -80,12 +95,17 @@ Two-stage:
 | MATH | 5,000 | boxed_math |
 | GSM8K | 1,319 | numeric_final |
 | AIME | 933 | integer_exact |
-| IFEval | 259 | constraint_set |
+| IFEval | up to 259 | partial constraint_set |
 | GPQA-Diamond | 198 | letter_mcq (gated dataset — needs HF auth) |
-| HumanEval | 164 | exec_io |
+| HumanEval | 155 exec_io + 9 legacy fallback | exec_io / exec_unittest |
 | LiveCodeBench | optional | exec_io (local JSON cache, see `fugal_subnet/benchmarks/livecode.py`) |
 
-All HuggingFace datasets are loaded at **pinned revisions** so every validator builds a byte-identical pool.
+These are v0.1 inputs. Revisions are pinned, but optional/gated availability and
+the local LiveCodeBench cache can still make v0.1 pools diverge. The inactive v2
+registry instead commits normalized counts and SHA-256 values and fails closed
+on any difference. V2 currently normalizes 14,042 MMLU, 5,000 MATH, 1,319
+GSM8K, 933 AIME, 541 fully evaluated IFEval, and 43 curated HumanEval tasks;
+the AIME redistribution/license rollout decision remains unresolved.
 
 ## Guides
 
@@ -97,6 +117,10 @@ All HuggingFace datasets are loaded at **pinned revisions** so every validator b
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing consensus-critical behavior. Report vulnerabilities privately according to [SECURITY.md](SECURITY.md); never include API keys or wallet material in a public issue.
 
 Release history is recorded in [CHANGELOG.md](CHANGELOG.md).
+The ongoing v0.2 implementation and verification record is maintained in
+[docs/V0_2_IMPLEMENTATION.md](docs/V0_2_IMPLEMENTATION.md).
+The explicit external and rollout gates are tracked in
+[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## License
 

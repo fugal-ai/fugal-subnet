@@ -35,6 +35,9 @@ METAGRAPH_REFRESH_S = 300
               help="Wallet coldkey name")
 @click.option("--hotkey", default=lambda: os.getenv("HOTKEY_NAME", "default"),
               help="Hotkey name")
+@click.option("--wallet-path", default=lambda: os.getenv("FUGAL_WALLET_PATH") or None,
+              type=click.Path(file_okay=False),
+              help="Bittensor wallet root (defaults to the SDK wallet directory)")
 @click.option("--port", default=lambda: int(os.getenv("FUGAL_MINER_PORT", "8091")),
               type=int, help="Axon port")
 @click.option("--head-path", required=True, type=click.Path(exists=True),
@@ -43,16 +46,18 @@ METAGRAPH_REFRESH_S = 300
               type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
               default=lambda: os.getenv("LOG_LEVEL", "INFO"),
               help="Logging level")
-def main(network, netuid, coldkey, hotkey, port, head_path, log_level):
+def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path, log_level):
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
     import bittensor as bt
-    from fugal_subnet.protocol import FugalSynapse
-    from fugal_subnet.config import MIN_VALIDATOR_STAKE
+
     from fugal_subnet.commitments import ensure_commitment
+    from fugal_subnet.config import MIN_VALIDATOR_STAKE
+    from fugal_subnet.consensus_manifest import select_protocol
+    from fugal_subnet.protocol import FugalSynapse
 
     head_data = _load_head_file(head_path)
     head_b64 = base64.b64encode(head_data).decode("ascii")
@@ -65,8 +70,9 @@ def main(network, netuid, coldkey, hotkey, port, head_path, log_level):
                 head_path, len(head_data), len(model_pool))
     logger.info("Head hash: %s", head_hash[:16])
 
-    wallet = bt.Wallet(name=coldkey, hotkey=hotkey)
+    wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     subtensor = bt.Subtensor(network=network)
+    selected_protocol = select_protocol(network, subtensor.get_current_block())
     metagraph = subtensor.metagraph(netuid)
 
     my_hotkey = wallet.hotkey.ss58_address
@@ -76,7 +82,37 @@ def main(network, netuid, coldkey, hotkey, port, head_path, log_level):
     my_uid = metagraph.hotkeys.index(my_hotkey)
     logger.info("Miner UID %d on %s netuid %d", my_uid, network, netuid)
 
-    committed = ensure_commitment(subtensor, wallet, netuid, head_hash)
+    def ensure_selected_commitment() -> bool:
+        if selected_protocol.protocol_id == "v1":
+            return ensure_commitment(subtensor, wallet, netuid, head_hash)
+        if selected_protocol.protocol_id == "v2":
+            from fugal_subnet.commitments import get_commitments_with_blocks
+            from fugal_subnet.v2.commitments import (
+                HEAD_COMMITMENT_ID,
+                commitment_payload,
+                set_commitment_finalized,
+            )
+
+            expected = commitment_payload("head", HEAD_COMMITMENT_ID, head_hash)
+            existing = get_commitments_with_blocks(subtensor, netuid).get(my_hotkey)
+            if existing and existing[0] == expected:
+                return True
+            try:
+                set_commitment_finalized(
+                    subtensor,
+                    wallet,
+                    netuid=netuid,
+                    namespace="head",
+                    epoch_id=HEAD_COMMITMENT_ID,
+                    artifact_hash=head_hash,
+                )
+                return True
+            except Exception as exc:
+                logger.error("v2 head commitment failed: %s", exc)
+                return False
+        raise RuntimeError(f"Unsupported selected protocol {selected_protocol.protocol_id}")
+
+    committed = ensure_selected_commitment()
     if not committed:
         logger.warning("Head hash NOT committed on-chain yet — will retry. "
                        "Validators will not score this head until it lands.")
@@ -148,7 +184,7 @@ def main(network, netuid, coldkey, hotkey, port, head_path, log_level):
         while True:
             time.sleep(30)
             if not committed:
-                committed = ensure_commitment(subtensor, wallet, netuid, head_hash)
+                committed = ensure_selected_commitment()
             if time.time() - last_refresh >= METAGRAPH_REFRESH_S:
                 try:
                     fresh = subtensor.metagraph(netuid)

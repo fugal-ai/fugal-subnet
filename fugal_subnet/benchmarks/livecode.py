@@ -11,6 +11,7 @@ and save to data/benchmarks/livecode.json as a list of dicts with keys:
     question_content, entry_point, test_list (list of {input, output} dicts)
 """
 from __future__ import annotations
+
 import json
 import logging
 import os

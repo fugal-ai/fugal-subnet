@@ -1,6 +1,8 @@
 """GPQA-Diamond benchmark loader — 198 graduate-level science questions."""
 from __future__ import annotations
+
 import hashlib
+
 from datasets import load_dataset
 
 from fugal_subnet.benchmarks.loader import DATASET_REVISIONS

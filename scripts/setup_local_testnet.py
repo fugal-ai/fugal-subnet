@@ -202,6 +202,7 @@ def train_head(output_path: str = "data/local_head.npz"):
 def start_miner(wallet, subtensor_network, netuid, head_path, port=8091):
     """Start miner in a background thread."""
     import bittensor as bt
+
     from fugal_subnet.protocol import FugalSynapse
 
     with open(head_path, "rb") as f:
@@ -231,16 +232,17 @@ def start_miner(wallet, subtensor_network, netuid, head_path, port=8091):
 def run_epoch(validator_wallet, subtensor, netuid):
     """Run one validator epoch."""
     import bittensor as bt
-    from fugal_subnet.protocol import FugalSynapse
-    from fugal_subnet.config import ROUTING_LAMBDA
+
     from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
-    from fugal_subnet.matrix import build_matrix_mock
-    from fugal_subnet.soft_targets import compute_soft_targets
-    from fugal_subnet.head_eval import load_head_from_b64, evaluate_head
-    from fugal_subnet.scoring import ScoringState, update_scores
-    from fugal_subnet.rewards import compute_weights
-    from fugal_subnet.dedup import find_duplicates
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
+    from fugal_subnet.config import ROUTING_LAMBDA
+    from fugal_subnet.dedup import find_duplicates
+    from fugal_subnet.head_eval import evaluate_head, load_head_from_b64
+    from fugal_subnet.matrix import build_matrix_mock
+    from fugal_subnet.protocol import FugalSynapse
+    from fugal_subnet.rewards import compute_weights
+    from fugal_subnet.scoring import ScoringState, update_scores
+    from fugal_subnet.soft_targets import compute_soft_targets
 
     metagraph = subtensor.metagraph(netuid)
     dendrite = bt.Dendrite(wallet=validator_wallet)

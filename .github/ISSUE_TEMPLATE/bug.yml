@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible problem that is not a private security issue.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include wallet material, API keys, or private vulnerability details.
+  - type: input
+    id: version
+    attributes:
+      label: Fugal version or commit
+      placeholder: v0.2.0 or full commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network profile
+      options:
+        - mock/local
+        - testnet
+        - finney/mainnet
+        - offline tooling
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include expected behavior, actual behavior, and minimal reproduction.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Linux distribution, architecture, Python, Bittensor, and container engine versions.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed secrets, wallet material, API keys, and private benchmark gold data.
+          required: true
+        - label: This is not a private security vulnerability.
+          required: true

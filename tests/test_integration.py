@@ -18,21 +18,33 @@ import numpy as np
 # Patch bittensor before any fugal imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import tests.bt_mock  # noqa: E402, F401
-
-from fugal_subnet.protocol import FugalSynapse
-from fugal_subnet.config import HEAD_HIDDEN_DIM, SLICE_SIZE
 from fugal_subnet.benchmarks.loader import load_all
-from fugal_subnet.benchmarks.slicer import select_slice, derive_nonce
-from fugal_subnet.matrix import build_matrix_mock
-from fugal_subnet.soft_targets import compute_soft_targets
-from fugal_subnet.head_eval import HeadArtifact, load_head_from_b64, load_head_from_npz, evaluate_head
-from fugal_subnet.scoring import ScoringState, update_scores
-from fugal_subnet.rewards import compute_weights, cap_weight_change
-from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch, verify_epoch
+from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
+from fugal_subnet.config import HEAD_HIDDEN_DIM, SLICE_SIZE
+from fugal_subnet.consensus import (
+    ValidatorReport,
+    check_self_consistency,
+    compute_consensus,
+)
 from fugal_subnet.dedup import find_duplicates
-from fugal_subnet.epoch_logger import EpochLog, EpochTimer, detect_anomalies, write_epoch_log, read_epoch_logs
-from fugal_subnet.consensus import ValidatorReport, compute_consensus, check_self_consistency
-
+from fugal_subnet.epoch_logger import (
+    EpochLog,
+    EpochTimer,
+    detect_anomalies,
+    read_epoch_logs,
+    write_epoch_log,
+)
+from fugal_subnet.head_eval import (
+    HeadArtifact,
+    evaluate_head,
+    load_head_from_b64,
+    load_head_from_npz,
+)
+from fugal_subnet.matrix import build_matrix_mock
+from fugal_subnet.protocol import FugalSynapse
+from fugal_subnet.rewards import cap_weight_change, compute_weights
+from fugal_subnet.scoring import ScoringState, update_scores
+from fugal_subnet.soft_targets import compute_soft_targets
 
 MODEL_POOL = [
     "openai/gpt-4o-mini",
@@ -203,7 +215,6 @@ def test_full_validator_pipeline():
 
 def test_dendrite_query_flow():
     """Simulate validator querying miner via dendrite."""
-    import bittensor as bt
 
     data, h = make_synthetic_head(MODEL_POOL)
     b64 = base64.b64encode(data).decode("ascii")
@@ -234,7 +245,8 @@ def test_dendrite_query_flow():
 def test_commit_reveal():
     """Commit-reveal: commit hash matches reveal hash."""
     print("\n  [TEST] Commit-reveal integrity")
-    import tempfile, os
+    import os
+    import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
         os.environ["FUGAL_EPOCH_DIR"] = tmpdir
         # Reload to pick up env var

@@ -5,6 +5,8 @@ Describe the problem and the approach taken.
 ## Validation
 
 - [ ] `python scripts/check_safety_invariants.py`
+- [ ] `python scripts/check_bittensor_axon.py`
+- [ ] `pytest -q`
 - [ ] `python tests/test_integration.py`
 - [ ] `python -m fugal_subnet.attacks.run_attacks`
 - [ ] Tests ran without real OpenRouter calls or API spend

@@ -1,0 +1,3 @@
+# Consensus-relevant symbolic parser dependency. The generated requirements.lock
+# includes transitive versions and distribution hashes for Linux x86-64.
+math-verify==0.9.0

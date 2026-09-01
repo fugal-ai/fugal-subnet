@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 
 logger = logging.getLogger(__name__)
 

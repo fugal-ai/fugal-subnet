@@ -1,34 +1,29 @@
-FROM python:3.10-slim AS builder
+# Production target is intentionally Linux amd64; keep this manifest digest and
+# uv.lock review-coupled. The image contains no mutable dependency installation.
+FROM ghcr.io/astral-sh/uv:0.8.14-python3.10-bookworm-slim@sha256:7b97c0f66dd8c8329b28d6509c0e13ef500aa90a91d48689ec9cc9ec0ea69bac
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential pkg-config libssl-dev curl \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Match pyproject.toml's bittensor range (the only dep needing a Rust toolchain)
-RUN pip install --no-cache-dir "bittensor>=10.0.0,<11.0.0"
-
-FROM python:3.10-slim
-
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-RUN apt-get update && apt-get install -y --no-install-recommends libssl3 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
-COPY pyproject.toml .
+
+# Cache third-party wheels independently from project sources.
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
+RUN uv sync --frozen --no-dev --no-install-project
+
 COPY fugal_subnet/ fugal_subnet/
 COPY neurons/ neurons/
 COPY scripts/ scripts/
-COPY tests/ tests/
 COPY data/ data/
+RUN uv sync --frozen --no-dev \
+    && groupadd --gid 10001 fugal \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/fugal fugal \
+    && mkdir -p /app/results /app/data /home/fugal/.bittensor \
+    && chown -R 10001:10001 /app/results /app/data /home/fugal
 
-# CPU-only torch first (avoids pulling CUDA wheels), then the package itself,
-# which installs the remaining pyproject dependencies.
-RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -e .
+USER 10001:10001
 
-ENTRYPOINT ["python"]
+ENTRYPOINT ["/app/.venv/bin/python"]

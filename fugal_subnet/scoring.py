@@ -5,12 +5,15 @@ provides stability — no EWMA smoothing needed. Wilson LCB is computed for
 diagnostics but not used in weight calculation.
 """
 from __future__ import annotations
+
 import math
 from dataclasses import dataclass, field
 
 from fugal_subnet.config import (
+    COMPOSITE_W_ACC,
+    COMPOSITE_W_COST,
+    COMPOSITE_W_KL,
     WILSON_CONFIDENCE,
-    COMPOSITE_W_ACC, COMPOSITE_W_COST, COMPOSITE_W_KL,
 )
 from fugal_subnet.head_eval import HeadScore
 

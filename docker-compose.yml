@@ -1,7 +1,7 @@
 services:
   subtensor:
     # Pin to v432 — :latest has a Drand txpool crash ~18 blocks in
-    image: ghcr.io/raofoundation/subtensor-localnet:v432
+    image: ghcr.io/raofoundation/subtensor-localnet:v432@sha256:2354832a7c45ceb35703d64bd6f9477439f9a966e34a1d460965b8faf19439e2
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -28,11 +28,10 @@ services:
       - FUGAL_REQUIRE_COMMITMENT=0
       - LOG_LEVEL=INFO
       - PYTHONUNBUFFERED=1
+    # Local dev-funded keys only. Production validator wallets must never be
+    # mounted into a grading worker or this legacy all-in-one test service.
     volumes:
-      - fugal-wallets:/root/.bittensor
-      - ./fugal_subnet:/app/fugal_subnet
-      - ./scripts:/app/scripts
-      - ./neurons:/app/neurons
+      - fugal-wallets:/home/fugal/.bittensor
     command: ["bash", "-c", "python -u scripts/setup_local_testnet.py 2>&1"]
     entrypoint: []
 

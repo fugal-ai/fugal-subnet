@@ -10,7 +10,7 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 
 from fugal_subnet.graders import grader_hash
 

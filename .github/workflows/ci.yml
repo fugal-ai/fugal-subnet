@@ -46,8 +46,131 @@ jobs:
       - name: Check security invariants
         run: uv run python scripts/check_safety_invariants.py
 
+      - name: Smoke-test real Bittensor Axon annotations
+        run: uv run python scripts/check_bittensor_axon.py
+
+      - name: Run unit and regression tests
+        run: uv run pytest -q
+
       - name: Run integration suite
         run: uv run python tests/test_integration.py
 
       - name: Run grader attack suite
         run: uv run python -m fugal_subnet.attacks.run_attacks
+
+      - name: Check byte-identical v2 golden vector
+        run: uv run python scripts/check_v2_golden.py
+
+      - name: Check pinned CPU backbone embedding vector
+        run: uv run python scripts/check_v2_backbone_golden.py
+
+      - name: Check all canonical IFEval instructions
+        run: uv run python scripts/check_v2_ifeval_golden.py
+
+  quality-and-package:
+    name: Quality, audit, and release artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Lint
+        run: uv run ruff check fugal_subnet neurons scripts tests
+
+      - name: Type-check consensus modules
+        run: >-
+          uv run mypy fugal_subnet/consensus_manifest.py
+          fugal_subnet/grader_registry.py fugal_subnet/graders_v2.py
+          fugal_subnet/v2 fugal_subnet/sandbox neurons/validator_v2.py
+          fugal_subnet/training.py fugal_subnet/verify_epoch.py
+
+      - name: Audit installed Python dependencies
+        run: uv run pip-audit --local --skip-editable
+
+      - name: Generate Python dependency SBOM
+        run: |
+          mkdir -p artifacts
+          uv run pip-audit --local --skip-editable --format cyclonedx-json \
+            --output artifacts/python-dependencies.cdx.json
+
+      - name: Build wheel and source distribution
+        run: uv build
+
+      - name: Test clean wheel and source installations
+        run: uv run python scripts/test_release_artifacts.py --dist-dir dist
+
+      - name: Attest package build provenance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Upload release candidates and Python SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fugal-release-candidates
+          path: |
+            dist/*
+            artifacts/python-dependencies.cdx.json
+          if-no-files-found: error
+
+  container:
+    name: Locked non-root container and SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build locked image
+        run: docker build --tag fugal-subnet:ci .
+
+      - name: Smoke-test unprivileged installed commands
+        run: |
+          test "$(docker run --rm --entrypoint id fugal-subnet:ci -u)" = "10001"
+          docker run --rm fugal-subnet:ci -m neurons.validator --help
+          docker run --rm fugal-subnet:ci -m neurons.validator_v2 --help
+          docker run --rm fugal-subnet:ci -m neurons.miner --help
+          docker run --rm fugal-subnet:ci -m fugal_subnet.training --help
+          docker run --rm fugal-subnet:ci -m fugal_subnet.verify_epoch --help
+
+      - name: Generate container SBOM
+        run: mkdir -p artifacts
+
+      - name: Scan container into SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: fugal-subnet:ci
+          format: spdx-json
+          output-file: artifacts/container.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload container SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fugal-container-sbom
+          path: artifacts/container.spdx.json
+          if-no-files-found: error

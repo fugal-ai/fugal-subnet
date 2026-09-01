@@ -6,3 +6,9 @@ __pycache__/
 dist/
 build/
 results/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+data/benchmarks/

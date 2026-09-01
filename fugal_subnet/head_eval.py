@@ -4,6 +4,7 @@ Loads a miner's .npz head, evaluates routing decisions against the matrix,
 computes accuracy, cost efficiency, and KL divergence.
 """
 from __future__ import annotations
+
 import base64
 import io
 import logging
@@ -13,8 +14,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from fugal_subnet.config import (
-    HEAD_MAX_BYTES, HEAD_MAX_DECOMPRESSED_BYTES, HEAD_MAX_MODELS,
-    HEAD_HIDDEN_DIM, ROUTING_LAMBDA,
+    HEAD_HIDDEN_DIM,
+    HEAD_MAX_BYTES,
+    HEAD_MAX_DECOMPRESSED_BYTES,
+    HEAD_MAX_MODELS,
+    ROUTING_LAMBDA,
 )
 
 logger = logging.getLogger(__name__)

@@ -7,6 +7,7 @@ Responses are collected concurrently (bounded by API_CONCURRENCY); grading is
 done sequentially afterwards so grade order never depends on network timing.
 """
 from __future__ import annotations
+
 import hashlib
 import logging
 import os
@@ -42,6 +43,7 @@ def build_matrix(
     cache_dir: str | None = None,
     allow_exec: bool = False,
     concurrency: int = API_CONCURRENCY,
+    live: bool = False,
 ) -> MatrixResult:
     """Build the ground truth matrix by calling all models on all questions.
 
@@ -53,6 +55,7 @@ def build_matrix(
         cache_dir: Optional directory for response caching (TTL-expired).
         allow_exec: Whether to allow code execution graders.
         concurrency: Max in-flight API calls.
+        live: Explicit authorization for the paid OpenRouter path.
 
     Returns:
         MatrixResult with the N×M binary matrix and metadata.
@@ -89,8 +92,11 @@ def build_matrix(
 
     def _fetch(task):
         q_idx, m_idx, model, question, key = task
+        # [PAID ~$0-$0.10/call] call_model reserves the worst-case amount
+        # atomically before each request attempt.
         text, _, _ = call_model(
             model, question["prompt"], tracker=tracker, prices=prices,
+            live=live,
         )
         return q_idx, m_idx, key, text
 

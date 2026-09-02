@@ -16,10 +16,22 @@ import numpy as np
 # PyTorch selects CPU kernels from the host's widest SIMD extension, and the
 # resulting float32 reduction order changes the embedding bits. An AVX-512 host
 # and an AVX2 host therefore disagree, which would make honest validators reject
-# each other's reveals, so the vector width is pinned before torch initializes
-# its dispatch table. This must stay above the torch import.
+# each other's reveals. Three dispatchers have to be pinned, not one:
+# ATEN_CPU_CAPABILITY covers ATen's own vectorized kernels, while the GEMMs run
+# through MKL and oneDNN, which dispatch on the real CPU independently.
+# MKL_CBWR is Intel's Conditional Bitwise Reproducibility switch and is the
+# mechanism actually intended for this. All of it must stay above the torch
+# import, because each is read once when the dispatch tables initialize.
 CPU_CAPABILITY = "avx2"
-os.environ.setdefault("ATEN_CPU_CAPABILITY", CPU_CAPABILITY)
+DETERMINISM_ENV = {
+    "ATEN_CPU_CAPABILITY": CPU_CAPABILITY,
+    "MKL_CBWR": "AVX2",
+    "DNNL_MAX_CPU_ISA": "AVX2",
+    "MKL_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+}
+for _key, _value in DETERMINISM_ENV.items():
+    os.environ.setdefault(_key, _value)
 
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
@@ -191,8 +203,15 @@ def verify_backbone_golden(
     embeddings = compute_hidden_states(list(GOLDEN_PROMPTS))
     actual = hashlib.sha256(embeddings.tobytes(order="C")).hexdigest()
     if actual != expected_embeddings_sha256:
+        # Name the host and the actual digest: this failure is nearly always a
+        # dispatcher that ignored the pins above, and the message is the only
+        # evidence available from another machine's CI run.
+        active = str(torch.backends.cpu.get_cpu_capability())
+        pins = ", ".join(f"{key}={os.environ.get(key)}" for key in sorted(DETERMINISM_ENV))
         raise BackboneEnvironmentError(
-            "pinned backbone embedding vector differs from manifest"
+            "pinned backbone embedding vector differs from manifest: expected "
+            f"{expected_embeddings_sha256}, got {actual}; torch capability "
+            f"{active}, threads {torch.get_num_threads()}, pins {pins}"
         )
     return actual
 

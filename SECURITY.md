@@ -37,18 +37,16 @@ Please do not exploit a vulnerability against public infrastructure, access data
 | Copied routing behavior | Cosine-similarity deduplication; earliest commitment wins |
 | Validator budget exhaustion | Per-epoch budget, model pool caps, per-query price cap, timeouts, bounded concurrency |
 | Credential disclosure | Environment-based secrets, no-key logging rule, ignored `.env` and key files |
-| Malicious executable answers | V2-only networkless ephemeral OCI isolation, trusted parent comparison, time/resource/output caps |
-| Validator disagreement | V2 pinned datasets, deterministic slicing/grading, replicated signed reports, grader-bundle hash, reveal artifacts |
+| Malicious executable answers | Trusted parent-side output comparison (`exec_io` grader), time/resource/output caps, Docker isolation recommended for validators |
+| Validator disagreement | Pinned HF dataset revisions, deterministic HMAC-seeded slicing, immutable hash-pinned graders, commit-reveal epoch artifacts |
 
 ## Known limitations
 
-- Historical v0.1 executes generated answers without the v2 isolation boundary
-  and is unsuitable for funded operation. V2 uses a separate launcher identity
-  and an ephemeral OCI worker with `--network none`; the validator receives only
-  a restricted Unix socket and never the container-engine socket.
-- The launcher identity can create containers and is therefore privileged
-  relative to its worker. Operators must isolate that identity from validator
-  wallets, API credentials, benchmark gold values, and unrelated host paths.
+- Code execution graders (`exec_io`, `exec_unittest`) run generated code on the
+  validator host. Operators should run the validator inside a Docker container
+  or VM to contain untrusted execution. The `exec_io` grader mitigates forgery
+  by comparing outputs parent-side, but host isolation remains the primary
+  defense.
 - Exact receipt verification depends on an archive-capable Bittensor endpoint
   retaining the historical blocks referenced by a reveal.
 - External model providers can be unavailable, change behavior, or return inconsistent outputs.

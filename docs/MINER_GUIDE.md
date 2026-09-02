@@ -69,36 +69,20 @@ Replace `<NETUID>` with the Fugal subnet's netuid (announced on launch).
 ### Quick start (synthetic data, no API cost)
 
 ```bash
-fugal-train \
+python scripts/train_head.py \
   --synthetic --n-questions 300 \
   --models openai/gpt-5.4-mini,anthropic/claude-haiku-4.5,deepseek/deepseek-v4-flash \
   --output data/my_head.npz
 ```
 
 This trains on synthetic data to verify everything works. For a competitive head,
-you'll want to train on real matrix data.
+train on real matrix data from validator-published epoch artifacts.
 
-### Competitive training (with matrix data)
+### Competitive training (with epoch data)
 
-Once v2 is running, validators publish canonical reveal artifacts. Download one,
-verify its exact-block chain receipts, and train directly from it:
-
-```bash
-fugal-train \
-  --reveal data/reveal.json \
-  --network test --netuid <NETUID> \
-  --grader-socket /run/fugal-grader/launcher.sock \
-  --models openai/gpt-5.4-mini,anthropic/claude-haiku-4.5,deepseek/deepseek-v4-flash \
-  --output data/my_head.npz \
-  --epochs 200
-```
-
-The trainer verifies the reveal's committee signatures and strict-majority
-matrix, regrades every published response, recomputes submitted head routing,
-dedup, scores, and weights, then uses the pinned CPU backbone embeddings. An
-isolated grader socket is required when the slice contains code or symbolic
-math. `--allow-unverified-chain` exists only for an explicit offline inspection
-where no historical node is available; it does not claim chain verification.
+Each epoch, validators publish the full ground truth matrix at
+`results/epochs/<epoch_id>/reveal.json`. Download a reveal, then retrain your
+head against the real question/model/grade data using `scripts/train_head.py`.
 
 ### Model selection strategy
 
@@ -108,9 +92,6 @@ Your head declares which models it can route to. This is a strategic choice:
 - **Cheaper models** = better cost efficiency score (35% of composite weight)
 - **Expensive models** = better accuracy on hard questions (55% of composite weight)
 - All miners compete in a single pool ranked by composite score (accuracy 55%, cost efficiency 35%, KL divergence 10%)
-- V2 heads may use only a unique subset of the versioned active registry (at
-  most eight models). Live prices protect the paid budget; the versioned
-  canonical price snapshot alone controls routing and scoring.
 
 ### Head format
 
@@ -210,9 +191,8 @@ scored from the next epoch boundary after the commitment lands.
 
 Training data: every epoch the validator publishes
 `results/epochs/<epoch_id>/reveal.json` containing the full question slice,
-the N×M ground truth matrix, builder reports, model/price registry, submitted
-heads, routing, dedup, scores, and weights — exactly what `fugal-train --reveal`
-verifies and consumes.
+the N×M ground truth matrix, model costs, submitted heads, scores, and weights.
+Use `scripts/train_head.py` to retrain against this data.
 
 ## Scoring Details
 

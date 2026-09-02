@@ -11,7 +11,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # Cache third-party wheels independently from project sources.
-COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY fugal_subnet/ fugal_subnet/

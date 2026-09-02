@@ -20,7 +20,7 @@ Better heads earn more emissions.
 
 - Linux or WSL2
 - Python 3.10-3.12
-- CPU for the consensus-pinned backbone and reference trainer
+- GPU recommended for training (CPU works but slower)
 - ~4GB disk for dependencies + backbone model
 - TAO for subnet registration
 

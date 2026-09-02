@@ -12,11 +12,13 @@ Automates the full deployment against a local subtensor chain:
 8. Reports results and costs
 
 Usage:
-    # Full run with mock API (no OpenRouter spend, no real cost):
+    # Full run with mock API (the default — no OpenRouter spend, no real cost):
     python scripts/launch_testnet.py --mock --epochs 3
 
-    # Full run with real API calls (costs ~$15-30/epoch):
-    OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py --epochs 2
+    # Full run with real API calls (costs ~$15-30/epoch; --live and an explicit
+    # positive --epoch-budget are both required to reach the paid path):
+    OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py \
+        --live --epoch-budget 30 --epochs 2
 
     # Dry run — check setup, don't create anything:
     python scripts/launch_testnet.py --dry-run
@@ -492,8 +494,9 @@ def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
     if mock:
         cmd.append("--mock")
     else:
-        budget = env.get("FUGAL_EPOCH_BUDGET", str(epoch_budget))
-        cmd.extend(["--live", "--epoch-budget", budget])
+        # The resolved --epoch-budget wins outright; passing it explicitly stops
+        # an ambient FUGAL_EPOCH_BUDGET from silently raising the validator's cap.
+        cmd.extend(["--live", "--epoch-budget", str(epoch_budget)])
 
     mode_str = "(mock)" if mock else "(REAL API — costs money)"
     print(f"  Running validator epoch {epoch_num} {mode_str}...", flush=True)
@@ -614,11 +617,12 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Full test with mock API (no cost at all):
+  # Full test with mock API (the default — no cost at all):
   python scripts/launch_testnet.py --mock --epochs 3
 
   # Full test with real API calls (costs ~$15-30/epoch):
-  OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py --epochs 2
+  OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py \
+      --live --epoch-budget 30 --epochs 2
 
   # Check setup without doing anything:
   python scripts/launch_testnet.py --dry-run
@@ -636,10 +640,11 @@ Examples:
                    help="Skip chain/wallet/subnet setup (already running)")
     p.add_argument("--netuid", type=int, default=None,
                    help="Use existing netuid (required with --skip-setup)")
-    p.add_argument("--mock", action="store_true", default=True,
-                   help="Use mock API — no OpenRouter spend (default)")
-    p.add_argument("--live", action="store_true",
-                   help="Use real OpenRouter API (costs money, needs OPENROUTER_API_KEY)")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--mock", action="store_true",
+                      help="Use mock API — no OpenRouter spend (default)")
+    mode.add_argument("--live", action="store_true",
+                      help="Use real OpenRouter API (costs money, needs OPENROUTER_API_KEY)")
     p.add_argument("--epoch-budget", type=float, default=None,
                    help="Per-epoch USD budget cap (required with --live)")
     p.add_argument("--epochs", type=int, default=3,
@@ -659,14 +664,18 @@ def main():
     args = parse_args()
     total_start = time.time()
 
+    # Mock is the default; --live is the only way to reach the paid path.
+    # argparse's mutually exclusive group guarantees both are never set at once.
+    args.mock = not args.live
     if args.live:
-        args.mock = False
         if args.epoch_budget is None:
             print("ERROR: --live requires --epoch-budget AMOUNT", flush=True)
             return 1
         if args.epoch_budget <= 0:
             print("ERROR: --epoch-budget must be positive", flush=True)
             return 1
+    elif args.epoch_budget is not None:
+        print("WARNING: --epoch-budget is ignored without --live", flush=True)
 
     section("FUGAL LOCAL TESTNET LAUNCH")
     print(f"Chain:    local Docker ({DOCKER_IMAGE}:{args.image_tag})", flush=True)
@@ -676,7 +685,8 @@ def main():
     print(flush=True)
 
     if not args.mock and not os.getenv("OPENROUTER_API_KEY"):
-        print("ERROR: OPENROUTER_API_KEY not set. Use --mock for free testing.", flush=True)
+        print("ERROR: --live requires OPENROUTER_API_KEY. Drop --live to run in "
+              "mock mode (the default).", flush=True)
         return 1
 
     # ── Dry run ──
@@ -798,7 +808,7 @@ def main():
             # and that each run lands on a fresh boundary (fresh slice).
             wait_for_next_epoch_boundary()
             result = run_validator_epoch(VALIDATOR_WALLET, netuid, args.mock, i,
-                                                epoch_budget=args.epoch_budget)
+                                         epoch_budget=args.epoch_budget)
             results.append(result)
 
             status = "PASS" if result["success"] else "FAIL"

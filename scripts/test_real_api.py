@@ -98,7 +98,7 @@ def main():
             text, ptok, ctok = call_model(
                 model, "What is 2+2? Give only the number.",
                 tracker=tracker, prices=prices,
-                max_tokens=32,
+                max_tokens=32, live=True,
             )
             print(f"  {model}: '{text.strip()[:50]}' ({ptok}+{ctok} tokens, ${tracker.total_cost_usd:.6f} total)")
         except Exception as e:
@@ -115,7 +115,7 @@ def main():
         questions, MODELS,
         tracker=tracker, prices=prices,
         cache_dir=cache_dir,
-        allow_exec=False,
+        allow_exec=False, live=True,
     )
     print(f"  Matrix shape: {matrix_result.matrix.shape}")
     print(f"  Total cost: ${tracker.total_cost_usd:.6f}")

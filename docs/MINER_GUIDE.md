@@ -78,11 +78,27 @@ python scripts/train_head.py \
 This trains on synthetic data to verify everything works. For a competitive head,
 train on real matrix data from validator-published epoch artifacts.
 
-### Competitive training (with epoch data)
+### Competitive training (with matrix data)
 
-Each epoch, validators publish the full ground truth matrix at
-`results/epochs/<epoch_id>/reveal.json`. Download a reveal, then retrain your
-head against the real question/model/grade data using `scripts/train_head.py`.
+Once the subnet is running, validators publish ground truth matrices. Download one
+and train against it:
+
+```bash
+python scripts/train_head.py \
+  --matrix data/matrix.npz \
+  --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
+  --output data/my_head.npz \
+  --device cuda \
+  --sft-epochs 100 \
+  --cma-generations 50
+```
+
+### Training stages
+
+1. **SFT (Stage 1)** — KL divergence loss against soft target distributions. AdamW
+   optimizer on W and b only. Takes seconds to minutes.
+2. **sep-CMA-ES (Stage 2)** — Derivative-free evolutionary refinement on actual routing
+   fitness. Takes minutes. Skip with `--skip-cma` for faster iteration.
 
 ### Model selection strategy
 
@@ -92,6 +108,10 @@ Your head declares which models it can route to. This is a strategic choice:
 - **Cheaper models** = better cost efficiency score (35% of composite weight)
 - **Expensive models** = better accuracy on hard questions (55% of composite weight)
 - All miners compete in a single pool ranked by composite score (accuracy 55%, cost efficiency 35%, KL divergence 10%)
+- Declare only models that exist on OpenRouter **with a listed price** — the
+  validator fetches prices at runtime and will not call (or score routes to)
+  unpriced models. Models above the per-query cost cap (default $0.10) are
+  also excluded, and each miner's declared pool is capped (default 30 models).
 
 ### Head format
 

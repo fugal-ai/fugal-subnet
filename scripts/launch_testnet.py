@@ -472,7 +472,7 @@ LOCAL_EPOCH_INTERVAL = "24"
 
 
 def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
-                        epoch_num: int) -> dict:
+                        epoch_num: int, epoch_budget: float | None = None) -> dict:
     """Run a single validator epoch and return results."""
     env = os.environ.copy()
     env["FUGAL_SKIP_BENCHMARKS"] = env.get("FUGAL_SKIP_BENCHMARKS",
@@ -492,7 +492,8 @@ def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
     if mock:
         cmd.append("--mock")
     else:
-        cmd.extend(["--live", "--epoch-budget", env.get("FUGAL_EPOCH_BUDGET", "30")])
+        budget = env.get("FUGAL_EPOCH_BUDGET", str(epoch_budget))
+        cmd.extend(["--live", "--epoch-budget", budget])
 
     mode_str = "(mock)" if mock else "(REAL API — costs money)"
     print(f"  Running validator epoch {epoch_num} {mode_str}...", flush=True)
@@ -635,8 +636,12 @@ Examples:
                    help="Skip chain/wallet/subnet setup (already running)")
     p.add_argument("--netuid", type=int, default=None,
                    help="Use existing netuid (required with --skip-setup)")
-    p.add_argument("--mock", action="store_true",
-                   help="Use mock API (no OpenRouter spend)")
+    p.add_argument("--mock", action="store_true", default=True,
+                   help="Use mock API — no OpenRouter spend (default)")
+    p.add_argument("--live", action="store_true",
+                   help="Use real OpenRouter API (costs money, needs OPENROUTER_API_KEY)")
+    p.add_argument("--epoch-budget", type=float, default=None,
+                   help="Per-epoch USD budget cap (required with --live)")
     p.add_argument("--epochs", type=int, default=3,
                    help="Number of epochs to run (default: 3)")
     p.add_argument("--retrain", action="store_true",
@@ -653,6 +658,15 @@ Examples:
 def main():
     args = parse_args()
     total_start = time.time()
+
+    if args.live:
+        args.mock = False
+        if args.epoch_budget is None:
+            print("ERROR: --live requires --epoch-budget AMOUNT", flush=True)
+            return 1
+        if args.epoch_budget <= 0:
+            print("ERROR: --epoch-budget must be positive", flush=True)
+            return 1
 
     section("FUGAL LOCAL TESTNET LAUNCH")
     print(f"Chain:    local Docker ({DOCKER_IMAGE}:{args.image_tag})", flush=True)
@@ -783,7 +797,8 @@ def main():
             # Ensure the miner's head commitment predates the epoch boundary,
             # and that each run lands on a fresh boundary (fresh slice).
             wait_for_next_epoch_boundary()
-            result = run_validator_epoch(VALIDATOR_WALLET, netuid, args.mock, i)
+            result = run_validator_epoch(VALIDATOR_WALLET, netuid, args.mock, i,
+                                                epoch_budget=args.epoch_budget)
             results.append(result)
 
             status = "PASS" if result["success"] else "FAIL"

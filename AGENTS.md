@@ -97,7 +97,8 @@ python -m fugal_subnet.attacks.run_attacks
 python scripts/launch_testnet.py --mock --epochs 3
 
 # Full local testnet (real API — costs money, needs OPENROUTER_API_KEY)
-OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py --epochs 2
+OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py \
+  --live --epoch-budget 30 --epochs 2
 ```
 
 ## Common Gotchas

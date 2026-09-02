@@ -32,6 +32,11 @@ pip install -e ".[dev]"
 # Local testnet (Docker chain + full epoch pipeline, no API spend)
 python scripts/launch_testnet.py --mock --epochs 3
 
+# Train a reference head (synthetic data, no API spend)
+python scripts/train_head.py --synthetic --n-questions 200 \
+  --models deepseek/deepseek-v4-flash meta-llama/llama-4-maverick openai/gpt-5.4-nano \
+  --output data/my_head.npz
+
 # Run the miner (commits the head hash on-chain, then serves it)
 python neurons/miner.py --netuid 1 --head-path data/my_head.npz
 

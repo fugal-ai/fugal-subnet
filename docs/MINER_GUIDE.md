@@ -89,9 +89,14 @@ python scripts/train_head.py \
   --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
   --output data/my_head.npz \
   --device cuda \
+  --use-backbone \
   --sft-epochs 100 \
   --cma-generations 50
 ```
+
+`--use-backbone` (or `--hidden-states <file.npy>`) is required here. Without one
+of them the trainer falls back to random hidden states and silently produces a
+head that scores near zero against the validator's real embeddings.
 
 ### Training stages
 

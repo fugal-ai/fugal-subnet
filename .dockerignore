@@ -12,3 +12,6 @@ results/
 .coverage
 htmlcov/
 data/benchmarks/
+# Locally trained heads are untracked, so including them would make a local
+# `docker build` produce a different image than CI's build from a clean clone.
+data/*.npz

@@ -80,6 +80,14 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ### Fixed
 
+- Pin the PyTorch CPU kernel width for the v2 backbone. PyTorch selects CPU
+  kernels from the host's widest SIMD extension, so an AVX-512 host and an AVX2
+  host produced different float32 reduction orders and different embedding bits
+  for the same prompts. Because reveal verification recomputes embeddings and
+  compares the derived scores exactly, honest validators on different hardware
+  would have rejected each other's reveals. `ATEN_CPU_CAPABILITY` is now pinned
+  before torch initializes its dispatch table, recorded in the manifest backbone
+  policy, and verified at startup so a mismatch aborts instead of diverging.
 - Read finalized `SubtensorModule.Weights` storage directly instead of the
   derived `metagraph.W` matrix, which Bittensor 10.5 can return empty even
   after finalized `set_weights` calls.

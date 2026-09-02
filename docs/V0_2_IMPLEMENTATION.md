@@ -76,7 +76,7 @@ No OpenRouter completion request or chain mutation was made.
   incomplete, disabled, and unactivated on local, test, and finney. Enabled or
   activated protocols must contain complete consensus material.
 - The current canonicalized manifest hash is
-  `eb17784950256e1bfae2bf350316f26d7df9308d325abbb87f93aa8338d9ea95`.
+  `13fd06d12da68ab959f00a0b4913dd58eb097ad2e159360fad45e64f89b9aacf`.
   It was recorded here as `5bf8b9c3...` before the final consensus-material
   rebuild; see phase 13 for how that staleness was found and prevented.
 - Manifest overrides are accepted only in local/mock profiles. Testnet and
@@ -536,6 +536,44 @@ that should have one, and otherwise prints an explicit `EVIDENCE BOUNDARY`
 line. Verifying post-reveal persistence requires a chain whose reveal
 completes, which means the public testnet. The corresponding
 `docs/RELEASE_CHECKLIST.md` item stays unchecked.
+
+**Unpinned CPU kernel width — a consensus defect the golden never caught.**
+With the golden pin fixed, `scripts/check_v2_backbone_golden.py` executed in CI
+for the first time (it had always been short-circuited by the earlier failure)
+and failed on Python 3.10, 3.11 and 3.12 while passing locally. The cause is
+hardware, not Python: PyTorch picks CPU kernels from the host's widest SIMD
+extension, and GitHub's AVX-512 runners use a different float32 reduction order
+than this AVX2 host.
+
+Measured locally, holding the machine fixed and varying only the thread count:
+
+```text
+threads=1  db07be51...                                    (the manifest pin)
+threads=2  8b2369b6...  3057/4096 values differ, max |d| 1.34e-07
+threads=4  a34dd0a8...  3048/4096 values differ, max |d| 1.30e-07
+ATEN_CPU_CAPABILITY=avx2     -> db07be51...  (matches the pin)
+ATEN_CPU_CAPABILITY=default  -> 6b4d6be5...  (scalar kernels)
+```
+
+The 8-decimal rounding cannot absorb this: the divergence is ~1.3e-7 against a
+1e-8 grid, thirteen times too coarse to help. This mattered because reveal
+verification recomputes embeddings and compares the derived composite scores as
+exact strings (`fugal_subnet/v2/reveal.py:825`), so two honest validators on
+different hardware would have rejected each other's reveals.
+
+Thread count was already pinned by `torch.set_num_threads(1)`; kernel width was
+not. `ATEN_CPU_CAPABILITY` is now pinned to `avx2` before the torch import,
+carried in `BackboneSpec`, recorded in the manifest backbone policy, and
+verified in `configure_determinism()` so a wider selection aborts with a clear
+message instead of diverging silently. AVX2 rather than scalar keeps the
+kernels fast and is available on effectively all x86-64 hosts, and the existing
+`golden_embeddings_sha256` was already the AVX2 result, so it is unchanged.
+Only `spec_sha256` and the manifest hash moved.
+
+This was also the first real exercise of the phase 13 golden split: the
+regenerated `tests/fixtures/v2_golden.json` diff was exactly one line,
+`manifest_sha256`, and `EXPECTED_MATH_SHA256` did not move, proving the
+consensus math was untouched by the manifest edit.
 
 ### 12. Remaining rollout gates (not implementation shortcuts)
 

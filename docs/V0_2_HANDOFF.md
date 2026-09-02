@@ -29,9 +29,9 @@ in `docs/RELEASE_CHECKLIST.md`.
 - The packaged v2 grader-bundle hash is
   `0142b66ce2901eae197a55eb0e8d525cfecb50ddcda869b1052e4ba21cc3bdd4`.
 - The canonicalized manifest hash is
-  `eb17784950256e1bfae2bf350316f26d7df9308d325abbb87f93aa8338d9ea95`.
+  `13fd06d12da68ab959f00a0b4913dd58eb097ad2e159360fad45e64f89b9aacf`.
 - Golden pins: whole vector
-  `b0022276224630a94f895dfcd28cc61eb916047bc3cdd1159d467c22e961c8d0`,
+  `cd8a6976e93841f69b993f123413b68833ce9943bc9f07757af60e904c79a2d7`,
   math-only `e15c8f129ebfe951685d97969729b984cd7da409b6e64a11bf32ed199b1a1a9d`.
 - The locally tested OCI worker image ID is
   `sha256:57410e04114488e5439518597d9b51dff024a27a4f09e42d3516840e38e968d6`.
@@ -72,6 +72,14 @@ phase 13 for the measured evidence behind each.
    after the current epoch boundary.
 3. Harness OOM during offline verification, which was misreported as a
    consensus failure because only `stderr[-500:]` was shown.
+4. Unpinned PyTorch CPU kernel width. The backbone golden had never actually
+   run in CI, because an earlier step always failed first. With the golden
+   fixed it ran and failed on all three Pythons: GitHub's AVX-512 runners
+   select wider kernels than this AVX2 host, changing the float32 reduction
+   order and the embedding bits. `ATEN_CPU_CAPABILITY` is now pinned to
+   `avx2` before the torch import, recorded in the manifest, and verified at
+   startup. Note the pinned embedding hash was already the AVX2 result, so
+   `golden_embeddings_sha256` is unchanged.
 
 **Evidence boundary.** On-chain weight persistence is not verified and cannot
 be on this chain: commit-reveal defers the weights, the drand reveal never

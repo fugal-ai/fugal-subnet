@@ -5,14 +5,24 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import platform
 import threading
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-import torch
-import torch.nn.functional as F
+
+# PyTorch selects CPU kernels from the host's widest SIMD extension, and the
+# resulting float32 reduction order changes the embedding bits. An AVX-512 host
+# and an AVX2 host therefore disagree, which would make honest validators reject
+# each other's reveals, so the vector width is pinned before torch initializes
+# its dispatch table. This must stay above the torch import.
+CPU_CAPABILITY = "avx2"
+os.environ.setdefault("ATEN_CPU_CAPABILITY", CPU_CAPABILITY)
+
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +63,7 @@ class BackboneSpec:
     max_length: int = MAX_LENGTH
     batch_size: int = BATCH_SIZE
     rounding_decimals: int = ROUNDING_DECIMALS
+    cpu_capability: str = CPU_CAPABILITY
 
     @property
     def sha256(self) -> str:
@@ -88,6 +99,16 @@ def configure_determinism() -> None:
                     "PyTorch inter-op threads were initialized above one"
                 )
         torch.use_deterministic_algorithms(True)
+        # Fail closed rather than diverge silently: if torch already selected a
+        # wider kernel set (another module imported it before this one, or the
+        # environment overrode the pin) the embeddings will not match consensus.
+        active = str(torch.backends.cpu.get_cpu_capability()).strip().upper()
+        if active != CPU_CAPABILITY.upper():
+            raise BackboneEnvironmentError(
+                "v2 consensus requires CPU capability "
+                f"{CPU_CAPABILITY.upper()}, but PyTorch selected {active}. Set "
+                f"ATEN_CPU_CAPABILITY={CPU_CAPABILITY} before importing torch."
+            )
         _configured = True
 
 

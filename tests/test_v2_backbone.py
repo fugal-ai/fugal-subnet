@@ -60,3 +60,33 @@ def test_backbone_golden_checks_prompt_and_embedding_hashes(monkeypatch):
             expected_prompts_sha256="0" * 64,
             expected_embeddings_sha256=expected,
         )
+
+
+def test_cpu_capability_is_pinned_before_torch_dispatch():
+    """AVX-512 and AVX2 hosts otherwise compute different embedding bits."""
+    import os
+
+    import torch
+
+    assert backbone.CPU_CAPABILITY == "avx2"
+    assert os.environ["ATEN_CPU_CAPABILITY"] == "avx2"
+    assert str(torch.backends.cpu.get_cpu_capability()).upper() == "AVX2"
+    assert backbone.BackboneSpec().cpu_capability == "avx2"
+
+
+def test_capability_mismatch_fails_closed(monkeypatch):
+    """A wider kernel set must abort rather than silently diverge."""
+    import torch
+
+    monkeypatch.setattr(backbone, "_configured", False)
+    monkeypatch.setattr(
+        torch.backends.cpu, "get_cpu_capability", lambda: "AVX512"
+    )
+    try:
+        backbone.configure_determinism()
+    except backbone.BackboneEnvironmentError as exc:
+        assert "AVX512" in str(exc)
+    else:
+        raise AssertionError("capability mismatch must fail closed")
+    finally:
+        backbone._configured = False

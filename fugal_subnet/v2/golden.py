@@ -20,7 +20,7 @@ from fugal_subnet.v2.soft_targets import compute_soft_targets
 GOLDEN_SCHEMA_VERSION = 2
 # Both pins are updated only by scripts/update_v2_golden.py, after an
 # explicit review of the tests/fixtures/v2_golden.json diff.
-EXPECTED_GOLDEN_SHA256 = "b0022276224630a94f895dfcd28cc61eb916047bc3cdd1159d467c22e961c8d0"
+EXPECTED_GOLDEN_SHA256 = "cd8a6976e93841f69b993f123413b68833ce9943bc9f07757af60e904c79a2d7"
 # Covers the material-independent math only. This one must not move.
 EXPECTED_MATH_SHA256 = "e15c8f129ebfe951685d97969729b984cd7da409b6e64a11bf32ed199b1a1a9d"
 

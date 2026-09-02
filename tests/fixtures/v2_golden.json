@@ -1,7 +1,7 @@
 {
   "material": {
     "grader_sha256": "0142b66ce2901eae197a55eb0e8d525cfecb50ddcda869b1052e4ba21cc3bdd4",
-    "manifest_sha256": "eb17784950256e1bfae2bf350316f26d7df9308d325abbb87f93aa8338d9ea95",
+    "manifest_sha256": "13fd06d12da68ab959f00a0b4913dd58eb097ad2e159360fad45e64f89b9aacf",
     "question_commitment": "d75b97019eb6a344195d26a946651f17dd7a927806d222abbc1cb38b8fb8f904"
   },
   "math": {

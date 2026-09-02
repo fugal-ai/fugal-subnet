@@ -491,6 +491,8 @@ def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
     ]
     if mock:
         cmd.append("--mock")
+    else:
+        cmd.extend(["--live", "--epoch-budget", env.get("FUGAL_EPOCH_BUDGET", "30")])
 
     mode_str = "(mock)" if mock else "(REAL API — costs money)"
     print(f"  Running validator epoch {epoch_num} {mode_str}...", flush=True)

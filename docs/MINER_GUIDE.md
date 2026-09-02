@@ -71,7 +71,7 @@ Replace `<NETUID>` with the Fugal subnet's netuid (announced on launch).
 ```bash
 python scripts/train_head.py \
   --synthetic --n-questions 300 \
-  --models openai/gpt-5.4-mini,anthropic/claude-haiku-4.5,deepseek/deepseek-v4-flash \
+  --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
   --output data/my_head.npz
 ```
 

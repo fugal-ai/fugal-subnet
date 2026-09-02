@@ -54,9 +54,11 @@ docker run --rm \
   -e OPENROUTER_API_KEY="sk-or-..." \
   -e FUGAL_NETWORK=finney \
   -v fugal-state:/app/results \
+  -v ~/.bittensor:/home/fugal/.bittensor:ro \
   fugal-subnet -m neurons.validator \
     --netuid <NETUID> --network finney \
     --coldkey fugal_validator --hotkey default \
+    --wallet-path /home/fugal/.bittensor/wallets \
     --live --epoch-budget 50
 ```
 

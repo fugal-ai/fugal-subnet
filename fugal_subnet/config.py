@@ -56,7 +56,12 @@ MAX_WEIGHT_DELTA = float(os.getenv("FUGAL_MAX_WEIGHT_DELTA", "0.3"))
 # --- Validator budget ---
 # None means "not explicitly set" — live mode requires a positive value.
 _budget_raw = os.getenv("FUGAL_EPOCH_BUDGET")
-EPOCH_BUDGET_USD: float | None = float(_budget_raw) if _budget_raw else None
+if _budget_raw:
+    EPOCH_BUDGET_USD: float | None = float(_budget_raw)
+    if EPOCH_BUDGET_USD <= 0:
+        raise ValueError(f"FUGAL_EPOCH_BUDGET must be positive, got {_budget_raw!r}")
+else:
+    EPOCH_BUDGET_USD = None
 MAX_MODEL_POOL = int(os.getenv("FUGAL_MAX_MODEL_POOL", "30"))
 MAX_MODELS_PER_MINER = int(os.getenv("FUGAL_MAX_MODELS_PER_MINER", "30"))
 

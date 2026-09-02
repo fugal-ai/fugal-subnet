@@ -29,7 +29,7 @@ services:
       - LOG_LEVEL=INFO
       - PYTHONUNBUFFERED=1
     # Local dev-funded keys only. Production validator wallets must never be
-    # mounted into a grading worker or this legacy all-in-one test service.
+    # mounted into this local testnet service.
     volumes:
       - fugal-wallets:/home/fugal/.bittensor
     command: ["bash", "-c", "python -u scripts/setup_local_testnet.py 2>&1"]

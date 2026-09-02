@@ -397,7 +397,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 continue
 
             timer.start_phase("matrix")
-            effective_budget = configured_budget if live else 50.0
+            effective_budget = configured_budget
             if mock:
                 all_models = sorted(set(
                     m for pool in model_pools.values() for m in pool

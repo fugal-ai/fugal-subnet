@@ -97,7 +97,7 @@ def check_immutable_v1_grader(errors: list[str]) -> None:
 
 
 def check_paid_call_guards(errors: list[str]) -> None:
-    """Ensure every call_model() has explicit live= and every httpx.post has a cost annotation."""
+    """Ensure every call_model() invocation has an explicit live= keyword."""
     for path in python_files():
         if "tests" in path.parts:
             continue

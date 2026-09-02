@@ -30,7 +30,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 
 # Local testnet (Docker chain + full epoch pipeline, no API spend)
-python scripts/launch_testnet.py --epochs 3
+python scripts/launch_testnet.py --mock --epochs 3
 
 # Run the miner (commits the head hash on-chain, then serves it)
 python neurons/miner.py --netuid 1 --head-path data/my_head.npz

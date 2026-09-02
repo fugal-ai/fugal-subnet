@@ -6,16 +6,55 @@ Frozen backbone, mean-pooling, L2-normalization.
 from __future__ import annotations
 
 import logging
+import os
 
 import numpy as np
-import torch
-import torch.nn.functional as F
 
-from fugal_subnet.config import BACKBONE_MODEL, ROUTER_SYSTEM_PROMPT, HEAD_HIDDEN_DIM
+# Pin CPU kernel dispatch before torch initializes its dispatch tables.
+# PyTorch selects CPU kernels from the host's widest SIMD extension, so
+# AVX-512 and AVX2 hosts produce different float32 embedding bits. Three
+# dispatchers must be pinned: ATen kernels (ATEN_CPU_CAPABILITY), MKL BLAS
+# (MKL_CBWR), and oneDNN (DNNL_MAX_CPU_ISA). Thread counts are also pinned
+# to eliminate reduction-order variance.
+_DETERMINISM_ENV = {
+    "ATEN_CPU_CAPABILITY": "avx2",
+    "MKL_CBWR": "AVX2",
+    "DNNL_MAX_CPU_ISA": "AVX2",
+    "MKL_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+}
+for _key, _value in _DETERMINISM_ENV.items():
+    os.environ.setdefault(_key, _value)
+
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+
+from fugal_subnet.config import BACKBONE_MODEL, HEAD_HIDDEN_DIM, ROUTER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
 _model_cache: dict[str, tuple] = {}
+_determinism_configured = False
+
+
+def configure_determinism() -> None:
+    """Lock down torch thread counts and deterministic mode for reproducible embeddings."""
+    global _determinism_configured
+    if _determinism_configured:
+        return
+    torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        if torch.get_num_interop_threads() != 1:
+            raise RuntimeError("PyTorch inter-op threads were initialized above one")
+    torch.use_deterministic_algorithms(True)
+    _determinism_configured = True
+    logger.info(
+        "Backbone determinism configured: capability=%s, threads=%d",
+        os.environ.get("ATEN_CPU_CAPABILITY", "unset"),
+        torch.get_num_threads(),
+    )
 
 
 def get_backbone(
@@ -63,6 +102,7 @@ def compute_hidden_states(
 
     Returns (N, hidden_dim) float32 array, mean-pooled and L2-normalized.
     """
+    configure_determinism()
     tokenizer, model = get_backbone(model_name, device)
 
     all_hidden = []

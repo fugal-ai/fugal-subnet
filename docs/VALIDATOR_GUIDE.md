@@ -44,8 +44,24 @@ validator:
 
 The `exec_io` grader executes model-generated Python in a subprocess sandbox
 (process-group kill, rlimits, output caps) but **without network isolation**.
-Run the validator inside Docker or a VM so untrusted code can't reach your
-keys or network. The provided `Dockerfile` builds a suitable image.
+A model's response to a HumanEval question could contain code that exfiltrates
+data or contacts external services. Run the validator inside Docker or a VM
+so untrusted code can't reach your keys or network:
+
+```bash
+docker build -t fugal-subnet .
+docker run --rm \
+  -e OPENROUTER_API_KEY="sk-or-..." \
+  -e FUGAL_NETWORK=finney \
+  -v fugal-state:/app/results \
+  fugal-subnet -m neurons.validator \
+    --netuid <NETUID> --network finney \
+    --coldkey fugal_validator --hotkey default \
+    --live --epoch-budget 50
+```
+
+The container provides network isolation for the grading sandbox while still
+allowing the validator's own OpenRouter and chain connections.
 
 ## Cost Estimate
 
@@ -54,7 +70,8 @@ models miners declare, but expect:
 
 - **~$15-30 per epoch** with a full model pool
 - **~$1,200-2,400/month** at hourly epochs
-- Budget is capped at `$50/epoch` by default (configurable via `FUGAL_EPOCH_BUDGET`)
+- Budget is hard-capped per epoch (set via `--epoch-budget` or `FUGAL_EPOCH_BUDGET`)
+- Live mode (`--live`) requires an explicit budget; mock mode is the default
 - Models with per-query cost exceeding `$0.10` are rejected for cost protection
 - Prices are fetched live from OpenRouter; `data/models.json` is the local fallback
 
@@ -109,7 +126,8 @@ python neurons/validator.py \
   --netuid <NETUID> \
   --network finney \
   --coldkey fugal_validator \
-  --hotkey default
+  --hotkey default \
+  --live --epoch-budget 50
 ```
 
 ### Test run (no API spend)
@@ -126,8 +144,9 @@ python neurons/validator.py \
   --once
 ```
 
-`--mock` uses synthetic responses instead of calling OpenRouter. `--once` exits
-after a single epoch.
+The default is `--mock`, which uses synthetic responses instead of calling
+OpenRouter. `--live` enables paid API calls and requires `--epoch-budget` (a
+positive USD ceiling). `--once` exits after a single epoch.
 
 ### Running as a service
 
@@ -168,7 +187,7 @@ All settings are configurable via environment variables (see `fugal_subnet/confi
 | `FUGAL_EPOCH_INTERVAL` | `3600` | Seconds between epochs |
 | `FUGAL_SLICE_SIZE` | `300` | Questions per epoch |
 | `OPENROUTER_API_KEY` | — | OpenRouter API key (required) |
-| `FUGAL_EPOCH_BUDGET` | `50.0` | Max API spend per epoch in USD |
+| `FUGAL_EPOCH_BUDGET` | — | Max API spend per epoch in USD (required with `--live`) |
 | `FUGAL_MAX_MODEL_POOL` | `30` | Max models in union pool |
 | `FUGAL_MAX_MODELS_PER_MINER` | `30` | Max models counted per miner's declared pool |
 | `FUGAL_MAX_MODEL_COST` | `0.10` | Per-query cost cap for callable models (USD) |
@@ -178,7 +197,7 @@ All settings are configurable via environment variables (see `fugal_subnet/confi
 | `FUGAL_LAMBDA` | `2.0` | Cost-quality routing tradeoff |
 | `FUGAL_WILSON_CONFIDENCE` | `0.95` | Wilson LCB confidence level (diagnostic) |
 | `FUGAL_MAX_WEIGHT_DELTA` | `0.3` | Max weight change per UID per epoch |
-| `FUGAL_HEARTBEAT_TIMEOUT` | `600` | Auto-restart if no heartbeat (seconds) |
+| `FUGAL_WALLET_PATH` | — | Bittensor wallet root (defaults to SDK wallet directory) |
 | `FUGAL_STATE_PATH` | `results/validator_state.json` | Persisted scoring state (survives restarts) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
@@ -191,7 +210,9 @@ All settings are configurable via environment variables (see `fugal_subnet/confi
 | `--coldkey` | `default` | Wallet coldkey name |
 | `--hotkey` | `default` | Hotkey name |
 | `--once` | off | Run one epoch and exit |
-| `--mock` | off | Use mock responses (no API spend) |
+| `--live/--mock` | `--mock` | Mock (default) or live (paid OpenRouter calls) |
+| `--epoch-budget` | — | Positive USD ceiling (required with `--live`) |
+| `--wallet-path` | SDK default | Bittensor wallet root directory |
 | `--log-level` | `INFO` | Logging level |
 
 ## Monitoring
@@ -221,11 +242,11 @@ For cross-validator auditing, `fugal_subnet/consensus.py` compares several
 validators' published reveals offline (median consensus, outlier detection,
 Kendall-tau rank agreement).
 
-### Heartbeat
+### Process supervision
 
-If the main loop stops checking in for 600 seconds (configurable), the validator
-auto-restarts via `os.execv`. This handles hangs from network issues or unexpected
-exceptions.
+Use systemd (`Restart=always`) or Docker (`--restart unless-stopped`) to restart
+the validator on crashes. The validator persists scoring state to disk, so restarts
+resume cleanly.
 
 ## Safety Features
 
@@ -247,7 +268,7 @@ exceptions.
 - **Commit-reveal** — benchmark questions are committed before miner queries,
   verified and fully published on reveal.
 - **State persistence** — scoring state and previous weights survive restarts
-  and heartbeat re-execs (`results/validator_state.json`).
+  (`results/validator_state.json`).
 - **CRW compatibility** — `set_weights()` automatically uses commit-reveal-weights
   when the chain enables it.
 
@@ -264,5 +285,5 @@ This is normal when the subnet is new and has few miners.
 **Weight-setting failed** — Check that your validator has enough stake. The error
 message in the epoch log will have details.
 
-**Heartbeat restart** — If you see frequent restarts, check network connectivity
-to the subtensor endpoint and OpenRouter API.
+**Frequent restarts** — Check network connectivity to the subtensor endpoint and
+OpenRouter API. Review epoch logs for error details.

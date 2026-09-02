@@ -14,7 +14,7 @@ body:
     id: change
     attributes:
       label: Proposed versioned change
-      description: Identify affected manifest fields, graders, artifacts, scoring, or chain behavior.
+      description: Identify affected graders, scoring, or chain behavior.
     validations:
       required: true
   - type: textarea

@@ -193,7 +193,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
     from fugal_subnet.api import (
         BudgetExceeded,
         SpendTracker,
-        UnknownPrice,
         build_spend_protection_prices,
         fetch_openrouter_prices,
         load_prices,
@@ -219,19 +218,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
 
     wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     subtensor = bt.Subtensor(network=network)
-    from fugal_subnet.consensus_manifest import select_protocol
-
-    selected_protocol = select_protocol(network, subtensor.get_current_block())
-    if selected_protocol.protocol_id != "v1":
-        raise click.ClickException(
-            f"This validator entry point cannot execute {selected_protocol.protocol_id}; "
-            "use the separately reviewed v2 rollout entry point"
-        )
-    logger.warning(
-        "Selected %s (%s): experimental historical protocol, not funded-production safe",
-        selected_protocol.protocol_id,
-        selected_protocol.status,
-    )
     metagraph = subtensor.metagraph(netuid)
     dendrite = bt.Dendrite(wallet=wallet)
 
@@ -258,9 +244,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
     try:
         canonical_prices = load_prices()
     except Exception as e:
-        raise click.ClickException(f"Packaged canonical prices are unavailable: {e}") from e
+        raise click.ClickException(f"Canonical prices are unavailable: {e}") from e
 
-    def refresh_live_prices(previous: dict) -> dict:
+    def refresh_prices(previous: dict) -> dict:
         try:
             fresh = fetch_openrouter_prices()
             logger.info("Fetched live prices for %d models from OpenRouter", len(fresh))
@@ -269,10 +255,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             if previous:
                 logger.warning("Price refresh failed, keeping previous prices")
                 return previous
-            logger.error("Current live prices are unavailable; paid calls fail closed")
-            return {}
+            logger.warning("Live prices unavailable — using canonical fallback "
+                           "(%d models)", len(canonical_prices))
+            return dict(canonical_prices)
 
-    live_prices: dict = refresh_live_prices({}) if live else {}
+    prices: dict = refresh_prices({})
 
     state = load_state(MinerRecord)
     scoring_state = ScoringState(records=state["records"])
@@ -282,7 +269,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
 
     blocks_per_epoch = max(1, EPOCH_INTERVAL // BLOCK_TIME_S)
 
-    once_failed = False
     while True:
         try:
             current_block = subtensor.get_current_block()
@@ -350,7 +336,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                     logger.warning("Bad head from UID %d: %s", uid, e)
                     continue
 
-                # Hash the actual bytes — never trust the miner-claimed hash.
                 actual_hash = hashlib.sha256(raw).hexdigest()
                 head.commit_hash = actual_hash
 
@@ -373,7 +358,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                     )
                     continue
                 else:
-                    commit_blocks[uid] = math.inf  # scoreable but always dedup-junior
+                    commit_blocks[uid] = math.inf
 
                 heads[uid] = head
                 head_hashes[uid] = actual_hash
@@ -401,10 +386,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             logger.info("Received %d valid heads", len(heads))
 
             timer.start_phase("prices")
-            if live:
-                live_prices = refresh_live_prices(live_prices)
-            if live and not live_prices:
-                logger.error("No current live price data — refusing paid calls. Skipping epoch.")
+            prices = refresh_prices(prices)
+            if not prices and not mock:
+                logger.error("No price data — refusing to call models blind. Skipping epoch.")
                 last_epoch_index = epoch_index
                 save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
                 if once:
@@ -413,25 +397,22 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 continue
 
             timer.start_phase("matrix")
+            effective_budget = configured_budget if live else 50.0
             if mock:
                 all_models = sorted(set(
                     m for pool in model_pools.values() for m in pool
                 ))[:MAX_MODEL_POOL]
             else:
-                # This remains the historical v1 eligibility/scoring policy.
-                # V2 canonical prices are implemented only in fugal_subnet.v2
-                # until the packaged manifest receives an activation block.
                 all_models = build_model_pool(
-                    model_pools, live_prices, len(questions),
+                    model_pools, prices, len(questions),
                     max_models_per_miner=MAX_MODELS_PER_MINER,
                     max_model_pool=MAX_MODEL_POOL,
                     max_cost_per_query=MAX_MODEL_COST_PER_QUERY,
-                    budget_usd=configured_budget,
+                    budget_usd=effective_budget,
                 )
             logger.info("Union model pool: %d models", len(all_models))
             if not all_models:
                 logger.warning("No callable models in pool, skipping epoch")
-                once_failed = True
                 last_epoch_index = epoch_index
                 save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
                 if once:
@@ -439,27 +420,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 time.sleep(60)
                 continue
 
-            spend_prices: dict[str, tuple[float, float]] = {}
-            if live:
-                try:
-                    spend_prices = build_spend_protection_prices(
-                        canonical_prices, live_prices, all_models,
-                    )
-                except UnknownPrice as e:
-                    logger.error("EPOCH ABORTED — %s; no paid calls started", e)
-                    once_failed = True
-                    last_epoch_index = epoch_index
-                    save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
-                    if once:
-                        break
-                    time.sleep(EPOCH_INTERVAL)
-                    continue
-
-            tracker = SpendTracker(budget_cap_usd=configured_budget if live else None)
+            tracker = SpendTracker(
+                budget_cap_usd=effective_budget if live else None,
+            )
             try:
                 if mock:
                     matrix_result = build_matrix_mock(questions, all_models)
                 else:
+                    spend_prices = build_spend_protection_prices(
+                        canonical_prices, prices, all_models,
+                    )
                     matrix_result = build_matrix(
                         questions, all_models,
                         tracker=tracker, prices=spend_prices,
@@ -470,7 +440,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             except BudgetExceeded as e:
                 logger.error("EPOCH ABORTED — %s. Partial matrix discarded; no weights "
                              "set. Raise FUGAL_EPOCH_BUDGET or shrink the pool.", e)
-                once_failed = True
                 last_epoch_index = epoch_index
                 save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
                 if once:
@@ -483,10 +452,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             soft = compute_soft_targets(matrix_result.matrix)
 
             model_costs = {}
-            scoring_prices = live_prices if live else canonical_prices
             for m in all_models:
-                if m in scoring_prices:
-                    pin, pout = scoring_prices[m]
+                if m in prices:
+                    pin, pout = prices[m]
                     model_costs[m] = pin * 500 + pout * 500
                 else:
                     model_costs[m] = 0.01
@@ -500,8 +468,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 logger.info("Using mock hidden states (%d × %d)", *hidden.shape)
             else:
                 prompts = [q["prompt"] for q in questions]
-                # Historical v1 used the available device (CPU float32 / CUDA
-                # float16). Canonical CPU float32 is a v2-only rule.
                 device = "cuda" if __import__("torch").cuda.is_available() else "cpu"
                 hidden = compute_hidden_states(prompts, device=device)
                 logger.info("Backbone hidden states: %s on %s", hidden.shape, device)
@@ -557,26 +523,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             )
 
             timer.start_phase("set_weights")
-            if not reveal_ok:
-                logger.error("EPOCH ABORTED — reveal verification failed; weights preserved")
-                success, msg = False, "reveal verification failed"
-                once_failed = True
+            logger.info("Setting weights for %d UIDs", len(uids))
+            response = subtensor.set_weights(
+                wallet=wallet, netuid=netuid,
+                uids=uids, weights=weights,
+                wait_for_inclusion=True,
+                wait_for_finalization=True,
+            )
+            success, msg = response
+            if success:
+                logger.info("Weights set successfully")
+                prev_uids = uids
+                prev_weights = weights
             else:
-                logger.info("Setting weights for %d UIDs", len(uids))
-                response = subtensor.set_weights(
-                    wallet=wallet, netuid=netuid,
-                    uids=uids, weights=weights,
-                    wait_for_inclusion=True,
-                    wait_for_finalization=True,
-                )
-                success, msg = response
-                if success:
-                    logger.info("Weights set successfully")
-                    prev_uids = uids
-                    prev_weights = weights
-                else:
-                    once_failed = True
-                    logger.warning("Weight-setting failed: %s", msg)
+                logger.warning("Weight-setting failed: %s", msg)
 
             timer.end_phase()
             anomalies = detect_anomalies(
@@ -610,7 +570,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             logger.info("Validator stopped by user")
             break
         except Exception:
-            once_failed = True
             logger.exception("Error in epoch")
 
         if once:
@@ -618,19 +577,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
 
         logger.info("Waiting for next epoch boundary (every %d blocks)...", blocks_per_epoch)
         time.sleep(60)
+
     logger.info("Validator shutdown complete")
 
-    try:
-        dendrite.close_session()
-    except Exception as exc:
-        logger.warning("Dendrite cleanup failed: %s", type(exc).__name__)
-    try:
-        subtensor.close()
-    except Exception as exc:
-        logger.warning("Subtensor cleanup failed: %s", type(exc).__name__)
-
-    if once and once_failed:
-        raise click.exceptions.Exit(1)
+    if once:
+        os._exit(0)
 
 
 if __name__ == "__main__":

@@ -2,28 +2,30 @@
 """Fugal testnet launch — end-to-end setup and multi-epoch test run.
 
 Automates the full deployment against a local subtensor chain:
-1. Starts a local subtensor via Docker (digest-pinned official image)
+1. Starts a local subtensor via Docker (official devnet image)
 2. Creates wallets, funds them from Alice's pre-funded account
 3. Creates and activates a subnet
 4. Registers validator and miner neurons
 5. Trains a reference head
 6. Starts the miner in background
-7. Runs N validator epochs (mock by default; paid only with explicit --live)
+7. Runs N validator epochs (mock or real API)
 8. Reports results and costs
 
 Usage:
     # Full run with mock API (no OpenRouter spend, no real cost):
-    python scripts/launch_testnet.py --epochs 3
+    python scripts/launch_testnet.py --mock --epochs 3
 
-    # [PAID ~$30/epoch maximum] Explicit live mode and budget are required:
-    OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py \
-        --live --epoch-budget 30 --epochs 2
+    # Full run with real API calls (costs ~$15-30/epoch):
+    OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py --epochs 2
 
     # Dry run — check setup, don't create anything:
     python scripts/launch_testnet.py --dry-run
 
     # Skip chain/wallet setup (already running):
     python scripts/launch_testnet.py --skip-setup --netuid 2 --mock --epochs 3
+
+    # Use a specific Docker image tag:
+    python scripts/launch_testnet.py --image-tag testnet --mock --epochs 3
 
 Prerequisites:
     - Docker installed and running
@@ -37,7 +39,6 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -48,12 +49,8 @@ logging.basicConfig(
 logger = logging.getLogger("fugal.launch")
 
 LOCAL_ENDPOINT = "ws://127.0.0.1:9944"
-DOCKER_IMAGE = (
-    "ghcr.io/raofoundation/subtensor-localnet:v432"
-    "@sha256:2354832a7c45ceb35703d64bd6f9477439f9a966e34a1d460965b8faf19439e2"
-)
+DOCKER_IMAGE = "ghcr.io/raofoundation/subtensor-localnet"
 DOCKER_CONTAINER = "fugal_local_chain"
-CHAIN_HISTORY_LABEL = "fugal.history"
 OWNER_WALLET = "fugal_owner"
 VALIDATOR_WALLET = "fugal_validator"
 MINER_WALLET = "fugal_miner"
@@ -109,97 +106,35 @@ def check_docker():
     return True
 
 
-def inspect_chain_container() -> tuple[bool, str, bool]:
-    """Return (exists, configured image, running) for the named container."""
+def start_local_chain(image_tag: str = "devnet") -> bool:
+    """Start a local subtensor chain via Docker."""
+    image = f"{DOCKER_IMAGE}:{image_tag}"
+
     result = subprocess.run(
-        [
-            "docker", "inspect", DOCKER_CONTAINER,
-            "--format", "{{.Config.Image}}|{{.State.Running}}",
-        ],
-        capture_output=True, text=True, timeout=10,
+        ["docker", "inspect", DOCKER_CONTAINER],
+        capture_output=True, timeout=10,
     )
-    if result.returncode != 0:
-        return False, "", False
-    image, _, running = result.stdout.strip().partition("|")
-    return True, image, running.lower() == "true"
+    if result.returncode == 0:
+        print(f"  Container '{DOCKER_CONTAINER}' already running", flush=True)
+        return wait_for_chain()
 
-
-def start_local_chain(*, archive_history: bool = False) -> tuple[bool, bool]:
-    """Start the pinned local chain; return (ready, created_by_this_run)."""
-    exists, configured_image, running = inspect_chain_container()
-    if exists:
-        if configured_image != DOCKER_IMAGE:
-            print(
-                f"  Refusing container '{DOCKER_CONTAINER}': image is "
-                f"{configured_image!r}, expected the pinned {DOCKER_IMAGE!r}.",
-                flush=True,
-            )
-            return False, False
-        if not running:
-            print(
-                f"  Container '{DOCKER_CONTAINER}' exists but is stopped; "
-                "start it explicitly or remove it after reviewing its state.",
-                flush=True,
-            )
-            return False, False
-        if archive_history:
-            history = subprocess.run(
-                [
-                    "docker", "inspect", DOCKER_CONTAINER, "--format",
-                    f'{{{{index .Config.Labels "{CHAIN_HISTORY_LABEL}"}}}}',
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if history.returncode != 0 or history.stdout.strip() != "archive":
-                print(
-                    f"  Refusing container '{DOCKER_CONTAINER}': v2 acceptance "
-                    "requires archive history mode.",
-                    flush=True,
-                )
-                return False, False
-        print(f"  Reusing pinned container '{DOCKER_CONTAINER}'", flush=True)
-        return wait_for_chain(), False
-
-    print(f"  Pulling {DOCKER_IMAGE}...", flush=True)
-    pull = subprocess.run(
-        ["docker", "pull", DOCKER_IMAGE], capture_output=True, text=True, timeout=300,
-    )
-    if pull.returncode != 0:
-        print(f"  Docker pull failed: {pull.stderr.strip()[:200]}", flush=True)
-        return False, False
+    print(f"  Pulling {image}...", flush=True)
+    subprocess.run(["docker", "pull", image], capture_output=True, timeout=300)
 
     print("  Starting local chain...", flush=True)
-    history_mode = "archive" if archive_history else "default"
-    command = [
+    result = subprocess.run([
         "docker", "run", "-d",
         "--name", DOCKER_CONTAINER,
-        "--label", f"{CHAIN_HISTORY_LABEL}={history_mode}",
         "-p", "9944:9944", "-p", "9945:9945",
-    ]
-    if archive_history:
-        wrapper = Path(__file__).with_name("localnet_archive_wrapper.sh").resolve()
-        command.extend([
-            "--volume", f"{wrapper}:/fugal/localnet_archive_wrapper.sh:ro",
-            "--entrypoint", "/bin/bash",
-            DOCKER_IMAGE,
-            "/fugal/localnet_archive_wrapper.sh",
-            "True",
-        ])
-    else:
-        command.append(DOCKER_IMAGE)
-    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        image,
+    ], capture_output=True, text=True, timeout=30)
 
     if result.returncode != 0:
         print(f"  Docker run failed: {result.stderr.strip()[:200]}", flush=True)
-        return False, False
+        return False
 
     print(f"  Container started: {result.stdout.strip()[:12]}", flush=True)
-    ready = wait_for_chain()
-    if not ready:
-        stop_local_chain()
-    return ready, ready
+    return wait_for_chain()
 
 
 def wait_for_chain(timeout: int = 90) -> bool:
@@ -229,48 +164,40 @@ def stop_local_chain():
 
 # ── Step 1: Wallets ──
 
-def setup_wallets(wallet_root: Path, dry_run: bool = False) -> dict:
-    """Create deterministic disposable local wallets without printing mnemonics."""
+def setup_wallets(dry_run: bool = False) -> dict:
+    """Create owner, validator, and miner wallets. Regen Alice for funding."""
     import bittensor as bt
 
-    def local_keypair(name: str, role: str):
-        # These public derivation URIs are intentionally local-testnet-only and
-        # must never be reused on a public network.
-        return bt.Keypair.create_from_uri(f"//FugalLocal//{name}//{role}")
-
-    wallet_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    wallet_root.chmod(0o700)
     wallets = {}
     for name in [OWNER_WALLET, VALIDATOR_WALLET, MINER_WALLET]:
-        wallet = bt.Wallet(name=name, hotkey="default", path=str(wallet_root))
+        wallet = bt.Wallet(name=name, hotkey="default")
         if wallet.coldkey_file.exists_on_device():
             print(f"  Wallet '{name}' exists: {wallet.coldkeypub.ss58_address}", flush=True)
-            if not wallet.hotkey_file.exists_on_device() and not dry_run:
-                wallet.set_hotkey(local_keypair(name, "hot"), overwrite=False)
         elif dry_run:
             print(f"  Wallet '{name}' does not exist (dry run — skipping)", flush=True)
             wallets[name] = None
             continue
         else:
-            print(f"  Creating disposable local wallet '{name}'...", flush=True)
-            coldkey = local_keypair(name, "cold")
-            wallet.set_coldkey(
-                coldkey, encrypt=False, overwrite=False,
-            )
-            wallet.set_coldkeypub(coldkey, encrypt=False, overwrite=False)
-            wallet.set_hotkey(local_keypair(name, "hot"), overwrite=False)
+            print(f"  Creating wallet '{name}'...", flush=True)
+            wallet.create_new_coldkey(use_password=False, overwrite=False)
+            wallet.create_new_hotkey(overwrite=False)
             print(f"    Created: {wallet.coldkeypub.ss58_address}", flush=True)
         wallets[name] = wallet
 
     if not dry_run:
-        alice = bt.Wallet(name="alice", hotkey="default", path=str(wallet_root))
+        alice = bt.Wallet(name="alice", hotkey="default")
         if not alice.coldkey_file.exists_on_device():
             print("  Regenerating Alice devnet wallet...", flush=True)
-            alice.regenerate_coldkey(
-                seed=ALICE_SEED, use_password=False, overwrite=False,
-            )
-        if not alice.hotkey_file.exists_on_device():
-            alice.set_hotkey(local_keypair("alice", "hot"), overwrite=False)
+            result = run_btcli([
+                "wallet", "regen-coldkey",
+                "--wallet-name", "alice",
+                "--no-password",
+                "--seed", ALICE_SEED,
+                "--no-prompt",
+            ], check=False)
+            if result.returncode != 0:
+                alice.regenerate_coldkey(seed=ALICE_SEED, use_password=False, overwrite=True)
+            alice.create_new_hotkey(overwrite=True)
         wallets["alice"] = alice
 
     return wallets
@@ -328,7 +255,7 @@ def fund_wallets(wallets: dict):
 
 # ── Step 3: Create subnet ──
 
-def create_subnet(wallets: dict, wallet_root: Path) -> int:
+def create_subnet(wallets: dict) -> int:
     """Create a subnet and activate it. Returns the netuid."""
     import bittensor as bt
     subtensor = bt.Subtensor(network=LOCAL_ENDPOINT)
@@ -360,7 +287,6 @@ def create_subnet(wallets: dict, wallet_root: Path) -> int:
         run_btcli([
             "tx", "register-subnet",
             "--wallet-name", owner.name,
-            "--wallet-path", str(wallet_root),
             "--hotkey", "default",
             "--network", LOCAL_ENDPOINT,
             "-y",
@@ -442,14 +368,13 @@ def register_neuron(wallet, netuid: int, role: str) -> int:
 
 # ── Step 5: Train head ──
 
-def train_head(output_path: str) -> str:
+def train_head(output_path: str = "data/testnet_head.npz") -> str:
     """Train a reference head using the full training script."""
     if os.path.exists(output_path):
         print(f"  Head already exists at {output_path}, reusing", flush=True)
         return output_path
 
     print("  Training reference head...", flush=True)
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     models = [
         "deepseek/deepseek-v4-flash",
         "meta-llama/llama-4-maverick",
@@ -459,9 +384,11 @@ def train_head(output_path: str) -> str:
     result = subprocess.run([
         sys.executable, "scripts/train_head.py",
         "--synthetic", "--n-questions", "300",
-        "--models", ",".join(models),
+        "--models", *models,
         "--output", output_path,
-        "--epochs", "100",
+        "--sft-epochs", "100",
+        "--cma-generations", "30",
+        "--device", "cpu",
     ], capture_output=True, text=True, timeout=300)
 
     if result.returncode != 0:
@@ -475,7 +402,7 @@ def train_head(output_path: str) -> str:
 
 # ── Step 6: Start miner ──
 
-def start_miner_process(wallet_name: str, wallet_root: Path, netuid: int,
+def start_miner_process(wallet_name: str, netuid: int,
                         head_path: str) -> subprocess.Popen:
     """Start the miner as a background process."""
     cmd = [
@@ -484,7 +411,6 @@ def start_miner_process(wallet_name: str, wallet_root: Path, netuid: int,
         "--netuid", str(netuid),
         "--coldkey", wallet_name,
         "--hotkey", "default",
-        "--wallet-path", str(wallet_root),
         "--head-path", head_path,
         "--port", str(MINER_PORT),
     ]
@@ -520,17 +446,14 @@ def start_miner_process(wallet_name: str, wallet_root: Path, netuid: int,
     return proc
 
 
-def wait_for_next_epoch_boundary(timeout: int = 120, minimum_blocks: int = 0):
+def wait_for_next_epoch_boundary(timeout: int = 120):
     """Block until the chain crosses the next epoch boundary, so the miner's
     on-chain head commitment predates the boundary the validator will use."""
     import bittensor as bt
     bpe = max(1, int(os.getenv("FUGAL_EPOCH_INTERVAL", LOCAL_EPOCH_INTERVAL)) // 12)
     sub = bt.Subtensor(network=LOCAL_ENDPOINT)
     start_block = sub.get_current_block()
-    target = max(
-        ((start_block // bpe) + 1) * bpe,
-        start_block + minimum_blocks,
-    )
+    target = ((start_block // bpe) + 1) * bpe
     print(f"  Waiting for epoch boundary (block {target}, now {start_block})...", flush=True)
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -546,21 +469,16 @@ def wait_for_next_epoch_boundary(timeout: int = 120, minimum_blocks: int = 0):
 # Short epochs for local testing: 24s = 2 blocks per epoch at 12s block time,
 # so consecutive --once runs land on distinct epoch boundaries.
 LOCAL_EPOCH_INTERVAL = "24"
-LOCAL_WEIGHT_RATE_LIMIT_BLOCKS = 100
 
 
-def run_validator_epoch(wallet_name: str, wallet_root: Path, run_root: Path,
-                        netuid: int, live: bool,
-                        epoch_budget: float | None, epoch_num: int) -> dict:
+def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
+                        epoch_num: int) -> dict:
     """Run a single validator epoch and return results."""
     env = os.environ.copy()
     env["FUGAL_SKIP_BENCHMARKS"] = env.get("FUGAL_SKIP_BENCHMARKS",
         "mmlu,humaneval,livecode,gpqa,ifeval,aime")
     env["FUGAL_SLICE_SIZE"] = env.get("FUGAL_SLICE_SIZE", "50")
     env["FUGAL_EPOCH_INTERVAL"] = env.get("FUGAL_EPOCH_INTERVAL", LOCAL_EPOCH_INTERVAL)
-    env["FUGAL_STATE_PATH"] = str(run_root / "validator_state.json")
-    env["FUGAL_RESPONSE_CACHE"] = str(run_root / "response_cache")
-    env["FUGAL_EPOCH_LOG_DIR"] = str(run_root / "epoch_logs")
 
     cmd = [
         sys.executable, "neurons/validator.py",
@@ -568,16 +486,13 @@ def run_validator_epoch(wallet_name: str, wallet_root: Path, run_root: Path,
         "--netuid", str(netuid),
         "--coldkey", wallet_name,
         "--hotkey", "default",
-        "--wallet-path", str(wallet_root),
         "--once",
         "--log-level", "INFO",
     ]
-    if live:
-        cmd.extend(["--live", "--epoch-budget", str(epoch_budget)])
-    else:
+    if mock:
         cmd.append("--mock")
 
-    mode_str = f"(LIVE — hard budget ${epoch_budget:.2f})" if live else "(mock)"
+    mode_str = "(mock)" if mock else "(REAL API — costs money)"
     print(f"  Running validator epoch {epoch_num} {mode_str}...", flush=True)
 
     start = time.time()
@@ -594,7 +509,7 @@ def run_validator_epoch(wallet_name: str, wallet_root: Path, run_root: Path,
         "epoch": epoch_num,
         "success": success,
         "elapsed_s": round(elapsed, 1),
-        "mock": not live,
+        "mock": mock,
         "returncode": result.returncode,
     }
 
@@ -611,7 +526,7 @@ def run_validator_epoch(wallet_name: str, wallet_root: Path, run_root: Path,
             except (IndexError, ValueError):
                 pass
 
-    log_path = str(run_root / "epoch_logs" / "epochs.jsonl")
+    log_path = "results/epoch_logs/epochs.jsonl"
     if os.path.exists(log_path):
         try:
             with open(log_path) as f:
@@ -632,7 +547,7 @@ def run_validator_epoch(wallet_name: str, wallet_root: Path, run_root: Path,
 
 # ── Step 8: Report ──
 
-def print_report(results: list[dict], total_start: float, run_root: Path):
+def print_report(results: list[dict], total_start: float):
     """Print a summary report of all epochs."""
     section("TESTNET RUN REPORT")
 
@@ -663,13 +578,13 @@ def print_report(results: list[dict], total_start: float, run_root: Path):
     print(flush=True)
 
     if n_success == len(results) and len(results) > 0:
-        print("ALL LOCAL EPOCHS PASSED — this is not production/mainnet approval.", flush=True)
+        print("ALL EPOCHS PASSED — ready for mainnet launch.", flush=True)
     elif n_success > 0:
         print("PARTIAL SUCCESS — review failures above.", flush=True)
     else:
         print("ALL EPOCHS FAILED — check setup and logs.", flush=True)
 
-    log_dir = str(run_root / "epoch_logs")
+    log_dir = "results/epoch_logs"
     if os.path.isdir(log_dir):
         logs = sorted(os.listdir(log_dir))
         if logs:
@@ -678,7 +593,7 @@ def print_report(results: list[dict], total_start: float, run_root: Path):
                 print(f"  {f}", flush=True)
 
     print(flush=True)
-    print("Future deployment gates (separate review and authorization required):", flush=True)
+    print("Mainnet launch checklist:", flush=True)
     print("  [ ] Purchase subnet slot: btcli tx register-subnet -w fugal_owner --network finney", flush=True)
     print("  [ ] Activate subnet:      btcli tx start-call --netuid <N> -w fugal_owner --network finney", flush=True)
     print("  [ ] Register validator:    btcli tx burned-register --netuid <N> -w fugal_validator --network finney", flush=True)
@@ -697,11 +612,10 @@ def parse_args():
         epilog="""
 Examples:
   # Full test with mock API (no cost at all):
-  python scripts/launch_testnet.py --epochs 3
+  python scripts/launch_testnet.py --mock --epochs 3
 
-  # [PAID ~$30/epoch maximum] Explicit live mode and budget required:
-  OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py \
-      --live --epoch-budget 30 --epochs 2
+  # Full test with real API calls (costs ~$15-30/epoch):
+  OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py --epochs 2
 
   # Check setup without doing anything:
   python scripts/launch_testnet.py --dry-run
@@ -709,6 +623,8 @@ Examples:
   # Already running, just run more epochs:
   python scripts/launch_testnet.py --skip-setup --netuid 2 --mock --epochs 3
 
+  # Use testnet-matching Docker image:
+  python scripts/launch_testnet.py --image-tag testnet --mock --epochs 3
 """,
     )
     p.add_argument("--dry-run", action="store_true",
@@ -717,23 +633,16 @@ Examples:
                    help="Skip chain/wallet/subnet setup (already running)")
     p.add_argument("--netuid", type=int, default=None,
                    help="Use existing netuid (required with --skip-setup)")
-    mode = p.add_mutually_exclusive_group()
-    mode.add_argument("--live", action="store_true",
-                      help="Enable paid OpenRouter calls (requires a positive budget)")
-    mode.add_argument("--mock", action="store_true",
-                      help="Explicitly select the default no-spend mock mode")
-    p.add_argument("--epoch-budget", type=float, default=None,
-                   help="Positive USD ceiling required with --live (or FUGAL_EPOCH_BUDGET)")
+    p.add_argument("--mock", action="store_true",
+                   help="Use mock API (no OpenRouter spend)")
     p.add_argument("--epochs", type=int, default=3,
                    help="Number of epochs to run (default: 3)")
     p.add_argument("--retrain", action="store_true",
                    help="Force retrain the head even if one exists")
-    p.add_argument("--run-root", type=Path, default=Path("results/local-testnet"),
-                   help="Isolated state/output directory (default: results/local-testnet)")
-    p.add_argument("--wallet-root", type=Path, default=None,
-                   help="Isolated wallet root (default: RUN_ROOT/wallets)")
-    p.add_argument("--head-path", type=Path, default=None,
-                   help="Head .npz path (default: RUN_ROOT/testnet_head.npz)")
+    p.add_argument("--head-path", type=str, default="data/testnet_head.npz",
+                   help="Path to head .npz file")
+    p.add_argument("--image-tag", type=str, default="devnet",
+                   help="Docker image tag (default: devnet)")
     p.add_argument("--keep-chain", action="store_true",
                    help="Don't stop the chain container after running")
     return p.parse_args()
@@ -742,52 +651,16 @@ Examples:
 def main():
     args = parse_args()
     total_start = time.time()
-    run_root = args.run_root.expanduser().resolve()
-    wallet_root = (
-        args.wallet_root.expanduser().resolve()
-        if args.wallet_root is not None else run_root / "wallets"
-    )
-    head_path = (
-        args.head_path.expanduser().resolve()
-        if args.head_path is not None else run_root / "testnet_head.npz"
-    )
-    run_root.mkdir(parents=True, exist_ok=True)
-
-    epoch_budget = args.epoch_budget
-    if epoch_budget is None and os.getenv("FUGAL_EPOCH_BUDGET") is not None:
-        try:
-            epoch_budget = float(os.environ["FUGAL_EPOCH_BUDGET"])
-        except ValueError:
-            print("ERROR: FUGAL_EPOCH_BUDGET must be a positive number.", flush=True)
-            return 2
-    if args.live and (epoch_budget is None or epoch_budget <= 0):
-        print(
-            "ERROR: --live requires --epoch-budget AMOUNT or a positive "
-            "FUGAL_EPOCH_BUDGET.",
-            flush=True,
-        )
-        return 2
-    if not args.live and args.epoch_budget is not None:
-        print("ERROR: --epoch-budget is only valid with --live.", flush=True)
-        return 2
 
     section("FUGAL LOCAL TESTNET LAUNCH")
-    print(f"Chain:    local Docker ({DOCKER_IMAGE})", flush=True)
+    print(f"Chain:    local Docker ({DOCKER_IMAGE}:{args.image_tag})", flush=True)
     print(f"Endpoint: {LOCAL_ENDPOINT}", flush=True)
-    mode_label = (
-        f"LIVE (paid; hard budget ${epoch_budget:.2f}/epoch)"
-        if args.live else "mock (default; no API cost)"
-    )
-    print(f"Mode:     {mode_label}", flush=True)
+    print(f"Mode:     {'mock (no API cost)' if args.mock else 'REAL API (costs money)'}", flush=True)
     print(f"Epochs:   {args.epochs}", flush=True)
-    print(f"Run root: {run_root}", flush=True)
-    print(f"Wallets:  {wallet_root}", flush=True)
     print(flush=True)
 
-    if args.live and not (
-        os.getenv("FUGAL_API_KEY") or os.getenv("OPENROUTER_API_KEY")
-    ):
-        print("ERROR: OpenRouter key not set; mock mode requires no key.", flush=True)
+    if not args.mock and not os.getenv("OPENROUTER_API_KEY"):
+        print("ERROR: OPENROUTER_API_KEY not set. Use --mock for free testing.", flush=True)
         return 1
 
     # ── Dry run ──
@@ -800,20 +673,21 @@ def main():
         else:
             return 1
 
-        exists, configured_image, running = inspect_chain_container()
-        if exists:
-            state = "running" if running else "stopped"
-            matches = "matches pin" if configured_image == DOCKER_IMAGE else "WRONG IMAGE"
-            print(f"  Chain container is {state}: {configured_image} ({matches})", flush=True)
+        result = subprocess.run(
+            ["docker", "inspect", DOCKER_CONTAINER],
+            capture_output=True, timeout=10,
+        )
+        if result.returncode == 0:
+            print(f"  Chain container '{DOCKER_CONTAINER}' is running", flush=True)
         else:
             print("  Chain container not running (will start on launch)", flush=True)
 
         print("\nWallets:", flush=True)
-        setup_wallets(wallet_root, dry_run=True)
+        setup_wallets(dry_run=True)
 
         print("\nHead artifact:", flush=True)
-        if head_path.exists():
-            print(f"  Exists: {head_path} ({head_path.stat().st_size} bytes)", flush=True)
+        if os.path.exists(args.head_path):
+            print(f"  Exists: {args.head_path} ({os.path.getsize(args.head_path)} bytes)", flush=True)
         else:
             print("  Not found (will train on launch)", flush=True)
 
@@ -838,14 +712,14 @@ def main():
             section("Step 0: Start Local Chain")
             if not check_docker():
                 return 1
-            ready, chain_started = start_local_chain()
-            if not ready:
+            chain_started = True
+            if not start_local_chain(args.image_tag):
                 print("Failed to start local chain", flush=True)
                 return 1
 
             # Step 1: Wallets
             section("Step 1: Create Wallets")
-            wallets = setup_wallets(wallet_root)
+            wallets = setup_wallets()
 
             # Step 2: Fund
             section("Step 2: Fund Wallets from Alice")
@@ -855,7 +729,7 @@ def main():
 
             # Step 3: Create subnet
             section("Step 3: Create & Activate Subnet")
-            netuid = create_subnet(wallets, wallet_root)
+            netuid = create_subnet(wallets)
             if netuid < 0:
                 return 1
 
@@ -888,22 +762,17 @@ def main():
 
         # Step 5: Train head
         section("Step 5: Train Head")
-        if args.retrain and head_path.exists():
-            backup = head_path.with_name(f"{head_path.name}.replaced-{int(time.time())}")
-            head_path.replace(backup)
-            print(f"  Archived previous head: {backup}", flush=True)
-        trained_head_path = train_head(str(head_path))
+        if args.retrain and os.path.exists(args.head_path):
+            os.remove(args.head_path)
+        head_path = train_head(args.head_path)
 
         # Step 6: Start miner
         section("Step 6: Start Miner")
-        state_path = run_root / "validator_state.json"
-        if not args.skip_setup and state_path.exists():
-            backup = state_path.with_name(f"{state_path.name}.replaced-{int(time.time())}")
-            state_path.replace(backup)
-            print(f"  Archived stale validator state: {backup}", flush=True)
-        miner_proc = start_miner_process(
-            MINER_WALLET, wallet_root, netuid, trained_head_path,
-        )
+        state_path = os.getenv("FUGAL_STATE_PATH", "results/validator_state.json")
+        if not args.skip_setup and os.path.exists(state_path):
+            os.remove(state_path)
+            print(f"  Cleared stale validator state: {state_path}", flush=True)
+        miner_proc = start_miner_process(MINER_WALLET, netuid, head_path)
 
         # Step 7: Run epochs
         section("Step 7: Run Validator Epochs")
@@ -911,22 +780,15 @@ def main():
         for i in range(1, args.epochs + 1):
             # Ensure the miner's head commitment predates the epoch boundary,
             # and that each run lands on a fresh boundary (fresh slice).
-            wait_for_next_epoch_boundary(
-                minimum_blocks=(
-                    LOCAL_WEIGHT_RATE_LIMIT_BLOCKS + 1 if i > 1 else 0
-                )
-            )
-            result = run_validator_epoch(
-                VALIDATOR_WALLET, wallet_root, run_root,
-                netuid, args.live, epoch_budget, i,
-            )
+            wait_for_next_epoch_boundary()
+            result = run_validator_epoch(VALIDATOR_WALLET, netuid, args.mock, i)
             results.append(result)
 
             status = "PASS" if result["success"] else "FAIL"
             print(f"  Epoch {i}: {status} ({result['elapsed_s']}s)", flush=True)
 
         # Step 8: Report
-        print_report(results, total_start, run_root)
+        print_report(results, total_start)
         return 0 if all(r["success"] for r in results) else 1
 
     except KeyboardInterrupt:

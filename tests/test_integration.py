@@ -21,11 +21,7 @@ import tests.bt_mock  # noqa: E402, F401
 from fugal_subnet.benchmarks.loader import load_all
 from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
 from fugal_subnet.config import HEAD_HIDDEN_DIM, SLICE_SIZE
-from fugal_subnet.consensus import (
-    ValidatorReport,
-    check_self_consistency,
-    compute_consensus,
-)
+from fugal_subnet.consensus import ValidatorReport, check_self_consistency, compute_consensus
 from fugal_subnet.dedup import find_duplicates
 from fugal_subnet.epoch_logger import (
     EpochLog,

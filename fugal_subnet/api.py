@@ -8,7 +8,6 @@ Each HTTP attempt atomically reserves its worst-case cost before it starts.
 """
 from __future__ import annotations
 
-import importlib.resources
 import json
 import logging
 import os
@@ -26,10 +25,6 @@ logger = logging.getLogger(__name__)
 
 OR_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# A UTF-8 byte count is a conservative upper bound for user-content tokens for
-# the tokenizers used by the active registry. The fixed allowance covers chat
-# framing and provider-added control tokens without requiring a mutable remote
-# tokenizer in the budget safety boundary.
 PROMPT_TOKEN_OVERHEAD = 256
 
 
@@ -153,11 +148,7 @@ class SpendTracker:
             })
 
     def forfeit(self, reservation: SpendReservation, reason: str) -> None:
-        """Charge the full reservation when provider billing is ambiguous.
-
-        A timeout or malformed response may still have consumed provider tokens.
-        Treating the worst case as spent preserves the hard local ceiling.
-        """
+        """Charge the full reservation when provider billing is ambiguous."""
         with self._lock:
             current = self._reservations.pop(reservation.reservation_id, None)
             if current is None:
@@ -176,11 +167,7 @@ class SpendTracker:
 
     def record(self, model: str, prompt_tokens: int, completion_tokens: int,
                cost_usd: float):
-        """Record non-reserved usage for compatibility with historical tools.
-
-        Live call paths must use reserve/reconcile instead. This method still
-        enforces the cap atomically and cannot overshoot it.
-        """
+        """Record non-reserved usage (mock mode and historical compatibility)."""
         with self._lock:
             if (
                 self.budget_cap_usd is not None
@@ -234,16 +221,9 @@ def call_model(
 ) -> tuple[str, int, int]:
     """Call a model via OpenRouter. Returns (response_text, prompt_tokens, completion_tokens).
 
-    Args:
-        model: OpenRouter model ID (e.g. "openai/gpt-5.5").
-        prompt: The question/task to send.
-        max_tokens: Max response tokens.
-        temperature: Sampling temperature. 0.0 for deterministic grading.
-        timeout: Request timeout in seconds.
-        retries: Number of retry attempts.
-        tracker: Optional SpendTracker to log costs.
-        prices: Spend-protection prices (greater of canonical and current live).
-        live: Explicit authorization to enter the paid OpenRouter path.
+    Requires explicit live=True authorization, a budgeted SpendTracker, and
+    spend-protection prices. Each attempt is atomically reserved before the
+    HTTP call starts.
     """
     if not live:
         raise LiveSpendNotEnabled("OpenRouter calls require explicit live=True authorization")
@@ -267,8 +247,7 @@ def call_model(
             prices,
         )
         try:
-            # [PAID ~$0-$0.10/call] The atomic reservation above is the hard
-            # per-attempt ceiling; the caller's explicit budget caps the epoch.
+            # [PAID ~$0-$0.10/call]
             r = httpx.post(
                 OR_URL, timeout=timeout,
                 headers={"Authorization": f"Bearer {key}"},
@@ -318,11 +297,7 @@ def build_spend_protection_prices(
     live: Mapping[str, tuple[float, float]],
     models: list[str],
 ) -> dict[str, tuple[float, float]]:
-    """Use the greater canonical/live token price for budget protection.
-
-    Canonical prices remain the only scoring input. Missing current live prices
-    fail closed because an unknown paid rate cannot be safely reserved.
-    """
+    """Use the greater canonical/live token price for budget protection."""
     protected: dict[str, tuple[float, float]] = {}
     for model in models:
         if model not in canonical:
@@ -362,20 +337,19 @@ def fetch_openrouter_prices(timeout: int = 30) -> dict[str, tuple[float, float]]
 
 
 def load_prices(path: str | None = None) -> dict[str, tuple[float, float]]:
-    """Load the packaged v1 model/price fallback or an explicit JSON path.
+    """Load model price sheet from local JSON fallback.
 
     Returns {model_id: (price_per_input_token, price_per_output_token)}.
     Prices in the JSON are per-million-token; this returns per-token.
     """
     if path is None:
-        resource = importlib.resources.files("fugal_subnet").joinpath(
-            "model-registry-v1.json"
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data", "models.json",
         )
-        with resource.open("r", encoding="utf-8") as f:
-            models = json.load(f)
-    else:
-        with open(path, encoding="utf-8") as f:
-            models = json.load(f)
+
+    with open(path, encoding="utf-8") as f:
+        models = json.load(f)
 
     prices = {}
     for m in models:

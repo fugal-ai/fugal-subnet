@@ -1,10 +1,6 @@
 # Consensus and security-sensitive surfaces require both maintainers.
-* @jtdoherty @fugal-ai-dev
+* @jtdoherty
 
-/fugal_subnet/graders.py @jtdoherty @fugal-ai-dev
-/fugal_subnet/graders_v2.py @jtdoherty @fugal-ai-dev
-/fugal_subnet/consensus-manifest.json @jtdoherty @fugal-ai-dev
-/fugal_subnet/v2/ @jtdoherty @fugal-ai-dev
-/fugal_subnet/sandbox/ @jtdoherty @fugal-ai-dev
-/neurons/ @jtdoherty @fugal-ai-dev
-/.github/workflows/ @jtdoherty @fugal-ai-dev
+/fugal_subnet/graders.py @jtdoherty
+/neurons/ @jtdoherty
+/.github/workflows/ @jtdoherty

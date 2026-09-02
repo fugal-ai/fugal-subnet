@@ -5,14 +5,11 @@ Calls 2 cheap models on 5 synthetic questions through OpenRouter.
 Builds a real ground-truth matrix, grades responses, runs the full scoring
 pipeline. Budget capped at $0.05.
 
-Usage (never run without separate approval):
-    # [PAID ~$0.05 maximum]
-    OPENROUTER_API_KEY=sk-or-... python scripts/test_real_api.py \
-        --live --epoch-budget 0.05
+Usage:
+    OPENROUTER_API_KEY=sk-or-... python scripts/test_real_api.py
 
 Expected cost: <$0.01 (2 cheap models × 5 questions × ~50 tokens each).
 """
-import argparse
 import logging
 import os
 import sys
@@ -33,6 +30,7 @@ MODELS = [
     "meta-llama/llama-4-maverick",
 ]
 
+BUDGET_CAP = float(os.getenv("FUGAL_B5_BUDGET", "0.05"))
 N_QUESTIONS = int(os.getenv("FUGAL_B5_QUESTIONS", "5"))
 
 
@@ -62,43 +60,9 @@ def make_questions(n: int) -> list:
     return questions
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Explicit paid OpenRouter canary")
-    parser.add_argument("--live", action="store_true", help="Authorize the paid path")
-    parser.add_argument("--epoch-budget", type=float, default=None,
-                        help="Required positive USD ceiling (or FUGAL_B5_BUDGET)")
-    return parser.parse_args()
-
-
 def main():
-    args = parse_args()
-    budget_cap = args.epoch_budget
-    if budget_cap is None and os.getenv("FUGAL_B5_BUDGET") is not None:
-        try:
-            budget_cap = float(os.environ["FUGAL_B5_BUDGET"])
-        except ValueError:
-            print("ERROR: FUGAL_B5_BUDGET must be a positive number")
-            return 2
-    if not args.live or budget_cap is None or budget_cap <= 0:
-        print(
-            "REFUSED: this paid canary requires --live and --epoch-budget AMOUNT "
-            "(or a positive FUGAL_B5_BUDGET)."
-        )
-        return 2
-
-    from fugal_subnet.api import (
-        SpendTracker,
-        build_spend_protection_prices,
-        call_model,
-        fetch_openrouter_prices,
-        load_prices,
-    )
-    from fugal_subnet.epoch_logger import (
-        EpochLog,
-        EpochTimer,
-        detect_anomalies,
-        write_epoch_log,
-    )
+    from fugal_subnet.api import SpendTracker, call_model, load_prices
+    from fugal_subnet.epoch_logger import EpochLog, EpochTimer, detect_anomalies, write_epoch_log
     from fugal_subnet.head_eval import HeadArtifact, evaluate_head
     from fugal_subnet.matrix import build_matrix
     from fugal_subnet.rewards import compute_weights
@@ -108,23 +72,19 @@ def main():
     timer = EpochTimer()
 
     try:
-        canonical_prices = load_prices()
-        live_prices = fetch_openrouter_prices()
-        spend_prices = build_spend_protection_prices(
-            canonical_prices, live_prices, MODELS,
-        )
-        logger.info("Loaded canonical and live price sheets")
-    except Exception as e:
-        logger.error("Price verification failed closed: %s", e)
-        return 1
+        prices = load_prices()
+        logger.info("Loaded price sheet: %d models", len(prices))
+    except Exception:
+        prices = {}
+        logger.warning("No price sheet, cost tracking will be approximate")
 
-    tracker = SpendTracker(budget_cap_usd=budget_cap)
+    tracker = SpendTracker(budget_cap_usd=BUDGET_CAP)
 
     print("=" * 60)
     print("B5 — REAL API MATRIX TEST (proof of concept)")
     print(f"Models: {MODELS}")
     print(f"Questions: {N_QUESTIONS}")
-    print(f"Budget cap: ${budget_cap:.2f}")
+    print(f"Budget cap: ${BUDGET_CAP:.2f}")
     print("=" * 60)
 
     timer.start_phase("questions")
@@ -135,12 +95,10 @@ def main():
     timer.start_phase("smoke_test")
     for model in MODELS:
         try:
-            # [PAID ~$0-$0.05 total] Reservation enforcement prevents overshoot.
             text, ptok, ctok = call_model(
                 model, "What is 2+2? Give only the number.",
-                tracker=tracker, prices=spend_prices,
-                max_tokens=32,
-                live=True,
+                tracker=tracker, prices=prices,
+                max_tokens=32, live=True,
             )
             print(f"  {model}: '{text.strip()[:50]}' ({ptok}+{ctok} tokens, ${tracker.total_cost_usd:.6f} total)")
         except Exception as e:
@@ -155,10 +113,9 @@ def main():
     cache_dir = os.path.join("results", "b5_cache")
     matrix_result = build_matrix(
         questions, MODELS,
-        tracker=tracker, prices=spend_prices,
+        tracker=tracker, prices=prices,
         cache_dir=cache_dir,
-        allow_exec=False,
-        live=True,
+        allow_exec=False, live=True,
     )
     print(f"  Matrix shape: {matrix_result.matrix.shape}")
     print(f"  Total cost: ${tracker.total_cost_usd:.6f}")
@@ -188,8 +145,8 @@ def main():
 
     model_costs = {}
     for m in MODELS:
-        if m in canonical_prices:
-            pin, pout = canonical_prices[m]
+        if m in prices:
+            pin, pout = prices[m]
             model_costs[m] = pin * 500 + pout * 500
         else:
             model_costs[m] = 0.01

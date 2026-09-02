@@ -1,0 +1,6 @@
+# Consensus and security-sensitive surfaces require both maintainers.
+* @jtdoherty
+
+/fugal_subnet/graders.py @jtdoherty
+/neurons/ @jtdoherty
+/.github/workflows/ @jtdoherty

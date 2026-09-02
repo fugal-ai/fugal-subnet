@@ -1,0 +1,42 @@
+name: Protocol change proposal
+description: Propose a consensus-affecting change for a future versioned activation.
+title: "[Protocol]: "
+labels: [protocol]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: Explain the consensus or incentive problem with reproducible evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Proposed versioned change
+      description: Identify affected graders, scoring, or chain behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Historical compatibility and activation
+      description: Explain how old epochs remain verifiable and how a block-based activation would work.
+    validations:
+      required: true
+  - type: textarea
+    id: vectors
+    attributes:
+      label: Regression and golden vectors
+      description: List tests needed across Python 3.10-3.12 and adversarial cases.
+    validations:
+      required: true
+  - type: checkboxes
+    id: gates
+    attributes:
+      label: Rollout gates
+      options:
+        - label: This proposal does not request an immediate mainnet activation.
+          required: true
+        - label: Any paid canary will require separate approval and a stated budget.
+          required: true

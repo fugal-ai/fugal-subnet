@@ -7,12 +7,6 @@
 
 A Bittensor subnet for continuously improving cost-aware LLM routing.
 
-> [!IMPORTANT]
-> **Project status: v0.2 development package; live v2 is disabled.** The
-> packaged manifest deliberately has no v2 activation block and no approved
-> active model registry. Historical v0.1 remains experimental and is not
-> suitable for funded production validation or mainnet.
-
 **Validators** build ground truth matrices — calling frontier models on benchmark questions, grading responses with mechanical checkers. **Miners** submit trained router heads — small linear layers (~10K-73K params) on a frozen Qwen3-0.6B backbone — that route any question to the optimal model for the cheapest price.
 
 The subnet's core output is a continuously refreshed ground-truth matrix that miners can use to train and improve routing policies.
@@ -38,11 +32,6 @@ pip install -e ".[dev]"
 # Local testnet (Docker chain + full epoch pipeline, no API spend)
 python scripts/launch_testnet.py --epochs 3
 
-# Train a local/mock reference head (synthetic data, no API spend)
-fugal-train --synthetic --n-questions 200 \
-  --models deepseek/deepseek-v4-flash,meta-llama/llama-4-maverick,openai/gpt-5.4-nano \
-  --output data/my_head.npz
-
 # Run the miner (commits the head hash on-chain, then serves it)
 python neurons/miner.py --netuid 1 --head-path data/my_head.npz
 
@@ -59,17 +48,9 @@ default. Review the [Validator Guide](docs/VALIDATOR_GUIDE.md) first.
 
 - Linux or WSL2 and Python 3.10–3.12
 - Docker for the full local-chain testnet
-- V2 consensus requires Linux x86-64 CPU float32 inference; the historical v1
-  development path can optionally use CUDA
-- Model, benchmark, and Docker storage requirements vary; hardware sizing has not yet been formally benchmarked
+- CPU float32 inference for backbone determinism (CUDA optional for training)
 
 ## How It Works
-
-The sequence below describes the historical v0.1 implementation. It is retained
-for development and historical verification. The v0.2 primitives, resumable
-orchestrator, report transport, concrete `fugal-validator-v2` entry point,
-reveal verifier, and trainer are implemented, but the manifest prevents v2 from
-starting on any network until the remaining rollout gates are resolved.
 
 1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks).
 2. Miners respond to the validator's query with their `.npz` head artifact (W, b, model list). A head is only scoreable if its SHA256 was **committed on-chain at or before the boundary block** — heads swapped after the nonce is knowable are rejected.
@@ -77,15 +58,6 @@ starting on any network until the remaining rollout gates are resolved.
 4. Each head is evaluated: routing accuracy, cost efficiency (capped at 1.0 — the oracle's cheapest-correct routing is the ceiling), and KL divergence against soft targets. Questions no model answered correctly are excluded for everyone.
 5. Composite scores (accuracy 55%, cost efficiency 35%, KL 10%) determine weights. Copied heads are deduplicated — earliest on-chain commitment wins. Weights are set on-chain; emissions flow.
 6. The validator publishes the full epoch artifact (`results/epochs/<epoch>/reveal.json`): questions, the complete matrix, model costs, scores, and weights. Miners download it, retrain, submit improved heads.
-
-## Training Pipeline
-
-The installed `fugal-train` command accepts a canonical v2 `reveal.json`,
-verifies report signatures/quorum, regrades responses, recomputes heads/scores/
-weights, and trains against the revealed canonical matrix and prices. Historical
-NPZ import requires explicit `--legacy-npz --allow-legacy-npz`; synthetic input
-is local/mock-only. V2 training uses KL divergence plus the same canonical
-routing-cost term and evaluates the result with validator routing rules.
 
 ## Benchmarks
 
@@ -100,12 +72,9 @@ routing-cost term and evaluates the result with validator routing rules.
 | HumanEval | 155 exec_io + 9 legacy fallback | exec_io / exec_unittest |
 | LiveCodeBench | optional | exec_io (local JSON cache, see `fugal_subnet/benchmarks/livecode.py`) |
 
-These are v0.1 inputs. Revisions are pinned, but optional/gated availability and
-the local LiveCodeBench cache can still make v0.1 pools diverge. The inactive v2
-registry instead commits normalized counts and SHA-256 values and fails closed
-on any difference. V2 currently normalizes 14,042 MMLU, 5,000 MATH, 1,319
-GSM8K, 933 AIME, 541 fully evaluated IFEval, and 43 curated HumanEval tasks;
-the AIME redistribution/license rollout decision remains unresolved.
+HuggingFace dataset revisions are pinned for reproducibility. GPQA is a gated
+dataset requiring `huggingface-cli login` and accepted terms, or add `gpqa` to
+`FUGAL_SKIP_BENCHMARKS` to exclude it.
 
 ## Guides
 

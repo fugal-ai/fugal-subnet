@@ -36,6 +36,11 @@ All notable changes to this project will be documented here. Releases follow [Se
   explicit compatibility flags.
 - Added byte-identical v2 golden vectors and a full 541-row IFEval semantic trace
   to the Python 3.10-3.12 test matrix.
+- Split the v2 golden vector into separately pinned packaged-material and
+  consensus-math sections, committed the vector as a reviewable JSON fixture,
+  and added `scripts/update_v2_golden.py` as the only supported way to repin.
+  Consensus-material rebuilds no longer produce an opaque digest change that is
+  indistinguishable from a real math regression.
 - Vendored and attributed the Apache-2.0 IFEval implementation and its pinned
   NLTK English Punkt parameters; added HumanEval MIT provenance.
 - Added inactive v2-only canonical-ID head evaluation and behavioral dedup,
@@ -72,6 +77,19 @@ All notable changes to this project will be documented here. Releases follow [Se
 - Added graceful Dendrite/Subtensor shutdown and local-chain cadence handling;
   three consecutive mock epochs now complete without leaked SDK sessions or
   violating the development chain's 100-block weight rate limit.
+
+### Fixed
+
+- Read finalized `SubtensorModule.Weights` storage directly instead of the
+  derived `metagraph.W` matrix, which Bittensor 10.5 can return empty even
+  after finalized `set_weights` calls.
+- Treat a pending timelocked weight commit as a completed v2 submission. On a
+  subnet with `commit_reveal_weights_enabled`, `set_weights` writes an encrypted
+  `TimelockedWeightCommits` entry and no plaintext row until its reveal epoch,
+  so the restart-idempotency check could never see its own submission and
+  resubmitted, burning the subnet weight rate limit. Only a commit made at or
+  after the current epoch boundary suppresses a new submission, and an
+  unreadable commit-reveal flag assumes the deferring path.
 
 ### Security
 

@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import IO
 
@@ -130,6 +131,28 @@ def _create_fresh_subnet(subtensor, owner) -> int:
     if not success:
         raise RuntimeError(f"fresh local subnet activation failed: {message}")
     return netuid
+
+
+def _weight_persistence_note(subtensor, netuid: int) -> str:
+    """Describe whether this chain can persist observable plaintext weights.
+
+    A subnet with ``commit_reveal_weights_enabled`` writes an encrypted entry
+    to ``TimelockedWeightCommits`` on a successful ``set_weights`` and nothing
+    to ``Weights`` until its reveal epoch. The local dev chain never completes
+    that drand-backed reveal, and its ~3s epoch expires the commit long before
+    offline verification finishes, so no on-chain weight artifact survives to
+    assertion time. Disabling the flag is not a reliable alternative: the
+    runtime rejects the admin call with AdminActionProhibitedDuringWeightsWindow
+    for most of a 10-block tempo.
+    """
+    from fugal_subnet.v2.chain import commit_reveal_is_enabled
+
+    if commit_reveal_is_enabled(subtensor, netuid):
+        return (
+            "commit-reveal is enabled, so finalized weights are deferred to an "
+            "encrypted timelock commit that this local chain never reveals"
+        )
+    return ""
 
 
 def _stake_validators(subtensor, netuid: int, validators: list) -> None:
@@ -459,6 +482,45 @@ def _wait_for_acceptance(
     raise RuntimeError(f"timed out waiting for {epoch_id} reveals")
 
 
+def _dump_weight_diagnostics(subtensor, netuid: int, uid: int, note: str) -> None:
+    """Print everything needed to tell an SDK read problem from a missing row."""
+    from fugal_subnet.v2.commitments import finalized_block_number
+
+    print(f"  WEIGHT DIAGNOSTICS for UID {uid}: {note}", file=sys.stderr, flush=True)
+    try:
+        finalized = finalized_block_number(subtensor)
+        current = subtensor.get_current_block()
+        print(
+            f"    finalized_block={finalized} current_block={current}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception as exc:
+        finalized = None
+        print(f"    block heights unavailable: {exc!r}", file=sys.stderr, flush=True)
+    for label, block in (("finalized", finalized), ("latest", None)):
+        if label == "finalized" and finalized is None:
+            continue
+        try:
+            rows = subtensor.weights(netuid, block=block)
+            print(
+                f"    weights({label}) len={len(rows)} raw={rows!r}"[:2000],
+                file=sys.stderr,
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"    weights({label}) raised {exc!r}", file=sys.stderr, flush=True)
+    try:
+        metagraph = subtensor.metagraph(netuid)
+        print(
+            f"    metagraph.n={metagraph.n} W_len={len(metagraph.W)}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"    metagraph unavailable: {exc!r}", file=sys.stderr, flush=True)
+
+
 def _verify_acceptance(
     subtensor,
     netuid: int,
@@ -497,13 +559,74 @@ def _verify_acceptance(
         timeout=180,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"offline reveal verification failed: {result.stderr[-500:]}")
+        # A negative return code means a signal, most often the OOM killer
+        # during backbone loading, which leaves no traceback at all. Report
+        # both streams so that case is never mistaken for a consensus failure.
+        detail = f"exit={result.returncode}"
+        if result.returncode < 0:
+            detail += f" (killed by signal {-result.returncode})"
+        raise RuntimeError(
+            "offline reveal verification failed: "
+            f"{detail}\n--- stdout ---\n{result.stdout[-4000:]}"
+            f"\n--- stderr ---\n{result.stderr[-4000:]}"
+        )
+    from fugal_subnet.v2.chain import read_finalized_weight_row
+
+    # Every reveal already records the exact weights, and each was written only
+    # after a set_weights extrinsic was accepted and finalized, so acceptance
+    # requires that evidence from all five validators.
+    expected = representative["weights"]
+    for path in reveals:
+        reveal = json.loads(path.read_text(encoding="utf-8"))
+        if not reveal["set_weights"] or reveal["weights"] != expected:
+            raise RuntimeError(f"{path} did not record a finalized weight submission")
+    positive = {uid: value for uid, value in expected.items() if Decimal(value) > 0}
+    if not positive:
+        raise RuntimeError("local acceptance derived no positive weights")
+    print(
+        "  five finalized weight submissions recorded, positive weights: "
+        + ", ".join(f"{uid}={value}" for uid, value in sorted(positive.items())),
+        flush=True,
+    )
+
+    # Reading the row back is the stronger check, but it is only observable on a
+    # subnet that writes plaintext weights. See _weight_persistence_note.
+    deferred = _weight_persistence_note(subtensor, netuid)
     metagraph = subtensor.metagraph(netuid)
     for wallet in validators:
         uid = [str(item) for item in metagraph.hotkeys].index(wallet.hotkey.ss58_address)
-        row = np.asarray(metagraph.W[uid], dtype=np.float64)
-        if not np.all(np.isfinite(row)) or float(row.sum()) <= 0:
+        # metagraph.W is a derived view that comes back empty on this chain even
+        # when plaintext rows exist, so read the storage map the validator uses.
+        try:
+            row = read_finalized_weight_row(subtensor, netuid=netuid, validator_uid=uid)
+        except Exception as exc:
+            _dump_weight_diagnostics(subtensor, netuid, uid, f"read raised: {exc!r}")
+            raise
+        if row:
+            if abs(sum(row.values()) - 1.0) > 1e-9:
+                _dump_weight_diagnostics(subtensor, netuid, uid, f"row={row!r}")
+                raise RuntimeError(f"validator UID {uid} has a malformed weight row")
+            print(
+                f"  validator UID {uid} on-chain weights: "
+                + ", ".join(
+                    f"{target}={value:.12f}" for target, value in sorted(row.items())
+                ),
+                flush=True,
+            )
+        elif deferred:
+            print(
+                f"  validator UID {uid} on-chain row not observable: {deferred}",
+                flush=True,
+            )
+        else:
+            _dump_weight_diagnostics(subtensor, netuid, uid, "row=None on a plaintext subnet")
             raise RuntimeError(f"validator UID {uid} has no finalized weight row")
+    if deferred:
+        print(
+            "  EVIDENCE BOUNDARY: on-chain weight persistence was not verified "
+            f"because {deferred}",
+            flush=True,
+        )
     for index in range(VALIDATOR_COUNT):
         journal_path = (
             reveals[index].parents[2]
@@ -692,6 +815,13 @@ def main() -> int:
             ACCEPTED_EPOCH,
             args.timeout,
         )
+        # Offline verification loads its own pinned CPU backbone. Retire the
+        # validator and miner processes first so their resident backbones do
+        # not push the verifier into the OOM killer; the grader launcher at
+        # index 0 stays up because verification regrades through its socket,
+        # and the chain container is untouched.
+        print("  Stopping validators and miners before offline verification...", flush=True)
+        _stop_processes(processes[1:])
         _verify_acceptance(
             subtensor,
             netuid,

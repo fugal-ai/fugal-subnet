@@ -22,6 +22,10 @@ from fugal_subnet.v2.reveal import HeadSubmission
 
 MAX_HEAD_BYTES = 1024 * 1024
 
+# Subtensor quantizes normalized weights to u16. Two units cover the
+# encode/decode and normalization round trips without masking real drift.
+WEIGHT_MATCH_TOLERANCE = 2 / 65_535
+
 
 class ChainAdapterError(RuntimeError):
     pass
@@ -140,6 +144,156 @@ def query_head_submissions(
     )
 
 
+def read_finalized_weight_row(
+    subtensor,
+    *,
+    netuid: int,
+    validator_uid: int,
+    block: int | None = None,
+) -> dict[int, float] | None:
+    """Read one validator's normalized weight row from finalized chain storage.
+
+    ``metagraph.W`` is a derived dense matrix that Bittensor 10.5 can return
+    empty even when finalized ``SubtensorModule.Weights`` rows exist, so both
+    production restart checks and acceptance assertions read the storage map
+    directly at an explicit finalized block.
+
+    Returns ``None`` when the validator genuinely has no row, and raises
+    ``ChainAdapterError`` when the chain could not be read at all. Callers that
+    must not distinguish the two use :func:`finalized_weight_row`.
+    """
+    if not isinstance(validator_uid, int) or isinstance(validator_uid, bool):
+        raise ChainAdapterError("validator UID is invalid")
+    if validator_uid < 0:
+        raise ChainAdapterError("validator UID is invalid")
+    if block is not None:
+        if not isinstance(block, int) or isinstance(block, bool) or block < 0:
+            raise ChainAdapterError("weight query block is invalid")
+    try:
+        height = finalized_block_number(subtensor) if block is None else block
+        rows = subtensor.weights(netuid, block=height)
+    except Exception as exc:
+        raise ChainAdapterError(
+            f"finalized weight query failed at block {block}: {exc!r}"
+        ) from exc
+    if not isinstance(rows, (list, tuple)):
+        raise ChainAdapterError(
+            f"finalized weight query returned {type(rows).__name__}, not a sequence"
+        )
+    raw: object = None
+    for entry in rows:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            continue
+        try:
+            uid = int(entry[0])
+        except (TypeError, ValueError):
+            continue
+        if uid == validator_uid:
+            raw = entry[1]
+            break
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None
+    row: dict[int, float] = {}
+    for pair in raw:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            return None
+        try:
+            target_uid = int(pair[0])
+            value = float(pair[1])
+        except (TypeError, ValueError):
+            return None
+        if target_uid < 0 or not math.isfinite(value) or value < 0:
+            return None
+        if target_uid in row:
+            return None
+        row[target_uid] = value
+    total = sum(row.values())
+    if total <= 0:
+        return None
+    return {uid: value / total for uid, value in row.items()}
+
+
+def finalized_weight_row(
+    subtensor,
+    *,
+    netuid: int,
+    validator_uid: int,
+    block: int | None = None,
+) -> dict[int, float] | None:
+    """Lenient wrapper: an unreadable chain looks the same as an absent row.
+
+    The restart check must resubmit rather than assume its weights are already
+    set, so it cannot afford to distinguish the two. Acceptance and debugging
+    callers use :func:`read_finalized_weight_row`, which reports the reason.
+    """
+    try:
+        return read_finalized_weight_row(
+            subtensor, netuid=netuid, validator_uid=validator_uid, block=block
+        )
+    except ChainAdapterError:
+        return None
+
+
+def pending_timelock_commit_block(
+    subtensor,
+    *,
+    netuid: int,
+    hotkey: str,
+) -> int | None:
+    """Return the block of an unrevealed timelock weight commit by ``hotkey``.
+
+    Subnets with ``commit_reveal_weights_enabled`` do not write plaintext
+    ``Weights`` when ``set_weights`` succeeds. The encrypted payload sits in
+    ``TimelockedWeightCommits`` until its reveal epoch, so during that window a
+    successful submission is invisible to :func:`read_finalized_weight_row`.
+    Restart idempotency has to consult this map or it will resubmit and burn
+    the subnet's weight rate limit.
+
+    Returns ``None`` when no such commit exists or the map cannot be read.
+    """
+    try:
+        entries = subtensor.substrate.query_map(
+            module="SubtensorModule",
+            storage_function="TimelockedWeightCommits",
+            params=[netuid],
+        )
+    except Exception:
+        return None
+    latest: int | None = None
+    try:
+        for _epoch, commits in entries:
+            for commit in commits or ():
+                if not isinstance(commit, (list, tuple)) or len(commit) < 2:
+                    continue
+                if str(commit[0]) != str(hotkey):
+                    continue
+                try:
+                    block = int(commit[1])
+                except (TypeError, ValueError):
+                    continue
+                if latest is None or block > latest:
+                    latest = block
+    except (TypeError, ValueError):
+        return None
+    return latest
+
+
+def commit_reveal_is_enabled(subtensor, netuid: int) -> bool:
+    """Report whether this subnet defers weights through a timelock commit."""
+    try:
+        return bool(
+            subtensor.substrate.query(
+                module="SubtensorModule",
+                storage_function="CommitRevealWeightsEnabled",
+                params=[netuid],
+            )
+        )
+    except Exception:
+        # Assume the deferring path, so an unreadable flag never causes a
+        # duplicate submission.
+        return True
+
+
 def _chain_weights_match(
     subtensor,
     *,
@@ -147,26 +301,19 @@ def _chain_weights_match(
     validator_uid: int,
     target: dict[int, float],
 ) -> bool:
-    """Return true only when the current normalized row already matches target."""
-    try:
-        metagraph = subtensor.metagraph(netuid)
-        row = [float(value) for value in metagraph.W[validator_uid]]
-        count = int(metagraph.n)
-    except (AttributeError, IndexError, TypeError, ValueError):
+    """Return true only when the finalized row already matches target."""
+    normalized = finalized_weight_row(
+        subtensor, netuid=netuid, validator_uid=validator_uid
+    )
+    if not normalized:
         return False
-    if len(row) != count or any(not math.isfinite(value) or value < 0 for value in row):
-        return False
-    total = sum(row)
-    if total <= 0:
-        return False
-    normalized = [value / total for value in row]
-    # Subtensor quantizes normalized weights to u16. Two units cover the
-    # encode/decode and normalization round trips without masking real drift.
-    tolerance = 2 / 65_535
-    return all(
-        abs(normalized[uid] - target.get(uid, 0.0)) <= tolerance
-        for uid in range(count)
-    ) and not any(uid < 0 or uid >= count for uid in target)
+    # Compare over the union so a chain entry absent from the target, or a
+    # target entry the chain never stored, both count as drift. Explicit zero
+    # weights compare equal whether or not the pallet retained them.
+    for uid in set(normalized) | set(target):
+        if abs(normalized.get(uid, 0.0) - target.get(uid, 0.0)) > WEIGHT_MATCH_TOLERANCE:
+            return False
+    return True
 
 
 def submit_exact_weights(
@@ -176,6 +323,7 @@ def submit_exact_weights(
     netuid: int,
     weights: dict[str, str],
     validator_uid: int | None = None,
+    epoch_start_block: int | None = None,
 ) -> bool:
     """Submit verified weights once and require finalization.
 
@@ -201,6 +349,19 @@ def submit_exact_weights(
             target=target,
         ):
             return False
+        # On a commit-reveal subnet a successful submission stays encrypted
+        # until its reveal epoch, so the plaintext check above cannot see it.
+        # Only a commit made at or after this epoch's boundary proves that this
+        # epoch's weights were already submitted; an older commit belongs to a
+        # previous epoch and must not suppress this one.
+        if epoch_start_block is not None and commit_reveal_is_enabled(subtensor, netuid):
+            hotkey = getattr(getattr(wallet, "hotkey", None), "ss58_address", None)
+            if hotkey is not None:
+                commit_block = pending_timelock_commit_block(
+                    subtensor, netuid=netuid, hotkey=str(hotkey)
+                )
+                if commit_block is not None and commit_block >= epoch_start_block:
+                    return False
     response = subtensor.set_weights(
         wallet=wallet,
         netuid=netuid,

@@ -76,7 +76,9 @@ No OpenRouter completion request or chain mutation was made.
   incomplete, disabled, and unactivated on local, test, and finney. Enabled or
   activated protocols must contain complete consensus material.
 - The current canonicalized manifest hash is
-  `5bf8b9c34a74fab6f7c1195722160f71a61bf11874d8d96fa11911bfaf9d932b`.
+  `eb17784950256e1bfae2bf350316f26d7df9308d325abbb87f93aa8338d9ea95`.
+  It was recorded here as `5bf8b9c3...` before the final consensus-material
+  rebuild; see phase 13 for how that staleness was found and prevented.
 - Manifest overrides are accepted only in local/mock profiles. Testnet and
   mainnet always use the packaged resource.
 - A versioned grader registry dispatches the immutable v1 grader and the
@@ -381,7 +383,7 @@ Final local zero-spend evidence on 2026-09-01:
 ```text
 ruff                                                        PASS
 mypy (32 consensus/security/runtime sources)                PASS
-pytest                                                       159 passed
+pytest                                                       178 passed
 v0.1 integration pipeline                                   PASS
 v0.1 attack suite                         17 blocked / 3 known / 2 controls
 real Bittensor 10.5 Axon attach                              PASS
@@ -400,13 +402,140 @@ reports it as unauditable rather than vulnerable. The local v1 chain run proves
 the launcher, wallet isolation, graceful SDK cleanup, miner/validator path, and
 weight cadence; it is not a substitute for the still-gated v2 committee test.
 
-The latest real v2 happy-path run produced five byte-identical, offline-verified
+The real v2 happy-path run produced five byte-identical, offline-verified
 reveals with four builder reports, two accepted committed heads, complete
-zero-spend journals, and derived weights. Its harness still returned nonzero
-because Bittensor 10.5 exposed an empty `metagraph.W` during the final weight
-assertion. Exact evidence and the direct finalized-storage remediation are
-recorded in `docs/V0_2_HANDOFF.md`; the v2 local-chain checklist remains open
-until that adapter is corrected and the harness exits successfully.
+zero-spend journals, and derived weights. Its harness returned nonzero because
+Bittensor 10.5 exposed an empty `metagraph.W` during the final weight
+assertion. That adapter is corrected in phase 13.
+
+### 13. Golden-vector reviewability and finalized weight reads — implemented
+
+Two defects were found by running the committed `main` checkpoint rather than
+trusting its recorded evidence. GitHub CI was red on both v0.2 commits
+(runs `33570488216`, `33571201280`).
+
+**Stale golden pin.** `tests/test_v2_golden.py` expected
+`175e58fe...` and got `e0f196bd...`. CI on Python 3.10 and a local run on 3.12
+produced the *same* actual hash, so cross-version determinism was never in
+question: the pin had simply not been regenerated after the last
+consensus-material rebuild, which also left the manifest hash above stale. The
+root cause is structural — the golden vector embedded packaged material hashes
+(`manifest_sha256`, and `question_commitment`, which derives from the grader
+bundle hash) in the same opaque digest as the consensus math, and was stored
+only as a hash, so ordinary rebuild churn was indistinguishable from a real
+math regression and neither could be reviewed.
+
+The vector is now `schema_version` 2 and split into two sections:
+
+- `material` — `manifest_sha256`, `grader_sha256`, `question_commitment`.
+  These legitimately move on every consensus-material rebuild.
+- `math` — committee, slice, registry snapshot, matrix, soft targets, head
+  evaluations, dedup, scores and weights. Derived only from fixed inputs, so
+  any movement here is a consensus regression.
+
+`EXPECTED_MATH_SHA256` pins the math alone and `EXPECTED_GOLDEN_SHA256` pins
+the whole vector. `assert_golden()` reports a math mismatch first, because the
+two failures require opposite responses: repin material churn, investigate math
+drift. `tests/fixtures/v2_golden.json` commits the pretty-printed vector so
+drift arrives as a readable JSON diff, and `scripts/update_v2_golden.py`
+(with `--check`) is the only supported way to repin.
+
+Before repinning, the math section was verified in full against the documented
+invariants rather than accepted: five builders selected from five permitted
+hotkeys; the reordered-head clone at UID 9 clustered with UID 5 and
+disqualified; both heads producing identical decisions, distributions and
+scores, proving row reordering cannot disguise behavior; every soft-target row
+summing to exactly `1.000000000000`; accuracy `0.333333333333` confirming
+all-zero questions are excluded; and final weights summing to exactly
+`1.000000000000` with UID 9 forced to zero, UID 12 moving `0.20 -> 0.50` at
+exactly the `0.3` cap and UID 5 moving `0.45 -> 0.50`. These values are also
+independently covered by `tests/test_v2_routing_rewards.py`.
+
+**Empty `metagraph.W`, and the commit-reveal defect behind it.** The previous
+handoff diagnosed this as "Bittensor 10.5 returns an empty `metagraph.W`; read
+the finalized `SubtensorModule.Weights` storage directly". That remedy was
+implemented and acceptance still failed, because on a commit-reveal subnet the
+weights are not in `Weights` either.
+
+Measured directly against the local chain:
+
+```text
+commit_reveal_weights_enabled = True   (tempo 10, commit_reveal_period 1)
+set_weights(...)             -> (True, 'Success')
+  TimelockedWeightCommits    -> 1 row  [[214, [(hotkey, 2162, 0x91a015a3...)]]]
+  Weights                    -> 0 rows
+```
+
+A successful `set_weights` writes an encrypted timelock commit; plaintext
+`Weights` is populated only at the reveal epoch. After disabling commit-reveal
+by sudo, the same submission produced `[(1, [(6, 43690), (7, 65535)])]` and the
+adapter returned exactly `{6: 0.4, 7: 0.6}`, confirming the reader is correct.
+`metagraph.W` stayed empty in both configurations, so replacing it was right
+but not sufficient.
+
+`read_finalized_weight_row()` reads the `SubtensorModule.Weights` storage map
+at an explicit finalized block, normalizes the sparse u16 row, and raises
+`ChainAdapterError` when the chain cannot be read; `finalized_weight_row()` is
+the lenient wrapper that returns `None`, because the restart check must
+resubmit rather than assume. `_chain_weights_match()` compares over the union
+of chain and target UIDs at the existing `2/65_535` tolerance, so an extra
+chain recipient is drift while an explicit zero weight matches whether or not
+the pallet retained it.
+
+The production consequence is the more important half. On any subnet with
+commit-reveal enabled — the default here — a successful submission is invisible
+to the plaintext read for the whole reveal window, so a validator restarting in
+that window resubmits and burns the subnet `weights_rate_limit` (100 blocks).
+`submit_exact_weights()` therefore also treats a pending
+`TimelockedWeightCommits` entry from its own hotkey as an already-completed
+submission, but only when that commit was made at or after the current epoch
+boundary, so a stale commit from a finished epoch cannot suppress a new one. An
+unreadable `CommitRevealWeightsEnabled` flag assumes the deferring path,
+because a false negative there costs a duplicate submission.
+
+Verification:
+
+```text
+pytest -q tests/test_v2_chain.py                            14 passed
+pytest -q                                                  183 passed
+scripts/check_v2_golden.py (3.10.20, 3.11.15, 3.12.3)   BYTE-IDENTICAL
+  b0022276224630a94f895dfcd28cc61eb916047bc3cdd1159d467c22e961c8d0
+EXPECTED_MATH_SHA256
+  e15c8f129ebfe951685d97969729b984cd7da409b6e64a11bf32ed199b1a1a9d
+ruff / mypy (29 sources) / safety invariants                PASS
+```
+
+**Local-chain acceptance result.** The five-validator harness now exits zero.
+Independently checked artifacts from `/tmp/fugal-v2-final13`: five reveals with
+the single SHA-256 `9a723e6c597e49299d0e30825866745ad9ae732f5d2e630465c0b9c87734e47a`,
+a five-member committee, four builder reports, two accepted miner heads,
+positive weights `6=0.421043925855` and `7=0.578956074145`, and five journals
+terminally `complete` with actual spend `0`.
+
+Two harness defects were fixed to get there. Offline verification loaded a
+sixth pinned CPU backbone while all five validators were still resident, and
+was OOM-killed on a 7.7 GiB host; validators and miners are now retired first,
+with the grader launcher and chain left up. That kill produced no traceback,
+and the harness reported only `stderr[-500:]`, a window the transformers load
+report reliably fills, so a resource failure read as a consensus failure.
+Failures now report the exit code, signal, and both streams.
+
+**Evidence boundary — on-chain weight persistence is not covered.** This local
+chain cannot demonstrate it at all: commit-reveal defers weights to an
+encrypted commit, its drand-backed reveal never completes, and with ~0.3s
+blocks and tempo 10 the commit expires within about a minute while offline
+verification takes several, so no on-chain weight artifact survives to
+assertion time. Disabling the flag is not a dependable workaround either — the
+runtime rejects the admin call with `AdminActionProhibitedDuringWeightsWindow`
+for most of a 10-block tempo (29 consecutive failures in the harness against a
+success on the fifth attempt by hand). Acceptance therefore requires all five
+reveals to record `set_weights` with identical exact weights, which is written
+only after an accepted and finalized extrinsic, still asserts the plaintext row
+wherever a subnet writes one, fails closed when a row is missing on a subnet
+that should have one, and otherwise prints an explicit `EVIDENCE BOUNDARY`
+line. Verifying post-reveal persistence requires a chain whose reveal
+completes, which means the public testnet. The corresponding
+`docs/RELEASE_CHECKLIST.md` item stays unchecked.
 
 ### 12. Remaining rollout gates (not implementation shortcuts)
 

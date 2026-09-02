@@ -632,6 +632,7 @@ def _run_epoch(
                 netuid=netuid,
                 weights=chain_weights,
                 validator_uid=current_self_uid,
+                epoch_start_block=boundary_block,
             )
         committed_liveness = validator_state.update_epoch(
             epoch_id,

@@ -48,6 +48,12 @@ Current local engineering status and continuation commands are recorded in
   miners: committee selection, historical commitments, chunked reports, quorum
   success/loss, selective refusal, restart/resume, UID ownership change, and
   weight submission.
+  Partially done. The happy path passes: five validators, four builder reports,
+  two accepted heads, byte-identical verified reveals, and five zero-spend
+  journals. Quorum loss, selective refusal, restart/resume and UID ownership
+  change still have only unit/injected coverage. On-chain weight persistence is
+  not demonstrable on the local chain at all; see the evidence boundary in
+  `docs/V0_2_IMPLEMENTATION.md` phase 13.
 - [ ] Demonstrate a production-size mock epoch completes before the manifest
   report deadline with documented hardware/concurrency SLO.
 - [ ] Prove restart recovery never repeats a completed paid cell or finalized

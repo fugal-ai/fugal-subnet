@@ -17,9 +17,12 @@ from fugal_subnet.v2.rewards import compute_bounded_weights
 from fugal_subnet.v2.scoring import composite_score
 from fugal_subnet.v2.soft_targets import compute_soft_targets
 
-GOLDEN_SCHEMA_VERSION = 1
-# Updated only after an explicit review of the canonical vector diff.
-EXPECTED_GOLDEN_SHA256 = "175e58fecf8e9ae058508470fbf50bb48638c79a47f96f496fbac9861232052c"
+GOLDEN_SCHEMA_VERSION = 2
+# Both pins are updated only by scripts/update_v2_golden.py, after an
+# explicit review of the tests/fixtures/v2_golden.json diff.
+EXPECTED_GOLDEN_SHA256 = "b0022276224630a94f895dfcd28cc61eb916047bc3cdd1159d467c22e961c8d0"
+# Covers the material-independent math only. This one must not move.
+EXPECTED_MATH_SHA256 = "e15c8f129ebfe951685d97969729b984cd7da409b6e64a11bf32ed199b1a1a9d"
 
 
 def _decimal(value: float) -> str:
@@ -116,39 +119,53 @@ def build_golden_vector() -> dict:
     matrix_bytes = canonical_json(matrix.tolist())
     return {
         "schema_version": GOLDEN_SCHEMA_VERSION,
-        "manifest_sha256": manifest.sha256,
-        "boundary": {"block": 100, "hash": boundary_hash},
-        "committee": [
-            {"uid": builder.uid, "hotkey": builder.hotkey} for builder in committee
-        ],
-        "slice": {
-            "question_ids": [question["question_id"] for question in questions],
+        # Hashes of packaged consensus material. These legitimately change
+        # whenever the manifest or grader bundle is rebuilt, so they are kept
+        # apart from the math below and pinned separately.
+        "material": {
+            "manifest_sha256": manifest.sha256,
+            "grader_sha256": grader_hash,
             "question_commitment": question_hash,
         },
-        "registry": {"model_ids": model_ids, "snapshot_hash": registry_hash},
-        "matrix": matrix.tolist(),
-        "matrix_sha256": hashlib.sha256(matrix_bytes).hexdigest(),
-        "soft_targets": [[_decimal(value) for value in row] for row in soft_targets],
-        "heads": {
-            str(uid): {
-                "accuracy": _decimal(score.accuracy),
-                "cost_efficiency": _decimal(score.cost_efficiency),
-                "kl_score": _decimal(score.kl_score),
-                "decisions": score.routing_decisions.tolist(),
-                "model_ids": list(score.routing_model_ids),
-                "distributions": [
-                    [_decimal(value) for value in row]
-                    for row in score.routing_distributions
-                ],
-            }
-            for uid, score in sorted(evaluations.items())
+        # Derived only from the fixed inputs above. Any change here is a real
+        # consensus-math regression and must never be repinned without review.
+        "math": {
+            "boundary": {"block": 100, "hash": boundary_hash},
+            "committee": [
+                {"uid": builder.uid, "hotkey": builder.hotkey} for builder in committee
+            ],
+            "slice": {
+                "question_ids": [question["question_id"] for question in questions],
+            },
+            "registry": {"model_ids": model_ids, "snapshot_hash": registry_hash},
+            "matrix": matrix.tolist(),
+            "matrix_sha256": hashlib.sha256(matrix_bytes).hexdigest(),
+            "soft_targets": [
+                [_decimal(value) for value in row] for row in soft_targets
+            ],
+            "heads": {
+                str(uid): {
+                    "accuracy": _decimal(score.accuracy),
+                    "cost_efficiency": _decimal(score.cost_efficiency),
+                    "kl_score": _decimal(score.kl_score),
+                    "decisions": score.routing_decisions.tolist(),
+                    "model_ids": list(score.routing_model_ids),
+                    "distributions": [
+                        [_decimal(value) for value in row]
+                        for row in score.routing_distributions
+                    ],
+                }
+                for uid, score in sorted(evaluations.items())
+            },
+            "dedup": {
+                "clusters": [list(cluster) for cluster in dedup.clusters],
+                "disqualified": sorted(dedup.disqualified),
+            },
+            "scores": {
+                str(uid): _decimal(score) for uid, score in sorted(scores.items())
+            },
+            "weights": weights.serialized(),
         },
-        "dedup": {
-            "clusters": [list(cluster) for cluster in dedup.clusters],
-            "disqualified": sorted(dedup.disqualified),
-        },
-        "scores": {str(uid): _decimal(score) for uid, score in sorted(scores.items())},
-        "weights": weights.serialized(),
     }
 
 
@@ -160,7 +177,28 @@ def golden_sha256() -> str:
     return hashlib.sha256(golden_bytes()).hexdigest()
 
 
+def golden_math_bytes() -> bytes:
+    """Serialize only the material-independent consensus math."""
+    return canonical_json(build_golden_vector()["math"])
+
+
+def golden_math_sha256() -> str:
+    return hashlib.sha256(golden_math_bytes()).hexdigest()
+
+
 def assert_golden() -> None:
+    """Fail closed on any drift, naming the math pin first.
+
+    A math mismatch is a consensus regression. A whole-vector mismatch with an
+    intact math pin is ordinary packaged-material churn and is repinned with
+    ``scripts/update_v2_golden.py`` after review.
+    """
+    actual_math = golden_math_sha256()
+    if actual_math != EXPECTED_MATH_SHA256:
+        raise RuntimeError(
+            "v2 golden consensus math differs: expected "
+            f"{EXPECTED_MATH_SHA256}, got {actual_math}"
+        )
     actual = golden_sha256()
     if actual != EXPECTED_GOLDEN_SHA256:
         raise RuntimeError(

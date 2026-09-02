@@ -1,6 +1,8 @@
 """GSM8K benchmark loader — 1,319 grade school math problems."""
 from __future__ import annotations
+
 import re
+
 from datasets import load_dataset
 
 from fugal_subnet.benchmarks.loader import DATASET_REVISIONS

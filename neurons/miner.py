@@ -53,9 +53,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path, log_lev
     )
 
     import bittensor as bt
-    from fugal_subnet.protocol import FugalSynapse
-    from fugal_subnet.config import MIN_VALIDATOR_STAKE
+
     from fugal_subnet.commitments import ensure_commitment
+    from fugal_subnet.config import MIN_VALIDATOR_STAKE
+    from fugal_subnet.protocol import FugalSynapse
 
     head_data = _load_head_file(head_path)
     head_b64 = base64.b64encode(head_data).decode("ascii")

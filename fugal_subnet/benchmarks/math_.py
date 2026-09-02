@@ -5,6 +5,7 @@ solution (the Hendrycks MATH convention) — grading against the full solution
 text would make the boxed_math string-match fallback unusable.
 """
 from __future__ import annotations
+
 from datasets import load_dataset
 
 from fugal_subnet.benchmarks.loader import DATASET_REVISIONS

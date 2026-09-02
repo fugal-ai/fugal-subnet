@@ -32,18 +32,13 @@ Prerequisites:
     - OpenRouter API key (for real API mode only)
 """
 import argparse
-import hashlib
 import json
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import sys
-import threading
 import time
-
-import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -126,7 +121,7 @@ def start_local_chain(image_tag: str = "devnet") -> bool:
     print(f"  Pulling {image}...", flush=True)
     subprocess.run(["docker", "pull", image], capture_output=True, timeout=300)
 
-    print(f"  Starting local chain...", flush=True)
+    print("  Starting local chain...", flush=True)
     result = subprocess.run([
         "docker", "run", "-d",
         "--name", DOCKER_CONTAINER,
@@ -283,7 +278,7 @@ def create_subnet(wallets: dict) -> int:
         )
         success, msg = response
         if success:
-            print(f"  Subnet created successfully", flush=True)
+            print("  Subnet created successfully", flush=True)
         else:
             print(f"  register_subnet returned: {msg}", flush=True)
     except Exception as e:
@@ -685,7 +680,7 @@ def main():
         if result.returncode == 0:
             print(f"  Chain container '{DOCKER_CONTAINER}' is running", flush=True)
         else:
-            print(f"  Chain container not running (will start on launch)", flush=True)
+            print("  Chain container not running (will start on launch)", flush=True)
 
         print("\nWallets:", flush=True)
         setup_wallets(dry_run=True)
@@ -694,7 +689,7 @@ def main():
         if os.path.exists(args.head_path):
             print(f"  Exists: {args.head_path} ({os.path.getsize(args.head_path)} bytes)", flush=True)
         else:
-            print(f"  Not found (will train on launch)", flush=True)
+            print("  Not found (will train on launch)", flush=True)
 
         api_key = os.getenv("OPENROUTER_API_KEY")
         print("\nOpenRouter API:", flush=True)
@@ -746,7 +741,7 @@ def main():
                 print("Registration failed", flush=True)
                 return 1
 
-            print(f"\n  Metagraph:", flush=True)
+            print("\n  Metagraph:", flush=True)
             result = run_btcli([
                 "query", "metagraph",
                 "--netuid", str(netuid),

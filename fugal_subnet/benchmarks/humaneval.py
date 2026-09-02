@@ -1,6 +1,6 @@
 """HumanEval benchmark loader — 164 code generation problems."""
 from __future__ import annotations
-import json
+
 from datasets import load_dataset
 
 from fugal_subnet.benchmarks.loader import DATASET_REVISIONS

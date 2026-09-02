@@ -4,11 +4,12 @@ Miners compete in one pool. Weight is proportional to composite score.
 Unassigned weight is burned to UID 0 (Greevils pattern).
 """
 from __future__ import annotations
+
 import logging
 
 import numpy as np
 
-from fugal_subnet.config import MAX_WEIGHT_DELTA, LIVENESS_MAX_MISSED
+from fugal_subnet.config import LIVENESS_MAX_MISSED, MAX_WEIGHT_DELTA
 from fugal_subnet.scoring import MinerRecord
 
 logger = logging.getLogger(__name__)

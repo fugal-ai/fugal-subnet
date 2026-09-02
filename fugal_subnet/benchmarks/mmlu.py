@@ -1,5 +1,6 @@
 """MMLU benchmark loader — 57 subjects, 14,042 test questions."""
 from __future__ import annotations
+
 from datasets import load_dataset
 
 from fugal_subnet.benchmarks.loader import DATASET_REVISIONS

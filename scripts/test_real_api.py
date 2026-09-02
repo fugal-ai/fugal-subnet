@@ -61,13 +61,13 @@ def make_questions(n: int) -> list:
 
 
 def main():
-    from fugal_subnet.api import SpendTracker, load_prices, call_model
-    from fugal_subnet.matrix import build_matrix
-    from fugal_subnet.soft_targets import compute_soft_targets
-    from fugal_subnet.head_eval import HeadArtifact, evaluate_head
-    from fugal_subnet.scoring import ScoringState, update_scores
-    from fugal_subnet.rewards import compute_weights
+    from fugal_subnet.api import SpendTracker, call_model, load_prices
     from fugal_subnet.epoch_logger import EpochLog, EpochTimer, detect_anomalies, write_epoch_log
+    from fugal_subnet.head_eval import HeadArtifact, evaluate_head
+    from fugal_subnet.matrix import build_matrix
+    from fugal_subnet.rewards import compute_weights
+    from fugal_subnet.scoring import ScoringState, update_scores
+    from fugal_subnet.soft_targets import compute_soft_targets
 
     timer = EpochTimer()
 

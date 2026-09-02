@@ -31,11 +31,14 @@ import torch.nn.functional as F
 logger = logging.getLogger("fugal.trainer")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from fugal_subnet.backbone import compute_hidden_states
 from fugal_subnet.config import (
-    HEAD_HIDDEN_DIM, SOFT_TARGET_TAU, ROUTING_LAMBDA, BACKBONE_MODEL,
+    BACKBONE_MODEL,
+    HEAD_HIDDEN_DIM,
+    ROUTING_LAMBDA,
+    SOFT_TARGET_TAU,
 )
 from fugal_subnet.soft_targets import compute_soft_targets
-from fugal_subnet.backbone import compute_hidden_states
 
 
 def parse_args():

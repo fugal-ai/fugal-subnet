@@ -73,7 +73,7 @@ def get_backbone(
     if cache_key in _model_cache:
         return _model_cache[cache_key]
 
-    from transformers import AutoTokenizer, AutoModel
+    from transformers import AutoModel, AutoTokenizer
 
     if dtype is None:
         dtype = torch.float16 if device.startswith("cuda") else torch.float32

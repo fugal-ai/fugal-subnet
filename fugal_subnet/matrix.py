@@ -42,6 +42,7 @@ def build_matrix(
     cache_dir: str | None = None,
     allow_exec: bool = False,
     concurrency: int = API_CONCURRENCY,
+    live: bool = False,
 ) -> MatrixResult:
     """Build the ground truth matrix by calling all models on all questions.
 
@@ -91,6 +92,7 @@ def build_matrix(
         q_idx, m_idx, model, question, key = task
         text, _, _ = call_model(
             model, question["prompt"], tracker=tracker, prices=prices,
+            live=live,
         )
         return q_idx, m_idx, key, text
 

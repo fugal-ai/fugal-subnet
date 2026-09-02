@@ -35,6 +35,9 @@ METAGRAPH_REFRESH_S = 300
               help="Wallet coldkey name")
 @click.option("--hotkey", default=lambda: os.getenv("HOTKEY_NAME", "default"),
               help="Hotkey name")
+@click.option("--wallet-path", default=lambda: os.getenv("FUGAL_WALLET_PATH") or None,
+              type=click.Path(file_okay=False),
+              help="Bittensor wallet root (defaults to the SDK wallet directory)")
 @click.option("--port", default=lambda: int(os.getenv("FUGAL_MINER_PORT", "8091")),
               type=int, help="Axon port")
 @click.option("--head-path", required=True, type=click.Path(exists=True),
@@ -43,7 +46,7 @@ METAGRAPH_REFRESH_S = 300
               type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
               default=lambda: os.getenv("LOG_LEVEL", "INFO"),
               help="Logging level")
-def main(network, netuid, coldkey, hotkey, port, head_path, log_level):
+def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path, log_level):
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
@@ -65,7 +68,7 @@ def main(network, netuid, coldkey, hotkey, port, head_path, log_level):
                 head_path, len(head_data), len(model_pool))
     logger.info("Head hash: %s", head_hash[:16])
 
-    wallet = bt.Wallet(name=coldkey, hotkey=hotkey)
+    wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     subtensor = bt.Subtensor(network=network)
     metagraph = subtensor.metagraph(netuid)
 

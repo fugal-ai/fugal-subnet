@@ -11,20 +11,17 @@ validators therefore score the same slice for the same epoch, and a head is
 only scoreable if its sha256 was committed on-chain at or before the boundary.
 """
 from __future__ import annotations
+
 import dataclasses
 import hashlib
 import json
 import logging
 import math
 import os
-import sys
-import threading
 import time
 
 import click
 import numpy as np
-
-from fugal_subnet.config import HEARTBEAT_TIMEOUT
 
 logger = logging.getLogger("fugal.validator")
 
@@ -33,26 +30,8 @@ RESPONSE_CACHE_DIR = os.getenv("FUGAL_RESPONSE_CACHE", "results/response_cache")
 BLOCK_TIME_S = 12
 
 
-def heartbeat_monitor(last_heartbeat: list[float], stop_event: threading.Event):
-    """Re-exec the process if the main loop stops checking in."""
-    while not stop_event.is_set():
-        time.sleep(5)
-        if time.time() - last_heartbeat[0] > HEARTBEAT_TIMEOUT:
-            logger.error("No heartbeat in %ds. Restarting.", HEARTBEAT_TIMEOUT)
-            logging.shutdown()
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-
-
-def _sleep_with_heartbeat(seconds: float, last_heartbeat: list[float],
-                          stop_event: threading.Event):
-    deadline = time.time() + seconds
-    while time.time() < deadline and not stop_event.is_set():
-        last_heartbeat[0] = time.time()
-        time.sleep(min(30, max(0, deadline - time.time())))
-
-
 def load_state(records_cls) -> dict:
-    """Load persisted validator state (survives restarts and heartbeat re-execs)."""
+    """Load persisted validator state across supervisor-managed restarts."""
     try:
         with open(STATE_PATH) as f:
             raw = json.load(f)
@@ -157,50 +136,96 @@ def build_model_pool(
               help="Wallet coldkey name")
 @click.option("--hotkey", default=lambda: os.getenv("HOTKEY_NAME", "default"),
               help="Hotkey name")
+@click.option("--wallet-path", default=lambda: os.getenv("FUGAL_WALLET_PATH") or None,
+              type=click.Path(file_okay=False),
+              help="Bittensor wallet root (defaults to the SDK wallet directory)")
 @click.option("--once", is_flag=True, help="Run one epoch and exit")
 @click.option("--log-level",
               type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
               default=lambda: os.getenv("LOG_LEVEL", "INFO"),
               help="Logging level")
-@click.option("--mock", is_flag=True, help="Use mock API responses (no spend)")
-def main(network, netuid, coldkey, hotkey, once, log_level, mock):
+@click.option(
+    "--live/--mock",
+    default=False,
+    help="Enable paid OpenRouter calls; defaults to mock mode (no spend)",
+)
+@click.option(
+    "--epoch-budget",
+    type=click.FloatRange(min=0.0, min_open=True),
+    default=None,
+    help="Positive USD ceiling required with --live (or set FUGAL_EPOCH_BUDGET)",
+)
+def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, epoch_budget):
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    import bittensor as bt
-    from fugal_subnet.protocol import FugalSynapse
     from fugal_subnet.config import (
-        EPOCH_INTERVAL, SLICE_SIZE, ROUTING_LAMBDA, EPOCH_BUDGET_USD,
-        MAX_MODEL_POOL, MAX_MODELS_PER_MINER, MAX_MODEL_COST_PER_QUERY,
+        EPOCH_BUDGET_USD,
+        EPOCH_INTERVAL,
+        MAX_MODEL_COST_PER_QUERY,
+        MAX_MODEL_POOL,
+        MAX_MODELS_PER_MINER,
         REQUIRE_COMMITMENT,
+        ROUTING_LAMBDA,
+        SLICE_SIZE,
     )
-    from fugal_subnet.benchmarks.loader import load_all
-    from fugal_subnet.benchmarks.slicer import select_slice, derive_nonce
-    from fugal_subnet.matrix import build_matrix, build_matrix_mock
-    from fugal_subnet.soft_targets import compute_soft_targets
-    from fugal_subnet.head_eval import load_head_from_b64, evaluate_head
-    from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
-    from fugal_subnet.rewards import compute_weights, cap_weight_change
-    from fugal_subnet.api import BudgetExceeded, SpendTracker, load_prices, fetch_openrouter_prices
-    from fugal_subnet.backbone import compute_hidden_states
-    from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
-    from fugal_subnet.commitments import get_commitments_with_blocks
-    from fugal_subnet.dedup import find_duplicates
-    from fugal_subnet.epoch_logger import EpochLog, EpochTimer, detect_anomalies, write_epoch_log
+    configured_budget = epoch_budget if epoch_budget is not None else EPOCH_BUDGET_USD
+    if live and configured_budget is None:
+        raise click.UsageError(
+            "--live requires --epoch-budget AMOUNT or an explicitly set positive "
+            "FUGAL_EPOCH_BUDGET"
+        )
+    if not live and epoch_budget is not None:
+        logger.warning("--epoch-budget is ignored in mock mode")
+    mock = not live
+    logger.info(
+        "Operation mode: %s%s",
+        "LIVE (paid)" if live else "mock (no API spend)",
+        f", hard epoch budget=${configured_budget:.2f}" if live else "",
+    )
 
     import base64
 
-    wallet = bt.Wallet(name=coldkey, hotkey=hotkey)
+    import bittensor as bt
+
+    from fugal_subnet.api import (
+        BudgetExceeded,
+        SpendTracker,
+        build_spend_protection_prices,
+        fetch_openrouter_prices,
+        load_prices,
+    )
+    from fugal_subnet.backbone import compute_hidden_states
+    from fugal_subnet.benchmarks.loader import load_all
+    from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
+    from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
+    from fugal_subnet.commitments import get_commitments_with_blocks
+    from fugal_subnet.dedup import find_duplicates
+    from fugal_subnet.epoch_logger import (
+        EpochLog,
+        EpochTimer,
+        detect_anomalies,
+        write_epoch_log,
+    )
+    from fugal_subnet.head_eval import evaluate_head, load_head_from_b64
+    from fugal_subnet.matrix import build_matrix, build_matrix_mock
+    from fugal_subnet.protocol import FugalSynapse
+    from fugal_subnet.rewards import cap_weight_change, compute_weights
+    from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
+    from fugal_subnet.soft_targets import compute_soft_targets
+
+    wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     subtensor = bt.Subtensor(network=network)
     metagraph = subtensor.metagraph(netuid)
     dendrite = bt.Dendrite(wallet=wallet)
 
     my_hotkey = wallet.hotkey.ss58_address
     if my_hotkey not in metagraph.hotkeys:
-        logger.error("Hotkey %s not registered on netuid %d", my_hotkey, netuid)
-        return
+        raise click.ClickException(
+            f"Hotkey {my_hotkey} is not registered on netuid {netuid}"
+        )
     my_uid = metagraph.hotkeys.index(my_hotkey)
     logger.info("Validator UID %d on %s netuid %d", my_uid, network, netuid)
     try:
@@ -214,8 +239,12 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
     benchmark_pool = load_all()
     logger.info("Benchmark pool: %d questions", len(benchmark_pool))
     if not benchmark_pool:
-        logger.error("Benchmark pool is empty — nothing to score. Exiting.")
-        return
+        raise click.ClickException("Benchmark pool is empty — nothing to score")
+
+    try:
+        canonical_prices = load_prices()
+    except Exception as e:
+        raise click.ClickException(f"Canonical prices are unavailable: {e}") from e
 
     def refresh_prices(previous: dict) -> dict:
         try:
@@ -226,14 +255,9 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
             if previous:
                 logger.warning("Price refresh failed, keeping previous prices")
                 return previous
-            try:
-                fallback = load_prices()
-                logger.warning("Live prices unavailable — using local models.json fallback "
-                               "(%d models)", len(fallback))
-                return fallback
-            except Exception:
-                logger.error("No price data available at all")
-                return {}
+            logger.warning("Live prices unavailable — using canonical fallback "
+                           "(%d models)", len(canonical_prices))
+            return dict(canonical_prices)
 
     prices: dict = refresh_prices({})
 
@@ -243,24 +267,15 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
     prev_weights: list[float] = state["prev_weights"]
     last_epoch_index: int = state["last_epoch_index"]
 
-    stop_event = threading.Event()
-    last_heartbeat = [time.time()]
-    hb_thread = threading.Thread(
-        target=heartbeat_monitor, args=(last_heartbeat, stop_event),
-        daemon=True,
-    )
-    hb_thread.start()
-
     blocks_per_epoch = max(1, EPOCH_INTERVAL // BLOCK_TIME_S)
 
     while True:
-        last_heartbeat[0] = time.time()
         try:
             current_block = subtensor.get_current_block()
             epoch_index = current_block // blocks_per_epoch
 
             if epoch_index <= last_epoch_index and not once:
-                _sleep_with_heartbeat(30, last_heartbeat, stop_event)
+                time.sleep(30)
                 continue
             if epoch_index <= last_epoch_index and once:
                 logger.warning("Epoch %d already processed — running again (--once)", epoch_index)
@@ -321,7 +336,6 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
                     logger.warning("Bad head from UID %d: %s", uid, e)
                     continue
 
-                # Hash the actual bytes — never trust the miner-claimed hash.
                 actual_hash = hashlib.sha256(raw).hexdigest()
                 head.commit_hash = actual_hash
 
@@ -344,7 +358,7 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
                     )
                     continue
                 else:
-                    commit_blocks[uid] = math.inf  # scoreable but always dedup-junior
+                    commit_blocks[uid] = math.inf
 
                 heads[uid] = head
                 head_hashes[uid] = actual_hash
@@ -366,7 +380,7 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
                 save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
                 if once:
                     break
-                _sleep_with_heartbeat(60, last_heartbeat, stop_event)
+                time.sleep(60)
                 continue
 
             logger.info("Received %d valid heads", len(heads))
@@ -379,10 +393,11 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
                 save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
                 if once:
                     break
-                _sleep_with_heartbeat(300, last_heartbeat, stop_event)
+                time.sleep(300)
                 continue
 
             timer.start_phase("matrix")
+            effective_budget = configured_budget if live else 50.0
             if mock:
                 all_models = sorted(set(
                     m for pool in model_pools.values() for m in pool
@@ -393,7 +408,7 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
                     max_models_per_miner=MAX_MODELS_PER_MINER,
                     max_model_pool=MAX_MODEL_POOL,
                     max_cost_per_query=MAX_MODEL_COST_PER_QUERY,
-                    budget_usd=EPOCH_BUDGET_USD,
+                    budget_usd=effective_budget,
                 )
             logger.info("Union model pool: %d models", len(all_models))
             if not all_models:
@@ -402,19 +417,25 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
                 save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
                 if once:
                     break
-                _sleep_with_heartbeat(60, last_heartbeat, stop_event)
+                time.sleep(60)
                 continue
 
-            tracker = SpendTracker(budget_cap_usd=EPOCH_BUDGET_USD)
+            tracker = SpendTracker(
+                budget_cap_usd=effective_budget if live else None,
+            )
             try:
                 if mock:
                     matrix_result = build_matrix_mock(questions, all_models)
                 else:
+                    spend_prices = build_spend_protection_prices(
+                        canonical_prices, prices, all_models,
+                    )
                     matrix_result = build_matrix(
                         questions, all_models,
-                        tracker=tracker, prices=prices,
+                        tracker=tracker, prices=spend_prices,
                         cache_dir=RESPONSE_CACHE_DIR,
                         allow_exec=True,
+                        live=True,
                     )
             except BudgetExceeded as e:
                 logger.error("EPOCH ABORTED — %s. Partial matrix discarded; no weights "
@@ -423,7 +444,7 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
                 save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
                 if once:
                     break
-                _sleep_with_heartbeat(EPOCH_INTERVAL, last_heartbeat, stop_event)
+                time.sleep(EPOCH_INTERVAL)
                 continue
             logger.info("Matrix built: %s, cost=$%.4f",
                         matrix_result.matrix.shape, tracker.total_cost_usd)
@@ -555,9 +576,8 @@ def main(network, netuid, coldkey, hotkey, once, log_level, mock):
             break
 
         logger.info("Waiting for next epoch boundary (every %d blocks)...", blocks_per_epoch)
-        _sleep_with_heartbeat(60, last_heartbeat, stop_event)
+        time.sleep(60)
 
-    stop_event.set()
     logger.info("Validator shutdown complete")
 
     if once:

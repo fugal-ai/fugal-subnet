@@ -53,11 +53,10 @@ ROUTER_SYSTEM_PROMPT = (
 # --- Weight stability ---
 MAX_WEIGHT_DELTA = float(os.getenv("FUGAL_MAX_WEIGHT_DELTA", "0.3"))
 
-# --- Heartbeat ---
-HEARTBEAT_TIMEOUT = int(os.getenv("FUGAL_HEARTBEAT_TIMEOUT", "600"))
-
 # --- Validator budget ---
-EPOCH_BUDGET_USD = float(os.getenv("FUGAL_EPOCH_BUDGET", "50.0"))
+# None means "not explicitly set" — live mode requires a positive value.
+_budget_raw = os.getenv("FUGAL_EPOCH_BUDGET")
+EPOCH_BUDGET_USD: float | None = float(_budget_raw) if _budget_raw else None
 MAX_MODEL_POOL = int(os.getenv("FUGAL_MAX_MODEL_POOL", "30"))
 MAX_MODELS_PER_MINER = int(os.getenv("FUGAL_MAX_MODELS_PER_MINER", "30"))
 

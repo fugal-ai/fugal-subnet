@@ -117,10 +117,6 @@ the AIME redistribution/license rollout decision remains unresolved.
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing consensus-critical behavior. Report vulnerabilities privately according to [SECURITY.md](SECURITY.md); never include API keys or wallet material in a public issue.
 
 Release history is recorded in [CHANGELOG.md](CHANGELOG.md).
-The ongoing v0.2 implementation and verification record is maintained in
-[docs/V0_2_IMPLEMENTATION.md](docs/V0_2_IMPLEMENTATION.md).
-The explicit external and rollout gates are tracked in
-[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## License
 

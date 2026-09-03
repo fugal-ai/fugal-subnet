@@ -81,6 +81,8 @@ if _budget_raw:
         raise ValueError(f"FUGAL_EPOCH_BUDGET must be positive, got {_budget_raw!r}")
 else:
     EPOCH_BUDGET_USD = None
+# No longer the primary pool cap — the budget is the natural limiter.
+# Kept for external tooling that may reference it.
 MAX_MODEL_POOL = int(os.getenv("FUGAL_MAX_MODEL_POOL", "30"))
 MAX_MODELS_PER_MINER = int(os.getenv("FUGAL_MAX_MODELS_PER_MINER", "30"))
 

@@ -6,6 +6,14 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ### Changed
 
+- Replaced fixed-cap model pool with routed-model pool: the matrix now includes
+  only models that heads actually route to, eliminating the pool-eviction
+  griefing vector (I4). Budget is the natural limiter; no fixed 30-model cap.
+  When budget pressure requires dropping models, those routed by fewer heads are
+  dropped first (least scoring signal lost).
+- Added coverage multiplier to composite scoring: a head covering a fraction of
+  the pool has its composite scaled by `intersection_size / pool_size`,
+  preventing narrow-surface gaming.
 - Pinned CPU kernel dispatch (ATEN_CPU_CAPABILITY, MKL_CBWR, DNNL_MAX_CPU_ISA,
   OPENBLAS_CORETYPE) and thread counts before both torch and numpy import,
   eliminating cross-machine embedding and scoring divergence between AVX2 and

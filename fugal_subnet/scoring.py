@@ -77,11 +77,16 @@ def update_scores(
         rec.epochs_seen += 1
         rec.epochs_missed = 0
 
-        rec.composite_score = (
+        raw_composite = (
             COMPOSITE_W_ACC * rec.accuracy
             + COMPOSITE_W_COST * rec.cost_efficiency
             + COMPOSITE_W_KL * _normalize_kl(rec.kl_score)
         )
+        # Coverage multiplier: a head covering only a fraction of the pool
+        # has its composite scaled down proportionally. Prevents gaming by
+        # declaring only one or two easy models to get a perfect accuracy
+        # on a narrow evaluation surface.
+        rec.composite_score = raw_composite * score.coverage
         n = n_questions or len(score.correct_mask)
         rec.wilson_lcb = wilson_lower_bound(rec.accuracy, n, WILSON_CONFIDENCE)
 

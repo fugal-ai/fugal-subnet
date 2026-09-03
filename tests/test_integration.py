@@ -534,35 +534,48 @@ def test_stratified_slicer():
 
 
 def test_build_model_pool():
-    """Union pool policy: priced-only, cost cap, sybil-resistant truncation, budget trim."""
+    """Union pool policy: priced-only, cost cap, budget trim, no sybil eviction."""
     print("\n  [TEST] Model pool policy")
+    from fugal_subnet.head_eval import HeadArtifact
     from neurons.validator import build_model_pool
+
+    def _head(models):
+        d = 8
+        return HeadArtifact(
+            W=np.zeros((len(models), d), dtype=np.float32),
+            b=np.zeros(len(models), dtype=np.float32),
+            models=models,
+            commit_hash="test",
+        )
 
     prices = {"a/cheap": (0.1 / 1e6, 0.2 / 1e6), "b/mid": (1 / 1e6, 2 / 1e6),
               "c/pricey": (500 / 1e6, 500 / 1e6)}
-    pools = {1: ["a/cheap", "b/mid", "zz/unknown"], 2: ["a/cheap", "c/pricey"]}
-    out = build_model_pool(pools, prices, 300, max_models_per_miner=30,
-                           max_model_pool=30, max_cost_per_query=0.10, budget_usd=1000)
+    heads = {1: _head(["a/cheap", "b/mid", "zz/unknown"]),
+             2: _head(["a/cheap", "c/pricey"])}
+    out = build_model_pool(heads, prices, 300, max_models_per_miner=30,
+                           max_cost_per_query=0.10, budget_usd=1000)
     assert "zz/unknown" not in out, "unpriced model must be excluded"
     assert "c/pricey" not in out, "cost-capped model must be excluded"
     assert set(out) == {"a/cheap", "b/mid"}
     print("  Unpriced + over-cap models excluded")
 
-    # Sybil declares 30 alphabetically-early models; the model 2 miners agree
-    # on must survive truncation.
-    sybil_models = [f"aaa/m{i:02d}" for i in range(30)]
-    pools2 = {1: sybil_models, 2: ["zz/popular"], 3: ["zz/popular"]}
+    # Sybil heads route to 5 junk models; two honest heads route to "zz/popular".
+    # Under the old fixed-cap pool, the sybil could evict "zz/popular".
+    # Under the routed-model pool, all models are included (budget permitting).
+    sybil_models = [f"aaa/m{i:02d}" for i in range(5)]
+    heads2 = {1: _head(sybil_models), 2: _head(["zz/popular"]), 3: _head(["zz/popular"])}
     prices2 = {m: (0.1 / 1e6, 0.1 / 1e6) for m in sybil_models + ["zz/popular"]}
-    out2 = build_model_pool(pools2, prices2, 300, max_models_per_miner=30,
-                            max_model_pool=5, max_cost_per_query=0.1, budget_usd=1000)
-    assert "zz/popular" in out2, "most-declared model evicted by alphabetical sybil"
-    print("  Sybil alphabetical eviction blocked")
+    out2 = build_model_pool(heads2, prices2, 300, max_models_per_miner=30,
+                            max_cost_per_query=0.1, budget_usd=1000)
+    assert "zz/popular" in out2, "honest model evicted by sybil"
+    assert set(out2) == set(sybil_models + ["zz/popular"]), "all routed models should be in pool"
+    print("  Sybil cannot evict honest models from pool")
 
-    # Budget trim drops the most expensive model first
+    # Budget trim drops the least-routed model first (fewest heads use it)
     prices3 = {"a/x": (10 / 1e6, 10 / 1e6), "b/y": (100 / 1e6, 100 / 1e6)}
-    pools3 = {1: ["a/x", "b/y"]}
-    out3 = build_model_pool(pools3, prices3, 300, max_models_per_miner=30,
-                            max_model_pool=30, max_cost_per_query=1.0, budget_usd=4.0)
+    heads3 = {1: _head(["a/x", "b/y"])}
+    out3 = build_model_pool(heads3, prices3, 300, max_models_per_miner=30,
+                            max_cost_per_query=1.0, budget_usd=4.0)
     assert out3 == ["a/x"], f"budget trim wrong: {out3}"
     print("  Budget pre-flight trim works")
     print("  [PASS] Model pool policy")

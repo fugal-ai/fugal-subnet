@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from fugal_subnet.dedup import find_duplicates
+from fugal_subnet.head_eval import HeadArtifact, evaluate_head
 
 
 def _decisions(pattern: list[int]) -> np.ndarray:
@@ -104,3 +105,117 @@ def test_uncommitted_heads_are_always_dedup_junior():
     )
     assert 1 in disqualified
     assert 2 not in disqualified
+
+
+def test_sybil_pool_stuffing_does_not_zero_victim():
+    """The pool-eviction attack must not work.
+
+    Two sybil heads declare 5 junk models each. The victim declares 5 real
+    models. Under the old fixed-cap pool (cap=5, declare-count priority), the
+    sybils' models would dominate and the victim would score 0.000. Under the
+    routed-model pool, the victim's models are always in the matrix and the
+    victim scores normally.
+    """
+    d = 8
+    n_questions = 20
+    real_models = [f"real/model-{i}" for i in range(5)]
+    junk_models = [f"junk/model-{i}" for i in range(5)]
+
+    np.random.seed(42)
+
+    victim_head = HeadArtifact(
+        W=np.random.randn(5, d).astype(np.float32),
+        b=np.zeros(5, dtype=np.float32),
+        models=real_models,
+        commit_hash="victim",
+    )
+    sybil_head = HeadArtifact(
+        W=np.random.randn(5, d).astype(np.float32),
+        b=np.zeros(5, dtype=np.float32),
+        models=junk_models,
+        commit_hash="sybil",
+    )
+
+    # The pool is the union of all routed models — no fixed cap, no eviction.
+    all_models = sorted(set(real_models + junk_models))
+    M = len(all_models)
+
+    hidden = np.random.randn(n_questions, d).astype(np.float32)
+    # Real models answer correctly; junk models answer incorrectly.
+    matrix = np.zeros((n_questions, M), dtype=np.int8)
+    for i, m in enumerate(all_models):
+        if m.startswith("real/"):
+            matrix[:, i] = 1
+
+    soft = np.ones((n_questions, M), dtype=np.float64) / M
+    costs = {m: 0.01 for m in all_models}
+
+    victim_score = evaluate_head(
+        victim_head, hidden, matrix, all_models, soft, costs,
+    )
+    sybil_score = evaluate_head(
+        sybil_head, hidden, matrix, all_models, soft, costs,
+    )
+
+    assert victim_score.accuracy > 0, (
+        "victim scores zero — pool eviction attack still works"
+    )
+    assert victim_score.accuracy > sybil_score.accuracy, (
+        "sybil routing to junk models should not outscore a victim routing to correct models"
+    )
+    assert victim_score.coverage == 5 / M
+    assert sybil_score.coverage == 5 / M
+
+
+def test_coverage_multiplier_prevents_narrow_surface_gaming():
+    """A head covering 2 models with 100% accuracy must not beat a head
+    covering all 10 models with 80% accuracy after the coverage multiplier.
+    """
+    d = 8
+    n_questions = 20
+    all_models = [f"model/{i}" for i in range(10)]
+    M = len(all_models)
+
+    np.random.seed(99)
+    hidden = np.random.randn(n_questions, d).astype(np.float32)
+
+    # Every model answers correctly.
+    matrix = np.ones((n_questions, M), dtype=np.int8)
+    soft = np.ones((n_questions, M), dtype=np.float64) / M
+    costs = {m: 0.01 for m in all_models}
+
+    # Narrow head: only 2 models.
+    narrow = HeadArtifact(
+        W=np.random.randn(2, d).astype(np.float32),
+        b=np.zeros(2, dtype=np.float32),
+        models=all_models[:2],
+        commit_hash="narrow",
+    )
+    # Broad head: all 10 models.
+    broad = HeadArtifact(
+        W=np.random.randn(10, d).astype(np.float32),
+        b=np.zeros(10, dtype=np.float32),
+        models=all_models,
+        commit_hash="broad",
+    )
+
+    narrow_score = evaluate_head(narrow, hidden, matrix, all_models, soft, costs)
+    broad_score = evaluate_head(broad, hidden, matrix, all_models, soft, costs)
+
+    assert narrow_score.coverage == 2 / M
+    assert broad_score.coverage == 1.0
+
+    # Even if the narrow head has perfect accuracy, the coverage multiplier
+    # should give the broad head a higher effective composite.
+    from fugal_subnet.config import COMPOSITE_W_ACC, COMPOSITE_W_COST, COMPOSITE_W_KL
+
+    def effective_composite(s):
+        from fugal_subnet.scoring import _normalize_kl
+        raw = (COMPOSITE_W_ACC * s.accuracy
+               + COMPOSITE_W_COST * s.cost_efficiency
+               + COMPOSITE_W_KL * _normalize_kl(s.kl_score))
+        return raw * s.coverage
+
+    assert effective_composite(broad_score) > effective_composite(narrow_score), (
+        "broad coverage must beat narrow coverage after multiplier"
+    )

@@ -297,7 +297,6 @@ def run_epoch(validator_wallet, subtensor, netuid):
 
     heads = {}
     head_hashes = {}
-    model_pools = {}
     for uid, resp in enumerate(responses):
         resp_type = type(resp).__name__
         b64 = resp.get("head_npz_b64") if isinstance(resp, dict) else getattr(resp, "head_npz_b64", None)
@@ -307,11 +306,9 @@ def run_epoch(validator_wallet, subtensor, netuid):
         try:
             head = load_head_from_b64(b64)
             commit_h = resp.get("head_commit_hash", "") if isinstance(resp, dict) else getattr(resp, "head_commit_hash", "")
-            mp = resp.get("model_pool", head.models) if isinstance(resp, dict) else getattr(resp, "model_pool", head.models)
             head.commit_hash = commit_h
             heads[uid] = head
             head_hashes[uid] = commit_h
-            model_pools[uid] = mp
             print(f"  UID {uid}: head OK ({len(head.models)} models)", flush=True)
         except Exception as e:
             print(f"  UID {uid}: bad head: {e}", flush=True)
@@ -321,7 +318,7 @@ def run_epoch(validator_wallet, subtensor, netuid):
         return False
 
     print(f"[Validator] {len(heads)} valid heads, building matrix...", flush=True)
-    all_models = sorted(set(m for ms in model_pools.values() for m in ms))
+    all_models = sorted(set(m for head in heads.values() for m in head.models))
     matrix_result = build_matrix_mock(questions, all_models)
     soft = compute_soft_targets(matrix_result.matrix)
     model_costs = {m: 0.005 for m in all_models}

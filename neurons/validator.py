@@ -19,6 +19,10 @@ import logging
 import math
 import os
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fugal_subnet.head_eval import HeadArtifact
 
 # isort: off
 # Must precede numpy: numpy's bundled OpenBLAS reads OPENBLAS_CORETYPE once, at
@@ -90,39 +94,43 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
 
 
 def build_model_pool(
-    model_pools: dict[int, list[str]],
+    heads: dict[int, HeadArtifact],
     prices: dict[str, tuple[float, float]],
     n_questions: int,
     *,
     max_models_per_miner: int,
-    max_model_pool: int,
     max_cost_per_query: float,
     budget_usd: float,
 ) -> list[str]:
     """Deterministic, abuse-resistant union model pool.
 
+    Builds the pool from models heads actually *route to* (declared in the
+    head's weight matrix), not from a separate declared pool. This eliminates
+    the pool-eviction griefing vector: an attacker's head that routes to junk
+    models only adds those models to the matrix (costing the validator a bit
+    more), but cannot evict a victim's models.
+
     Policy:
-    - each miner's declared pool is truncated to max_models_per_miner;
-    - only models with a known price are callable (unknown models would
-      bypass both the cost cap and the budget tracker);
+    - each head's model list is truncated to max_models_per_miner;
+    - only models with a known price are callable;
     - models above the per-query cost cap are dropped;
-    - if the union exceeds max_model_pool, models declared by MORE miners
-      win (alphabetical truncation would let a sybil evict everyone else's
-      models with names like "aaa/x"); ties break alphabetically;
-    - most expensive models are then dropped until the estimated epoch cost
+    - if the budget can't cover all models, models routed to by MORE heads
+      have priority (they carry the most scoring signal); ties break
+      alphabetically;
+    - most expensive models are dropped last until the estimated epoch cost
       fits the budget.
     """
-    declare_counts: dict[str, int] = {}
-    for pool in model_pools.values():
-        for m in sorted(set(pool))[:max_models_per_miner]:
-            declare_counts[m] = declare_counts.get(m, 0) + 1
+    route_counts: dict[str, int] = {}
+    for head in heads.values():
+        for m in sorted(set(head.models))[:max_models_per_miner]:
+            route_counts[m] = route_counts.get(m, 0) + 1
 
     def est_cost(m: str) -> float:
         pin, pout = prices[m]
         return pin * 500 + pout * 500
 
     candidates = []
-    for m in sorted(declare_counts):
+    for m in sorted(route_counts):
         if m not in prices:
             logger.warning("Model %s has no known price — excluded from matrix", m)
             continue
@@ -132,18 +140,14 @@ def build_model_pool(
             continue
         candidates.append(m)
 
-    if len(candidates) > max_model_pool:
-        candidates.sort(key=lambda m: (-declare_counts[m], m))
-        logger.warning("Union pool %d exceeds cap %d — keeping most-declared models",
-                       len(candidates), max_model_pool)
-        candidates = sorted(candidates[:max_model_pool])
-
     est_total = sum(est_cost(m) for m in candidates) * n_questions
     while candidates and est_total > budget_usd:
-        most_expensive = max(candidates, key=lambda m: (est_cost(m), m))
-        logger.warning("Estimated epoch cost $%.2f exceeds budget $%.2f — dropping %s",
-                       est_total, budget_usd, most_expensive)
-        candidates.remove(most_expensive)
+        # Drop the model with the fewest routing heads first (least scoring
+        # signal lost), breaking ties by most expensive, then alphabetical.
+        drop = min(candidates, key=lambda m: (route_counts[m], -est_cost(m), m))
+        logger.warning("Estimated epoch cost $%.2f exceeds budget $%.2f — dropping %s "
+                       "(routed by %d heads)", est_total, budget_usd, drop, route_counts[drop])
+        candidates.remove(drop)
         est_total = sum(est_cost(m) for m in candidates) * n_questions
 
     return candidates
@@ -188,7 +192,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
         EPOCH_BUDGET_USD,
         EPOCH_INTERVAL,
         MAX_MODEL_COST_PER_QUERY,
-        MAX_MODEL_POOL,
         MAX_MODELS_PER_MINER,
         REQUIRE_COMMITMENT,
         ROUTING_LAMBDA,
@@ -358,7 +361,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             timer.start_phase("parse_heads")
             heads = {}
             head_hashes = {}
-            model_pools = {}
             commit_blocks: dict[int, float] = {}
             n_invalid = 0
             for uid, resp in enumerate(responses):
@@ -416,7 +418,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
 
                 heads[uid] = head
                 head_hashes[uid] = actual_hash
-                model_pools[uid] = list(resp.model_pool or head.models)
 
             if not heads:
                 logger.warning("No valid heads received, skipping epoch")
@@ -456,13 +457,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             effective_budget = configured_budget
             if mock:
                 all_models = sorted(set(
-                    m for pool in model_pools.values() for m in pool
-                ))[:MAX_MODEL_POOL]
+                    m for head in heads.values() for m in head.models
+                ))[:MAX_MODELS_PER_MINER * len(heads)]
             else:
                 all_models = build_model_pool(
-                    model_pools, prices, len(questions),
+                    heads, prices, len(questions),
                     max_models_per_miner=MAX_MODELS_PER_MINER,
-                    max_model_pool=MAX_MODEL_POOL,
                     max_cost_per_query=MAX_MODEL_COST_PER_QUERY,
                     budget_usd=effective_budget,
                 )

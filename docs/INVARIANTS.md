@@ -29,31 +29,36 @@ here, and a check that enforces it.**
 | **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI), `fugal_subnet/determinism.py`, `test_validator_embeds_on_cpu_for_consensus` |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better. | Commit-reveal, behavioral dedup, cost cap, `run_attacks.py` |
-| **I4** | **Non-interference.** A miner cannot lower another miner's score or prevent them from being scored. | `tests/test_non_interference.py` — **partially violated, see below** |
+| **I4** | **Non-interference.** A miner cannot lower another miner's score or prevent them from being scored. | `tests/test_non_interference.py`, routed-model pool (no fixed cap), coverage multiplier |
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. | `SpendTracker` reserve/reconcile/forfeit, `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior can stop a validator completing an epoch and setting weights. | `run_miner_attacks.py`, property test P1 |
 | **I7** | **Auditability.** Any divergence between two validators is diagnosable after the fact from published artifacts. | `fugal_subnet/fingerprint.py`, `environment` block in every `reveal.json` |
 
 ## Known gaps
 
-### I4 — pool eviction (open, mechanism-design decision required)
+### I4 — pool eviction (resolved)
 
-Two sybil registrations declaring the same 30 cheap models evict **100%** of a
-victim's declared models from the union pool: slots are awarded by
-declare-count and the cap is 30. The victim's head then routes to models absent
-from the matrix, every routing decision is scored incorrect, and its accuracy
-is **0.000** — verified end to end, even against a matrix where every model
-answers every question correctly.
+**Previous vulnerability:** Two sybil registrations declaring the same 30 cheap
+models could evict 100% of a victim's declared models from the union pool via
+the fixed 30-model cap with declare-count priority, zeroing the victim's
+accuracy. The attack cost only two registrations.
 
-Heads are committed before the epoch boundary, so the victim cannot adapt
-within the epoch. The attack is repeatable for the price of two registrations.
+**Fix:** The model pool is now built from models that heads actually *route to*
+(the union of every head's weight-matrix model list), not from a separate
+declared pool. There is no fixed cap — the validator's epoch budget is the
+natural limiter. When the budget cannot cover all routed models, models used by
+fewer heads are dropped first (least scoring signal lost).
 
-This is reported rather than patched because every fix changes incentives and
-that is a deliberate decision, not a bug fix. Candidate directions:
+Each head is scored only on the models present in the matrix. A coverage
+multiplier (`intersection_size / pool_size`) scales the composite score so a
+head covering fewer models cannot outperform a head with broader coverage on
+raw accuracy alone. This prevents the narrow-surface gaming strategy (declare
+two easy models, ace them, ignore the rest).
 
-- guarantee each miner a minimum share of pool slots;
-- score each head only on the intersection of its declared models and the pool;
-- weight declare-counts by stake, so sybils gain nothing over one staked miner.
+An attacker's sybil heads that route to junk models simply add those models to
+the matrix (a small cost to the validator) without affecting honest miners'
+scores. The attacker's own heads score poorly (junk models answer incorrectly)
+and earn nothing. The griefing vector is eliminated.
 
 ### I4 — seniority squatting (residual, accepted)
 
@@ -109,10 +114,8 @@ spend.
 
 The gaps above are the ones worth closing first, in this order:
 
-1. Decide the I4 pool-eviction mechanism. It is the only open finding that a
-   miner can exploit today for the cost of two registrations.
-2. Measure matrix divergence between two validators on testnet. Until that
+1. Measure matrix divergence between two validators on testnet. Until that
    number exists, the practical strength of I1 in production is unknown.
-3. Run two validators on **different CPU generations** and diff their published
+2. Run two validators on **different CPU generations** and diff their published
    reveals every epoch. `--perturb` approximates this on one machine; only real
    hardware diversity tests it properly.

@@ -53,6 +53,7 @@ class HeadScore:
     kl_score: float         # -mean KL divergence (higher = better distribution match)
     routing_decisions: np.ndarray  # (N,) model indices chosen by head
     correct_mask: np.ndarray       # (N,) bool — did the chosen model get it right?
+    coverage: float = 1.0  # fraction of pool models this head covers (intersection / pool size)
 
 
 def load_head_from_npz(data: bytes) -> HeadArtifact:
@@ -152,16 +153,20 @@ def evaluate_head(
         HeadScore with accuracy, cost efficiency, KL divergence, and decisions.
     """
     N = hidden_states.shape[0]
+    M_pool = len(models_in_matrix)
     head_model_to_matrix_idx = {}
     for i, m in enumerate(head.models):
         if m in models_in_matrix:
             head_model_to_matrix_idx[i] = models_in_matrix.index(m)
+
+    coverage = len(head_model_to_matrix_idx) / max(M_pool, 1)
 
     if not head_model_to_matrix_idx:
         return HeadScore(
             accuracy=0.0, cost_efficiency=0.0, kl_score=-100.0,
             routing_decisions=np.full(N, -1, dtype=np.int32),
             correct_mask=np.zeros(N, dtype=bool),
+            coverage=0.0,
         )
 
     head_costs = np.array([model_costs.get(m, 0.01) for m in head.models], dtype=np.float64)
@@ -215,6 +220,7 @@ def evaluate_head(
             accuracy=0.0, cost_efficiency=0.0, kl_score=-100.0,
             routing_decisions=routing_decisions,
             correct_mask=correct_mask,
+            coverage=coverage,
         )
 
     accuracy = float(correct_mask.sum()) / n_scored
@@ -230,6 +236,7 @@ def evaluate_head(
         kl_score=kl_score,
         routing_decisions=routing_decisions,
         correct_mask=correct_mask,
+        coverage=coverage,
     )
 
 

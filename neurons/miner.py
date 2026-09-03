@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Fugal subnet miner — axon server for head submission.
+"""Fugal subnet TEE miner — runs benchmarks inside Intel TDX, publishes proofs.
 
 Usage:
-    python neurons/miner.py --netuid 1 --coldkey fugal_miner_1 --hotkey default --head-path data/my_head.npz
+    python neurons/miner.py --netuid 1 --coldkey miner --hotkey default \\
+        --head-path data/my_head.npz --benchmark-pool data/pool.json
 
-On startup the miner commits sha256(head bytes) on-chain (Commitments pallet).
-Validators only score heads whose hash was committed at or before the epoch
-boundary block, so a freshly (re)started miner becomes scoreable from the next
-epoch after its commitment lands.
+Each epoch:
+  1. Wait for epoch boundary (new block hash)
+  2. Derive nonce from block hash
+  3. Run benchmark inside TEE (route questions via head, call models, grade)
+  4. Generate TDX attestation binding the proof
+  5. Serve proof via axon when validator queries
+
+The miner pays for model inference. The validator verifies the attested
+proof without calling any models.
 """
-import base64
 import hashlib
+import json
 import logging
 import os
 import threading
@@ -18,7 +24,6 @@ import time
 from typing import Tuple
 
 import click
-import numpy as np
 
 logger = logging.getLogger("fugal.miner")
 
@@ -37,16 +42,21 @@ METAGRAPH_REFRESH_S = 300
               help="Hotkey name")
 @click.option("--wallet-path", default=lambda: os.getenv("FUGAL_WALLET_PATH") or None,
               type=click.Path(file_okay=False),
-              help="Bittensor wallet root (defaults to the SDK wallet directory)")
+              help="Bittensor wallet root")
 @click.option("--port", default=lambda: int(os.getenv("FUGAL_MINER_PORT", "8091")),
               type=int, help="Axon port")
 @click.option("--head-path", required=True, type=click.Path(exists=True),
               help="Path to .npz head artifact")
+@click.option("--benchmark-pool", required=True, type=click.Path(exists=True),
+              help="Path to benchmark pool JSON")
+@click.option("--mock/--live", default=True,
+              help="Mock mode (no real TDX attestation)")
 @click.option("--log-level",
               type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
               default=lambda: os.getenv("LOG_LEVEL", "INFO"),
               help="Logging level")
-def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path, log_level):
+def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
+         benchmark_pool, mock, log_level):
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
@@ -55,19 +65,19 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path, log_lev
     import bittensor as bt
 
     from fugal_subnet.commitments import ensure_commitment
-    from fugal_subnet.config import MIN_VALIDATOR_STAKE
-    from fugal_subnet.protocol import FugalSynapse
+    from fugal_subnet.config import MIN_VALIDATOR_STAKE, SLICE_SIZE, TEE_PROXY_PORT
+    from fugal_subnet.protocol import FugalProofSynapse
+    from fugal_subnet.tee.runtime import TEERuntime
 
     head_data = _load_head_file(head_path)
-    head_b64 = base64.b64encode(head_data).decode("ascii")
-    head_hash = hashlib.sha256(head_data).hexdigest()
+    weights_hash = hashlib.sha256(head_data).hexdigest()
 
-    with np.load(head_path, allow_pickle=False) as npz:
-        model_pool = [str(m) for m in npz["models"]]
+    with open(benchmark_pool) as f:
+        pool = json.load(f)
+    logger.info("Loaded benchmark pool: %d questions", len(pool))
 
-    logger.info("Head loaded: %s (%d bytes, %d models)",
-                head_path, len(head_data), len(model_pool))
-    logger.info("Head hash: %s", head_hash[:16])
+    logger.info("Head loaded: %s (%d bytes)", head_path, len(head_data))
+    logger.info("Weights hash: %s", weights_hash[:16])
 
     wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     subtensor = bt.Subtensor(network=network)
@@ -80,19 +90,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path, log_lev
     my_uid = metagraph.hotkeys.index(my_hotkey)
     logger.info("Miner UID %d on %s netuid %d", my_uid, network, netuid)
 
-    committed = ensure_commitment(subtensor, wallet, netuid, head_hash)
+    committed = ensure_commitment(subtensor, wallet, netuid, weights_hash)
     if not committed:
-        logger.warning("Head hash NOT committed on-chain yet — will retry. "
-                       "Validators will not score this head until it lands.")
+        logger.warning("Weights hash NOT committed on-chain yet — will retry.")
 
-    # Shared metagraph snapshot for the blacklist (refreshed by the main loop).
+    tee_runtime = TEERuntime(mock=mock)
+    current_proof = {"proof": None, "lock": threading.Lock()}
+
     mg_lock = threading.Lock()
     mg_state = {"metagraph": metagraph}
 
-    def blacklist(synapse: FugalSynapse) -> Tuple[bool, str]:
-        """Only registered hotkeys may pull the head; with a configured stake
-        floor, only validators (permit or stake) may. This stops competitors
-        from copying the head with a plain unregistered dendrite query."""
+    def blacklist(synapse: FugalProofSynapse) -> Tuple[bool, str]:
         caller = getattr(synapse.dendrite, "hotkey", None)
         if not caller:
             return True, "no caller hotkey"
@@ -116,11 +124,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path, log_lev
                 return True, f"caller {caller[:8]}... lacks validator permit/stake"
         return False, "ok"
 
-    def forward(synapse: FugalSynapse) -> FugalSynapse:
-        logger.info("Epoch %s: serving head (hash=%s)", synapse.epoch_id, head_hash[:16])
-        synapse.head_npz_b64 = head_b64
-        synapse.model_pool = model_pool
-        synapse.head_commit_hash = head_hash
+    def forward(synapse: FugalProofSynapse) -> FugalProofSynapse:
+        with current_proof["lock"]:
+            proof = current_proof["proof"]
+        if proof is None:
+            logger.warning("No proof available yet for epoch %s", synapse.epoch_id)
+            return synapse
+
+        synapse.proof_hash = proof.content_hash()
+        synapse.weights_hash = weights_hash
+        synapse.proof_bundle_url = ""  # In production: HuggingFace URL
+        logger.info("Epoch %s: serving proof (hash=%s)",
+                     synapse.epoch_id, synapse.proof_hash[:16])
         return synapse
 
     external_ip = os.getenv("FUGAL_AXON_IP")
@@ -142,17 +157,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path, log_lev
             logger.warning("Axon IP not registered yet, retrying in 15s...")
             time.sleep(15)
         else:
-            logger.error("axon.serve() failed after 5 attempts — IP still unregistered")
+            logger.error("axon.serve() failed after 5 attempts")
 
     axon.start()
-    logger.info("Miner axon serving on port %d", port)
+    logger.info("Miner axon serving on port %d (mock=%s)", port, mock)
 
     try:
         last_refresh = time.time()
+        last_block = ""
         while True:
             time.sleep(30)
+
             if not committed:
-                committed = ensure_commitment(subtensor, wallet, netuid, head_hash)
+                committed = ensure_commitment(subtensor, wallet, netuid, weights_hash)
+
             if time.time() - last_refresh >= METAGRAPH_REFRESH_S:
                 try:
                     fresh = subtensor.metagraph(netuid)
@@ -161,15 +179,101 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path, log_lev
                 except Exception as e:
                     logger.warning("Metagraph refresh failed: %s", e)
                 last_refresh = time.time()
+
+            try:
+                block_hash = subtensor.get_block_hash()
+                if block_hash and block_hash != last_block:
+                    last_block = block_hash
+                    _run_epoch(
+                        head_data=head_data,
+                        weights_hash=weights_hash,
+                        pool=pool,
+                        block_hash=block_hash,
+                        tee_runtime=tee_runtime,
+                        current_proof=current_proof,
+                        slice_size=SLICE_SIZE,
+                        proxy_port=TEE_PROXY_PORT,
+                    )
+            except Exception as e:
+                logger.error("Epoch run failed: %s", e)
+
     except KeyboardInterrupt:
         logger.info("Miner stopped by user")
     finally:
         axon.stop()
+        tee_runtime.teardown()
         logger.info("Miner shutdown complete")
 
 
-def _load_head_file(path: str) -> bytes:
-    """Load and validate the head .npz file (same checks the validator runs)."""
+def _run_epoch(
+    head_data,
+    weights_hash,
+    pool,
+    block_hash,
+    tee_runtime,
+    current_proof,
+    slice_size,
+    proxy_port,
+):
+    """Run a single benchmark epoch."""
+    from fugal_subnet.benchmarks.slicer import derive_nonce
+    from fugal_subnet.tee.harness import run_benchmark
+
+    epoch_id = f"e_{block_hash[:16]}"
+    nonce_bytes = derive_nonce(epoch_id, block_hash)
+    nonce = nonce_bytes.hex()
+
+    logger.info("Starting epoch %s (nonce=%s...)", epoch_id, nonce[:16])
+
+    proxy = tee_runtime.setup(proxy_port=proxy_port)
+    try:
+        hidden_states = _compute_hidden_states(pool)
+
+        proof = run_benchmark(
+            nonce=nonce,
+            head_bytes=head_data,
+            benchmark_pool=pool,
+            proxy=proxy,
+            hidden_states=hidden_states,
+            slice_size=slice_size,
+            epoch_id=epoch_id,
+            source_hash=_get_source_hash(),
+        )
+
+        content_hash_bytes = bytes.fromhex(proof.content_hash())
+        proof.attestation_quote = tee_runtime.generate_attestation(content_hash_bytes)
+
+        with current_proof["lock"]:
+            current_proof["proof"] = proof
+
+        logger.info(
+            "Epoch %s complete: %d/%d correct (%.1f%%), cost=$%.4f",
+            epoch_id, proof.n_correct, proof.n_total,
+            proof.accuracy * 100, proof.total_cost_usd,
+        )
+    finally:
+        proxy.stop()
+
+
+def _compute_hidden_states(pool):
+    """Compute backbone hidden states for the benchmark pool.
+
+    Uses CPU float32 for determinism (same as validator).
+    """
+    from fugal_subnet.backbone import get_hidden_states
+    questions = [q.get("question", q.get("prompt", "")) for q in pool]
+    return get_hidden_states(questions)
+
+
+def _get_source_hash():
+    """Get the hash of the runtime source for measurement verification."""
+    import fugal_subnet
+    src_dir = os.path.dirname(os.path.abspath(fugal_subnet.__file__))
+    return hashlib.sha256(src_dir.encode()).hexdigest()
+
+
+def _load_head_file(path):
+    """Load and validate the head .npz file."""
     from fugal_subnet.head_eval import load_head_from_npz
     with open(path, "rb") as f:
         data = f.read()

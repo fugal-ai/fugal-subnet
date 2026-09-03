@@ -28,3 +28,20 @@ class FugalSynapse(bt.Synapse):
 
     def deserialize(self) -> "FugalSynapse":
         return self
+
+
+class FugalProofSynapse(bt.Synapse):
+    """TEE proof submission from miner to validator.
+
+    The validator sends this synapse with epoch_id and nonce filled in.
+    The miner populates proof_bundle_url, proof_hash, and weights_hash,
+    then returns it.
+    """
+    epoch_id: str = pydantic.Field(default="", max_length=64)
+    nonce: str = pydantic.Field(default="", max_length=HASH_MAX_LEN)
+    proof_bundle_url: str = pydantic.Field(default="", max_length=2048)
+    proof_hash: str = pydantic.Field(default="", max_length=HASH_MAX_LEN)
+    weights_hash: str = pydantic.Field(default="", max_length=HASH_MAX_LEN)
+
+    def deserialize(self) -> "FugalProofSynapse":
+        return self

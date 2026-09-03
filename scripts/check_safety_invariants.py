@@ -72,18 +72,25 @@ def check_runtime_annotations(errors: list[str]) -> None:
 def check_deserialize_contract(errors: list[str]) -> None:
     path = ROOT / "fugal_subnet" / "protocol.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == "FugalSynapse":
-            for item in node.body:
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "deserialize":
-                    returns = [child for child in ast.walk(item) if isinstance(child, ast.Return)]
-                    if len(returns) == 1 and isinstance(returns[0].value, ast.Name) and returns[0].value.id == "self":
-                        return
+    for synapse_name in ("FugalSynapse", "FugalProofSynapse"):
+        found = False
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == synapse_name:
+                found = True
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "deserialize":
+                        returns = [child for child in ast.walk(item) if isinstance(child, ast.Return)]
+                        if not (len(returns) == 1 and isinstance(returns[0].value, ast.Name) and returns[0].value.id == "self"):
+                            errors.append(
+                                f"fugal_subnet/protocol.py: {synapse_name}.deserialize() must return only self"
+                            )
+                        break
+                else:
                     errors.append(
-                        "fugal_subnet/protocol.py: FugalSynapse.deserialize() must return only self"
+                        f"fugal_subnet/protocol.py: {synapse_name}.deserialize() was not found"
                     )
-                    return
-    errors.append("fugal_subnet/protocol.py: FugalSynapse.deserialize() was not found")
+        if not found:
+            errors.append(f"fugal_subnet/protocol.py: {synapse_name} class was not found")
 
 
 def check_immutable_v1_grader(errors: list[str]) -> None:

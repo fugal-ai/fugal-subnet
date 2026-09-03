@@ -468,9 +468,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 logger.info("Using mock hidden states (%d × %d)", *hidden.shape)
             else:
                 prompts = [q["prompt"] for q in questions]
-                device = "cuda" if __import__("torch").cuda.is_available() else "cpu"
-                hidden = compute_hidden_states(prompts, device=device)
-                logger.info("Backbone hidden states: %s on %s", hidden.shape, device)
+                # Consensus-critical: the backbone always runs on CPU in float32.
+                # CUDA would select float16 (backbone.get_backbone), so a GPU
+                # validator and a CPU validator would embed the same question
+                # differently, flip argmax on near-ties, and score the same head
+                # differently. Different GPU architectures diverge from each
+                # other too, so forcing float32 on CUDA is not a fix — CPU is the
+                # only device that gives every validator identical embeddings.
+                hidden = compute_hidden_states(prompts, device="cpu")
+                logger.info("Backbone hidden states: %s on cpu (float32)", hidden.shape)
 
             timer.start_phase("evaluate")
             epoch_scores = {}

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import threading
+from pathlib import Path
 
 import httpx
 import pytest
@@ -151,3 +153,72 @@ def test_validator_live_mode_requires_budget_before_chain_access(monkeypatch):
 
     assert result.exit_code == 2
     assert "requires --epoch-budget" in result.output
+
+
+def test_usage_overage_is_charged_not_retried(monkeypatch):
+    """A provider overage must settle, never raise — raising retries a paid call.
+
+    Regression guard: reconcile() used to raise RuntimeError when actual usage
+    exceeded the reservation. call_model catches RuntimeError, forfeits, and
+    retries, so a valid already-billed response was discarded and paid for
+    again. Realistic for reasoning models, whose completion_tokens include
+    reasoning tokens that max_tokens does not cap.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-placeholder-never-sent")
+    calls = 0
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                # 5000 completion tokens against a max_tokens of 10.
+                "usage": {"prompt_tokens": 2, "completion_tokens": 5000},
+            }
+
+    def counting_post(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return Response()
+
+    monkeypatch.setattr(httpx, "post", counting_post)
+    tracker = SpendTracker(budget_cap_usd=10.0)
+
+    text, _, ctok = call_model(
+        "provider/model", "hello", max_tokens=10, retries=3,
+        tracker=tracker, prices={"provider/model": (0.0001, 0.0002)},
+        live=True,
+    )
+
+    assert (text, ctok) == ("ok", 5000)
+    assert calls == 1, "an overage must not trigger a retry of a paid call"
+    assert tracker.reserved_cost_usd == pytest.approx(0.0)
+    # True cost is charged, not the smaller reservation.
+    assert tracker.total_cost_usd == pytest.approx(2 * 0.0001 + 5000 * 0.0002)
+
+
+def test_validator_embeds_on_cpu_for_consensus():
+    """The backbone must never run on CUDA in the validator.
+
+    get_backbone selects float16 on CUDA and float32 on CPU, so a GPU validator
+    and a CPU validator would embed identically-worded questions differently,
+    flip argmax on near-ties, and score the same head differently.
+    """
+    source = (Path(__file__).resolve().parents[1] / "neurons" / "validator.py").read_text()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "compute_hidden_states":
+            device = next((kw for kw in node.keywords if kw.arg == "device"), None)
+            assert device is not None, "compute_hidden_states() must pin device="
+            assert isinstance(device.value, ast.Constant) and device.value.value == "cpu", (
+                "validator must embed on cpu; a cuda path breaks cross-validator consensus"
+            )
+            return
+    raise AssertionError("no compute_hidden_states() call found in neurons/validator.py")

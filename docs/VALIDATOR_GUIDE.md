@@ -51,6 +51,7 @@ so untrusted code can't reach your keys or network:
 ```bash
 docker build -t fugal-subnet .
 docker run --rm \
+  --user "$(id -u):$(id -g)" \
   -e OPENROUTER_API_KEY="sk-or-..." \
   -e FUGAL_NETWORK=finney \
   -v fugal-state:/app/results \
@@ -60,6 +61,14 @@ docker run --rm \
     --coldkey fugal_validator --hotkey default \
     --wallet-path /home/fugal/.bittensor/wallets \
     --live --epoch-budget 50
+```
+
+`--user` is required. The image runs as UID 10001, but `btcli` writes key files
+mode `0600` owned by your host user, so without it the container can traverse
+the wallet directories and read nothing:
+
+```
+cat: /home/fugal/.bittensor/wallets/.../hotkeys/default: Permission denied
 ```
 
 The container provides network isolation for the grading sandbox while still

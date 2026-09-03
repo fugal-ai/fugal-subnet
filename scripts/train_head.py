@@ -25,13 +25,22 @@ import sys
 import time
 
 import numpy as np
-import torch
-import torch.nn.functional as F
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# isort: off
+# Order is load-bearing — do not let an import sorter reflow this block.
+# fugal_subnet.backbone pins the CPU kernel dispatch env vars
+# (ATEN_CPU_CAPABILITY, MKL_CBWR, DNNL_MAX_CPU_ISA) that torch reads once, at
+# import. Importing torch first makes those pins a no-op and yields embeddings
+# that do not match the validator's.
+from fugal_subnet.backbone import compute_hidden_states  # noqa: E402
+
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+# isort: on
 
 logger = logging.getLogger("fugal.trainer")
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from fugal_subnet.backbone import compute_hidden_states
 from fugal_subnet.config import (
     BACKBONE_MODEL,
     HEAD_HIDDEN_DIM,
@@ -299,8 +308,12 @@ def main():
             if not prompts:
                 logger.error("Matrix has no 'prompts' or 'questions' array for backbone")
                 sys.exit(1)
+            # Always CPU, regardless of --device: the validator embeds on CPU in
+            # float32, and CUDA would use float16. Training against embeddings
+            # the validator will never reproduce yields a head that scores far
+            # below what local fitness suggests. --device still drives SFT/CMA.
             hidden_states = compute_hidden_states(
-                prompts, model_name=args.backbone, device=args.device,
+                prompts, model_name=args.backbone, device="cpu",
             )
         else:
             logger.info("No hidden states source — generating random (for testing)")

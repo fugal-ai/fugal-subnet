@@ -98,6 +98,10 @@ python scripts/train_head.py \
 of them the trainer falls back to random hidden states and silently produces a
 head that scores near zero against the validator's real embeddings.
 
+`--device` drives the SFT and CMA-ES stages only. Backbone embeddings are always
+computed on CPU in float32 to match the validator exactly — CUDA would use
+float16 and give you embeddings no validator ever reproduces.
+
 ### Training stages
 
 1. **SFT (Stage 1)** — KL divergence loss against soft target distributions. AdamW

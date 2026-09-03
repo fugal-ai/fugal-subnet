@@ -122,12 +122,22 @@ class SpendTracker:
         completion_tokens: int,
         prices: Mapping[str, tuple[float, float]],
     ) -> None:
-        """Replace a reservation with provider-reported actual usage."""
+        """Replace a reservation with provider-reported actual usage.
+
+        An overage never raises. The provider has already billed this call, so
+        rejecting it would discard a paid response and retry — paying twice.
+        Instead the true cost is charged (so the overage is visible to the cap)
+        and the next reserve() fails if that pushed us over budget.
+        """
         pin, pout = prices[reservation.model]
         actual_cost = max(0, int(prompt_tokens)) * pin + max(0, int(completion_tokens)) * pout
         if actual_cost > reservation.cost_usd + 1e-12:
-            raise RuntimeError(
-                f"Provider usage for {reservation.model} exceeded its conservative reservation"
+            # Realistic for reasoning models, whose completion_tokens include
+            # reasoning tokens that max_tokens does not always cap.
+            logger.warning(
+                "Provider usage for %s cost $%.6f, above its $%.6f reservation; "
+                "charging the true cost",
+                reservation.model, actual_cost, reservation.cost_usd,
             )
 
         with self._lock:

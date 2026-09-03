@@ -39,6 +39,10 @@ DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("FUGAL_DEDUP_THRESHOLD", "0.99"))
 # --- Liveness ---
 LIVENESS_MAX_MISSED = int(os.getenv("FUGAL_MAX_MISSED_EPOCHS", "3"))
 
+# --- Evidence accumulation ---
+EVIDENCE_HALF_LIFE = int(os.getenv("FUGAL_EVIDENCE_HALF_LIFE", "200"))
+LIVENESS_MAX_MISSED_EVIDENCE = int(os.getenv("FUGAL_MAX_MISSED_EVIDENCE", "10"))
+
 # --- Routing ---
 ROUTING_LAMBDA = float(os.getenv("FUGAL_LAMBDA", "2.0"))
 

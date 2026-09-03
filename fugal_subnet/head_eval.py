@@ -54,6 +54,11 @@ class HeadScore:
     routing_decisions: np.ndarray  # (N,) model indices chosen by head
     correct_mask: np.ndarray       # (N,) bool — did the chosen model get it right?
     coverage: float = 1.0  # fraction of pool models this head covers (intersection / pool size)
+    n_correct: int = 0
+    n_scored: int = 0
+    total_head_cost: float = 0.0
+    total_oracle_cost: float = 0.0
+    total_kl: float = 0.0
 
 
 def load_head_from_npz(data: bytes) -> HeadArtifact:
@@ -221,6 +226,8 @@ def evaluate_head(
             routing_decisions=routing_decisions,
             correct_mask=correct_mask,
             coverage=coverage,
+            n_correct=0, n_scored=0,
+            total_head_cost=0.0, total_oracle_cost=0.0, total_kl=0.0,
         )
 
     accuracy = float(correct_mask.sum()) / n_scored
@@ -237,6 +244,11 @@ def evaluate_head(
         routing_decisions=routing_decisions,
         correct_mask=correct_mask,
         coverage=coverage,
+        n_correct=int(correct_mask.sum()),
+        n_scored=n_scored,
+        total_head_cost=total_head_cost,
+        total_oracle_cost=total_oracle_cost,
+        total_kl=total_kl,
     )
 
 

@@ -42,12 +42,18 @@ BLOCK_TIME_S = 12
 
 def load_state(records_cls) -> dict:
     """Load persisted validator state across supervisor-managed restarts."""
+    from fugal_subnet.evidence import Evidence
+
     try:
         with open(STATE_PATH) as f:
             raw = json.load(f)
-        records = {
-            int(uid): records_cls(**rec) for uid, rec in raw.get("records", {}).items()
-        }
+        records = {}
+        for uid, rec in raw.get("records", {}).items():
+            ev_data = rec.pop("evidence", None)
+            record = records_cls(**rec)
+            if ev_data is not None:
+                record.evidence = Evidence(**ev_data)
+            records[int(uid)] = record
         return {
             "records": records,
             "prev_uids": [int(u) for u in raw.get("prev_uids", [])],

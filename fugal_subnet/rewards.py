@@ -9,7 +9,7 @@ import logging
 
 import numpy as np
 
-from fugal_subnet.config import LIVENESS_MAX_MISSED, MAX_WEIGHT_DELTA
+from fugal_subnet.config import LIVENESS_MAX_MISSED_EVIDENCE, MAX_WEIGHT_DELTA
 from fugal_subnet.scoring import MinerRecord
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ def compute_weights(
             continue
         if uid == BURN_UID:
             continue
-        if rec.epochs_missed >= LIVENESS_MAX_MISSED:
+        if rec.epochs_missed >= LIVENESS_MAX_MISSED_EVIDENCE:
             continue
         miners.append((uid, rec.composite_score))
 

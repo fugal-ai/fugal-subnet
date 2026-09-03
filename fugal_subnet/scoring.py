@@ -1,8 +1,9 @@
-"""Scoring system: raw epoch scoring with composite weights.
+"""Scoring system: evidence-accumulated composite with Wilson LCB.
 
-Miners are scored on current-epoch performance. Weight capping (in rewards.py)
-provides stability — no EWMA smoothing needed. Wilson LCB is computed for
-diagnostics but not used in weight calculation.
+Miners accumulate evidence across epochs, keyed by head artifact.
+Changing the head resets the accumulator. Missing an epoch counts as
+n_expected tasks scored 0. The composite score uses Wilson LCB for
+accuracy, with cost efficiency and KL from accumulated evidence.
 """
 from __future__ import annotations
 
@@ -13,8 +14,10 @@ from fugal_subnet.config import (
     COMPOSITE_W_ACC,
     COMPOSITE_W_COST,
     COMPOSITE_W_KL,
-    WILSON_CONFIDENCE,
+    EVIDENCE_HALF_LIFE,
+    SLICE_SIZE,
 )
+from fugal_subnet.evidence import Evidence, accumulate_epoch, apply_miss
 from fugal_subnet.head_eval import HeadScore
 
 
@@ -29,6 +32,7 @@ class MinerRecord:
     kl_score: float = 0.0
     composite_score: float = 0.0
     wilson_lcb: float = 0.0
+    evidence: Evidence | None = None
 
 
 @dataclass
@@ -43,27 +47,19 @@ def update_scores(
     head_hashes: dict[int, str],
     n_questions: int = 0,
 ) -> ScoringState:
-    """Update scores with new epoch results.
-
-    Uses raw epoch scores — no smoothing. Weight capping in rewards.py
-    provides the stability guarantees.
-
-    Args:
-        state: Current scoring state.
-        epoch_scores: {uid: HeadScore} from this epoch's evaluation.
-        head_hashes: {uid: sha256_hex} of each miner's submitted head.
-        n_questions: Number of scoreable questions this epoch (Wilson LCB
-            sample size). Falls back to each score's correct_mask length.
-
-    Returns:
-        Updated ScoringState.
-    """
+    """Update scores with new epoch results using evidence accumulation."""
     state.epoch_count += 1
+    n_expected = n_questions or SLICE_SIZE
 
     active_uids = set(epoch_scores.keys())
     for uid in list(state.records.keys()):
         if uid not in active_uids:
-            state.records[uid].epochs_missed += 1
+            rec = state.records[uid]
+            rec.epochs_missed += 1
+            if rec.evidence is not None:
+                rec.evidence = apply_miss(rec.evidence, n_expected, EVIDENCE_HALF_LIFE)
+                rec.wilson_lcb = rec.evidence.wilson_lcb
+                rec.composite_score = _composite_from_evidence(rec.evidence)
 
     for uid, score in epoch_scores.items():
         if uid not in state.records:
@@ -77,27 +73,36 @@ def update_scores(
         rec.epochs_seen += 1
         rec.epochs_missed = 0
 
-        raw_composite = (
-            COMPOSITE_W_ACC * rec.accuracy
-            + COMPOSITE_W_COST * rec.cost_efficiency
-            + COMPOSITE_W_KL * _normalize_kl(rec.kl_score)
+        rec.evidence = accumulate_epoch(
+            rec.evidence,
+            weights_hash=rec.current_head_hash,
+            n_correct=score.n_correct,
+            n_total=score.n_scored,
+            head_cost=score.total_head_cost,
+            oracle_cost=score.total_oracle_cost,
+            kl_total=score.total_kl,
+            n_kl=score.n_scored,
+            coverage=score.coverage,
+            half_life=EVIDENCE_HALF_LIFE,
         )
-        # Coverage multiplier: a head covering only a fraction of the pool
-        # has its composite scaled down proportionally. Prevents gaming by
-        # declaring only one or two easy models to get a perfect accuracy
-        # on a narrow evaluation surface.
-        rec.composite_score = raw_composite * score.coverage
-        n = n_questions or len(score.correct_mask)
-        rec.wilson_lcb = wilson_lower_bound(rec.accuracy, n, WILSON_CONFIDENCE)
+
+        rec.wilson_lcb = rec.evidence.wilson_lcb
+        rec.composite_score = _composite_from_evidence(rec.evidence)
 
     return state
 
 
-def wilson_lower_bound(p: float, n: int, confidence: float = 0.95) -> float:
-    """Wilson score interval lower bound (diagnostic only).
+def _composite_from_evidence(ev: Evidence) -> float:
+    raw = (
+        COMPOSITE_W_ACC * ev.wilson_lcb
+        + COMPOSITE_W_COST * ev.cost_efficiency
+        + COMPOSITE_W_KL * _normalize_kl(ev.avg_kl)
+    )
+    return raw * ev.avg_coverage
 
-    Provides a conservative estimate of true performance with limited samples.
-    """
+
+def wilson_lower_bound(p: float, n: int, confidence: float = 0.95) -> float:
+    """Wilson score interval lower bound (kept for external callers)."""
     if n == 0:
         return 0.0
     z = _z_score(confidence)
@@ -108,17 +113,10 @@ def wilson_lower_bound(p: float, n: int, confidence: float = 0.95) -> float:
 
 
 def _z_score(confidence: float) -> float:
-    """Approximate z-score for common confidence levels."""
     table = {0.90: 1.645, 0.95: 1.96, 0.99: 2.576}
     return table.get(confidence, 1.96)
 
 
 def _normalize_kl(kl: float) -> float:
-    """Map KL score from (-inf, 0] to (0, ~0.73] for composite scoring.
-
-    KL scores are negative (higher = better); kl=0 (perfect match) maps to
-    1/(1+e^-1) ~= 0.731. Sigmoid keeps very bad KL from dragging the composite
-    below what accuracy/cost earn. Exponent is clamped to avoid overflow on
-    adversarial inputs.
-    """
+    """Map KL score from (-inf, 0] to (0, ~0.73] for composite scoring."""
     return 1.0 / (1.0 + math.exp(min(700.0, -kl - 1.0)))

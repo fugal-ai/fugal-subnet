@@ -159,6 +159,18 @@ def build_matrix(
     )
 
 
+def _mock_grade(question_id: str, model: str) -> int:
+    """Deterministic stand-in for a real grade, stable across processes/hosts.
+
+    Mock mode has to be reproducible for the same reason live mode does: the
+    local testnet is where multi-validator agreement gets rehearsed, and a
+    nondeterministic matrix would make every validator disagree by construction
+    and hide real determinism bugs behind the noise.
+    """
+    digest = hashlib.sha256(f"{question_id}|{model}".encode("utf-8")).digest()
+    return digest[0] & 1
+
+
 def build_matrix_mock(
     questions: list[dict],
     model_pool: list[str],
@@ -172,7 +184,6 @@ def build_matrix_mock(
         mock_fn: Optional callable(model, question) -> (response_text, correct).
                  If None, uses random 0/1 assignment.
     """
-    import random as rng
     N = len(questions)
     M = len(model_pool)
     matrix = np.zeros((N, M), dtype=np.int8)
@@ -184,7 +195,12 @@ def build_matrix_mock(
             if mock_fn:
                 text, correct = mock_fn(model, question)
             else:
-                correct = rng.randint(0, 1)
+                # Derived from (question, model), never from an RNG. The
+                # global `random` module is unseeded, so mock matrices used to
+                # differ between processes — which made a mock local testnet
+                # useless as a consensus rehearsal, since two validators would
+                # score the same head against different ground truth.
+                correct = _mock_grade(question["question_id"], model)
                 text = f"mock response for {question['question_id']} by {model}"
             matrix[q_idx, m_idx] = correct
             responses[(q_idx, m_idx)] = text

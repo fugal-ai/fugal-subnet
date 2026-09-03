@@ -20,8 +20,14 @@ import math
 import os
 import time
 
-import click
-import numpy as np
+# isort: off
+# Must precede numpy: numpy's bundled OpenBLAS reads OPENBLAS_CORETYPE once, at
+# import, and head_eval's scoring arithmetic runs through it.
+import fugal_subnet.determinism  # noqa: F401
+
+import click  # noqa: E402
+import numpy as np  # noqa: E402
+# isort: on
 
 logger = logging.getLogger("fugal.validator")
 
@@ -160,6 +166,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+
+    # Assert before any chain or network work: a validator running mismatched
+    # libraries does not crash, it quietly computes different scores and sets
+    # divergent weights while looking healthy. Loud failure is the right trade.
+    from fugal_subnet.fingerprint import assert_environment, consensus_digest
+    assert_environment()
+    logger.info("Consensus environment digest: %s", consensus_digest())
 
     from fugal_subnet.config import (
         EPOCH_BUDGET_USD,

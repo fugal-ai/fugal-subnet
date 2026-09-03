@@ -12,6 +12,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass
 
+from fugal_subnet.fingerprint import consensus_digest, environment_fingerprint
 from fugal_subnet.graders import grader_hash
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,12 @@ def reveal_epoch(
         "routing_decisions": {str(k): list(map(int, v)) for k, v in routing_decisions.items()},
         "scores": {str(k): v for k, v in scores.items()},
         "weights": {str(k): v for k, v in weights.items()},
+        # What these numbers were computed with. Two validators publishing
+        # different scores for the same head can diff this to find out why;
+        # without it, divergence is unfalsifiable. consensus_digest is the
+        # score-affecting subset, so a mismatch is visible at a glance.
+        "environment": environment_fingerprint(),
+        "consensus_digest": consensus_digest(),
     }
 
     reveal_path = os.path.join(epoch_dir, "reveal.json")

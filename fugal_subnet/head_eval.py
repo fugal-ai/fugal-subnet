@@ -18,11 +18,24 @@ from fugal_subnet.config import (
     HEAD_MAX_BYTES,
     HEAD_MAX_DECOMPRESSED_BYTES,
     HEAD_MAX_MODELS,
+    ROUTING_DECISION_QUANTUM,
     ROUTING_LAMBDA,
 )
 
 logger = logging.getLogger(__name__)
 
+
+
+def quantize_utility(utility: np.ndarray) -> np.ndarray:
+    """Snap routing utilities to a fixed grid so validators agree on argmax.
+
+    Computed in float64 and rounded to ROUTING_DECISION_QUANTUM. Both matter:
+    float64 keeps the rounding itself from being the thing that differs, and a
+    fixed grid absorbs the small float differences that separate two honest
+    validators running different BLAS kernels or CPU generations.
+    """
+    scaled = np.asarray(utility, dtype=np.float64) / ROUTING_DECISION_QUANTUM
+    return np.round(scaled) * ROUTING_DECISION_QUANTUM
 
 @dataclass
 class HeadArtifact:
@@ -152,7 +165,12 @@ def evaluate_head(
         logits = head.W @ h + head.b
         p = _softmax(logits)
 
-        utility = p - lam * head_costs
+        # Quantize before the argmax. See config.ROUTING_DECISION_QUANTUM:
+        # raw argmax is a discontinuity, so any cross-validator float
+        # difference flips the routing decision on a near-tie. Rounding to a
+        # fixed step makes the decision agree unless validators differ by a
+        # whole quantum, and exact ties fall to the lowest index.
+        utility = quantize_utility(p - lam * head_costs)
         selected_head_idx = int(np.argmax(utility))
         routing_decisions[q_idx] = selected_head_idx
 

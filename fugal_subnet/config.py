@@ -37,6 +37,20 @@ LIVENESS_MAX_MISSED = int(os.getenv("FUGAL_MAX_MISSED_EPOCHS", "3"))
 # --- Routing ---
 ROUTING_LAMBDA = float(os.getenv("FUGAL_LAMBDA", "2.0"))
 
+# Routing utilities are quantized to this step before argmax picks a model.
+# Deliberately NOT env-overridable: it is consensus-critical, and two validators
+# using different quanta would disagree on every near-tie.
+#
+# Why it exists: the routing decision is argmax(softmax(W@h + b) - lam*costs),
+# a discontinuity with no tolerance. Any float difference between two validators
+# — a different BLAS kernel, CPU generation, or library build — flips the
+# decision whenever two models' utilities are close, and across 300 questions
+# and 30 models near-ties are certain. Quantizing turns "every validator must
+# produce identical bits" into "every validator must agree to within 1e-4",
+# which survives library and hardware changes. Exact ties then resolve by
+# lowest index (numpy argmax), which is deterministic everywhere.
+ROUTING_DECISION_QUANTUM = 1e-4
+
 # --- API ---
 API_TIMEOUT = int(os.getenv("FUGAL_API_TIMEOUT", "180"))
 API_MAX_RETRIES = int(os.getenv("FUGAL_API_RETRIES", "3"))

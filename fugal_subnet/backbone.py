@@ -8,26 +8,16 @@ from __future__ import annotations
 import logging
 import os
 
-import numpy as np
+# isort: off
+# Order is load-bearing. numpy and torch both read the CPU-dispatch env vars
+# once, at import, so this must precede both or the pinning silently does
+# nothing. check_safety_invariants.py enforces it.
+import fugal_subnet.determinism  # noqa: F401
 
-# Pin CPU kernel dispatch before torch initializes its dispatch tables.
-# PyTorch selects CPU kernels from the host's widest SIMD extension, so
-# AVX-512 and AVX2 hosts produce different float32 embedding bits. Three
-# dispatchers must be pinned: ATen kernels (ATEN_CPU_CAPABILITY), MKL BLAS
-# (MKL_CBWR), and oneDNN (DNNL_MAX_CPU_ISA). Thread counts are also pinned
-# to eliminate reduction-order variance.
-_DETERMINISM_ENV = {
-    "ATEN_CPU_CAPABILITY": "avx2",
-    "MKL_CBWR": "AVX2",
-    "DNNL_MAX_CPU_ISA": "AVX2",
-    "MKL_NUM_THREADS": "1",
-    "OMP_NUM_THREADS": "1",
-}
-for _key, _value in _DETERMINISM_ENV.items():
-    os.environ.setdefault(_key, _value)
-
+import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
+# isort: on
 
 from fugal_subnet.config import (  # noqa: E402
     BACKBONE_MODEL,
@@ -63,7 +53,7 @@ def configure_determinism() -> None:
 
 def get_backbone(
     model_name: str = BACKBONE_MODEL,
-    device: str = "cuda",
+    device: str = "cpu",
     dtype: torch.dtype | None = None,
 ) -> tuple:
     """Load (or return cached) backbone model and tokenizer.
@@ -98,7 +88,7 @@ def get_backbone(
 def compute_hidden_states(
     prompts: list[str],
     model_name: str = BACKBONE_MODEL,
-    device: str = "cuda",
+    device: str = "cpu",
     batch_size: int = 8,
     max_length: int = 512,
 ) -> np.ndarray:

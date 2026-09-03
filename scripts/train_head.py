@@ -24,15 +24,16 @@ import os
 import sys
 import time
 
-import numpy as np
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # isort: off
 # Order is load-bearing — do not let an import sorter reflow this block.
-# fugal_subnet.backbone pins the CPU kernel dispatch env vars
-# (ATEN_CPU_CAPABILITY, MKL_CBWR, DNNL_MAX_CPU_ISA) that torch reads once, at
-# import. Importing torch first makes those pins a no-op and yields embeddings
-# that do not match the validator's.
+# numpy and torch read the CPU-dispatch env vars once, at import, so the
+# determinism module has to come first or the pinning silently does nothing
+# and this trainer produces embeddings the validator cannot reproduce.
+import fugal_subnet.determinism  # noqa: F401
+
+import numpy as np  # noqa: E402
+
 from fugal_subnet.backbone import compute_hidden_states  # noqa: E402
 
 import torch  # noqa: E402

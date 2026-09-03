@@ -49,22 +49,32 @@ def load_state(records_cls) -> dict:
             "prev_uids": [int(u) for u in raw.get("prev_uids", [])],
             "prev_weights": [float(w) for w in raw.get("prev_weights", [])],
             "last_epoch_index": int(raw.get("last_epoch_index", -1)),
+            "first_commit_blocks": {
+                str(hk): int(blk)
+                for hk, blk in (raw.get("first_commit_blocks") or {}).items()
+            },
         }
     except FileNotFoundError:
-        return {"records": {}, "prev_uids": [], "prev_weights": [], "last_epoch_index": -1}
+        return _empty_state()
     except Exception as e:
         logger.warning("Could not load state from %s: %s — starting fresh", STATE_PATH, e)
-        return {"records": {}, "prev_uids": [], "prev_weights": [], "last_epoch_index": -1}
+        return _empty_state()
+
+
+def _empty_state() -> dict:
+    return {"records": {}, "prev_uids": [], "prev_weights": [],
+            "last_epoch_index": -1, "first_commit_blocks": {}}
 
 
 def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
-               last_epoch_index: int):
+               last_epoch_index: int, first_commit_blocks: dict[str, int] | None = None):
     os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
     payload = {
         "records": {str(uid): dataclasses.asdict(rec) for uid, rec in records.items()},
         "prev_uids": prev_uids,
         "prev_weights": prev_weights,
         "last_epoch_index": last_epoch_index,
+        "first_commit_blocks": first_commit_blocks or {},
     }
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
@@ -279,6 +289,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
     prev_uids: list[int] = state["prev_uids"]
     prev_weights: list[float] = state["prev_weights"]
     last_epoch_index: int = state["last_epoch_index"]
+    # Dedup seniority ledger: hotkey -> earliest block we ever saw it commit a
+    # valid head. Keyed by hotkey because UIDs are recycled on deregistration.
+    first_commit_blocks: dict[str, int] = state["first_commit_blocks"]
 
     blocks_per_epoch = max(1, EPOCH_INTERVAL // BLOCK_TIME_S)
 
@@ -360,7 +373,24 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                     and 0 < committed[1] <= boundary_block
                 )
                 if has_valid_commitment:
-                    commit_blocks[uid] = committed[1]
+                    # Seniority is when this hotkey FIRST committed any valid
+                    # head, not when it committed the one it is serving now.
+                    #
+                    # Using the current commitment block inverts the core
+                    # incentive. A copier fetches a victim's head from its axon
+                    # (MIN_VALIDATOR_STAKE defaults to 0, so anyone registered
+                    # may), commits it, and is correctly deduped as junior. But
+                    # the moment the victim retrains — which the miner guide
+                    # tells them to do every epoch — the victim's commitment
+                    # block jumps past the copier's stale one. The new head is
+                    # an incremental improvement, so it still clusters with the
+                    # old behavior, and the copier now wins the cluster. The
+                    # subnet would be disqualifying authors in favor of their
+                    # copiers precisely for improving.
+                    hotkey_first = first_commit_blocks.get(hotkey_ss58)
+                    if hotkey_first is None or committed[1] < hotkey_first:
+                        first_commit_blocks[hotkey_ss58] = int(committed[1])
+                    commit_blocks[uid] = first_commit_blocks[hotkey_ss58]
                 elif REQUIRE_COMMITMENT:
                     n_invalid += 1
                     logger.warning(
@@ -391,7 +421,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 )
                 write_epoch_log(epoch_log)
                 last_epoch_index = epoch_index
-                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
+                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
+                           first_commit_blocks)
                 if once:
                     break
                 time.sleep(60)
@@ -404,7 +435,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             if not prices and not mock:
                 logger.error("No price data — refusing to call models blind. Skipping epoch.")
                 last_epoch_index = epoch_index
-                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
+                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
+                           first_commit_blocks)
                 if once:
                     break
                 time.sleep(300)
@@ -428,7 +460,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             if not all_models:
                 logger.warning("No callable models in pool, skipping epoch")
                 last_epoch_index = epoch_index
-                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
+                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
+                           first_commit_blocks)
                 if once:
                     break
                 time.sleep(60)
@@ -455,7 +488,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 logger.error("EPOCH ABORTED — %s. Partial matrix discarded; no weights "
                              "set. Raise FUGAL_EPOCH_BUDGET or shrink the pool.", e)
                 last_epoch_index = epoch_index
-                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
+                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
+                           first_commit_blocks)
                 if once:
                     break
                 time.sleep(EPOCH_INTERVAL)
@@ -584,7 +618,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             write_epoch_log(epoch_log)
 
             last_epoch_index = epoch_index
-            save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index)
+            save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
+                           first_commit_blocks)
 
         except KeyboardInterrupt:
             logger.info("Validator stopped by user")

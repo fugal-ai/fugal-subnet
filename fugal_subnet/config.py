@@ -43,6 +43,14 @@ LIVENESS_MAX_MISSED = int(os.getenv("FUGAL_MAX_MISSED_EPOCHS", "3"))
 EVIDENCE_HALF_LIFE = int(os.getenv("FUGAL_EVIDENCE_HALF_LIFE", "200"))
 LIVENESS_MAX_MISSED_EVIDENCE = int(os.getenv("FUGAL_MAX_MISSED_EVIDENCE", "10"))
 
+# --- TEE (Trusted Execution Environment) ---
+TEE_APPROVED_MEASUREMENTS = [
+    m.strip() for m in os.getenv("FUGAL_TEE_MEASUREMENTS", "").split(",") if m.strip()
+]
+TEE_PROOF_TIMEOUT = int(os.getenv("FUGAL_TEE_PROOF_TIMEOUT", "600"))
+TEE_BUNDLE_STORE = os.getenv("FUGAL_TEE_BUNDLE_STORE", "")
+TEE_PROXY_PORT = int(os.getenv("FUGAL_TEE_PROXY_PORT", "8199"))
+
 # --- Routing ---
 ROUTING_LAMBDA = float(os.getenv("FUGAL_LAMBDA", "2.0"))
 

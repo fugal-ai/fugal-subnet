@@ -537,7 +537,7 @@ def test_build_model_pool():
     """Union pool policy: priced-only, cost cap, budget trim, no sybil eviction."""
     print("\n  [TEST] Model pool policy")
     from fugal_subnet.head_eval import HeadArtifact
-    from neurons.validator import build_model_pool
+    from neurons.validator_legacy import build_model_pool
 
     def _head(models):
         d = 8

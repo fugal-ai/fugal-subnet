@@ -8,7 +8,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-from click.testing import CliRunner
 
 from fugal_subnet.api import (
     BudgetExceeded,
@@ -145,14 +144,18 @@ def test_protection_price_uses_greater_rate_and_rejects_missing_live():
         build_spend_protection_prices(canonical, {}, ["provider/model"])
 
 
-def test_validator_live_mode_requires_budget_before_chain_access(monkeypatch):
-    monkeypatch.delenv("FUGAL_EPOCH_BUDGET", raising=False)
+def test_validator_tee_mode_no_budget_needed(monkeypatch):
+    """TEE validators don't pay for inference, so --epoch-budget is not required.
+
+    The old (pre-TEE) validator required --epoch-budget with --live. The TEE
+    validator only requires --live for real TDX attestation verification.
+    """
+    # The TEE validator's main() should not have --epoch-budget as a flag.
     from neurons.validator import main
-
-    result = CliRunner().invoke(main, ["--live", "--once"])
-
-    assert result.exit_code == 2
-    assert "requires --epoch-budget" in result.output
+    params = {p.name for p in main.params}
+    assert "epoch_budget" not in params, (
+        "TEE validator should not have --epoch-budget; miners pay their own costs"
+    )
 
 
 def test_usage_overage_is_charged_not_retried(monkeypatch):
@@ -201,24 +204,21 @@ def test_usage_overage_is_charged_not_retried(monkeypatch):
     assert tracker.total_cost_usd == pytest.approx(2 * 0.0001 + 5000 * 0.0002)
 
 
-def test_validator_embeds_on_cpu_for_consensus():
-    """The backbone must never run on CUDA in the validator.
+def test_validator_does_not_call_models():
+    """TEE validator must never call models — miners pay for inference.
 
-    get_backbone selects float16 on CUDA and float32 on CPU, so a GPU validator
-    and a CPU validator would embed identically-worded questions differently,
-    flip argmax on near-ties, and score the same head differently.
+    The validator verifies TEE-attested proofs. It should not import or call
+    build_matrix, compute_hidden_states, or SpendTracker. These belonged to
+    the pre-TEE architecture where the validator computed the matrix.
     """
     source = (Path(__file__).resolve().parents[1] / "neurons" / "validator.py").read_text()
     tree = ast.parse(source)
+    forbidden_names = {"build_matrix", "build_matrix_mock", "compute_hidden_states", "SpendTracker"}
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if isinstance(func, ast.Name) and func.id == "compute_hidden_states":
-            device = next((kw for kw in node.keywords if kw.arg == "device"), None)
-            assert device is not None, "compute_hidden_states() must pin device="
-            assert isinstance(device.value, ast.Constant) and device.value.value == "cpu", (
-                "validator must embed on cpu; a cuda path breaks cross-validator consensus"
-            )
-            return
-    raise AssertionError("no compute_hidden_states() call found in neurons/validator.py")
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                assert alias.name not in forbidden_names, (
+                    f"TEE validator imports {alias.name} — it should not call models"
+                )
+        if isinstance(node, ast.Name) and node.id in forbidden_names:
+            assert False, f"TEE validator references {node.id} — it should not call models"

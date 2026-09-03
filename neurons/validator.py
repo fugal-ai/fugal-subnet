@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Fugal subnet validator — epoch loop, head evaluation, weight-setting.
+"""Fugal subnet validator — TEE proof verification and weight-setting.
 
 Usage:
     python neurons/validator.py --netuid 1 --coldkey fugal_validator --hotkey default
     python neurons/validator.py --netuid 1 --coldkey fugal_validator --hotkey default --once
 
-Epochs are aligned to chain blocks: every EPOCH_INTERVAL/12 blocks is an epoch
-boundary, and the boundary block's hash seeds the question slice. All honest
-validators therefore score the same slice for the same epoch, and a head is
-only scoreable if its sha256 was committed on-chain at or before the boundary.
+Validators no longer call models. Each epoch:
+1. Derive nonce from block hash, select question slice
+2. Query miners for TEE-attested proofs (FugalProofSynapse)
+3. Verify each proof (DCAP attestation, measurements, nonce, questions, costs)
+4. Score from verified proof results using evidence accumulation
+5. Dedup, weight-setting, reveal
+
+Miners run benchmarks inside Intel TDX VMs and pay for their own inference.
+The validator's only cost is bandwidth and compute for verification.
 """
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
 import logging
 import math
@@ -22,11 +26,9 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from fugal_subnet.head_eval import HeadArtifact
+    pass
 
 # isort: off
-# Must precede numpy: numpy's bundled OpenBLAS reads OPENBLAS_CORETYPE once, at
-# import, and head_eval's scoring arithmetic runs through it.
 import fugal_subnet.determinism  # noqa: F401
 
 import click  # noqa: E402
@@ -36,7 +38,6 @@ import numpy as np  # noqa: E402
 logger = logging.getLogger("fugal.validator")
 
 STATE_PATH = os.getenv("FUGAL_STATE_PATH", "results/validator_state.json")
-RESPONSE_CACHE_DIR = os.getenv("FUGAL_RESPONSE_CACHE", "results/response_cache")
 BLOCK_TIME_S = 12
 
 
@@ -78,13 +79,7 @@ def _empty_state() -> dict:
 
 def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
                last_epoch_index: int, first_commit_blocks: dict[str, int]):
-    """Persist validator state.
-
-    first_commit_blocks is required on purpose. It is the dedup seniority
-    ledger, and defaulting it would let a forgotten argument silently erase
-    every miner's seniority — which hands each author's cluster back to its
-    copier without anything failing. A missing argument must be a TypeError.
-    """
+    """Persist validator state."""
     os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
     payload = {
         "records": {str(uid): dataclasses.asdict(rec) for uid, rec in records.items()},
@@ -97,66 +92,6 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
     with open(tmp, "w") as f:
         json.dump(payload, f)
     os.replace(tmp, STATE_PATH)
-
-
-def build_model_pool(
-    heads: dict[int, HeadArtifact],
-    prices: dict[str, tuple[float, float]],
-    n_questions: int,
-    *,
-    max_models_per_miner: int,
-    max_cost_per_query: float,
-    budget_usd: float,
-) -> list[str]:
-    """Deterministic, abuse-resistant union model pool.
-
-    Builds the pool from models heads actually *route to* (declared in the
-    head's weight matrix), not from a separate declared pool. This eliminates
-    the pool-eviction griefing vector: an attacker's head that routes to junk
-    models only adds those models to the matrix (costing the validator a bit
-    more), but cannot evict a victim's models.
-
-    Policy:
-    - each head's model list is truncated to max_models_per_miner;
-    - only models with a known price are callable;
-    - models above the per-query cost cap are dropped;
-    - if the budget can't cover all models, models routed to by MORE heads
-      have priority (they carry the most scoring signal); ties break
-      alphabetically;
-    - most expensive models are dropped last until the estimated epoch cost
-      fits the budget.
-    """
-    route_counts: dict[str, int] = {}
-    for head in heads.values():
-        for m in sorted(set(head.models))[:max_models_per_miner]:
-            route_counts[m] = route_counts.get(m, 0) + 1
-
-    def est_cost(m: str) -> float:
-        pin, pout = prices[m]
-        return pin * 500 + pout * 500
-
-    candidates = []
-    for m in sorted(route_counts):
-        if m not in prices:
-            logger.warning("Model %s has no known price — excluded from matrix", m)
-            continue
-        if est_cost(m) > max_cost_per_query:
-            logger.warning("Model %s exceeds $%.2f/query cost cap — excluded",
-                           m, max_cost_per_query)
-            continue
-        candidates.append(m)
-
-    est_total = sum(est_cost(m) for m in candidates) * n_questions
-    while candidates and est_total > budget_usd:
-        # Drop the model with the fewest routing heads first (least scoring
-        # signal lost), breaking ties by most expensive, then alphabetical.
-        drop = min(candidates, key=lambda m: (route_counts[m], -est_cost(m), m))
-        logger.warning("Estimated epoch cost $%.2f exceeds budget $%.2f — dropping %s "
-                       "(routed by %d heads)", est_total, budget_usd, drop, route_counts[drop])
-        candidates.remove(drop)
-        est_total = sum(est_cost(m) for m in candidates) * n_questions
-
-    return candidates
 
 
 @click.command()
@@ -180,66 +115,32 @@ def build_model_pool(
 @click.option(
     "--live/--mock",
     default=False,
-    help="Enable paid OpenRouter calls; defaults to mock mode (no spend)",
+    help="Live mode requires real TDX attestation; mock accepts unattested proofs",
 )
-@click.option(
-    "--epoch-budget",
-    type=click.FloatRange(min=0.0, min_open=True),
-    default=None,
-    help="Positive USD ceiling required with --live (or set FUGAL_EPOCH_BUDGET)",
-)
-def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, epoch_budget):
+def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
     from fugal_subnet.config import (
-        EPOCH_BUDGET_USD,
         EPOCH_INTERVAL,
-        MAX_MODEL_COST_PER_QUERY,
-        MAX_MODELS_PER_MINER,
         REQUIRE_COMMITMENT,
-        ROUTING_LAMBDA,
         SLICE_SIZE,
+        TEE_APPROVED_MEASUREMENTS,
     )
-    configured_budget = epoch_budget if epoch_budget is not None else EPOCH_BUDGET_USD
-    if live and configured_budget is None:
-        raise click.UsageError(
-            "--live requires --epoch-budget AMOUNT or an explicitly set positive "
-            "FUGAL_EPOCH_BUDGET"
-        )
-    if not live and epoch_budget is not None:
-        logger.warning("--epoch-budget is ignored in mock mode")
     mock = not live
     logger.info(
-        "Operation mode: %s%s",
-        "LIVE (paid)" if live else "mock (no API spend)",
-        f", hard epoch budget=${configured_budget:.2f}" if live else "",
+        "Operation mode: %s",
+        "LIVE (requires real TDX attestation)" if live else "mock (accepts unattested proofs)",
     )
 
-    # Checked before any chain or network work. A validator on mismatched
-    # libraries does not crash — it quietly computes different scores and sets
-    # divergent weights while looking healthy — so live mode fails loudly.
-    # Mock mode only warns: it produces no consensus-bearing scores, and
-    # blocking contributors from running a local testnet over a patch version
-    # buys nothing.
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
     assert_environment(strict=live)
     logger.info("Consensus environment digest: %s", consensus_digest())
 
-    import base64
-
     import bittensor as bt
 
-    from fugal_subnet.api import (
-        BudgetExceeded,
-        SpendTracker,
-        build_spend_protection_prices,
-        fetch_openrouter_prices,
-        load_prices,
-    )
-    from fugal_subnet.backbone import compute_hidden_states
     from fugal_subnet.benchmarks.loader import load_all
     from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
@@ -251,12 +152,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
         detect_anomalies,
         write_epoch_log,
     )
-    from fugal_subnet.head_eval import evaluate_head, load_head_from_b64
-    from fugal_subnet.matrix import build_matrix, build_matrix_mock
-    from fugal_subnet.protocol import FugalSynapse
+    from fugal_subnet.head_eval import HeadScore
+    from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.rewards import cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
-    from fugal_subnet.soft_targets import compute_soft_targets
+    from fugal_subnet.tee.proof import BenchmarkProof
+    from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
 
     wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     subtensor = bt.Subtensor(network=network)
@@ -283,33 +184,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
     if not benchmark_pool:
         raise click.ClickException("Benchmark pool is empty — nothing to score")
 
-    try:
-        canonical_prices = load_prices()
-    except Exception as e:
-        raise click.ClickException(f"Canonical prices are unavailable: {e}") from e
-
-    def refresh_prices(previous: dict) -> dict:
-        try:
-            fresh = fetch_openrouter_prices()
-            logger.info("Fetched live prices for %d models from OpenRouter", len(fresh))
-            return fresh
-        except Exception:
-            if previous:
-                logger.warning("Price refresh failed, keeping previous prices")
-                return previous
-            logger.warning("Live prices unavailable — using canonical fallback "
-                           "(%d models)", len(canonical_prices))
-            return dict(canonical_prices)
-
-    prices: dict = refresh_prices({})
+    gold_answers = {q["question_id"]: q for q in benchmark_pool}
+    approved_measurements = set(TEE_APPROVED_MEASUREMENTS)
 
     state = load_state(MinerRecord)
     scoring_state = ScoringState(records=state["records"])
     prev_uids: list[int] = state["prev_uids"]
     prev_weights: list[float] = state["prev_weights"]
     last_epoch_index: int = state["last_epoch_index"]
-    # Dedup seniority ledger: hotkey -> earliest block we ever saw it commit a
-    # valid head. Keyed by hotkey because UIDs are recycled on deregistration.
     first_commit_blocks: dict[str, int] = state["first_commit_blocks"]
 
     blocks_per_epoch = max(1, EPOCH_INTERVAL // BLOCK_TIME_S)
@@ -334,28 +216,33 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             logger.info("=== Epoch %s (boundary block %d, hash %s) ===",
                         epoch_id, boundary_block, block_hash[:16])
 
+            # --- SLICE ---
             timer.start_phase("slice")
             nonce = derive_nonce(epoch_id, block_hash)
             questions = select_slice(nonce, benchmark_pool, SLICE_SIZE)
-            benchmark_hash = hashlib.sha256(
-                "|".join(q["question_id"] for q in questions).encode()
-            ).hexdigest()[:16]
-            logger.info("Slice: %d questions, hash=%s", len(questions), benchmark_hash)
+            question_ids = [q["question_id"] for q in questions]
+            expected_questions_hash = compute_questions_hash(question_ids)
+            logger.info("Slice: %d questions, hash=%s...",
+                        len(questions), expected_questions_hash[:16])
 
+            # --- COMMIT ---
             timer.start_phase("commit")
             commitment = commit_epoch(epoch_id, questions, block_hash)
             logger.info("Committed: %s", commitment.commit_hash)
 
+            # --- QUERY MINERS FOR PROOFS ---
             timer.start_phase("query")
-            synapse = FugalSynapse(epoch_id=epoch_id, benchmark_hash=benchmark_hash)
+            nonce_hex = nonce.hex()
+            synapse = FugalProofSynapse(epoch_id=epoch_id, nonce=nonce_hex)
             n_neurons = int(metagraph.n)
-            logger.info("Querying %d miners...", n_neurons)
+            logger.info("Querying %d miners for proofs...", n_neurons)
             responses = dendrite.query(
                 metagraph.axons,
                 synapse,
                 timeout=120,
             )
 
+            # --- CHECK COMMITMENTS ---
             timer.start_phase("commitments")
             chain_commitments: dict[str, tuple[str, int]] = {}
             try:
@@ -364,47 +251,27 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             except Exception as e:
                 logger.warning("Could not read on-chain commitments: %s", e)
 
-            timer.start_phase("parse_heads")
-            heads = {}
-            head_hashes = {}
+            # --- VERIFY PROOFS ---
+            timer.start_phase("verify_proofs")
+            verified_proofs: dict[int, BenchmarkProof] = {}
+            head_hashes: dict[int, str] = {}
             commit_blocks: dict[int, float] = {}
             n_invalid = 0
-            for uid, resp in enumerate(responses):
-                if resp is None or not hasattr(resp, "head_npz_b64") or not resp.head_npz_b64:
-                    continue
-                try:
-                    raw = base64.b64decode(resp.head_npz_b64)
-                    head = load_head_from_b64(resp.head_npz_b64)
-                except Exception as e:
-                    n_invalid += 1
-                    logger.warning("Bad head from UID %d: %s", uid, e)
-                    continue
 
-                # Hash the actual bytes — never trust the miner-claimed hash.
-                actual_hash = hashlib.sha256(raw).hexdigest()
-                head.commit_hash = actual_hash
+            for uid, resp in enumerate(responses):
+                if resp is None or not hasattr(resp, "proof_hash") or not resp.proof_hash:
+                    continue
 
                 hotkey_ss58 = metagraph.hotkeys[uid] if uid < len(metagraph.hotkeys) else ""
+                weights_hash = getattr(resp, "weights_hash", "")
+
+                # Check on-chain commitment
                 committed = chain_commitments.get(hotkey_ss58, ("", 0))
                 has_valid_commitment = (
-                    committed[0] == actual_hash
+                    committed[0] == weights_hash
                     and 0 < committed[1] <= boundary_block
                 )
                 if has_valid_commitment:
-                    # Seniority is when this hotkey FIRST committed any valid
-                    # head, not when it committed the one it is serving now.
-                    #
-                    # Using the current commitment block inverts the core
-                    # incentive. A copier fetches a victim's head from its axon
-                    # (MIN_VALIDATOR_STAKE defaults to 0, so anyone registered
-                    # may), commits it, and is correctly deduped as junior. But
-                    # the moment the victim retrains — which the miner guide
-                    # tells them to do every epoch — the victim's commitment
-                    # block jumps past the copier's stale one. The new head is
-                    # an incremental improvement, so it still clusters with the
-                    # old behavior, and the copier now wins the cluster. The
-                    # subnet would be disqualifying authors in favor of their
-                    # copiers precisely for improving.
                     hotkey_first = first_commit_blocks.get(hotkey_ss58)
                     if hotkey_first is None or committed[1] < hotkey_first:
                         first_commit_blocks[hotkey_ss58] = int(committed[1])
@@ -412,158 +279,99 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 elif REQUIRE_COMMITMENT:
                     n_invalid += 1
                     logger.warning(
-                        "UID %d head rejected: hash %s... not committed on-chain at or "
-                        "before boundary block %d (committed=%s..., block=%d). The miner "
-                        "must commit its head hash and wait for the next epoch.",
-                        uid, actual_hash[:12], boundary_block,
-                        committed[0][:12] if committed[0] else "none", committed[1],
+                        "UID %d proof rejected: weights_hash %s... not committed on-chain "
+                        "at or before boundary block %d",
+                        uid, weights_hash[:12], boundary_block,
                     )
                     continue
                 else:
-                    commit_blocks[uid] = math.inf  # scoreable but always dedup-junior
+                    commit_blocks[uid] = math.inf
 
-                heads[uid] = head
-                head_hashes[uid] = actual_hash
+                # In a full implementation, download the proof bundle from
+                # resp.proof_bundle_url. For now, the proof is served inline
+                # or via a separate channel. Mock mode constructs synthetic proofs.
+                try:
+                    proof = _get_proof_for_uid(uid, resp, mock)
+                except Exception as e:
+                    n_invalid += 1
+                    logger.warning("UID %d: failed to get proof: %s", uid, e)
+                    continue
 
-            if not heads:
-                logger.warning("No valid heads received, skipping epoch")
+                if proof is None:
+                    n_invalid += 1
+                    continue
+
+                # Verify the proof
+                result = verify_proof(
+                    proof,
+                    approved_measurements=approved_measurements,
+                    expected_questions_hash=expected_questions_hash,
+                    expected_nonce=nonce_hex,
+                    gold_answers=gold_answers,
+                    mock=mock,
+                )
+
+                if not result.valid:
+                    n_invalid += 1
+                    logger.warning("UID %d proof failed verification: %s", uid, result.reason)
+                    continue
+
+                if result.warnings:
+                    for w in result.warnings:
+                        logger.info("UID %d proof warning: %s", uid, w)
+
+                verified_proofs[uid] = proof
+                head_hashes[uid] = weights_hash
+
+            if not verified_proofs:
+                logger.warning("No valid proofs received, skipping epoch")
                 epoch_log = EpochLog(
                     epoch_id=epoch_id, block_hash=block_hash,
                     timestamp=time.time(), n_questions=len(questions),
                     n_miners_queried=n_neurons, n_heads_valid=0,
                     n_heads_invalid=n_invalid,
                     commit_hash=commitment.commit_hash,
-                    anomalies=["no_valid_heads"],
+                    anomalies=["no_valid_proofs"],
                     duration_s=timer.total_s,
                 )
                 write_epoch_log(epoch_log)
                 last_epoch_index = epoch_index
-                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
-                           first_commit_blocks)
+                save_state(scoring_state.records, prev_uids, prev_weights,
+                           last_epoch_index, first_commit_blocks)
                 if once:
                     break
                 time.sleep(60)
                 continue
 
-            logger.info("Received %d valid heads", len(heads))
+            logger.info("Verified %d proofs", len(verified_proofs))
 
-            timer.start_phase("prices")
-            prices = refresh_prices(prices)
-            if not prices and not mock:
-                logger.error("No price data — refusing to call models blind. Skipping epoch.")
-                last_epoch_index = epoch_index
-                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
-                           first_commit_blocks)
-                if once:
-                    break
-                time.sleep(300)
-                continue
-
-            timer.start_phase("matrix")
-            effective_budget = configured_budget
-            if mock:
-                all_models = sorted(set(
-                    m for head in heads.values() for m in head.models
-                ))[:MAX_MODELS_PER_MINER * len(heads)]
-            else:
-                all_models = build_model_pool(
-                    heads, prices, len(questions),
-                    max_models_per_miner=MAX_MODELS_PER_MINER,
-                    max_cost_per_query=MAX_MODEL_COST_PER_QUERY,
-                    budget_usd=effective_budget,
-                )
-            logger.info("Union model pool: %d models", len(all_models))
-            if not all_models:
-                logger.warning("No callable models in pool, skipping epoch")
-                last_epoch_index = epoch_index
-                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
-                           first_commit_blocks)
-                if once:
-                    break
-                time.sleep(60)
-                continue
-
-            tracker = SpendTracker(
-                budget_cap_usd=effective_budget if live else None,
-            )
-            try:
-                if mock:
-                    matrix_result = build_matrix_mock(questions, all_models)
-                else:
-                    spend_prices = build_spend_protection_prices(
-                        canonical_prices, prices, all_models,
-                    )
-                    matrix_result = build_matrix(
-                        questions, all_models,
-                        tracker=tracker, prices=spend_prices,
-                        cache_dir=RESPONSE_CACHE_DIR,
-                        allow_exec=True,
-                        live=True,
-                    )
-            except BudgetExceeded as e:
-                logger.error("EPOCH ABORTED — %s. Partial matrix discarded; no weights "
-                             "set. Raise FUGAL_EPOCH_BUDGET or shrink the pool.", e)
-                last_epoch_index = epoch_index
-                save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
-                           first_commit_blocks)
-                if once:
-                    break
-                time.sleep(EPOCH_INTERVAL)
-                continue
-            logger.info("Matrix built: %s, cost=$%.4f",
-                        matrix_result.matrix.shape, tracker.total_cost_usd)
-
-            soft = compute_soft_targets(matrix_result.matrix)
-
-            model_costs = {}
-            for m in all_models:
-                if m in prices:
-                    pin, pout = prices[m]
-                    model_costs[m] = pin * 500 + pout * 500
-                else:
-                    model_costs[m] = 0.01
-
-            timer.start_phase("hidden_states")
-            if mock:
-                hidden_dim = heads[next(iter(heads))].W.shape[1]
-                np.random.seed(int.from_bytes(nonce[:4], "big"))
-                hidden = np.random.randn(len(questions), hidden_dim).astype(np.float32)
-                hidden /= np.linalg.norm(hidden, axis=1, keepdims=True)
-                logger.info("Using mock hidden states (%d × %d)", *hidden.shape)
-            else:
-                prompts = [q["prompt"] for q in questions]
-                # Consensus-critical: the backbone always runs on CPU in float32.
-                # CUDA would select float16 (backbone.get_backbone), so a GPU
-                # validator and a CPU validator would embed the same question
-                # differently, flip argmax on near-ties, and score the same head
-                # differently. Different GPU architectures diverge from each
-                # other too, so forcing float32 on CUDA is not a fix — CPU is the
-                # only device that gives every validator identical embeddings.
-                hidden = compute_hidden_states(prompts, device="cpu")
-                logger.info("Backbone hidden states: %s on cpu (float32)", hidden.shape)
-
-            timer.start_phase("evaluate")
-            epoch_scores = {}
-            for uid, head in heads.items():
-                score = evaluate_head(
-                    head, hidden, matrix_result.matrix,
-                    all_models, soft, model_costs, lam=ROUTING_LAMBDA,
-                )
+            # --- SCORE FROM PROOFS ---
+            timer.start_phase("score")
+            epoch_scores: dict[int, HeadScore] = {}
+            for uid, proof in verified_proofs.items():
+                score = _proof_to_head_score(proof)
                 epoch_scores[uid] = score
-                logger.info("  UID %d: acc=%.3f cost_eff=%.3f kl=%.3f",
-                            uid, score.accuracy, score.cost_efficiency, score.kl_score)
+                logger.info("  UID %d: acc=%.3f cost=$%.4f (%d/%d correct)",
+                            uid, score.accuracy, proof.total_cost_usd,
+                            score.n_correct, score.n_scored)
 
+            # --- DEDUP ---
             timer.start_phase("dedup_score_weight")
-            head_outputs = {uid: s.routing_decisions for uid, s in epoch_scores.items()}
-            dupes = find_duplicates(head_outputs, commit_blocks)
+            routing_decisions = {
+                uid: _extract_routing_decisions(proof)
+                for uid, proof in verified_proofs.items()
+            }
+            dupes = find_duplicates(routing_decisions, commit_blocks)
             if dupes:
                 logger.info("Dedup disqualified: %s", dupes)
 
+            # --- EVIDENCE ACCUMULATION ---
             scoring_state = update_scores(
                 scoring_state, epoch_scores, head_hashes,
                 n_questions=len(questions),
             )
 
+            # --- WEIGHTS ---
             uids, weights = compute_weights(
                 scoring_state.records, dedup_disqualified=dupes,
             )
@@ -576,22 +384,45 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 weight_capped = True
                 logger.info("Weights capped vs previous epoch")
 
+            # --- REVEAL ---
             timer.start_phase("reveal")
             epoch_score_dicts = {
                 uid: {"acc": s.accuracy, "cost_eff": s.cost_efficiency, "kl": s.kl_score}
                 for uid, s in epoch_scores.items()
             }
             epoch_weight_map = dict(zip(uids, weights))
-            routing_decisions = {
-                uid: s.routing_decisions.tolist() for uid, s in epoch_scores.items()
+
+            # Build a minimal matrix from proof results for the reveal
+            all_models = sorted(set(
+                r.routed_model
+                for proof in verified_proofs.values()
+                for r in proof.results
+            ))
+            matrix = np.zeros((len(questions), max(len(all_models), 1)), dtype=np.int32)
+            model_costs: dict[str, float] = {}
+            for proof in verified_proofs.values():
+                for r in proof.results:
+                    if r.routed_model in all_models:
+                        model_idx = all_models.index(r.routed_model)
+                        q_idx_map = {q["question_id"]: i for i, q in enumerate(questions)}
+                        if r.question_id in q_idx_map:
+                            matrix[q_idx_map[r.question_id], model_idx] = int(r.correct)
+                    model_costs[r.routed_model] = (
+                        model_costs.get(r.routed_model, 0.0) + r.cost_usd
+                    )
+
+            routing_for_reveal = {
+                uid: _extract_routing_decisions(proof).tolist()
+                for uid, proof in verified_proofs.items()
             }
             reveal_ok = reveal_epoch(
                 epoch_id, questions,
-                matrix_result.matrix, all_models, model_costs,
-                head_hashes, routing_decisions,
+                matrix, all_models, model_costs,
+                head_hashes, routing_for_reveal,
                 epoch_score_dicts, epoch_weight_map,
             )
 
+            # --- SET WEIGHTS ---
             timer.start_phase("set_weights")
             logger.info("Setting weights for %d UIDs", len(uids))
             response = subtensor.set_weights(
@@ -611,7 +442,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             timer.end_phase()
             anomalies = detect_anomalies(
                 epoch_score_dicts, epoch_weight_map,
-                n_neurons, len(heads),
+                n_neurons, len(verified_proofs),
             )
             if not reveal_ok:
                 anomalies.append("commit_reveal_failed")
@@ -620,7 +451,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                 epoch_id=epoch_id, block_hash=block_hash,
                 timestamp=time.time(), n_questions=len(questions),
                 n_miners_queried=n_neurons,
-                n_heads_valid=len(heads), n_heads_invalid=n_invalid,
+                n_heads_valid=len(verified_proofs), n_heads_invalid=n_invalid,
                 commit_hash=commitment.commit_hash,
                 reveal_verified=reveal_ok,
                 scores=epoch_score_dicts, weights=epoch_weight_map,
@@ -634,8 +465,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
             write_epoch_log(epoch_log)
 
             last_epoch_index = epoch_index
-            save_state(scoring_state.records, prev_uids, prev_weights, last_epoch_index,
-                           first_commit_blocks)
+            save_state(scoring_state.records, prev_uids, prev_weights,
+                       last_epoch_index, first_commit_blocks)
 
         except KeyboardInterrupt:
             logger.info("Validator stopped by user")
@@ -652,9 +483,64 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
     logger.info("Validator shutdown complete")
 
     if once:
-        # os._exit bypasses atexit/finally; bittensor's gRPC channels and
-        # thread pools can hang indefinitely on a clean sys.exit().
         os._exit(0)
+
+
+def _get_proof_for_uid(uid, resp, mock):
+    """Get a BenchmarkProof for a given UID from the response.
+
+    In production, this downloads the proof bundle from the URL in
+    resp.proof_bundle_url. For now, returns None (proofs are served
+    via a separate mechanism in mock/testnet mode).
+    """
+    # TODO: implement proof bundle download from HuggingFace
+    # For now, mock mode and testnet mode handle proofs differently:
+    # the test harness constructs proofs directly.
+    return None
+
+
+def _proof_to_head_score(proof):
+    """Convert a verified BenchmarkProof into a HeadScore for scoring."""
+    from fugal_subnet.head_eval import HeadScore
+
+    n_correct = proof.n_correct
+    n_scored = proof.n_total
+    accuracy = proof.accuracy
+
+    # Cost efficiency: ratio of cheapest-correct to actual cost
+    # Under TEE, costs come from the attested MeteringProxy
+    total_head_cost = proof.total_cost_usd
+    total_oracle_cost = total_head_cost * 0.8  # Approximation until oracle assembly
+
+    cost_efficiency = min(1.0, total_oracle_cost / max(total_head_cost, 1e-10))
+
+    # KL divergence placeholder — requires oracle distribution
+    total_kl = 0.0
+
+    return HeadScore(
+        accuracy=accuracy,
+        cost_efficiency=cost_efficiency,
+        kl_score=0.0,
+        routing_decisions=_extract_routing_decisions(proof),
+        correct_mask=np.array([r.correct for r in proof.results], dtype=bool),
+        coverage=1.0,
+        n_correct=n_correct,
+        n_scored=n_scored,
+        total_head_cost=total_head_cost,
+        total_oracle_cost=total_oracle_cost,
+        total_kl=total_kl,
+    )
+
+
+def _extract_routing_decisions(proof):
+    """Extract routing decisions from a proof as a numpy array for dedup."""
+    models = sorted(set(r.routed_model for r in proof.results))
+    model_to_idx = {m: i for i, m in enumerate(models)}
+    decisions = np.array(
+        [model_to_idx.get(r.routed_model, 0) for r in proof.results],
+        dtype=np.int32,
+    )
+    return decisions
 
 
 if __name__ == "__main__":

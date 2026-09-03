@@ -17,6 +17,7 @@ from fugal_subnet.config import (
     HEAD_HIDDEN_DIM,
     HEAD_MAX_BYTES,
     HEAD_MAX_DECOMPRESSED_BYTES,
+    HEAD_MAX_MODEL_ID_LEN,
     HEAD_MAX_MODELS,
     ROUTING_DECISION_QUANTUM,
     ROUTING_LAMBDA,
@@ -87,6 +88,12 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
     if W.ndim != 2:
         raise ValueError(f"Head W must be 2-D, got shape {W.shape}")
     L, d = W.shape
+    if L == 0:
+        # A head declaring no models routes nothing. It survives every other
+        # check (shapes agree, no non-finite values) and scores 0.0, so it is
+        # not a crash — but it still occupies a slot in scoring, dedup, and the
+        # published reveal. Degenerate input dies at the boundary.
+        raise ValueError("Head declares no models")
     if L > HEAD_MAX_MODELS:
         raise ValueError(f"Head has {L} model rows (max {HEAD_MAX_MODELS})")
     if d != HEAD_HIDDEN_DIM:
@@ -95,6 +102,11 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
         raise ValueError(f"Head bias shape {b.shape} != expected ({L},)")
     if len(models) != L:
         raise ValueError(f"Head has {L} rows but {len(models)} model names")
+    for name in models:
+        if len(name) > HEAD_MAX_MODEL_ID_LEN:
+            raise ValueError(
+                f"Head model ID is {len(name)} chars (max {HEAD_MAX_MODEL_ID_LEN})"
+            )
 
     if not np.all(np.isfinite(W)):
         raise ValueError("Head W contains non-finite values")

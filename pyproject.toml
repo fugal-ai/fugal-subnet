@@ -64,13 +64,11 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = [
-    "E402",   # module-import-not-at-top (intentional in backbone.py, validator.py)
     "E501",   # line-too-long (existing code)
     "E701",   # multiple-statements-on-one-line
     "E702",   # multiple-statements-on-one-line-semicolon
     "E741",   # ambiguous-variable-name (W, b, etc. are standard ML names)
     "E731",   # do-not-assign-lambda-expression (existing docker code)
-    "F841",   # local-variable-is-assigned-but-never-used (side-effect calls)
 ]
 
 [tool.ruff.lint.per-file-ignores]

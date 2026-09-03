@@ -29,7 +29,11 @@ for _key, _value in _DETERMINISM_ENV.items():
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
-from fugal_subnet.config import BACKBONE_MODEL, HEAD_HIDDEN_DIM, ROUTER_SYSTEM_PROMPT
+from fugal_subnet.config import (  # noqa: E402
+    BACKBONE_MODEL,
+    HEAD_HIDDEN_DIM,
+    ROUTER_SYSTEM_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 

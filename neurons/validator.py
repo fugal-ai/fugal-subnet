@@ -336,6 +336,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                     logger.warning("Bad head from UID %d: %s", uid, e)
                     continue
 
+                # Hash the actual bytes — never trust the miner-claimed hash.
                 actual_hash = hashlib.sha256(raw).hexdigest()
                 head.commit_hash = actual_hash
 
@@ -358,7 +359,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
                     )
                     continue
                 else:
-                    commit_blocks[uid] = math.inf
+                    commit_blocks[uid] = math.inf  # scoreable but always dedup-junior
 
                 heads[uid] = head
                 head_hashes[uid] = actual_hash

@@ -195,18 +195,6 @@ class SpendTracker:
                 "status": "recorded",
             })
 
-    def check_budget(self):
-        with self._lock:
-            if (
-                self.budget_cap_usd is not None
-                and self.total_cost_usd + self.reserved_cost_usd >= self.budget_cap_usd
-            ):
-                raise BudgetExceeded(
-                    f"Budget cap ${self.budget_cap_usd:.2f} reached "
-                    f"(spent ${self.total_cost_usd:.4f}, reserved "
-                    f"${self.reserved_cost_usd:.4f} across {self.total_calls} attempts)"
-                )
-
 
 def _get_api_key() -> str:
     key = os.environ.get("FUGAL_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
@@ -287,9 +275,6 @@ def call_model(
         except RuntimeError as e:
             tracker.forfeit(reservation, type(e).__name__)
             last_err = e
-        except (ValueError, httpx.HTTPStatusError) as e:
-            tracker.forfeit(reservation, type(e).__name__)
-            raise
         except Exception as e:
             tracker.forfeit(reservation, type(e).__name__)
             raise

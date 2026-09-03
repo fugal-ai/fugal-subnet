@@ -57,7 +57,7 @@ default. Review the [Validator Guide](docs/VALIDATOR_GUIDE.md) first.
 
 ## How It Works
 
-1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks).
+1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks) — every honest validator gets the identical slice.
 2. Miners respond to the validator's query with their `.npz` head artifact (W, b, model list). A head is only scoreable if its SHA256 was **committed on-chain at or before the boundary block** — heads swapped after the nonce is knowable are rejected.
 3. The validator calls all models in the (priced, capped, budget-checked) union pool on those questions, grades responses with mechanical checkers, and builds an N×M binary matrix.
 4. Each head is evaluated: routing accuracy, cost efficiency (capped at 1.0 — the oracle's cheapest-correct routing is the ceiling), and KL divergence against soft targets. Questions no model answered correctly are excluded for everyone.

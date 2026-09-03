@@ -20,9 +20,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def get_commitments_with_blocks(
-    subtensor, netuid: int, *, block: int | None = None,
-) -> dict[str, tuple[str, int]]:
+def get_commitments_with_blocks(subtensor, netuid: int) -> dict[str, tuple[str, int]]:
     """Read all commitments on a subnet as {hotkey_ss58: (data, commit_block)}.
 
     Mirrors bittensor's Subtensor.get_all_commitments but keeps the block
@@ -33,7 +31,7 @@ def get_commitments_with_blocks(
 
     result: dict[str, tuple[str, int]] = {}
     query = subtensor.query_map(
-        module="Commitments", name="CommitmentOf", params=[netuid], block=block,
+        module="Commitments", name="CommitmentOf", params=[netuid],
     )
     for hotkey, value in query:
         raw = getattr(value, "value", value)

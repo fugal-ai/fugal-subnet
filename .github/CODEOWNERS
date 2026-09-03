@@ -1,6 +1,4 @@
-# Consensus and security-sensitive surfaces require both maintainers.
+# Sole maintainer owns every path, including the consensus-critical and
+# security-sensitive surfaces (fugal_subnet/graders.py, neurons/,
+# .github/workflows/). Add per-path rules here if that ever changes.
 * @jtdoherty
-
-/fugal_subnet/graders.py @jtdoherty
-/neurons/ @jtdoherty
-/.github/workflows/ @jtdoherty

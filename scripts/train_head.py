@@ -12,7 +12,7 @@ Usage:
     # Quick synthetic test (no data needed):
     python scripts/train_head.py --synthetic --n-questions 200 --models openai/gpt-4o-mini google/gemini-2.0-flash-001 anthropic/claude-3.5-haiku
 
-    # Full pipeline with backbone on GPU:
+    # Full pipeline (backbone embeddings are always CPU/float32):
     python scripts/train_head.py --matrix data/matrix.npz --models model_a model_b --device cuda --sft-epochs 50
 """
 from __future__ import annotations
@@ -37,17 +37,16 @@ from fugal_subnet.backbone import compute_hidden_states  # noqa: E402
 
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
-# isort: on
-
-logger = logging.getLogger("fugal.trainer")
-
-from fugal_subnet.config import (
+from fugal_subnet.config import (  # noqa: E402
     BACKBONE_MODEL,
     HEAD_HIDDEN_DIM,
     ROUTING_LAMBDA,
     SOFT_TARGET_TAU,
 )
-from fugal_subnet.soft_targets import compute_soft_targets
+from fugal_subnet.soft_targets import compute_soft_targets  # noqa: E402
+# isort: on
+
+logger = logging.getLogger("fugal.trainer")
 
 
 def parse_args():
@@ -226,7 +225,6 @@ def train_cma(
 
     n_models, hidden_dim = W_init.shape
     theta = np.concatenate([W_init.flatten(), b_init.flatten()])
-    dim = len(theta)
 
     optimizer = SepCMA(mean=theta, sigma=sigma, population_size=popsize)
 
@@ -372,7 +370,7 @@ def main():
         logger.info("Skipping CMA-ES stage (--skip-cma)")
 
     # ── Save ──
-    head_hash = save_head(W, b, args.models, args.output)
+    save_head(W, b, args.models, args.output)
     logger.info("Training complete. Head ready for miner submission.")
 
     # ── Validation ──

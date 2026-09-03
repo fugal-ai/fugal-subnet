@@ -75,7 +75,7 @@ def get_backbone(
     logger.info("Loading backbone: %s on %s (%s)", model_name, device, dtype)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(
-        model_name, torch_dtype=dtype,
+        model_name, torch_dtype=dtype, trust_remote_code=False,
     ).to(device).eval()
 
     if tokenizer.pad_token is None:

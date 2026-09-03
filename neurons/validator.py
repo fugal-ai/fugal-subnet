@@ -67,7 +67,14 @@ def _empty_state() -> dict:
 
 
 def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
-               last_epoch_index: int, first_commit_blocks: dict[str, int] | None = None):
+               last_epoch_index: int, first_commit_blocks: dict[str, int]):
+    """Persist validator state.
+
+    first_commit_blocks is required on purpose. It is the dedup seniority
+    ledger, and defaulting it would let a forgotten argument silently erase
+    every miner's seniority — which hands each author's cluster back to its
+    copier without anything failing. A missing argument must be a TypeError.
+    """
     os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
     payload = {
         "records": {str(uid): dataclasses.asdict(rec) for uid, rec in records.items()},
@@ -177,13 +184,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    # Assert before any chain or network work: a validator running mismatched
-    # libraries does not crash, it quietly computes different scores and sets
-    # divergent weights while looking healthy. Loud failure is the right trade.
-    from fugal_subnet.fingerprint import assert_environment, consensus_digest
-    assert_environment()
-    logger.info("Consensus environment digest: %s", consensus_digest())
-
     from fugal_subnet.config import (
         EPOCH_BUDGET_USD,
         EPOCH_INTERVAL,
@@ -208,6 +208,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
         "LIVE (paid)" if live else "mock (no API spend)",
         f", hard epoch budget=${configured_budget:.2f}" if live else "",
     )
+
+    # Checked before any chain or network work. A validator on mismatched
+    # libraries does not crash — it quietly computes different scores and sets
+    # divergent weights while looking healthy — so live mode fails loudly.
+    # Mock mode only warns: it produces no consensus-bearing scores, and
+    # blocking contributors from running a local testnet over a patch version
+    # buys nothing.
+    from fugal_subnet.fingerprint import assert_environment, consensus_digest
+    assert_environment(strict=live)
+    logger.info("Consensus environment digest: %s", consensus_digest())
 
     import base64
 
@@ -636,6 +646,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, e
     logger.info("Validator shutdown complete")
 
     if once:
+        # os._exit bypasses atexit/finally; bittensor's gRPC channels and
+        # thread pools can hang indefinitely on a clean sys.exit().
         os._exit(0)
 
 

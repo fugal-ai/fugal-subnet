@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,6 +118,64 @@ def check_paid_call_guards(errors: list[str]) -> None:
                 )
 
 
+def _declared_flags(path: Path) -> set[str]:
+    """Every long flag an entry point defines, read statically from its AST.
+
+    Parsed rather than executed: importing these modules pulls in torch and
+    bittensor, and a lint check should not cost thirty seconds or have import
+    side effects. Covers both click (@click.option) and argparse
+    (add_argument on a parser or any group).
+    """
+    flags: set[str] = set()
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name not in ("option", "add_argument"):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                for piece in arg.value.split("/"):        # click's --live/--mock
+                    if piece.startswith("--"):
+                        flags.add(piece)
+    return flags
+
+
+def check_documented_flags(errors: list[str]) -> None:
+    """Every flag the docs show must exist on the command they show it for.
+
+    This class of bug recurred repeatedly: docs advertising --live and
+    --epoch-budget on a script that had neither, a --models example using
+    comma separation against a nargs="+" parser, and a competitive-training
+    command missing --use-backbone, which silently trained on random
+    embeddings. Prose drifts from argparse and nothing catches it.
+    """
+    doc_paths = sorted(ROOT.glob("*.md")) + sorted((ROOT / "docs").glob("*.md"))
+    command = re.compile(
+        r"python\s+((?:scripts|neurons)/[\w_]+\.py)((?:\s+\\\s*\n|[^\n`])*)"
+    )
+    cache: dict[str, set[str]] = {}
+
+    for doc in doc_paths:
+        for match in command.finditer(doc.read_text(encoding="utf-8")):
+            target, rest = match.group(1), match.group(2)
+            script = ROOT / target
+            if not script.exists():
+                errors.append(f"{doc.name}: documents {target}, which does not exist")
+                continue
+            if target not in cache:
+                cache[target] = _declared_flags(script)
+            declared = cache[target]
+            for flag in sorted(set(re.findall(r"(?<![\w-])(--[a-z][a-z0-9-]*)", rest))):
+                if flag not in declared:
+                    errors.append(
+                        f"{doc.relative_to(ROOT)}: documents `{flag}` for {target}, "
+                        "which does not define it"
+                    )
+
+
 def main() -> None:
     errors: list[str] = []
     check_np_load_calls(errors)
@@ -124,6 +183,7 @@ def main() -> None:
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
     check_paid_call_guards(errors)
+    check_documented_flags(errors)
     if errors:
         raise SystemExit("Safety invariant check failed:\n- " + "\n- ".join(errors))
     print("Safety invariants passed.")

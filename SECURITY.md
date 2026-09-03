@@ -38,7 +38,7 @@ Please do not exploit a vulnerability against public infrastructure, access data
 | Validator budget exhaustion | Per-epoch budget, model pool caps, per-query price cap, timeouts, bounded concurrency |
 | Credential disclosure | Environment-based secrets, no-key logging rule, ignored `.env` and key files |
 | Malicious executable answers | Trusted parent-side output comparison (`exec_io` grader), time/resource/output caps, Docker isolation recommended for validators |
-| Validator disagreement | Pinned HF dataset revisions, deterministic HMAC-seeded slicing, immutable hash-pinned graders, commit-reveal epoch artifacts |
+| Validator disagreement | CPU kernel dispatch pinning (torch + numpy/OpenBLAS), quantized routing decisions, pinned HF dataset revisions, deterministic HMAC-seeded slicing, immutable hash-pinned graders, commit-reveal epoch artifacts, environment fingerprint + startup assertion, two-process differential harness in CI |
 
 ## Known limitations
 

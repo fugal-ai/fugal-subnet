@@ -182,7 +182,7 @@ def build_matrix_mock(
         questions: List of question dicts.
         model_pool: List of model IDs.
         mock_fn: Optional callable(model, question) -> (response_text, correct).
-                 If None, uses random 0/1 assignment.
+                 If None, uses SHA256-deterministic grading.
     """
     N = len(questions)
     M = len(model_pool)

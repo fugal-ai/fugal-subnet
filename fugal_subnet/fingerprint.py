@@ -78,9 +78,15 @@ def _torch_runtime() -> dict[str, str]:
 
 
 def grader_hash() -> str:
-    """sha256 of graders.py with newlines normalized, matching the CI pin."""
-    path = Path(__file__).resolve().parent / "graders.py"
-    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    """The canonical grader version string.
+
+    Delegates to fugal_subnet.graders rather than recomputing the digest. A
+    second implementation of the same hash is a thing that can silently drift
+    from the first, and this value is published in every reveal.
+    """
+    from fugal_subnet.graders import grader_hash as canonical
+
+    return canonical()
 
 
 def environment_fingerprint() -> dict:
@@ -129,12 +135,22 @@ def consensus_digest(fingerprint: dict | None = None) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def _expected_pins() -> dict[str, str]:
-    """Exact versions from pyproject, which is the single source of truth."""
+def _expected_pins() -> dict[str, str] | None:
+    """Exact versions from pyproject, the single source of truth.
+
+    Returns None when pyproject.toml is not readable — a wheel installed into
+    site-packages has no sibling pyproject. That means version pins cannot be
+    verified, which is worth a warning, but it must never stop a validator
+    from starting: the CPU-dispatch checks below are the load-bearing half and
+    they do not depend on this file.
+    """
     import re
 
-    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
-    block = text.split("dependencies = [", 1)[1].split("]", 1)[0]
+    try:
+        text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+        block = text.split("dependencies = [", 1)[1].split("]", 1)[0]
+    except (OSError, IndexError):
+        return None
     found = dict(re.findall(r'"([A-Za-z0-9_.-]+)==([^"]+)"', block))
     return {k: v for k, v in found.items() if k in CONSENSUS_PACKAGES}
 
@@ -144,13 +160,20 @@ def check_environment() -> list[str]:
     problems: list[str] = []
 
     installed = _package_versions()
-    for name, expected in _expected_pins().items():
-        actual = installed.get(name, "missing")
-        if actual != expected:
-            problems.append(
-                f"{name} {actual} is installed but pyproject pins {expected} — "
-                "a different build can change computed scores"
-            )
+    pins = _expected_pins()
+    if pins is None:
+        problems.append(
+            "pyproject.toml is not readable, so dependency pins could not be "
+            "verified — confirm this host matches the locked versions"
+        )
+    else:
+        for name, expected in pins.items():
+            actual = installed.get(name, "missing")
+            if actual != expected:
+                problems.append(
+                    f"{name} {actual} is installed but pyproject pins {expected} — "
+                    "a different build can change computed scores"
+                )
 
     for key, expected in DETERMINISM_ENV.items():
         actual = os.environ.get(key)

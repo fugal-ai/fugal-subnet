@@ -176,7 +176,8 @@ Environment=FUGAL_NETWORK=finney
 Environment=FUGAL_NETUID=<NETUID>
 ExecStart=/path/to/fugal-subnet/.venv/bin/python neurons/validator.py \
   --netuid <NETUID> --network finney \
-  --coldkey fugal_validator --hotkey default
+  --coldkey fugal_validator --hotkey default \
+  --live --epoch-budget 50
 Restart=always
 RestartSec=30
 

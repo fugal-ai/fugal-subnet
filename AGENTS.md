@@ -84,6 +84,14 @@ validator must produce byte-identical grades. A grader change is a consensus for
 - The grader version is `sha256(graders.py bytes)`, pinned in `scripts/check_safety_invariants.py`
 - Run `python -m fugal_subnet.attacks.run_attacks` after any grader change — all 22 cases must pass with 0 surprises
 
+## Consensus Invariants
+
+`docs/INVARIANTS.md` states the seven properties the subnet rests on (I1-I7),
+what enforces each, and the known gaps. A consensus-affecting change means
+updating that file and adding a check that enforces the property — the reason
+it exists is that a real consensus bug survived five code reviews because the
+property was never written down.
+
 ## Testing
 
 ```bash

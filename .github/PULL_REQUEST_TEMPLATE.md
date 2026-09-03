@@ -9,6 +9,8 @@ Describe the problem and the approach taken.
 - [ ] `pytest -q`
 - [ ] `python tests/test_integration.py`
 - [ ] `python -m fugal_subnet.attacks.run_attacks`
+- [ ] `python -m fugal_subnet.attacks.run_miner_attacks`
+- [ ] `python scripts/check_determinism.py --perturb`
 - [ ] Tests ran without real OpenRouter calls or API spend
 
 ## Consensus and security checklist

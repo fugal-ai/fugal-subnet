@@ -17,6 +17,9 @@ rules.
 6. **`fugal_subnet/graders.py` is immutable.** It is hash-pinned
    (SHA256 checked in CI). Any byte change breaks consensus. It is excluded from
    ruff via `per-file-ignores`.
+7. **Consensus invariants live in `docs/INVARIANTS.md`.** Read it before
+   changing anything that affects scoring, determinism, or the miner
+   interface. Consensus-affecting changes update it and add a check.
 
 ## Quick Reference
 
@@ -27,8 +30,12 @@ ruff check .
 # Unit + integration tests (no API spend)
 python tests/test_integration.py
 
-# Attack suite (grader verification)
+# Attack suites (grader verification, then hostile miner input)
 python -m fugal_subnet.attacks.run_attacks
+python -m fugal_subnet.attacks.run_miner_attacks
+
+# Scoring determinism (I1) — --perturb simulates a second host
+python scripts/check_determinism.py --perturb
 
 # Safety invariants (grader hash, no-pickle, no paid defaults)
 python scripts/check_safety_invariants.py

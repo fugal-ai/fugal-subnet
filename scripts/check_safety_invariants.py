@@ -183,6 +183,44 @@ def check_documented_flags(errors: list[str]) -> None:
                     )
 
 
+def check_tee_safety(errors: list[str]) -> None:
+    """TEE-specific safety invariants."""
+    # Miner must not use deferred annotations
+    miner_path = ROOT / "neurons" / "miner.py"
+    tree = ast.parse(miner_path.read_text(encoding="utf-8"), filename=str(miner_path))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "__future__"
+            and any(alias.name == "annotations" for alias in node.names)
+        ):
+            errors.append(
+                "neurons/miner.py: deferred annotations break bt.Axon.attach()"
+            )
+
+    # TEE harness must use the same graders.py (import check)
+    harness_path = ROOT / "fugal_subnet" / "tee" / "harness.py"
+    if harness_path.exists():
+        source = harness_path.read_text(encoding="utf-8")
+        if "fugal_subnet.graders" not in source:
+            errors.append(
+                "fugal_subnet/tee/harness.py: must import from fugal_subnet.graders "
+                "(hash-pinned grader ensures TEE grades match validator)"
+            )
+
+    # Verify module must not import or call models
+    verify_path = ROOT / "fugal_subnet" / "tee" / "verify.py"
+    if verify_path.exists():
+        vtree = ast.parse(verify_path.read_text(encoding="utf-8"), filename=str(verify_path))
+        forbidden = {"build_matrix", "call_model", "compute_hidden_states"}
+        for node in ast.walk(vtree):
+            if isinstance(node, ast.Name) and node.id in forbidden:
+                errors.append(
+                    f"fugal_subnet/tee/verify.py: references {node.id} — "
+                    "verification must never call models"
+                )
+
+
 def main() -> None:
     errors: list[str] = []
     check_np_load_calls(errors)
@@ -190,6 +228,7 @@ def main() -> None:
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
     check_paid_call_guards(errors)
+    check_tee_safety(errors)
     check_documented_flags(errors)
     if errors:
         raise SystemExit("Safety invariant check failed:\n- " + "\n- ".join(errors))

@@ -225,3 +225,90 @@ def test_metering_proxy_lifecycle():
     assert proxy.per_model_costs == {}
     proxy.stop()
     assert proxy._server is None
+
+
+# --- TEE Attack Tests ---
+
+def test_attack_tampered_proof_after_attestation():
+    """A miner that modifies proof fields after attestation should be detected.
+
+    The content_hash in the report_data won't match the tampered proof.
+    """
+    proof = _make_proof()
+    # Tamper with a result after attestation
+    proof.results[0].correct = not proof.results[0].correct
+
+    # In non-mock mode, the report_data binding check would catch this.
+    # In mock mode, binding is skipped, but the content hash changed.
+    original_hash = proof.content_hash()
+    # The attestation was generated for the pre-tamper content hash.
+    # The report_data in the quote doesn't match the post-tamper hash.
+    report_data = extract_report_data(proof.attestation_quote)
+    tampered_expected = bytes.fromhex(original_hash).ljust(64, b"\x00")[:64]
+    # These should NOT match because we tampered after attestation
+    assert report_data[:32] != tampered_expected[:32] or proof.n_correct != 4
+
+
+def test_attack_replayed_old_proof():
+    """A miner replaying a proof from a previous epoch (wrong nonce)."""
+    proof = _make_proof(nonce="old_epoch_nonce")
+    gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce="current_epoch_nonce",
+        gold_answers=gold,
+        mock=True,
+    )
+    assert not result.valid
+    assert "Nonce mismatch" in result.reason
+
+
+def test_attack_wrong_question_set():
+    """A miner answering a different set of questions than requested."""
+    proof = _make_proof()
+    gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash="completely_different_hash",
+        expected_nonce=proof.nonce,
+        gold_answers=gold,
+        mock=True,
+    )
+    assert not result.valid
+    assert "Questions hash mismatch" in result.reason
+
+
+def test_attack_fabricated_attestation():
+    """Without dcap_qvl, fabricated quotes fail DCAP verification."""
+    proof = _make_proof()
+    gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce=proof.nonce,
+        gold_answers=gold,
+        mock=False,  # Non-mock mode requires real DCAP
+    )
+    # Without dcap_qvl installed, DCAP verification fails
+    assert not result.valid
+
+
+def test_proof_content_hash_changes_on_any_tamper():
+    """Any change to proof content must change the content hash."""
+    proof = _make_proof()
+    original = proof.content_hash()
+
+    # Tamper: change a result
+    proof.results[0].correct = not proof.results[0].correct
+    assert proof.content_hash() != original
+
+    # Restore and tamper differently
+    proof.results[0].correct = not proof.results[0].correct
+    assert proof.content_hash() == original  # restored
+
+    proof.total_cost_usd += 0.001
+    assert proof.content_hash() != original

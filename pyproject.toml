@@ -52,7 +52,10 @@ dev = [
 # attestation, so it is a declared dependency rather than a manual install
 # mentioned only in the guide.
 tee = [
-    "dcap-qvl>=0.2.0",
+    # Pinned exactly, like the runtime deps: DCAP verification is a consensus
+    # rule for --live validators, so a behaviour change in it is a consensus
+    # change and should arrive through a deliberate bump.
+    "dcap-qvl==0.6.3",
 ]
 
 [project.scripts]

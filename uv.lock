@@ -575,6 +575,21 @@ wheels = [
 ]
 
 [[package]]
+name = "dcap-qvl"
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/44/04/43be611f3c54ebe29d9a8429d4d679db5962af303a8eefa3f1dfcc739028/dcap_qvl-0.6.3.tar.gz", hash = "sha256:cb0196f0b502fcecec04e8181a42fd8cc267603db2e37f421e8988436ca06cd8", size = 289536, upload-time = "2026-08-31T10:45:23.989Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/4a/b6c810c8469872952674c8f546c4e73a20637b2eabee5f183d71bce7f0fc/dcap_qvl-0.6.3-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:993f7bc59e6cb7de0a383f2cd9b99f1f151f9d399a70783cfc8bc886318fdbfd", size = 2486945, upload-time = "2026-08-31T10:45:12.865Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/5c/5812299b6a8ee7ee7eb40a9f7cfa8f59e5b9e1bc06e1a4911aa3978f8087/dcap_qvl-0.6.3-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:1a16bb8b9eb21f27e10f1886735367da82ca80e334e38ea8df4c0d80c1211373", size = 2379542, upload-time = "2026-08-31T10:45:14.59Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/ed/fa6bf937ca1c9d9c12c970c4c642730e764026b762014790f3086f2cefc9/dcap_qvl-0.6.3-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:7bb441177dd13f71ea6ad6aca827956a85351d0e61673ced46aac1921ac59261", size = 2749853, upload-time = "2026-08-31T10:45:16.114Z" },
+    { url = "https://files.pythonhosted.org/packages/df/e9/ba237d9da48fa794bbf257af17b1ec60bdc652813f16103ca27cde88eda4/dcap_qvl-0.6.3-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3ac72a0ef2eb7e591ac66646b3899a0e008a46bf743d07716c34d7540214c295", size = 2863205, upload-time = "2026-08-31T10:45:17.995Z" },
+    { url = "https://files.pythonhosted.org/packages/79/8b/964da83b960d30bdc749f3040b6c0b4ed607e75d55cf1eb7d8650840740a/dcap_qvl-0.6.3-cp38-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:3a56d1089eb78011877013cbb86a119bde7d53e998f015cafdcc2e8c733cf579", size = 2747578, upload-time = "2026-08-31T10:45:19.49Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/bd/af8e4104fa82d71e4f5eb9697933af96e0f8bc3c9e387699c0705d00c095/dcap_qvl-0.6.3-cp38-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:4144d8c862592f8d4420d4b4acbafd00161ab55cbe0e29b9a10a84383b98115c", size = 2860051, upload-time = "2026-08-31T10:45:20.928Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/bc/abab11d85d7c1fbb01ddfaa4a2fd4bc396f7c68fa7cc29c7e71786c0b585/dcap_qvl-0.6.3-cp38-abi3-win_amd64.whl", hash = "sha256:c811b0eaff88b60d43d351a318f03b21e830f1969fb3b6426c290aa3d292c93b", size = 2233447, upload-time = "2026-08-31T10:45:22.314Z" },
+]
+
+[[package]]
 name = "decorator"
 version = "5.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -734,6 +749,9 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
+tee = [
+    { name = "dcap-qvl" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -741,6 +759,7 @@ requires-dist = [
     { name = "click", specifier = "==8.5.0" },
     { name = "cmaes", specifier = "==0.13.1" },
     { name = "datasets", specifier = "==5.0.1" },
+    { name = "dcap-qvl", marker = "extra == 'tee'", specifier = "==0.6.3" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.100.0" },
     { name = "math-verify", specifier = "==0.9.0" },
@@ -753,7 +772,7 @@ requires-dist = [
     { name = "torch", specifier = "==2.14.0" },
     { name = "transformers", specifier = "==5.16.1" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "tee"]
 
 [[package]]
 name = "h11"

@@ -61,6 +61,13 @@ jobs:
       - name: Run adversarial miner suite (I2, I6)
         run: uv run python -m fugal_subnet.attacks.run_miner_attacks
 
+      # I8/I3. Every case here verified against production code before the
+      # attestation was bound to what it claims to prove. The attacker is
+      # modelled as owning real Intel TDX hardware, so DCAP genuinely passes
+      # and only the bindings can stop them.
+      - name: Run adversarial TEE suite (I8, I3)
+        run: uv run python -m fugal_subnet.attacks.run_tee_attacks
+
       # I1. --perturb unpins kernel dispatch and thread counts to stand in for
       # a second host; the thread lever is what makes it bite on one runner.
       - name: Check scoring determinism (I1)

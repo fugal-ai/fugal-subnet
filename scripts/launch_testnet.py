@@ -494,9 +494,15 @@ def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
     if mock:
         cmd.append("--mock")
     else:
-        # The resolved --epoch-budget wins outright; passing it explicitly stops
-        # an ambient FUGAL_EPOCH_BUDGET from silently raising the validator's cap.
-        cmd.extend(["--live", "--epoch-budget", str(epoch_budget)])
+        # No --epoch-budget: under the TEE architecture the validator never
+        # calls a model, so it has no API budget to cap. Miners pay for their
+        # own inference inside the TEE. Passing the flag would now be a hard
+        # error from click, and test_paid_safety asserts the validator has no
+        # epoch_budget parameter precisely so this cannot creep back.
+        #
+        # --epoch-budget still governs what THIS script authorises for the
+        # miner-side runs it launches; it is passed through the environment.
+        cmd.append("--live")
 
     mode_str = "(mock)" if mock else "(REAL API — costs money)"
     print(f"  Running validator epoch {epoch_num} {mode_str}...", flush=True)

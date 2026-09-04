@@ -15,7 +15,6 @@ This script:
 Usage (inside Docker container with subtensor running):
     python scripts/setup_local_testnet.py
 """
-import base64
 import hashlib
 import logging
 import os
@@ -199,182 +198,294 @@ def train_head(output_path: str = "data/local_head.npz"):
     return output_path
 
 
-def start_miner(wallet, subtensor_network, netuid, head_path, port=8091):
-    """Start miner in a background thread."""
-    import bittensor as bt
-
-    from fugal_subnet.protocol import FugalSynapse
-
-    with open(head_path, "rb") as f:
-        head_data = f.read()
-    head_b64 = base64.b64encode(head_data).decode("ascii")
-    head_hash = hashlib.sha256(head_data).hexdigest()
-    with np.load(head_path, allow_pickle=False) as npz:
-        model_pool = [str(m) for m in npz["models"]]
-
-    subtensor = bt.Subtensor(network=subtensor_network)
-
-    def forward(synapse: FugalSynapse) -> FugalSynapse:
-        logger.info("[Miner] Serving head for epoch %s", synapse.epoch_id)
-        synapse.head_npz_b64 = head_b64
-        synapse.model_pool = model_pool
-        synapse.head_commit_hash = head_hash
-        return synapse
-
-    axon = bt.Axon(wallet=wallet, port=port)
-    axon.attach(forward_fn=forward)
-    axon.serve(netuid=netuid, subtensor=subtensor)
-    axon.start()
-    logger.info("[Miner] Axon serving on port %d", port)
-    return axon
+# A deterministic stand-in for a model reply. The container has no API key and
+# must never spend money, but the point of this harness is to exercise the REAL
+# TEE path end to end, so only the network call is replaced — the routing,
+# metering, grading, attestation, verification and scoring are all genuine.
+_SKILL = {}
 
 
-def run_epoch(validator_wallet, subtensor, netuid):
-    """Run one validator epoch."""
-    import bittensor as bt
+def _stub_model_call(proxy, model_id, question):
+    from fugal_subnet.tee.runtime import APICallRecord
 
-    from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
-    from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
-    from fugal_subnet.dedup import find_duplicates
-    from fugal_subnet.head_eval import evaluate_head, load_head_from_b64
-    from fugal_subnet.matrix import build_matrix_mock
-    from fugal_subnet.protocol import FugalSynapse
-    from fugal_subnet.rewards import compute_weights
-    from fugal_subnet.scoring import ScoringState, update_scores
-    from fugal_subnet.soft_targets import compute_soft_targets
+    digest = hashlib.sha256(
+        f"{question['question_id']}|{model_id}".encode()
+    ).digest()
+    correct = (digest[0] / 255.0) < _SKILL.get(model_id, 0.5)
+    text = question["gold"] if correct else "0"
+    proxy.records.append(APICallRecord(
+        model_id=model_id, prompt_tokens=500, completion_tokens=300,
+        cost_usd=proxy.price_call(model_id, 500, 300), timestamp=0.0,
+        response_hash=hashlib.sha256(text.encode()).hexdigest(),
+    ))
+    return text
 
-    metagraph = subtensor.metagraph(netuid)
-    dendrite = bt.Dendrite(wallet=validator_wallet)
-    logger.info("[Validator] Metagraph: %d neurons", metagraph.n)
 
-    pool = []
+def _synthetic_pool(n=100):
     rng = np.random.RandomState(42)
-    for i in range(100):
-        pool.append({
-            "prompt": f"What is {rng.randint(1,100)} + {rng.randint(1,100)}?",
+    return [
+        {
+            "prompt": f"What is {rng.randint(1, 100)} + {rng.randint(1, 100)}?",
             "gold": str(rng.randint(2, 200)),
             "grader_id": "numeric_final",
             "benchmark": "synthetic",
             "question_id": f"syn_{i:04d}",
             "metadata": {},
-        })
+        }
+        for i in range(n)
+    ]
+
+
+def start_miner(wallet, subtensor_network, netuid, head_path, port=8091,
+                pool=None, models=None, slice_size=50, explore_size=3):
+    """Start a TEE miner in a background thread.
+
+    Serves FugalProofSynapse — the real wire protocol — and recomputes its
+    proof whenever the validator asks about an epoch it has not run yet.
+    """
+    import bittensor as bt
+
+    from fugal_subnet.protocol import FugalProofSynapse
+    from fugal_subnet.tee import harness as harness_mod
+    from fugal_subnet.tee.runtime import MeteringProxy, TEERuntime
+
+    with open(head_path, "rb") as f:
+        head_data = f.read()
+
+    prices = _local_prices(models)
+    hidden = _local_hidden(pool, head_path)
+    harness_mod._call_model = _stub_model_call
+
+    class _Proxy(MeteringProxy):
+        def start(self):
+            self.prices = prices
+
+    cache = {}
+
+    def forward(synapse: FugalProofSynapse) -> FugalProofSynapse:
+        epoch_id, nonce_hex = synapse.epoch_id, synapse.nonce
+        logger.info("[Miner] Proof requested for epoch %s", epoch_id)
+        if epoch_id not in cache:
+            proxy = _Proxy(port=0)
+            proxy.start()
+            proof = harness_mod.run_benchmark(
+                nonce=nonce_hex, head_bytes=head_data, benchmark_pool=pool,
+                proxy=proxy, hidden_states=hidden, slice_size=slice_size,
+                epoch_id=epoch_id, source_hash="local-testnet",
+                explore_models=models, explore_size=explore_size,
+            )
+            proof.timestamp = 0.0
+            proof.attestation_quote = TEERuntime(mock=True).generate_attestation(
+                bytes.fromhex(proof.content_hash())
+            )
+            cache[epoch_id] = proof
+            logger.info("[Miner] Ran benchmark: %d/%d correct, $%.6f",
+                        proof.n_correct, proof.n_total, proof.total_cost_usd)
+        proof = cache[epoch_id]
+        synapse.proof_hash = proof.content_hash()
+        synapse.weights_hash = proof.weights_hash
+        # No bundle store in-container: the validator reads the proof from the
+        # shared in-process cache below rather than downloading it.
+        synapse.proof_bundle_url = f"memory://{epoch_id}"
+        return synapse
+
+    subtensor = bt.Subtensor(network=subtensor_network)
+    axon = bt.Axon(wallet=wallet, port=port)
+    axon.attach(forward_fn=forward)
+    axon.serve(netuid=netuid, subtensor=subtensor)
+    axon.start()
+    logger.info("[Miner] TEE axon serving on port %d", port)
+    return axon, cache, head_data
+
+
+def _local_prices(models):
+    return {m: (1e-7 * (i + 1), 2e-7 * (i + 1)) for i, m in enumerate(models)}
+
+
+def _local_hidden(pool, head_path):
+    """Synthetic embeddings — the backbone is too heavy for a container demo.
+
+    Deterministic given the head, so miner and validator agree.
+    """
+    with np.load(head_path, allow_pickle=False) as npz:
+        dim = int(npz["W"].shape[1])
+    rng = np.random.RandomState(7)
+    h = rng.randn(len(pool), dim).astype(np.float32)
+    h /= np.linalg.norm(h, axis=1, keepdims=True)
+    return h
+
+
+def run_epoch(validator_wallet, subtensor, netuid, pool, models, proof_cache,
+              head_data, slice_size=50, explore_size=3):
+    """Run one validator epoch against the real TEE verification path."""
+    import bittensor as bt
+
+    from fugal_subnet.benchmarks.slicer import (
+        derive_nonce,
+        epoch_id_for_block,
+        epoch_index_for_block,
+        select_slice,
+    )
+    from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
+    from fugal_subnet.dedup import find_duplicates
+    from fugal_subnet.exploration import expected_exploration
+    from fugal_subnet.head_eval import HeadScore
+    from fugal_subnet.protocol import FugalProofSynapse
+    from fugal_subnet.reference_frame import (
+        ReferenceFrame,
+        accumulate_exploration,
+        best_model,
+        reference_cost,
+    )
+    from fugal_subnet.rewards import compute_weights
+    from fugal_subnet.scoring import ScoringState, update_scores
+    from fugal_subnet.tee.proof import compute_questions_hash
+    from fugal_subnet.tee.verify import verify_proof
+
+    metagraph = subtensor.metagraph(netuid)
+    dendrite = bt.Dendrite(wallet=validator_wallet)
+    logger.info("[Validator] Metagraph: %d neurons", metagraph.n)
 
     block = subtensor.get_current_block()
     block_hash = str(block)
-    epoch_id = f"e000001_{block_hash[-8:]}"
+    # Same helper the production validator uses — see slicer.epoch_id_for_block.
+    epoch_id = epoch_id_for_block(epoch_index_for_block(block, 1))
     nonce = derive_nonce(epoch_id, block_hash)
-    questions = select_slice(nonce, pool, 50)
+    questions = select_slice(nonce, pool, slice_size)
+    question_ids = [q["question_id"] for q in questions]
+    explore_map = expected_exploration(
+        nonce, pool, set(question_ids), models, explore_size,
+    )
+    gold = {q["question_id"]: q for q in pool}
 
-    benchmark_hash = hashlib.sha256(
-        "|".join(q["question_id"] for q in questions).encode()
-    ).hexdigest()[:16]
-    logger.info("[Validator] Epoch %s — %d questions, hash=%s",
-                epoch_id, len(questions), benchmark_hash)
+    print(f"[Validator] Epoch {epoch_id}: {len(questions)} scored + "
+          f"{len(explore_map)} exploration questions", flush=True)
 
     commitment = commit_epoch(epoch_id, questions, block_hash)
     print(f"[Validator] Committed: {commitment.commit_hash}", flush=True)
 
-    synapse = FugalSynapse(epoch_id=epoch_id, benchmark_hash=benchmark_hash)
-
-    # Override axon IPs to localhost — miner is in the same container
+    synapse = FugalProofSynapse(epoch_id=epoch_id, nonce=nonce.hex())
     axons = metagraph.axons
     for ax in axons:
         if ax.port and ax.port > 0:
-            ax.ip = "127.0.0.1"
-    print(f"[Validator] Querying {len(axons)} axons (overridden to localhost)...", flush=True)
-    for i, ax in enumerate(axons):
-        print(f"  Axon {i}: {ax.ip}:{ax.port}", flush=True)
+            ax.ip = "127.0.0.1"      # miner shares this container
+    responses = dendrite.query(axons, synapse, timeout=60)
+    print(f"[Validator] Got {len(responses)} responses", flush=True)
 
-    try:
-        responses = dendrite.query(axons, synapse, timeout=30)
-        print(f"[Validator] Got {len(responses)} responses", flush=True)
-    except Exception as e:
-        import traceback
-        print(f"[Validator] dendrite.query FAILED: {e}", flush=True)
-        traceback.print_exc()
-        raise
-
-    heads = {}
-    head_hashes = {}
+    verified, head_hashes, prices = {}, {}, _local_prices(models)
     for uid, resp in enumerate(responses):
-        resp_type = type(resp).__name__
-        b64 = resp.get("head_npz_b64") if isinstance(resp, dict) else getattr(resp, "head_npz_b64", None)
-        if not b64:
-            print(f"  UID {uid}: no head (resp type={resp_type})", flush=True)
+        proof_hash = getattr(resp, "proof_hash", "")
+        if not proof_hash:
             continue
-        try:
-            head = load_head_from_b64(b64)
-            commit_h = resp.get("head_commit_hash", "") if isinstance(resp, dict) else getattr(resp, "head_commit_hash", "")
-            head.commit_hash = commit_h
-            heads[uid] = head
-            head_hashes[uid] = commit_h
-            print(f"  UID {uid}: head OK ({len(head.models)} models)", flush=True)
-        except Exception as e:
-            print(f"  UID {uid}: bad head: {e}", flush=True)
+        proof = proof_cache.get(epoch_id)
+        if proof is None:
+            print(f"  UID {uid}: no proof in bundle store", flush=True)
+            continue
 
-    if not heads:
-        print("[Validator] No valid heads received!", flush=True)
+        result = verify_proof(
+            proof, approved_measurements=set(),
+            expected_questions_hash=compute_questions_hash(question_ids),
+            expected_nonce=nonce.hex(), gold_answers=gold,
+            expected_question_ids=set(question_ids),
+            expected_exploration=explore_map,
+            expected_weights_hash=proof.weights_hash,
+            expected_proof_hash=proof_hash,
+            head_bytes=head_data, mock=True,
+        )
+        if not result.valid:
+            print(f"  UID {uid}: proof REJECTED — {result.reason}", flush=True)
+            continue
+        verified[uid] = proof
+        head_hashes[uid] = proof.weights_hash
+        print(f"  UID {uid}: proof verified ({proof.n_correct}/{proof.n_total} "
+              f"correct, ${proof.scored_cost_usd:.6f})", flush=True)
+
+    if not verified:
+        print("[Validator] No valid proofs!", flush=True)
         return False
 
-    print(f"[Validator] {len(heads)} valid heads, building matrix...", flush=True)
-    all_models = sorted(set(m for head in heads.values() for m in head.models))
-    matrix_result = build_matrix_mock(questions, all_models)
-    soft = compute_soft_targets(matrix_result.matrix)
-    model_costs = {m: 0.005 for m in all_models}
-    print(f"[Validator] Matrix: {matrix_result.matrix.shape}", flush=True)
+    frame = accumulate_exploration(ReferenceFrame(), [
+        (r.routed_model, r.correct, r.prompt_tokens, r.completion_tokens)
+        for uid in sorted(verified)
+        for r in verified[uid].exploration_results
+    ])
+    ref_model, acc_best = best_model(frame, prices)
+    print(f"[Validator] Reference model: {ref_model} (acc={acc_best:.3f})", flush=True)
 
-    hidden_dim = heads[next(iter(heads))].W.shape[1]
-    np.random.seed(int.from_bytes(nonce[:4], "big"))
-    hidden = np.random.randn(len(questions), hidden_dim).astype(np.float32)
-    hidden /= np.linalg.norm(hidden, axis=1, keepdims=True)
+    model_index = {m: i for i, m in enumerate(sorted(prices))}
+    epoch_scores, routing = {}, {}
+    for uid, proof in verified.items():
+        scored = proof.scored_results
+        ref = reference_cost(
+            frame, prices, ref_model,
+            prompt_tokens=sum(r.prompt_tokens for r in scored),
+            n_questions=len(scored), default_completion_tokens=300.0,
+        )
+        epoch_scores[uid] = HeadScore(
+            accuracy=proof.accuracy, cost_efficiency=0.0, kl_score=0.0,
+            routing_decisions=np.array([], dtype=np.int32),
+            correct_mask=np.array([r.correct for r in scored], dtype=bool),
+            n_correct=proof.n_correct, n_scored=proof.n_total,
+            total_head_cost=proof.scored_cost_usd, total_oracle_cost=ref,
+        )
+        routing[uid] = np.array(
+            [model_index.get(r.routed_model, -1)
+             for r in sorted(scored, key=lambda x: x.question_id)],
+            dtype=np.int32,
+        )
 
-    epoch_scores = {}
-    for uid, head in heads.items():
-        score = evaluate_head(head, hidden, matrix_result.matrix,
-                              all_models, soft, model_costs)
-        epoch_scores[uid] = score
-        print(f"  UID {uid}: acc={score.accuracy:.3f} cost_eff={score.cost_efficiency:.3f} kl={score.kl_score:.3f}", flush=True)
+    dupes = find_duplicates(routing, {uid: uid for uid in verified})
+    print(f"[Validator] Dedup: {dupes or '{}'}", flush=True)
 
-    head_outputs = {uid: s.routing_decisions for uid, s in epoch_scores.items()}
-    # Demo flow skips on-chain commitments — use UID order as stand-in seniority.
-    commit_blocks = {uid: uid for uid in heads}
-    dupes = find_duplicates(head_outputs, commit_blocks)
-    print(f"[Validator] Dedup: {dupes}", flush=True)
-
-    state = ScoringState()
-    state = update_scores(state, epoch_scores, head_hashes)
+    state = update_scores(
+        ScoringState(), epoch_scores, head_hashes, acc_best=acc_best,
+        hotkeys={uid: metagraph.hotkeys[uid] for uid in verified
+                 if uid < len(metagraph.hotkeys)},
+        n_questions=len(questions), pool_size=len(pool),
+    )
     uids, weights = compute_weights(state.records, dedup_disqualified=dupes)
-    print(f"[Validator] Weights: UIDs={uids} weights={[f'{w:.4f}' for w in weights]}", flush=True)
+    for uid, rec in state.records.items():
+        print(f"  UID {uid}: quality={rec.quality:.3f} thrift={rec.thrift:.3f} "
+              f"score={rec.composite_score:.4f}", flush=True)
+    print(f"[Validator] Weights: UIDs={uids} "
+          f"weights={[f'{w:.4f}' for w in weights]}", flush=True)
 
     print("[Validator] Setting weights on chain...", flush=True)
     try:
         success, msg = subtensor.set_weights(
             wallet=validator_wallet, netuid=netuid,
             uids=uids, weights=weights,
-            wait_for_inclusion=True,
-            wait_for_finalization=False,
+            wait_for_inclusion=True, wait_for_finalization=False,
         )
     except Exception as e:
-        success = False
-        msg = str(e)
+        success, msg = False, str(e)
     if success:
         print("[Validator] Weights set successfully!", flush=True)
     else:
         print(f"[Validator] Weight-setting failed: {msg}", flush=True)
-        print("[Validator] (Chain config issue — pipeline itself completed OK)", flush=True)
+        print("[Validator] (Chain config issue — pipeline itself completed OK)",
+              flush=True)
         success = True
 
-    epoch_score_dicts = {
-        uid: {"acc": s.accuracy, "cost_eff": s.cost_efficiency, "kl": s.kl_score}
-        for uid, s in epoch_scores.items()
-    }
-    epoch_weight_map = dict(zip(uids, [weights[i] for i in range(len(uids))]))
-    routing_decisions = {uid: s.routing_decisions.tolist() for uid, s in epoch_scores.items()}
-    verified = reveal_epoch(epoch_id, questions,
-                            matrix_result.matrix, all_models, model_costs,
-                            head_hashes, routing_decisions,
-                            epoch_score_dicts, epoch_weight_map)
-    if verified:
+    all_models = sorted(prices)
+    matrix = np.zeros((len(questions), len(all_models)), dtype=np.int32)
+    q_index = {qid: i for i, qid in enumerate(question_ids)}
+    for proof in verified.values():
+        for r in proof.scored_results:
+            if r.question_id in q_index and r.routed_model in model_index:
+                matrix[q_index[r.question_id], model_index[r.routed_model]] = int(r.correct)
+
+    verified_reveal = reveal_epoch(
+        epoch_id, questions, matrix, all_models,
+        {m: prices[m][0] + prices[m][1] for m in all_models},
+        head_hashes, {uid: routing[uid].tolist() for uid in routing},
+        {uid: {"quality": state.records[uid].quality,
+               "thrift": state.records[uid].thrift,
+               "score": state.records[uid].composite_score}
+         for uid in verified},
+        dict(zip(uids, weights)),
+    )
+    if verified_reveal:
         logger.info("[Validator] Commit-reveal verified!")
     else:
         logger.error("[Validator] Commit-reveal FAILED!")
@@ -410,13 +521,25 @@ def main():
     logger.info("\n--- Step 5: Train head ---")
     head_path = train_head()
 
-    print("--- Step 6: Start miner ---", flush=True)
-    axon = start_miner(miner_wallet, CHAIN_ENDPOINT, netuid, head_path)
+    print("--- Step 6: Start TEE miner ---", flush=True)
+    pool = _synthetic_pool()
+    with np.load(head_path, allow_pickle=False) as npz:
+        models = [str(m) for m in npz["models"]]
+    # Pricier models answer more of the synthetic pool correctly, so the
+    # reference frame has a real signal to find rather than noise.
+    _SKILL.update({m: 0.25 + 0.6 * i / max(1, len(models) - 1)
+                   for i, m in enumerate(models)})
+
+    axon, proof_cache, head_data = start_miner(
+        miner_wallet, CHAIN_ENDPOINT, netuid, head_path,
+        pool=pool, models=models,
+    )
     print("Miner started, waiting 5s...", flush=True)
     time.sleep(5)
 
-    print("--- Step 7: Run validator epoch ---", flush=True)
-    success = run_epoch(val_wallet, subtensor, netuid)
+    print("--- Step 7: Run validator epoch (TEE proof verification) ---", flush=True)
+    success = run_epoch(val_wallet, subtensor, netuid, pool, models,
+                        proof_cache, head_data)
 
     logger.info("\n--- Step 8: Cleanup ---")
     axon.stop()

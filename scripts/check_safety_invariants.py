@@ -112,6 +112,47 @@ def check_immutable_v1_grader(errors: list[str]) -> None:
         )
 
 
+def check_epoch_id_single_source(errors: list[str]) -> None:
+    """Both neurons must derive epoch identity from the same helper.
+
+    The nonce is sha256(f"{epoch_id}:{block_hash}"), so if the miner and the
+    validator format the identifier differently they derive different nonces,
+    select different question slices, and every proof fails the nonce check.
+    That shipped: the miner used f"e_{block_hash[:16]}" and the validator used
+    f"e{epoch_index:08d}", their slices overlapped 45/300, and the subnet could
+    not have set weights.
+
+    A behavioural test cannot catch this — a test naturally derives the id once
+    and passes it to both sides, which is exactly the divergence it needs to
+    detect. So the invariant is structural: neither neuron may build an
+    epoch_id itself.
+    """
+    for name in ("miner.py", "validator.py"):
+        path = ROOT / "neurons" / name
+        if not path.exists():
+            continue
+        source = path.read_text(encoding="utf-8")
+        if "epoch_id_for_block" not in source:
+            errors.append(
+                f"neurons/{name}: must derive epoch identity from "
+                "slicer.epoch_id_for_block, the single source of truth"
+            )
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if "epoch_id" not in targets:
+                continue
+            # A locally constructed string is the bug; a call is the fix.
+            if isinstance(node.value, (ast.JoinedStr, ast.Constant, ast.BinOp)):
+                errors.append(
+                    f"neurons/{name}:{node.lineno}: epoch_id is built locally. "
+                    "Call slicer.epoch_id_for_block instead — a second "
+                    "formatting of the epoch id is a consensus break"
+                )
+
+
 def check_price_table_pinned(errors: list[str]) -> None:
     """The consensus price table must match its pin, and be well-formed."""
     path = ROOT / "data" / "models.json"
@@ -274,6 +315,7 @@ def main() -> None:
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
     check_price_table_pinned(errors)
+    check_epoch_id_single_source(errors)
     check_paid_call_guards(errors)
     check_tee_safety(errors)
     check_documented_flags(errors)

@@ -375,74 +375,18 @@ def run_validator_once(coldkey: str, netuid: int, state_path: str,
 
 # ── chain fixtures ────────────────────────────────────────────────────────────
 
-def relax_chain_limits(subtensor, netuid: int) -> None:
-    """Drop the localnet's transaction rate limits via sudo (Alice).
-
-    A fresh chain ships with TxRateLimit=1000 blocks and ServingRateLimit=50,
-    so a miner that commits its head hash and then serves its axon has the
-    second extrinsic rejected — `Custom error: 11` — and stays unreachable at
-    0.0.0.0 forever. Mainnet spaces these naturally across hour-long epochs;
-    a rehearsal running an epoch every 24 seconds cannot.
-
-    This is test-chain configuration, not a subnet change: it makes the local
-    chain behave like a chain with room to breathe, so the thing under test is
-    the subnet rather than the rate limiter.
-    """
-    from scripts.setup_local_testnet import get_alice_keypair, submit_extrinsic
-
-    alice = get_alice_keypair()
-    for call_name, params in (
-        ("sudo_set_tx_rate_limit", {"tx_rate_limit": 0}),
-        ("sudo_set_serving_rate_limit", {"netuid": netuid, "serving_rate_limit": 0}),
-        ("sudo_set_weights_set_rate_limit",
-         {"netuid": netuid, "weights_set_rate_limit": 0}),
-    ):
-        try:
-            inner = subtensor.substrate.compose_call(
-                call_module="AdminUtils", call_function=call_name, call_params=params,
-            )
-            sudo = subtensor.substrate.compose_call(
-                call_module="Sudo", call_function="sudo", call_params={"call": inner},
-            )
-            submit_extrinsic(subtensor, sudo, alice)
-            print(f"  chain config: {call_name} -> {list(params.values())[-1]}",
-                  flush=True)
-        except Exception as e:
-            print(f"  chain config: {call_name} failed: {e}", flush=True)
-
-
-def stake_validator(subtensor, wallet, netuid: int, amount: float = 1000.0) -> None:
-    """Give a validator enough stake to earn a permit.
-
-    Without stake there is no validator permit and set_weights is rejected, so
-    the weight path — the thing this rehearsal exists to prove — never runs.
-    """
-    try:
-        subtensor.add_stake(
-            wallet=wallet, netuid=netuid,
-            hotkey_ss58=wallet.hotkey.ss58_address,
-            amount=bt_balance(amount),
-            wait_for_inclusion=True,
-        )
-        print(f"  staked {amount} TAO to {wallet.name}", flush=True)
-    except Exception as e:
-        print(f"  staking {wallet.name} failed: {e}", flush=True)
-
-
-def bt_balance(tao: float):
-    import bittensor as bt
-    return bt.Balance.from_tao(tao)
-
-
 def setup_subnet(subtensor, coldkeys: list[str]) -> tuple[int, dict]:
     """Create a subnet and register every wallet on it. Reuses the working
     primitives in setup_local_testnet rather than reimplementing extrinsics."""
     import bittensor as bt
 
     from scripts.setup_local_testnet import (
+        activate_subnet,
         create_subnet,
         fund_wallet,
         register_wallet,
+        relax_chain_limits,
+        stake_validator,
     )
 
     netuid = create_subnet(subtensor)
@@ -460,21 +404,7 @@ def setup_subnet(subtensor, coldkeys: list[str]) -> tuple[int, dict]:
         wallets[name] = w
         fund_wallet(subtensor, w, amount_tao=10000)
 
-    # Activate the subnet. Without start_call the subnet has no first-emission
-    # block, staking is rejected with SubtokenDisabled, and validators never
-    # earn a permit — so set_weights, the thing this rehearsal exists to prove,
-    # can never run.
-    from scripts.setup_local_testnet import get_alice_keypair, submit_extrinsic
-    try:
-        call = subtensor.substrate.compose_call(
-            call_module="SubtensorModule", call_function="start_call",
-            call_params={"netuid": netuid},
-        )
-        submit_extrinsic(subtensor, call, get_alice_keypair())
-        print(f"  Subnet {netuid} activated (start_call)", flush=True)
-    except Exception as e:
-        print(f"  start_call failed: {e}", flush=True)
-
+    activate_subnet(subtensor, netuid)
     relax_chain_limits(subtensor, netuid)
 
     for name, w in wallets.items():

@@ -15,7 +15,9 @@ This script:
 Usage (inside Docker container with subtensor running):
     python scripts/setup_local_testnet.py
 """
+import base64
 import hashlib
+import json
 import logging
 import os
 import sys
@@ -145,6 +147,66 @@ def register_wallet(subtensor, wallet, netuid):
             logger.info("  Registration returned False — may already be registered")
     except Exception as e:
         logger.warning("  Registration: %s", e)
+
+
+def activate_subnet(subtensor, netuid: int) -> None:
+    """Start the subnet. Without this it has no first-emission block, staking is
+    rejected with SubtokenDisabled, validators never earn a permit, and
+    set_weights fails — so the pipeline runs and then quietly cannot land."""
+    try:
+        call = subtensor.substrate.compose_call(
+            call_module="SubtensorModule", call_function="start_call",
+            call_params={"netuid": netuid},
+        )
+        submit_extrinsic(subtensor, call, get_alice_keypair())
+        logger.info("Subnet %d activated (start_call)", netuid)
+    except Exception as e:
+        logger.warning("start_call failed: %s", e)
+
+
+def relax_chain_limits(subtensor, netuid: int) -> None:
+    """Drop the local chain's transaction rate limits via sudo (Alice).
+
+    A fresh chain ships with TxRateLimit=1000 blocks and ServingRateLimit=50,
+    so a miner that commits its head hash and then serves its axon has the
+    second extrinsic rejected — `Custom error: 11` — and stays unreachable at
+    0.0.0.0. Mainnet spaces these across hour-long epochs; a local run cannot.
+
+    Test-chain configuration, not a subnet change.
+    """
+    alice = get_alice_keypair()
+    for call_name, params in (
+        ("sudo_set_tx_rate_limit", {"tx_rate_limit": 0}),
+        ("sudo_set_serving_rate_limit", {"netuid": netuid, "serving_rate_limit": 0}),
+        ("sudo_set_weights_set_rate_limit",
+         {"netuid": netuid, "weights_set_rate_limit": 0}),
+    ):
+        try:
+            inner = subtensor.substrate.compose_call(
+                call_module="AdminUtils", call_function=call_name, call_params=params,
+            )
+            sudo = subtensor.substrate.compose_call(
+                call_module="Sudo", call_function="sudo", call_params={"call": inner},
+            )
+            submit_extrinsic(subtensor, sudo, alice)
+            logger.info("chain config: %s -> %s", call_name, list(params.values())[-1])
+        except Exception as e:
+            logger.warning("chain config %s failed: %s", call_name, e)
+
+
+def stake_validator(subtensor, wallet, netuid: int, amount: float = 1000.0) -> None:
+    """Stake a validator so it earns a permit; without one set_weights fails."""
+    import bittensor as bt
+
+    try:
+        subtensor.add_stake(
+            wallet=wallet, netuid=netuid,
+            hotkey_ss58=wallet.hotkey.ss58_address,
+            amount=bt.Balance.from_tao(amount), wait_for_inclusion=True,
+        )
+        logger.info("Staked %s TAO to %s", amount, wallet.name)
+    except Exception as e:
+        logger.warning("Staking %s failed: %s", wallet.name, e)
 
 
 def train_head(output_path: str = "data/local_head.npz"):
@@ -282,11 +344,11 @@ def start_miner(wallet, subtensor_network, netuid, head_path, port=8091,
             logger.info("[Miner] Ran benchmark: %d/%d correct, $%.6f",
                         proof.n_correct, proof.n_total, proof.total_cost_usd)
         proof = cache[epoch_id]
+        # Inline, exactly as neurons/miner.py serves it — no bundle store.
+        synapse.proof_json = json.dumps(proof.to_dict(), separators=(",", ":"))
+        synapse.head_npz_b64 = base64.b64encode(head_data).decode("ascii")
         synapse.proof_hash = proof.content_hash()
         synapse.weights_hash = proof.weights_hash
-        # No bundle store in-container: the validator reads the proof from the
-        # shared in-process cache below rather than downloading it.
-        synapse.proof_bundle_url = f"memory://{epoch_id}"
         return synapse
 
     subtensor = bt.Subtensor(network=subtensor_network)
@@ -372,15 +434,20 @@ def run_epoch(validator_wallet, subtensor, netuid, pool, models, proof_cache,
     responses = dendrite.query(axons, synapse, timeout=60)
     print(f"[Validator] Got {len(responses)} responses", flush=True)
 
+    # Parse the inline bundle with the real validator's helper, so this demo
+    # exercises the production path rather than a parallel one.
+    from neurons.validator import _get_bundle_for_uid
+
     verified, head_hashes, prices = {}, {}, _local_prices(models)
     for uid, resp in enumerate(responses):
         proof_hash = getattr(resp, "proof_hash", "")
         if not proof_hash:
             continue
-        proof = proof_cache.get(epoch_id)
-        if proof is None:
-            print(f"  UID {uid}: no proof in bundle store", flush=True)
+        bundle = _get_bundle_for_uid(uid, resp)
+        if bundle is None:
+            print(f"  UID {uid}: no usable bundle in response", flush=True)
             continue
+        proof, head_data_dl = bundle
 
         result = verify_proof(
             proof, approved_measurements=set(),
@@ -390,7 +457,7 @@ def run_epoch(validator_wallet, subtensor, netuid, pool, models, proof_cache,
             expected_exploration=explore_map,
             expected_weights_hash=proof.weights_hash,
             expected_proof_hash=proof_hash,
-            head_bytes=head_data, mock=True,
+            head_bytes=head_data_dl, mock=True,
         )
         if not result.valid:
             print(f"  UID {uid}: proof REJECTED — {result.reason}", flush=True)
@@ -508,10 +575,41 @@ def run_epoch(validator_wallet, subtensor, netuid, pool, models, proof_cache,
     return success
 
 
+def check_wallet_dir_writable() -> None:
+    """Fail early and legibly if the wallet directory is not writable.
+
+    docker-compose mounts a named volume at ~/.bittensor. A volume created
+    before the image switched to a non-root user is owned by root, so the
+    container (uid 10001) cannot write to it — and the symptom is
+    `Failed to get coldkeypub: Permission denied`, which says nothing about
+    volumes. This turns that into an instruction.
+    """
+    wallet_dir = os.path.expanduser("~/.bittensor")
+    try:
+        os.makedirs(wallet_dir, exist_ok=True)
+        probe = os.path.join(wallet_dir, ".write_probe")
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+    except OSError as e:
+        raise SystemExit(
+            f"Cannot write to {wallet_dir}: {e}\n\n"
+            "If you are running under docker compose, the wallet volume was "
+            "most likely created by an older image that ran as root. Remove it "
+            "and try again:\n\n"
+            "    docker compose down -v\n"
+            "    docker volume rm fugal-subnet_fugal-wallets\n"
+            "    docker compose up --abort-on-container-exit\n\n"
+            "The volume holds throwaway dev keys only; nothing of value is lost."
+        )
+
+
 def main():
     logger.info("=" * 60)
     logger.info("FUGAL LOCAL TESTNET SETUP")
     logger.info("=" * 60)
+
+    check_wallet_dir_writable()
 
     subtensor = wait_for_chain(CHAIN_ENDPOINT)
 
@@ -527,9 +625,12 @@ def main():
     fund_wallet(subtensor, val_wallet, amount_tao=10000)
     fund_wallet(subtensor, miner_wallet, amount_tao=10000)
 
-    logger.info("\n--- Step 4: Register wallets ---")
+    logger.info("\n--- Step 4: Activate subnet, relax limits, register ---")
+    activate_subnet(subtensor, netuid)
+    relax_chain_limits(subtensor, netuid)
     register_wallet(subtensor, val_wallet, netuid)
     register_wallet(subtensor, miner_wallet, netuid)
+    stake_validator(subtensor, val_wallet, netuid)
 
     time.sleep(5)
 

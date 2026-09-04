@@ -44,8 +44,9 @@ def create_confined_namespace(
     ns_name = f"{_NAMESPACE_PREFIX}{namespace_id}"
     veth_host = f"veth_h_{namespace_id[:8]}"
     veth_ns = f"veth_n_{namespace_id[:8]}"
-    host_ip = "10.200.0.1"
-    ns_ip = "10.200.0.2"
+    subnet_id = _subnet_octet(namespace_id)
+    host_ip = f"10.200.{subnet_id}.1"
+    ns_ip = f"10.200.{subnet_id}.2"
 
     try:
         _run(["ip", "netns", "add", ns_name])
@@ -91,18 +92,33 @@ def create_confined_namespace(
 
     except Exception:
         logger.exception("Failed to create confined namespace %s", ns_name)
-        cleanup_namespace(ns_name)
+        cleanup_namespace(ns_name, proxy_port=proxy_port)
         raise
 
 
-def cleanup_namespace(namespace_id_or_name: str) -> None:
+def cleanup_namespace(namespace_id_or_name: str, proxy_port: int = 0) -> None:
     """Tear down a confined namespace and its network resources."""
     ns_name = namespace_id_or_name
     if not ns_name.startswith(_NAMESPACE_PREFIX):
         ns_name = f"{_NAMESPACE_PREFIX}{namespace_id_or_name}"
 
-    short_id = ns_name.replace(_NAMESPACE_PREFIX, "")[:8]
+    raw_id = ns_name.replace(_NAMESPACE_PREFIX, "")
+    short_id = raw_id[:8]
     veth_host = f"veth_h_{short_id}"
+
+    if proxy_port:
+        _run([
+            "iptables", "-t", "nat", "-D", "PREROUTING",
+            "-i", veth_host,
+            "-p", "tcp", "--dport", str(proxy_port),
+            "-j", "DNAT", "--to-destination", f"127.0.0.1:{proxy_port}",
+        ], check=False)
+        _run([
+            "iptables", "-D", "FORWARD",
+            "-i", veth_host, "-o", "lo",
+            "-p", "tcp", "--dport", str(proxy_port),
+            "-j", "ACCEPT",
+        ], check=False)
 
     try:
         _run(["ip", "netns", "delete", ns_name], check=False)
@@ -115,6 +131,12 @@ def cleanup_namespace(namespace_id_or_name: str) -> None:
         logger.debug("Veth %s may not exist", veth_host)
 
     logger.info("Cleaned up namespace %s", ns_name)
+
+
+def _subnet_octet(namespace_id: str) -> int:
+    """Derive a unique /24 subnet octet (1-254) from the namespace ID."""
+    digest = int.from_bytes(namespace_id.encode()[:4], "big")
+    return (digest % 254) + 1
 
 
 def run_in_namespace(ns_name: str, cmd: list[str], **kwargs) -> subprocess.CompletedProcess:

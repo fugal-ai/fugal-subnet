@@ -25,6 +25,10 @@ from typing import Tuple
 
 import click
 
+# isort: off
+import fugal_subnet.determinism  # noqa: F401, E402 — must precede numpy
+# isort: on
+
 logger = logging.getLogger("fugal.miner")
 
 METAGRAPH_REFRESH_S = 300
@@ -66,6 +70,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     from fugal_subnet.commitments import ensure_commitment
     from fugal_subnet.config import (
+        EPOCH_INTERVAL,
         MIN_VALIDATOR_STAKE,
         SLICE_SIZE,
         TEE_BUNDLE_STORE,
@@ -178,9 +183,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     axon.start()
     logger.info("Miner axon serving on port %d (mock=%s)", port, mock)
 
+    block_time_s = 12
+    blocks_per_epoch = max(1, EPOCH_INTERVAL // block_time_s)
+
     try:
         last_refresh = time.time()
-        last_block = ""
+        last_epoch_index = -1
         while True:
             time.sleep(30)
 
@@ -197,22 +205,30 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                 last_refresh = time.time()
 
             try:
-                block_hash = subtensor.get_block_hash()
-                if block_hash and block_hash != last_block:
-                    last_block = block_hash
-                    _run_epoch(
-                        head_data=head_data,
-                        weights_hash=weights_hash,
-                        pool=pool,
-                        block_hash=block_hash,
-                        tee_runtime=tee_runtime,
-                        current_proof=current_proof,
-                        slice_size=SLICE_SIZE,
-                        proxy_port=TEE_PROXY_PORT,
-                        bundle_repo=TEE_BUNDLE_STORE,
-                        hotkey_ss58=my_hotkey,
-                        model_costs=model_costs,
-                    )
+                current_block = subtensor.get_current_block()
+                epoch_index = current_block // blocks_per_epoch
+                if epoch_index <= last_epoch_index:
+                    continue
+
+                boundary_block = epoch_index * blocks_per_epoch
+                block_hash = subtensor.get_block_hash(boundary_block)
+                if not block_hash:
+                    continue
+
+                last_epoch_index = epoch_index
+                _run_epoch(
+                    head_data=head_data,
+                    weights_hash=weights_hash,
+                    pool=pool,
+                    block_hash=block_hash,
+                    tee_runtime=tee_runtime,
+                    current_proof=current_proof,
+                    slice_size=SLICE_SIZE,
+                    proxy_port=TEE_PROXY_PORT,
+                    bundle_repo=TEE_BUNDLE_STORE,
+                    hotkey_ss58=my_hotkey,
+                    model_costs=model_costs,
+                )
             except Exception as e:
                 logger.error("Epoch run failed: %s", e)
 
@@ -299,10 +315,18 @@ def _compute_hidden_states(pool):
 
 
 def _get_source_hash():
-    """Get the hash of the runtime source for measurement verification."""
+    """Hash the actual source file contents for measurement verification."""
     import fugal_subnet
     src_dir = os.path.dirname(os.path.abspath(fugal_subnet.__file__))
-    return hashlib.sha256(src_dir.encode()).hexdigest()
+    h = hashlib.sha256()
+    for root, _dirs, files in sorted(os.walk(src_dir)):
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            fpath = os.path.join(root, fname)
+            h.update(fpath[len(src_dir):].encode())
+            h.update(open(fpath, "rb").read())
+    return h.hexdigest()
 
 
 def _load_head_file(path):

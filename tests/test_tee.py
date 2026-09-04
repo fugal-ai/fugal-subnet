@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import time
 
+import pytest
+
 from fugal_subnet.tee.attestation import (
     extract_report_data,
     parse_quote,
@@ -168,21 +170,18 @@ def test_verify_proof_mock_skips_measurement_check():
 
 
 def test_verify_proof_nonmock_order():
-    """Non-mock mode checks DCAP first, then measurement."""
-    # Without dcap_qvl installed, DCAP fails before measurement check.
-    # This verifies the check ordering: DCAP → measurement → nonce → ...
+    """Non-mock mode raises ImportError when dcap_qvl is not installed."""
     proof = _make_proof()
     gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
-    result = verify_proof(
-        proof,
-        approved_measurements={"some_other_measurement"},
-        expected_questions_hash=proof.questions_hash,
-        expected_nonce=proof.nonce,
-        gold_answers=gold,
-        mock=False,
-    )
-    assert not result.valid
-    assert "DCAP" in result.reason or "Unapproved" in result.reason
+    with pytest.raises(ImportError, match="dcap_qvl"):
+        verify_proof(
+            proof,
+            approved_measurements={"some_other_measurement"},
+            expected_questions_hash=proof.questions_hash,
+            expected_nonce=proof.nonce,
+            gold_answers=gold,
+            mock=False,
+        )
 
 
 def test_verify_proof_cost_inconsistency():
@@ -282,19 +281,18 @@ def test_attack_wrong_question_set():
 
 
 def test_attack_fabricated_attestation():
-    """Without dcap_qvl, fabricated quotes fail DCAP verification."""
+    """Without dcap_qvl, non-mock verification raises ImportError."""
     proof = _make_proof()
     gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
-    result = verify_proof(
-        proof,
-        approved_measurements={"approved_measurement_1"},
-        expected_questions_hash=proof.questions_hash,
-        expected_nonce=proof.nonce,
-        gold_answers=gold,
-        mock=False,  # Non-mock mode requires real DCAP
-    )
-    # Without dcap_qvl installed, DCAP verification fails
-    assert not result.valid
+    with pytest.raises(ImportError, match="dcap_qvl"):
+        verify_proof(
+            proof,
+            approved_measurements={"approved_measurement_1"},
+            expected_questions_hash=proof.questions_hash,
+            expected_nonce=proof.nonce,
+            gold_answers=gold,
+            mock=False,
+        )
 
 
 def test_proof_content_hash_changes_on_any_tamper():

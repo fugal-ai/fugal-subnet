@@ -22,6 +22,7 @@ import json
 import logging
 import math
 import os
+import sys
 import time
 from typing import TYPE_CHECKING
 
@@ -483,7 +484,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     logger.info("Validator shutdown complete")
 
     if once:
-        os._exit(0)
+        sys.exit(0)
 
 
 def _get_proof_for_uid(uid, resp, mock):

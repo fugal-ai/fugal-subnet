@@ -95,15 +95,17 @@ def verify_dcap(quote_bytes: bytes) -> bool:
 
     Requires the dcap_qvl package. Returns True if the quote signature
     and collateral chain are valid. In mock mode, this is skipped.
+
+    Raises:
+        ImportError: If dcap_qvl is not installed (configuration error).
     """
     try:
         from dcap_qvl import get_collateral_and_verify
     except ImportError:
-        logger.warning(
-            "dcap_qvl not installed — DCAP verification unavailable. "
+        raise ImportError(
+            "dcap_qvl not installed — DCAP verification requires it. "
             "Install with: pip install dcap-qvl"
         )
-        return False
 
     import asyncio
 

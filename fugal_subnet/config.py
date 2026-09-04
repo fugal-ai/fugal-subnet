@@ -175,18 +175,12 @@ ROUTER_SYSTEM_PROMPT = (
 MAX_WEIGHT_DELTA = float(os.getenv("FUGAL_MAX_WEIGHT_DELTA", "0.3"))
 
 # --- Validator budget ---
-# None means "not explicitly set" — live mode requires a positive value.
-_budget_raw = os.getenv("FUGAL_EPOCH_BUDGET")
-if _budget_raw:
-    EPOCH_BUDGET_USD: float | None = float(_budget_raw)
-    if EPOCH_BUDGET_USD <= 0:
-        raise ValueError(f"FUGAL_EPOCH_BUDGET must be positive, got {_budget_raw!r}")
-else:
-    EPOCH_BUDGET_USD = None
-# No longer the primary pool cap — the budget is the natural limiter.
-# Kept for external tooling that may reference it.
-MAX_MODEL_POOL = int(os.getenv("FUGAL_MAX_MODEL_POOL", "30"))
-MAX_MODELS_PER_MINER = int(os.getenv("FUGAL_MAX_MODELS_PER_MINER", "30"))
+# Deliberately absent. Under the TEE architecture the validator never calls a
+# model, so it has no API budget to cap and no shared model pool to bound.
+# Miners pay for their own inference inside the TEE, which is what resolved the
+# I5 cost-asymmetry problem — a $1 registration could previously waste $30+ of
+# validator inference per epoch. tests/test_paid_safety.py asserts the
+# validator has no epoch_budget parameter so this cannot creep back.
 
 # --- Head commitment (anti-copy / anti-overfit) ---
 # When enabled, a head is only scored if its SHA256 was committed on-chain

@@ -65,20 +65,22 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 4. `commitments.py` → read/write on-chain head commitments (Commitments pallet)
 5. `tee/verify.py` → verify TEE proofs (DCAP attestation, measurement match, nonce, questions hash, cost consistency)
 6. `graders.py` → 7 deterministic mechanical checkers (consensus-critical, hash-versioned)
-7. `evidence.py` → EWMA-decayed evidence accumulation with Wilson LCB scoring
-8. `scoring.py` → composite scoring from accumulated evidence
-9. `rewards.py` → weight computation (single pool, weight capping ±0.3/epoch)
-10. `dedup.py` → behavioral dedup (cosine similarity on routing decisions)
-11. `commit_reveal.py` → commit-reveal integrity + publish epoch artifacts
+7. `grading_task.py` → loader question → grader task translation (shared by matrix.py and the TEE harness so miner and validator grading cannot drift)
+8. `exploration.py` → nonce-derived exploration assignment (recovers the counterfactual the TEE removes)
+9. `reference_frame.py` → per-model accuracy pooled over time; supplies `acc_best` and the reference cost
+10. `evidence.py` → EWMA-decayed evidence accumulation with Wilson LCB, effective-n capped by pool size
+11. `scoring.py` → `quality^0.8 * thrift^0.2`, ramped in over a burn-in period
+12. `rewards.py` → weight computation (single pool, weight capping ±0.3/epoch)
+13. `dedup.py` → behavioural dedup (cosine similarity on routing decisions, GLOBAL model index space)
+14. `commit_reveal.py` → commit-reveal integrity + publish epoch artifacts
 
 ### Orchestrators
 - `neurons/validator.py` → TEE proof verification epoch loop (block-aligned, state-persistent)
 - `neurons/miner.py` → TEE miner (runs benchmarks each epoch, produces attested proofs)
-- `neurons/validator_legacy.py` → pre-TEE validator (reference only)
-- `neurons/miner_legacy.py` → pre-TEE miner (reference only)
 
 ### Support
-- `config.py` → all env-overridable constants (single source), including TEE config
+- `config.py` → all env-overridable constants (single source), including TEE config. Read the comments: several constants record *why* a value is what it is, and two (the scoring exponent, the frame prior) are derived or measured rather than chosen.
+- `data/models.json` → the pinned price table. Consensus-critical and hash-pinned like `graders.py`: a price change re-scores every miner.
 - `backbone.py` → Qwen3-0.6B hidden state extraction (float32 on CPU, float16 on CUDA)
 - `api.py` → call models via OpenRouter (used by miner inside TEE, not by validator)
 - `consensus.py` → offline multi-validator audit tool (not used in the live loop)
@@ -93,6 +95,14 @@ validator must produce byte-identical grades. A grader change is a consensus for
 - A semantic change requires a new grader version (applies from next epoch only)
 - The grader version is `sha256(graders.py bytes)`, pinned in `scripts/check_safety_invariants.py`
 - Run `python -m fugal_subnet.attacks.run_attacks` after any grader change — all 22 cases must pass with 0 surprises
+- `grading_task.py` is not the grader, but it decides what the grader sees. A change there changes every grade.
+
+## The Price Table Is Also A Consensus Rule
+
+`data/models.json` is the denominator every validator prices every proof
+against. It is hash-pinned in `scripts/check_safety_invariants.py` for the same
+reason `graders.py` is: an unreviewed edit silently re-scores the whole subnet.
+Changing prices means updating the pin in the same commit and saying why.
 
 ## Consensus Invariants
 

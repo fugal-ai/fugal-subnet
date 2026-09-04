@@ -57,12 +57,12 @@ default. Review the [Validator Guide](docs/VALIDATOR_GUIDE.md) first.
 
 ## How It Works
 
-1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks) — every honest validator gets the identical slice.
-2. Miners respond to the validator's query with their `.npz` head artifact (W, b, model list). A head is only scoreable if its SHA256 was **committed on-chain at or before the boundary block** — heads swapped after the nonce is knowable are rejected.
-3. The validator calls all models in the (priced, capped, budget-checked) union pool on those questions, grades responses with mechanical checkers, and builds an N×M binary matrix.
-4. Each head is evaluated: routing accuracy, cost efficiency (capped at 1.0 — the oracle's cheapest-correct routing is the ceiling), and KL divergence against soft targets. Questions no model answered correctly are excluded for everyone.
-5. Composite scores (accuracy 55%, cost efficiency 35%, KL 10%) determine weights. Copied heads are deduplicated — earliest on-chain commitment wins. Weights are set on-chain; emissions flow.
-6. The validator publishes the full epoch artifact (`results/epochs/<epoch>/reveal.json`): questions, the complete matrix, model costs, scores, and weights. Miners download it, retrain, submit improved heads.
+1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks) — every honest validator derives the identical slice, and neither side can know it in advance.
+2. **Miners run the benchmark themselves, inside an Intel TDX enclave.** The enclave loads the miner's `.npz` head, routes each question, calls the chosen model through a metering proxy, grades the reply with the hash-pinned graders, and produces a hardware-attested `BenchmarkProof`. Miners pay for their own inference. A head is only scoreable if its SHA256 was **committed on-chain at or before the boundary block** — a head swapped after the nonce is knowable is rejected.
+3. **Miners also answer a nonce-chosen ~5% of extra questions using a model they do not pick.** These are never scored against them; they are the only unbiased samples of how good each model actually is, and a proof missing them is rejected.
+4. **Validators never call a model.** They verify the proof: the Intel DCAP signature, the hardware's own measurement registers against the approved runtime image, the attested content hash, the head against its on-chain commitment, the answers against the assigned slice, the exploration set against the nonce, and the cost figures against each other.
+5. **Scoring is quality per dollar against the best single model.** `quality = wilson_lcb(accuracy) / acc_best`, `thrift = ref_cost / miner_cost`, and `score = quality^0.8 * thrift^0.2`. A score of 1.0 means "matched the best single model's quality per dollar"; above 1.0 means "beat it". Evidence accumulates per head artifact across epochs, so noise cancels and a lucky epoch does not dethrone. Copied heads are deduplicated — earliest on-chain commitment wins.
+6. The validator publishes the full epoch artifact (`results/epochs/<epoch>/reveal.json`): questions, results, the reference frame, scores, and weights. Miners download it, retrain, and commit improved heads.
 
 ## Benchmarks
 

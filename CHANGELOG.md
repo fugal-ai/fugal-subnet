@@ -4,6 +4,87 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — the TEE path had never run end to end
+
+- **Epoch identity diverged between the neurons.** The miner built its epoch_id
+  from the block hash and the validator from the epoch index. Since the nonce is
+  `sha256(f"{epoch_id}:{block_hash}")`, their question slices overlapped 45/300
+  and `verify_proof` rejected every proof — the subnet could not have set
+  weights. Epoch identity now has one source, `slicer.epoch_id_for_block`, and a
+  structural check in `check_safety_invariants.py` prevents a second one.
+- **The miner imported a backbone function that does not exist**
+  (`get_hidden_states`; the real name is `compute_hidden_states`). Every epoch
+  died inside an `except` clause that only logged the message.
+- **The TEE harness passed a raw loader dict to the grader**, which reads
+  `task["checker"]["id"]` / `task["domain"]` — keys the loader schema does not
+  have. `grade()` caught the KeyError and returned 0, so every TEE-graded answer
+  scored wrong. The translation is now shared (`fugal_subnet/grading_task.py`)
+  by both the matrix builder and the harness.
+
+CI did not catch any of these because it drove the pre-TEE pipeline end to end
+and the TEE pipeline only in pieces. `tests/test_tee_e2e.py`,
+`scripts/check_determinism.py` and the docker-compose entry point now all drive
+the live path.
+
+### Fixed — attested claims were not bound to anything
+
+Five exploit classes verified against production code, each now blocked and kept
+as an executable regression in `fugal_subnet/attacks/run_tee_attacks.py`:
+
+- Approved-image matching used `proof.source_hash`, a field the workload writes
+  about itself, so an attacker with genuine TDX hardware could run a modified
+  harness and pass. It now uses `measurement_id(quote)` — the CPU's own MRTD and
+  RTMR0-2, covered by Intel's signature.
+- Results were never checked against the assigned slice, and `gold_answers` was
+  the whole 21K pool, so a miner could grade 300 easy questions of its choosing
+  while copying the (public) expected questions hash.
+- `proof.weights_hash` was never compared to the on-chain commitment, so a miner
+  could commit one head and run another while keeping a stable evidence key.
+  The head now ships in the bundle and is hash-verified.
+- The downloaded bundle was never checked against the advertised `proof_hash`.
+- Cost inconsistency was a warning. Understating `total_cost_usd` raises a
+  miner's score, so advisory treatment paid the attacker; it is now a rejection.
+
+### Changed — scoring
+
+- Replaced the 0.55/0.35/0.10 composite with `quality^0.8 * thrift^0.2`,
+  measured against the best single model. A score of 1.0 means "matched the best
+  single model's quality per dollar". The exponent is derived from the product
+  claim, not chosen: giving up 40% of quality must not outscore matching the
+  best model at its own price, forcing `w > 0.778`.
+- Added the exploration quota and reference frame. Under TEE a miner only calls
+  the model it routed to, so the counterfactual — and therefore any honest cost
+  denominator — was unobservable. Miners now answer a nonce-chosen ~5% of extra
+  questions with a nonce-chosen model; the samples pool over time into a
+  per-model accuracy estimate.
+- `_proof_to_head_score` used `min(per_model_costs.values()) * n` as its
+  denominator, which treated totals as per-query prices and drew every term from
+  the miner's own proof. Any single-model router scored a perfect 1.0. Measured
+  on the real price table the incentive ran exactly backwards: all-frontier
+  1.000 vs genuinely cheap 0.177; it is now 0.008 vs 1.000.
+- `MeteringProxy` priced every model identically (a TODO stub). Costs now come
+  from the hash-pinned `data/models.json`; the provider's own reported figure is
+  recorded alongside so drift is detectable.
+- Dropped `ROUTING_LAMBDA` from the routing rule, which is now
+  `argmax(softmax(Wh+b))`. `p - lambda*cost` mixed a probability with dollars and
+  asserted what a correct answer is worth. It survives as a miner-side training
+  hyperparameter.
+- Dropped the KL term (a constant 0.0731 for every miner under TEE) and the
+  coverage multiplier (pinned to 1.0 under TEE).
+- Capped Wilson's effective n at the distinct-question count, added a burn-in
+  ramp so evidence reset is no longer a free penalty wash, and bound
+  `MinerRecord` to a hotkey so a recycled UID does not inherit standing.
+- Dedup now indexes routing decisions in a global model space. Per-miner indices
+  clustered two distinct single-model routers as clones and let a real copy
+  evade detection at 96.7% identical routing.
+
+### Removed
+
+- `neurons/validator_legacy.py` and `neurons/miner_legacy.py`.
+- `MAX_MODEL_COST_PER_QUERY`, `MAX_MODEL_POOL`, `MAX_MODELS_PER_MINER` and
+  `EPOCH_BUDGET_USD`. All existed to bound a shared model pool the validator
+  paid for; under TEE there is no shared pool and the miner pays.
+
 ### Added
 
 - TEE-attested benchmarks: miners run inside Intel TDX confidential VMs,

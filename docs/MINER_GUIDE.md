@@ -199,17 +199,46 @@ and rankings stable.
 
 ## Scoring
 
-Each epoch, your miner runs the benchmark and produces a proof. Validators
-verify it and extract:
+You are scored on **quality per dollar, against the best single model**:
 
-- **Accuracy** — did your routed model get the question right?
-- **Cost efficiency** — how cheaply did you route relative to the oracle?
-- **Coverage** — how many models does your head route to?
+```
+quality = wilson_lcb(your accuracy) / accuracy of the best single model
+thrift  = what the best model would have cost / what you actually spent
+score   = quality^0.8 * thrift^0.2
+```
+
+**A score of 1.0 means you matched the best single model's quality per dollar.
+Above 1.0 means you beat it.** That is the whole product: same answers, less
+money.
+
+Two consequences worth internalising:
+
+- **Neither axis rescues the other.** Routing everything to the cheapest model
+  scores badly (quality collapses). Routing everything to the best model scores
+  badly (thrift collapses). There is no weighting you can exploit — the score is
+  a product, not a sum.
+- **Quality is weighted heavier than cost**, deliberately. Giving up 40% of
+  quality does not pay for itself even at a 6x saving. The exponent is derived
+  from that requirement, not picked.
+
+The reference is the best model's *measured* accuracy, pooled from exploration
+samples across all miners and many epochs. It is a fact about the model pool,
+not about the current field — how many other miners are online does not move it.
 
 Results are pooled across epochs via **evidence accumulation** (EWMA decay with
 Wilson LCB scoring). Your score stabilizes over time — a few lucky epochs won't
 rocket you to the top, and a few bad ones won't destroy you. Consistent quality
 wins.
+
+**Burn-in:** a freshly committed head ramps in over ~3000 scored questions
+(roughly 10 epochs). This is what stops a miner washing a bad record by
+recommitting: recovering costs the same evidence that earning the position did.
+
+**Exploration quota:** each epoch you also answer ~5% extra questions using a
+model the *nonce* chooses, not your head. These never count toward your
+accuracy or your cost — a forced random route is not a penalty — but a proof
+missing them, or routing them anywhere other than the assigned model, is
+rejected. Budget for the ~5%.
 
 **Miss = 0 accounting:** If your miner misses an epoch (offline, timeout, proof
 verification fails), that epoch counts as 0 correct out of n_expected. You
@@ -219,14 +248,18 @@ cannot selectively skip bad epochs.
 
 - **TEE attestation** — results are hardware-attested. You cannot fabricate or
   tamper with proofs after attestation.
-- **Measurement pinning** — the TEE runtime image is measurement-checked.
-  Validators reject proofs from tampered runtime images.
+- **Measurement pinning** — validators check the TDX quote's own measurement
+  registers (MRTD, RTMR0-2) against the approved image list, not any field your
+  code writes about itself. Running a modified harness on genuine TDX hardware
+  produces a valid quote and an unapproved measurement.
 - **Network confinement** — inside the TEE, the benchmark process can only
   communicate with the local MeteringProxy. No data exfiltration.
 - **On-chain commitment** — your head hash is committed before benchmarks run.
   Prevents mid-epoch head swaps.
 - **Behavioral dedup** — identical or near-identical routing behavior is
   clustered; earliest on-chain commitment wins. Copies are disqualified.
+  Routing decisions are compared in a global model index space, so perturbing
+  one question to renumber your own model list does not evade it.
 - **Evidence accumulation** — miss=0 prevents selective publication.
 
 ## Costs

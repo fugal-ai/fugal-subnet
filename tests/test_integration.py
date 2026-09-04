@@ -533,52 +533,46 @@ def test_stratified_slicer():
     print("  [PASS] Stratified slicer")
 
 
-def test_build_model_pool():
-    """Union pool policy: priced-only, cost cap, budget trim, no sybil eviction."""
-    print("\n  [TEST] Model pool policy")
-    from fugal_subnet.head_eval import HeadArtifact
-    from neurons.validator_legacy import build_model_pool
+def test_unpriced_and_expensive_models():
+    """What replaced the pre-TEE model-pool policy.
 
-    def _head(models):
-        d = 8
-        return HeadArtifact(
-            W=np.zeros((len(models), d), dtype=np.float32),
-            b=np.zeros(len(models), dtype=np.float32),
-            models=models,
-            commit_hash="test",
-        )
+    The validator used to assemble a shared, priced, cost-capped model pool
+    because it paid for every call in it. Under TEE there is no shared pool and
+    the miner pays, so both halves of that policy are re-expressed:
 
-    prices = {"a/cheap": (0.1 / 1e6, 0.2 / 1e6), "b/mid": (1 / 1e6, 2 / 1e6),
-              "c/pricey": (500 / 1e6, 500 / 1e6)}
-    heads = {1: _head(["a/cheap", "b/mid", "zz/unknown"]),
-             2: _head(["a/cheap", "c/pricey"])}
-    out = build_model_pool(heads, prices, 300, max_models_per_miner=30,
-                           max_cost_per_query=0.10, budget_usd=1000)
-    assert "zz/unknown" not in out, "unpriced model must be excluded"
-    assert "c/pricey" not in out, "cost-capped model must be excluded"
-    assert set(out) == {"a/cheap", "b/mid"}
-    print("  Unpriced + over-cap models excluded")
+      - unpriced model  -> a hard error, because an uncosted route cannot be
+                           scored (it used to be silently excluded)
+      - expensive model -> allowed, and it lowers only that miner's own thrift
+                           (it used to be excluded to protect a shared budget)
+    """
+    print("\n  [TEST] Unpriced and expensive models")
+    from fugal_subnet.evidence import Evidence
+    from fugal_subnet.scoring import composite
+    from fugal_subnet.tee.runtime import MeteringProxy, UnpricedModel
 
-    # Sybil heads route to 5 junk models; two honest heads route to "zz/popular".
-    # Under the old fixed-cap pool, the sybil could evict "zz/popular".
-    # Under the routed-model pool, all models are included (budget permitting).
-    sybil_models = [f"aaa/m{i:02d}" for i in range(5)]
-    heads2 = {1: _head(sybil_models), 2: _head(["zz/popular"]), 3: _head(["zz/popular"])}
-    prices2 = {m: (0.1 / 1e6, 0.1 / 1e6) for m in sybil_models + ["zz/popular"]}
-    out2 = build_model_pool(heads2, prices2, 300, max_models_per_miner=30,
-                            max_cost_per_query=0.1, budget_usd=1000)
-    assert "zz/popular" in out2, "honest model evicted by sybil"
-    assert set(out2) == set(sybil_models + ["zz/popular"]), "all routed models should be in pool"
-    print("  Sybil cannot evict honest models from pool")
+    proxy = MeteringProxy(port=0)
+    proxy.prices = {"a/cheap": (1e-7, 2e-7), "c/pricey": (5e-6, 3e-5)}
 
-    # Budget trim drops the least-routed model first (fewest heads use it)
-    prices3 = {"a/x": (10 / 1e6, 10 / 1e6), "b/y": (100 / 1e6, 100 / 1e6)}
-    heads3 = {1: _head(["a/x", "b/y"])}
-    out3 = build_model_pool(heads3, prices3, 300, max_models_per_miner=30,
-                            max_cost_per_query=1.0, budget_usd=4.0)
-    assert out3 == ["a/x"], f"budget trim wrong: {out3}"
-    print("  Budget pre-flight trim works")
-    print("  [PASS] Model pool policy")
+    try:
+        proxy.price_call("zz/unknown", 500, 300)
+        raise AssertionError("unpriced model must not be costable")
+    except UnpricedModel:
+        pass
+    print("  Unpriced model is a hard error, never a default rate")
+
+    cheap = proxy.price_call("a/cheap", 500, 300)
+    pricey = proxy.price_call("c/pricey", 500, 300)
+    assert pricey > cheap * 50, "price table must distinguish models"
+    print(f"  Price table distinguishes models: ${cheap:.6f} vs ${pricey:.6f}")
+
+    # Routing expensively is permitted and self-punishing.
+    frugal = Evidence("h", n_correct=9000.0, n_total=10000.0,
+                      cost_sum=1.0, ref_cost_sum=6.0, pool_size=1e9)
+    lavish = Evidence("h", n_correct=9000.0, n_total=10000.0,
+                      cost_sum=36.0, ref_cost_sum=6.0, pool_size=1e9)
+    assert composite(frugal, 0.9) > composite(lavish, 0.9)
+    print("  Expensive routing costs the miner, not the validator")
+    print("  [PASS] Unpriced and expensive models")
 
 
 def main():
@@ -597,7 +591,7 @@ def main():
     test_head_security()
     test_cost_efficiency_cap()
     test_stratified_slicer()
-    test_build_model_pool()
+    test_unpriced_and_expensive_models()
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASS")

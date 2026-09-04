@@ -77,6 +77,11 @@ API_CONCURRENCY = int(os.getenv("FUGAL_API_CONCURRENCY", "4"))
 
 # --- Backbone ---
 BACKBONE_MODEL = os.getenv("FUGAL_BACKBONE", "Qwen/Qwen3-0.6B")
+# Consensus-critical: tokenizer padding is per-batch, so hidden states depend on
+# how prompts are grouped. Two hosts using different batch sizes can produce
+# different embeddings for the same question, which flips near-tie routing
+# decisions. Pin it here rather than leaving it a call-site default.
+BACKBONE_BATCH_SIZE = int(os.getenv("FUGAL_BACKBONE_BATCH_SIZE", "8"))
 ROUTER_SYSTEM_PROMPT = (
     "You are a routing model. Given a question, your hidden state will be used to "
     "predict which language model can best answer it. Read the question carefully."

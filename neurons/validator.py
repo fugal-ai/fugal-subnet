@@ -143,7 +143,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     import bittensor as bt
 
     from fugal_subnet.benchmarks.loader import load_all
-    from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
+    from fugal_subnet.benchmarks.slicer import (
+        derive_nonce,
+        epoch_id_for_block,
+        epoch_index_for_block,
+        select_slice,
+    )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
     from fugal_subnet.commitments import get_commitments_with_blocks
     from fugal_subnet.dedup import find_duplicates
@@ -200,7 +205,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     while True:
         try:
             current_block = subtensor.get_current_block()
-            epoch_index = current_block // blocks_per_epoch
+            epoch_index = epoch_index_for_block(current_block, blocks_per_epoch)
 
             if epoch_index <= last_epoch_index and not once:
                 time.sleep(30)
@@ -210,7 +215,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
             boundary_block = epoch_index * blocks_per_epoch
             block_hash = subtensor.get_block_hash(boundary_block)
-            epoch_id = f"e{epoch_index:08d}"
+            epoch_id = epoch_id_for_block(epoch_index)
 
             timer = EpochTimer()
             metagraph = subtensor.metagraph(netuid)

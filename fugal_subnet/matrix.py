@@ -20,6 +20,7 @@ import numpy as np
 from fugal_subnet.api import BudgetExceeded, SpendTracker, call_model
 from fugal_subnet.config import API_CONCURRENCY, CACHE_STALENESS_TTL
 from fugal_subnet.graders import grade
+from fugal_subnet.grading_task import build_grader_task
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ def build_matrix(
     # Phase 2 — grade sequentially (deterministic order, no network involved)
     for m_idx, model in enumerate(model_pool):
         for q_idx, question in enumerate(questions):
-            task = _build_grader_task(question)
+            task = build_grader_task(question)
             matrix[q_idx, m_idx] = grade(
                 task, responses.get((q_idx, m_idx), ""), allow_exec,
             )
@@ -213,33 +214,6 @@ def build_matrix_mock(
         costs={m: 0.0 for m in model_pool},
         tracker=tracker,
     )
-
-
-def _build_grader_task(question: dict) -> dict:
-    """Build a grader-compatible task dict from a benchmark question."""
-    task: dict = {"gold": question["gold"]}
-
-    meta = question.get("metadata", {})
-    checker_meta = meta.get("checker")
-    if checker_meta:
-        task["checker"] = checker_meta
-    else:
-        task["checker"] = {"id": question["grader_id"]}
-
-    if "domain" not in task:
-        bench_to_domain = {
-            "gsm8k": "gsm8k", "math": "math500", "mmlu": "mmlupro",
-            "gpqa": "gpqa", "aime": "aime", "humaneval": "humaneval",
-            "livecode": "codegen", "ifeval": "ifbench",
-        }
-        task["domain"] = bench_to_domain.get(question["benchmark"], question["benchmark"])
-
-    if question["grader_id"] == "exec_unittest":
-        task["test"] = meta.get("test", "")
-        task["entry"] = meta.get("entry_point", "")
-        task["stub"] = meta.get("stub", "")
-
-    return task
 
 
 def _cache_key(model: str, question: dict) -> str:

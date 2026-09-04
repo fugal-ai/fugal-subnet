@@ -68,6 +68,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     import bittensor as bt
 
+    from fugal_subnet.benchmarks.slicer import epoch_index_for_block
     from fugal_subnet.commitments import ensure_commitment
     from fugal_subnet.config import (
         EPOCH_INTERVAL,
@@ -114,7 +115,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         logger.warning("Weights hash NOT committed on-chain yet — will retry.")
 
     tee_runtime = TEERuntime(mock=mock)
-    current_proof = {"proof": None, "url": "", "lock": threading.Lock()}
+    current_proof = {"proof": None, "url": "", "epoch_id": "", "lock": threading.Lock()}
 
     mg_lock = threading.Lock()
     mg_state = {"metagraph": metagraph}
@@ -147,8 +148,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         with current_proof["lock"]:
             proof = current_proof["proof"]
             bundle_url = current_proof["url"]
+            proof_epoch = current_proof["epoch_id"]
         if proof is None:
             logger.warning("No proof available yet for epoch %s", synapse.epoch_id)
+            return synapse
+
+        # Serve only a proof for the epoch the validator actually asked about.
+        # The validator rejects a stale proof anyway (its nonce won't match), so
+        # returning one just burns bandwidth and buries the real reason in a
+        # generic "nonce mismatch" on the validator side.
+        if synapse.epoch_id and synapse.epoch_id != proof_epoch:
+            logger.warning(
+                "Epoch mismatch: validator asked for %s, we hold %s — not serving",
+                synapse.epoch_id, proof_epoch or "<none>",
+            )
             return synapse
 
         synapse.proof_hash = proof.content_hash()
@@ -189,6 +202,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     try:
         last_refresh = time.time()
         last_epoch_index = -1
+        consecutive_failures = 0
         while True:
             time.sleep(30)
 
@@ -206,7 +220,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
             try:
                 current_block = subtensor.get_current_block()
-                epoch_index = current_block // blocks_per_epoch
+                epoch_index = epoch_index_for_block(current_block, blocks_per_epoch)
                 if epoch_index <= last_epoch_index:
                     continue
 
@@ -220,6 +234,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     head_data=head_data,
                     weights_hash=weights_hash,
                     pool=pool,
+                    epoch_index=epoch_index,
                     block_hash=block_hash,
                     tee_runtime=tee_runtime,
                     current_proof=current_proof,
@@ -229,8 +244,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     hotkey_ss58=my_hotkey,
                     model_costs=model_costs,
                 )
-            except Exception as e:
-                logger.error("Epoch run failed: %s", e)
+                consecutive_failures = 0
+            except Exception:
+                # A miner that silently swallows every epoch failure looks
+                # alive while producing nothing. Log the traceback and escalate
+                # so the operator sees it.
+                consecutive_failures += 1
+                logger.exception(
+                    "Epoch run failed (%d consecutive)", consecutive_failures,
+                )
+                if consecutive_failures >= 3:
+                    logger.error(
+                        "%d consecutive epoch failures — this miner is earning "
+                        "nothing. Fix the error above.", consecutive_failures,
+                    )
 
     except KeyboardInterrupt:
         logger.info("Miner stopped by user")
@@ -244,6 +271,7 @@ def _run_epoch(
     head_data,
     weights_hash,
     pool,
+    epoch_index,
     block_hash,
     tee_runtime,
     current_proof,
@@ -254,11 +282,12 @@ def _run_epoch(
     model_costs,
 ):
     """Run a single benchmark epoch."""
-    from fugal_subnet.benchmarks.slicer import derive_nonce
+    from fugal_subnet.benchmarks.slicer import derive_nonce, epoch_id_for_block
     from fugal_subnet.tee.harness import run_benchmark
     from fugal_subnet.tee.store import upload_proof
 
-    epoch_id = f"e_{block_hash[:16]}"
+    # Must match the validator exactly — see slicer.epoch_id_for_block.
+    epoch_id = epoch_id_for_block(epoch_index)
     nonce_bytes = derive_nonce(epoch_id, block_hash)
     nonce = nonce_bytes.hex()
 
@@ -293,6 +322,7 @@ def _run_epoch(
         with current_proof["lock"]:
             current_proof["proof"] = proof
             current_proof["url"] = bundle_url
+            current_proof["epoch_id"] = epoch_id
 
         logger.info(
             "Epoch %s complete: %d/%d correct (%.1f%%), cost=$%.4f, url=%s",
@@ -309,9 +339,13 @@ def _compute_hidden_states(pool):
 
     Uses CPU float32 for determinism (same as validator).
     """
-    from fugal_subnet.backbone import get_hidden_states
-    questions = [q.get("question", q.get("prompt", "")) for q in pool]
-    return get_hidden_states(questions)
+    from fugal_subnet.backbone import compute_hidden_states
+    from fugal_subnet.config import BACKBONE_BATCH_SIZE
+    questions = [q["prompt"] for q in pool]
+    # batch_size is pinned in config, not left to the call site: padding is
+    # batch-composition dependent, so two hosts using different batch sizes are
+    # a latent cross-validator divergence.
+    return compute_hidden_states(questions, batch_size=BACKBONE_BATCH_SIZE)
 
 
 def _get_source_hash():

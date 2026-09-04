@@ -73,6 +73,24 @@ def select_slice(
     return out
 
 
+def epoch_id_for_block(epoch_index: int) -> str:
+    """Canonical epoch identifier for a block-derived epoch index.
+
+    Consensus-critical and deliberately the only way to build an epoch_id.
+    The nonce is sha256(f"{epoch_id}:{block_hash}"), so a miner and a validator
+    that format the identifier differently derive different nonces, select
+    different slices, and every proof fails the nonce check. That is exactly
+    what happened when the miner used the block hash and the validator used the
+    epoch index — the two never agreed on a single question.
+    """
+    return f"e{int(epoch_index):08d}"
+
+
+def epoch_index_for_block(block: int, blocks_per_epoch: int) -> int:
+    """Epoch index containing `block`. Shared so both neurons align epochs."""
+    return int(block) // max(1, int(blocks_per_epoch))
+
+
 def derive_nonce(epoch_id: str, block_hash: str) -> bytes:
     """Derive the epoch nonce from the epoch identifier and a block hash.
 

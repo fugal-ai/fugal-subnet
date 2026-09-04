@@ -22,6 +22,7 @@ import numpy as np
 from fugal_subnet.benchmarks.slicer import select_slice
 from fugal_subnet.config import ROUTING_LAMBDA
 from fugal_subnet.graders import grade
+from fugal_subnet.grading_task import build_grader_task
 from fugal_subnet.head_eval import HeadArtifact, load_head_from_npz, quantize_utility
 from fugal_subnet.tee.proof import BenchmarkProof, QuestionResult, compute_questions_hash
 from fugal_subnet.tee.runtime import MeteringProxy
@@ -87,8 +88,12 @@ def run_benchmark(
         response_text = _call_model(proxy, model_id, q)
         response_hash = hashlib.sha256(response_text.encode()).hexdigest()
 
+        # grade() needs a grader task dict, not a raw loader question: it reads
+        # task["checker"]["id"] / task["domain"], neither of which the loader
+        # schema has. Passing the raw dict raises KeyError inside grade(), which
+        # catches it and returns 0 — every answer would grade wrong, silently.
         # allow_exec=False: no code execution inside TEE (security boundary)
-        correct = bool(grade(q, response_text, allow_exec=False))
+        correct = bool(grade(build_grader_task(q), response_text, allow_exec=False))
 
         cost = proxy.records[-1].cost_usd if proxy.records else 0.0
 
@@ -143,7 +148,7 @@ def _call_model(
     question: dict,
 ) -> str:
     """Call a model via the MeteringProxy."""
-    prompt = question.get("question", question.get("prompt", ""))
+    prompt = question["prompt"]
     payload = json.dumps({
         "model": model_id,
         "messages": [{"role": "user", "content": prompt}],

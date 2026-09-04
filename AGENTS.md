@@ -4,10 +4,12 @@ Instructions for AI coding agents working on this codebase.
 
 ## Project Overview
 
-Fugal is a Bittensor subnet for continuous LLM router optimization. Validators
-build ground truth matrices (calling models, grading with mechanical checkers),
-miners submit trained router heads (linear layers on a frozen Qwen3-0.6B backbone),
-and the subnet sets on-chain weights proportional to routing quality.
+Fugal is a Bittensor subnet for continuous LLM router optimization. Miners run
+TEE-attested benchmarks inside Intel TDX confidential VMs — they load their
+trained router head, call models via a metered proxy, and produce
+hardware-attested proofs of their results. Validators verify proofs (never call
+models) and set on-chain weights proportional to routing quality. Evidence
+accumulation pools results across epochs for noise-resistant Wilson LCB scores.
 
 ## Critical Constraints
 
@@ -49,28 +51,36 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 
 ## Architecture — What Each File Does
 
-### Core pipeline (execution order per epoch)
+### TEE pipeline (miner side, inside TDX VM)
+1. `tee/harness.py` → runs benchmark: loads head, routes questions, calls models via proxy, grades, produces proof
+2. `tee/runtime.py` → MeteringProxy (records API calls with token counts/costs) + TEERuntime (TDX attestation)
+3. `tee/confine.py` → network namespace confinement (only proxy port allowed)
+4. `tee/proof.py` → BenchmarkProof and QuestionResult data models
+5. `tee/attestation.py` → TDX v4 quote parsing + DCAP verification (forked from ThirtySpokes/Chutes)
+
+### Validator pipeline (verification, no model calls)
 1. `benchmarks/loader.py` + individual loaders → load question pool (pinned HF revisions)
 2. `benchmarks/slicer.py` → HMAC-seeded stratified question selection
-3. `protocol.py` → FugalSynapse wire format for miner queries
+3. `protocol.py` → FugalProofSynapse wire format (epoch_id + nonce → proof_bundle_url + proof_hash + weights_hash)
 4. `commitments.py` → read/write on-chain head commitments (Commitments pallet)
-5. `api.py` → call models via OpenRouter (thread-safe SpendTracker)
-6. `matrix.py` → build N×M ground truth matrix (concurrent API, sequential grading)
-7. `graders.py` → 7 deterministic mechanical checkers (consensus-critical, hash-versioned)
-8. `soft_targets.py` → softmax distributions from matrix for KL training signal
-9. `head_eval.py` → load + validate + evaluate heads against matrix
-10. `scoring.py` → composite scoring (accuracy 55%, cost efficiency 35%, KL 10%)
-11. `rewards.py` → weight computation (single pool, weight capping ±0.3/epoch)
-12. `dedup.py` → behavioral dedup (cosine similarity on routing decisions)
-13. `commit_reveal.py` → commit-reveal integrity + publish epoch artifacts
+5. `tee/verify.py` → verify TEE proofs (DCAP attestation, measurement match, nonce, questions hash, cost consistency)
+6. `graders.py` → 7 deterministic mechanical checkers (consensus-critical, hash-versioned)
+7. `evidence.py` → EWMA-decayed evidence accumulation with Wilson LCB scoring
+8. `scoring.py` → composite scoring from accumulated evidence
+9. `rewards.py` → weight computation (single pool, weight capping ±0.3/epoch)
+10. `dedup.py` → behavioral dedup (cosine similarity on routing decisions)
+11. `commit_reveal.py` → commit-reveal integrity + publish epoch artifacts
 
 ### Orchestrators
-- `neurons/validator.py` → main epoch loop (block-aligned, state-persistent)
-- `neurons/miner.py` → axon server with blacklist + on-chain commitment
+- `neurons/validator.py` → TEE proof verification epoch loop (block-aligned, state-persistent)
+- `neurons/miner.py` → TEE miner (runs benchmarks each epoch, produces attested proofs)
+- `neurons/validator_legacy.py` → pre-TEE validator (reference only)
+- `neurons/miner_legacy.py` → pre-TEE miner (reference only)
 
 ### Support
-- `config.py` → all env-overridable constants (single source)
+- `config.py` → all env-overridable constants (single source), including TEE config
 - `backbone.py` → Qwen3-0.6B hidden state extraction (float32 on CPU, float16 on CUDA)
+- `api.py` → call models via OpenRouter (used by miner inside TEE, not by validator)
 - `consensus.py` → offline multi-validator audit tool (not used in the live loop)
 - `epoch_logger.py` → structured JSONL logging
 

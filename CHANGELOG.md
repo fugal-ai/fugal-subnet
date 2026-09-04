@@ -4,8 +4,36 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added
+
+- TEE-attested benchmarks: miners run inside Intel TDX confidential VMs,
+  validators verify hardware-attested proofs. Validators never call models —
+  zero inference cost. Miners pay for their own API calls via an attested
+  MeteringProxy inside the TEE.
+- New `fugal_subnet/tee/` package with TDX quote parsing, DCAP verification,
+  MeteringProxy, TEERuntime, network confinement, BenchmarkProof model,
+  proof verification, and benchmark harness. TDX patterns forked from
+  ThirtySpokes/Chutes (MIT licensed).
+- New protocol: `FugalProofSynapse` — validator sends epoch_id + nonce,
+  miner returns proof_bundle_url + proof_hash + weights_hash.
+- Evidence accumulation (`fugal_subnet/evidence.py`): EWMA-decayed binomial
+  with Wilson LCB scoring, artifact-keyed reset on retrain, miss=0 accounting
+  to prevent selective publication.
+- TEE safety invariant checks in `scripts/check_safety_invariants.py`
+  (`check_tee_safety`): miner annotation check, harness grader import check,
+  verify module model-call check.
+- 20 TEE unit tests + 5 TEE attack tests in `tests/test_tee.py`.
+- 11 evidence accumulation tests in `tests/test_evidence.py`.
+
 ### Changed
 
+- Rewrote `neurons/miner.py` as TEE miner — runs benchmarks each epoch inside
+  TDX, produces hardware-attested proofs. Old miner saved as
+  `neurons/miner_legacy.py`.
+- Rewrote `neurons/validator.py` as verify-only validator — checks TEE proofs,
+  accumulates evidence, never calls models. Old validator saved as
+  `neurons/validator_legacy.py`. Removed `--epoch-budget` flag (miners pay
+  their own costs).
 - Replaced fixed-cap model pool with routed-model pool: the matrix now includes
   only models that heads actually route to, eliminating the pool-eviction
   griefing vector (I4). Budget is the natural limiter; no fixed 30-model cap.

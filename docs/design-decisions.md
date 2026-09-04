@@ -212,20 +212,30 @@ Miner discovers which questions are in the pool and overfits.
 
 ---
 
-## Implementation priority order
+## Implementation status
 
-1. **TEE infrastructure** (Step 3) — the biggest architectural change, gates everything else
-2. **Evidence accumulation** (Step 4) — scoring stability, composes with TEE
-3. **Headroom scoring** (Step 2) — formula swap, can do anytime
-4. **Held-out evaluation** (Step 5) — anti-memorization, easy once TEE is in place
-5. **Weight-setting refinement** (Step 6) — proportional is fine for launch, iterate later
+| Step | Status | Notes |
+|---|---|---|
+| Step 3: TEE infrastructure | **Implemented** | `fugal_subnet/tee/` package — attestation, runtime, confine, proof, verify, harness. Forked TDX patterns from ThirtySpokes/Chutes (MIT). |
+| Step 4: Evidence accumulation | **Implemented** | `fugal_subnet/evidence.py` — EWMA-decayed binomial with Wilson LCB scoring, artifact-keyed reset, miss=0 accounting. |
+| Step 2: Headroom scoring | Pending | Formula swap in scoring module. Can implement after launch. |
+| Step 5: Anti-gaming (held-out) | Pending | Held-out matmul evaluation. Easy once TEE is in place on real hardware. |
+| Step 6: Weight-setting | Pending | Proportional is fine for launch, iterate later. |
+
+### What was implemented
+
+- **TEE package** (`fugal_subnet/tee/`): TDX quote parsing, DCAP verification, MeteringProxy, TEERuntime, network confinement, BenchmarkProof model, proof verification, benchmark harness.
+- **Evidence accumulation** (`fugal_subnet/evidence.py`): EWMA decay with configurable half-life, Wilson LCB scoring, artifact-keyed reset on retrain, miss=0 for absent miners.
+- **New miner** (`neurons/miner.py`): TEE miner that runs benchmarks each epoch inside TDX, pays for its own inference, produces hardware-attested proofs.
+- **New validator** (`neurons/validator.py`): Verify-only validator that checks TEE proofs, never calls models. Zero inference cost.
+- **New protocol** (`fugal_subnet/protocol.py`): `FugalProofSynapse` — validator sends epoch_id + nonce, miner returns proof_bundle_url + proof_hash + weights_hash.
+- **Safety checks**: `check_tee_safety()` in `scripts/check_safety_invariants.py`, 20 TEE tests + 5 attack tests in `tests/test_tee.py`.
 
 ---
 
 ## Open questions for further examination
 
-- What's the right evidence half-life? ThirtySpokes uses 200 epochs. Need to calibrate to Fugal's epoch interval.
+- What's the right evidence half-life? Currently defaulting to 200 epochs (same as ThirtySpokes). Calibrate on testnet.
 - What's the right held-out slice size? Bigger = more anti-memorization power but more variance in held-out scores.
 - Should the headroom formula use per-question oracle or per-epoch oracle? Per-question is more precise but requires the full matrix.
-- How to handle the transition from current design to TEE? Backwards compatibility? Migration path for existing miners?
 - Exact TEE VM cost for miners — need to benchmark to set expectations in docs.

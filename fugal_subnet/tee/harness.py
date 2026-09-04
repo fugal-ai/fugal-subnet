@@ -38,6 +38,7 @@ def run_benchmark(
     slice_size: int = 300,
     epoch_id: str = "",
     source_hash: str = "",
+    model_costs: dict[str, float] | None = None,
 ) -> BenchmarkProof:
     """Execute the routing benchmark inside the TEE.
 
@@ -50,10 +51,14 @@ def run_benchmark(
         slice_size: Number of questions to select.
         epoch_id: Epoch identifier.
         source_hash: SHA256 of the runtime image.
+        model_costs: Per-model cost map {model_id: cost_per_token} for routing.
 
     Returns:
         BenchmarkProof with routing results and attestation.
     """
+    if model_costs is None:
+        model_costs = {}
+
     head = load_head_from_npz(head_bytes)
     weights_hash = hashlib.sha256(head_bytes).hexdigest()
 
@@ -76,7 +81,7 @@ def run_benchmark(
             continue
 
         h = hidden_states[q_idx]
-        routing_decision = _route_question(head, h)
+        routing_decision = _route_question(head, h, model_costs)
         model_id = head.models[routing_decision]
 
         response_text = _call_model(proxy, model_id, q)
@@ -110,11 +115,17 @@ def run_benchmark(
     return proof
 
 
-def _route_question(head: HeadArtifact, hidden_state: np.ndarray) -> int:
+def _route_question(
+    head: HeadArtifact,
+    hidden_state: np.ndarray,
+    model_costs: dict[str, float],
+) -> int:
     """Route a single question through the head — same logic as head_eval.py."""
     logits = head.W @ hidden_state + head.b
     p = _softmax(logits)
-    costs = np.zeros(len(head.models), dtype=np.float64)
+    costs = np.array(
+        [model_costs.get(m, 0.01) for m in head.models], dtype=np.float64,
+    )
     utility = quantize_utility(p - ROUTING_LAMBDA * costs)
     return int(np.argmax(utility))
 

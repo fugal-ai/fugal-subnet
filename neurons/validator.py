@@ -487,16 +487,31 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
 
 def _get_proof_for_uid(uid, resp, mock):
-    """Get a BenchmarkProof for a given UID from the response.
+    """Download and parse a BenchmarkProof for a given UID.
 
-    In production, this downloads the proof bundle from the URL in
-    resp.proof_bundle_url. For now, returns None (proofs are served
-    via a separate mechanism in mock/testnet mode).
+    Downloads the proof bundle from the HuggingFace URL in
+    resp.proof_bundle_url. Returns None if the URL is empty or
+    the download/parse fails.
     """
-    # TODO: implement proof bundle download from HuggingFace
-    # For now, mock mode and testnet mode handle proofs differently:
-    # the test harness constructs proofs directly.
-    return None
+    from fugal_subnet.tee.proof import BenchmarkProof
+    from fugal_subnet.tee.store import download_proof
+
+    url = getattr(resp, "proof_bundle_url", "") or ""
+    if not url:
+        logger.debug("UID %d: no proof_bundle_url", uid)
+        return None
+
+    try:
+        proof = download_proof(url)
+    except Exception as e:
+        logger.warning("UID %d: failed to download proof from %s: %s", uid, url[:60], e)
+        return None
+
+    if not isinstance(proof, BenchmarkProof):
+        logger.warning("UID %d: downloaded object is not a BenchmarkProof", uid)
+        return None
+
+    return proof
 
 
 def _proof_to_head_score(proof):

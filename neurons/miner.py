@@ -65,7 +65,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     import bittensor as bt
 
     from fugal_subnet.commitments import ensure_commitment
-    from fugal_subnet.config import MIN_VALIDATOR_STAKE, SLICE_SIZE, TEE_PROXY_PORT
+    from fugal_subnet.config import (
+        MIN_VALIDATOR_STAKE,
+        SLICE_SIZE,
+        TEE_BUNDLE_STORE,
+        TEE_MODEL_PRICES_PATH,
+        TEE_PROXY_PORT,
+    )
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.tee.runtime import TEERuntime
 
@@ -75,6 +81,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     with open(benchmark_pool) as f:
         pool = json.load(f)
     logger.info("Loaded benchmark pool: %d questions", len(pool))
+
+    model_costs: dict[str, float] = {}
+    if TEE_MODEL_PRICES_PATH and os.path.isfile(TEE_MODEL_PRICES_PATH):
+        with open(TEE_MODEL_PRICES_PATH) as f:
+            model_costs = json.load(f)
+        logger.info("Loaded model prices for %d models", len(model_costs))
+    else:
+        logger.warning("No model prices file configured (FUGAL_MODEL_PRICES) — routing will ignore costs")
 
     logger.info("Head loaded: %s (%d bytes)", head_path, len(head_data))
     logger.info("Weights hash: %s", weights_hash[:16])
@@ -95,7 +109,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         logger.warning("Weights hash NOT committed on-chain yet — will retry.")
 
     tee_runtime = TEERuntime(mock=mock)
-    current_proof = {"proof": None, "lock": threading.Lock()}
+    current_proof = {"proof": None, "url": "", "lock": threading.Lock()}
 
     mg_lock = threading.Lock()
     mg_state = {"metagraph": metagraph}
@@ -127,15 +141,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     def forward(synapse: FugalProofSynapse) -> FugalProofSynapse:
         with current_proof["lock"]:
             proof = current_proof["proof"]
+            bundle_url = current_proof["url"]
         if proof is None:
             logger.warning("No proof available yet for epoch %s", synapse.epoch_id)
             return synapse
 
         synapse.proof_hash = proof.content_hash()
         synapse.weights_hash = weights_hash
-        synapse.proof_bundle_url = ""  # In production: HuggingFace URL
-        logger.info("Epoch %s: serving proof (hash=%s)",
-                     synapse.epoch_id, synapse.proof_hash[:16])
+        synapse.proof_bundle_url = bundle_url
+        logger.info("Epoch %s: serving proof (hash=%s, url=%s)",
+                     synapse.epoch_id, synapse.proof_hash[:16],
+                     bundle_url[:60] if bundle_url else "<none>")
         return synapse
 
     external_ip = os.getenv("FUGAL_AXON_IP")
@@ -193,6 +209,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                         current_proof=current_proof,
                         slice_size=SLICE_SIZE,
                         proxy_port=TEE_PROXY_PORT,
+                        bundle_repo=TEE_BUNDLE_STORE,
+                        hotkey_ss58=my_hotkey,
+                        model_costs=model_costs,
                     )
             except Exception as e:
                 logger.error("Epoch run failed: %s", e)
@@ -214,10 +233,14 @@ def _run_epoch(
     current_proof,
     slice_size,
     proxy_port,
+    bundle_repo,
+    hotkey_ss58,
+    model_costs,
 ):
     """Run a single benchmark epoch."""
     from fugal_subnet.benchmarks.slicer import derive_nonce
     from fugal_subnet.tee.harness import run_benchmark
+    from fugal_subnet.tee.store import upload_proof
 
     epoch_id = f"e_{block_hash[:16]}"
     nonce_bytes = derive_nonce(epoch_id, block_hash)
@@ -238,18 +261,28 @@ def _run_epoch(
             slice_size=slice_size,
             epoch_id=epoch_id,
             source_hash=_get_source_hash(),
+            model_costs=model_costs,
         )
 
         content_hash_bytes = bytes.fromhex(proof.content_hash())
         proof.attestation_quote = tee_runtime.generate_attestation(content_hash_bytes)
 
+        bundle_url = ""
+        if bundle_repo:
+            try:
+                bundle_url = upload_proof(proof, bundle_repo, hotkey=hotkey_ss58)
+            except Exception as e:
+                logger.error("Failed to upload proof bundle: %s", e)
+
         with current_proof["lock"]:
             current_proof["proof"] = proof
+            current_proof["url"] = bundle_url
 
         logger.info(
-            "Epoch %s complete: %d/%d correct (%.1f%%), cost=$%.4f",
+            "Epoch %s complete: %d/%d correct (%.1f%%), cost=$%.4f, url=%s",
             epoch_id, proof.n_correct, proof.n_total,
             proof.accuracy * 100, proof.total_cost_usd,
+            bundle_url[:60] if bundle_url else "<not uploaded>",
         )
     finally:
         proxy.stop()

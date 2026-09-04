@@ -7,10 +7,13 @@ produces a Wilson LCB that converges as epochs pile up.
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 
 from fugal_subnet.config import WILSON_CONFIDENCE
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,7 +52,7 @@ class Evidence:
     @property
     def avg_kl(self) -> float:
         if self.n_kl < 1e-6:
-            return -100.0
+            return float("nan")
         return -(self.kl_sum / self.n_kl)
 
     @property
@@ -136,7 +139,11 @@ def apply_miss(
 def _wilson_lower_bound(p: float, n: float, confidence: float) -> float:
     if n < 1e-6:
         return 0.0
-    z = {0.90: 1.645, 0.95: 1.96, 0.99: 2.576}.get(confidence, 1.96)
+    _z_table = {0.90: 1.645, 0.95: 1.96, 0.99: 2.576}
+    z = _z_table.get(confidence)
+    if z is None:
+        logger.warning("Wilson confidence %.2f not in lookup table, defaulting to z=1.96", confidence)
+        z = 1.96
     denom = 1 + z * z / n
     center = p + z * z / (2 * n)
     spread = z * math.sqrt((p * (1 - p) + z * z / (4 * n)) / n)

@@ -6,7 +6,8 @@ quality. Better routers earn more emissions.
 
 ## What You're Building
 
-A **router head** — a small linear layer (~14KB `.npz` file) on a frozen
+A **router head** — a small linear layer (~14KB to ~130KB `.npz` file, depending
+on model count) on a frozen
 Qwen3-0.6B backbone. Given a question's hidden state, your head picks which LLM
 should answer it. Each epoch, your miner:
 
@@ -23,7 +24,7 @@ exact token counts and costs. Validators verify proofs — they never call model
 
 ## Requirements
 
-- **Intel TDX VM** — GCP `n2d-standard` or Azure confidential VMs
+- **Intel TDX VM** — GCP `c3-standard` or Azure confidential VMs
   (required for hardware attestation in `--live` mode; `--mock` works anywhere)
 - Linux (Ubuntu 22.04+ recommended)
 - Python 3.10-3.12
@@ -115,6 +116,7 @@ OPENROUTER_API_KEY=sk-or-... python neurons/miner.py \
   --coldkey fugal_miner \
   --hotkey default \
   --head-path data/my_head.npz \
+  --benchmark-pool data/benchmark_pool.json \
   --port 8091 \
   --mock
 ```
@@ -134,6 +136,7 @@ OPENROUTER_API_KEY=sk-or-... python neurons/miner.py \
   --coldkey fugal_miner \
   --hotkey default \
   --head-path data/my_head.npz \
+  --benchmark-pool data/benchmark_pool.json \
   --port 8091 \
   --live
 ```
@@ -156,8 +159,9 @@ Environment=OPENROUTER_API_KEY=sk-or-...
 ExecStart=/path/to/fugal-subnet/.venv/bin/python neurons/miner.py \
   --netuid <NETUID> --network finney \
   --coldkey fugal_miner --hotkey default \
-  --head-path data/my_head.npz --port 8091 \
-  --live
+  --head-path data/my_head.npz \
+  --benchmark-pool data/benchmark_pool.json \
+  --port 8091 --live
 Restart=always
 RestartSec=10
 

@@ -119,4 +119,6 @@ def _z_score(confidence: float) -> float:
 
 def _normalize_kl(kl: float) -> float:
     """Map KL score from (-inf, 0] to (0, ~0.73] for composite scoring."""
+    if math.isnan(kl):
+        return 0.0
     return 1.0 / (1.0 + math.exp(min(700.0, -kl - 1.0)))

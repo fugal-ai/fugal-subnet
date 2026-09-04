@@ -22,7 +22,7 @@ All notable changes to this project will be documented here. Releases follow [Se
 - TEE safety invariant checks in `scripts/check_safety_invariants.py`
   (`check_tee_safety`): miner annotation check, harness grader import check,
   verify module model-call check.
-- 20 TEE unit tests + 5 TEE attack tests in `tests/test_tee.py`.
+- 24 TEE unit tests + 4 TEE attack tests in `tests/test_tee.py`.
 - 11 evidence accumulation tests in `tests/test_evidence.py`.
 
 ### Changed
@@ -70,8 +70,6 @@ All notable changes to this project will be documented here. Releases follow [Se
 - Added `--wallet-path` option to both miner and validator.
 - Added head model-ID length cap (256 chars) and zero-model rejection.
 
-### Added
-
 - `scripts/check_determinism.py` — two-process differential determinism harness
   with 7 stages and `--perturb` mode simulating a second host. In CI.
 - `fugal_subnet/attacks/run_miner_attacks.py` — 14 hostile head payloads (zip
@@ -80,7 +78,7 @@ All notable changes to this project will be documented here. Releases follow [Se
   loader.
 - `tests/test_non_interference.py` — regression tests for the dedup seniority
   inversion (I4).
-- `docs/INVARIANTS.md` — the seven consensus invariants, what enforces each, and
+- `docs/INVARIANTS.md` — the eight consensus invariants, what enforces each, and
   known gaps (including the I4 pool-eviction griefing vector).
 - Doc/code flag consistency checker in `check_safety_invariants.py`.
 - Ruff linting, pip-audit, CodeQL security scanning, CODEOWNERS, and structured

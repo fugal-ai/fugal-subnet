@@ -96,7 +96,7 @@ validator must produce byte-identical grades. A grader change is a consensus for
 
 ## Consensus Invariants
 
-`docs/INVARIANTS.md` states the seven properties the subnet rests on (I1-I7),
+`docs/INVARIANTS.md` states the eight properties the subnet rests on (I1-I8),
 what enforces each, and the known gaps. A consensus-affecting change means
 updating that file and adding a check that enforces the property — the reason
 it exists is that a real consensus bug survived five code reviews because the

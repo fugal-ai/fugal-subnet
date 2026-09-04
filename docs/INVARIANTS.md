@@ -110,7 +110,7 @@ spend.
 
 1. Deploy on testnet with two validators and verify they produce identical
    weights from the same set of TEE proofs.
-2. Run miners on real Intel TDX VMs (GCP `n2d-standard` or Azure confidential
+2. Run miners on real Intel TDX VMs (GCP `c3-standard` or Azure confidential
    VMs) and verify DCAP attestation end-to-end.
 3. Publish approved runtime measurements (`FUGAL_TEE_MEASUREMENTS`) and
    document the process for updating them.

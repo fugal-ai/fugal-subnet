@@ -1,4 +1,4 @@
-"""Proof data models for TEE-attested benchmarks.
+"""Proof data models and shared helpers for TEE-attested benchmarks.
 
 BenchmarkProof is what a miner produces inside the TEE after running
 the routing benchmark. QuestionResult holds per-question routing
@@ -9,6 +9,12 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+
+
+def compute_questions_hash(question_ids: list[str]) -> str:
+    """Compute the canonical hash for a set of question IDs."""
+    canonical = json.dumps(sorted(question_ids), separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 @dataclass

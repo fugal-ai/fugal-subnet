@@ -234,18 +234,21 @@ def test_attack_tampered_proof_after_attestation():
     The content_hash in the report_data won't match the tampered proof.
     """
     proof = _make_proof()
-    # Tamper with a result after attestation
-    proof.results[0].correct = not proof.results[0].correct
+    pre_tamper_hash = proof.content_hash()
 
-    # In non-mock mode, the report_data binding check would catch this.
-    # In mock mode, binding is skipped, but the content hash changed.
-    original_hash = proof.content_hash()
-    # The attestation was generated for the pre-tamper content hash.
-    # The report_data in the quote doesn't match the post-tamper hash.
+    # Tamper with a result after attestation was generated
+    proof.results[0].correct = not proof.results[0].correct
+    post_tamper_hash = proof.content_hash()
+
+    # The content hash must change after tampering
+    assert pre_tamper_hash != post_tamper_hash
+
+    # The report_data in the quote was bound to the pre-tamper hash
     report_data = extract_report_data(proof.attestation_quote)
-    tampered_expected = bytes.fromhex(original_hash).ljust(64, b"\x00")[:64]
-    # These should NOT match because we tampered after attestation
-    assert report_data[:32] != tampered_expected[:32] or proof.n_correct != 4
+    post_tamper_expected = bytes.fromhex(post_tamper_hash).ljust(64, b"\x00")[:64]
+
+    # report_data should NOT match the tampered proof's content hash
+    assert report_data != post_tamper_expected
 
 
 def test_attack_replayed_old_proof():
@@ -310,3 +313,89 @@ def test_proof_content_hash_changes_on_any_tamper():
 
     proof.total_cost_usd += 0.001
     assert proof.content_hash() != original
+
+
+# --- Harness unit tests (M3) ---
+
+def test_compute_questions_hash_sorted_order():
+    """compute_questions_hash is order-independent (sorted internally)."""
+    from fugal_subnet.tee.proof import compute_questions_hash as cqh
+    h1 = cqh(["q3", "q1", "q2"])
+    h2 = cqh(["q1", "q2", "q3"])
+    assert h1 == h2
+
+
+def test_compute_questions_hash_unique():
+    """Different question sets produce different hashes."""
+    from fugal_subnet.tee.proof import compute_questions_hash as cqh
+    h1 = cqh(["q1", "q2"])
+    h2 = cqh(["q1", "q3"])
+    assert h1 != h2
+
+
+def test_cost_consistency_tolerance():
+    """Verify M7 fix: relative + absolute cost tolerance."""
+    from fugal_subnet.tee.verify import _costs_consistent
+    # Small costs: 5% relative tolerance
+    assert _costs_consistent(0.005, 0.005)
+    assert _costs_consistent(0.005, 0.0055)
+    # Large costs: 5% relative tolerance
+    assert _costs_consistent(1.0, 1.04)
+    assert not _costs_consistent(1.0, 1.06)
+    # Absolute floor: $0.001
+    assert _costs_consistent(0.0, 0.0005)
+    assert not _costs_consistent(0.0, 0.002)
+
+
+# --- TEE pipeline integration test (M2) ---
+
+def test_tee_verify_then_score_pipeline():
+    """End-to-end: make proof → verify → convert to HeadScore."""
+    import numpy as np
+
+    from fugal_subnet.tee.proof import compute_questions_hash as cqh
+
+    proof = _make_proof()
+    gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
+    expected_qhash = cqh([r.question_id for r in proof.results])
+
+    # Step 1: verify
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=expected_qhash,
+        expected_nonce=proof.nonce,
+        gold_answers=gold,
+        mock=True,
+    )
+    assert result.valid, f"verify failed: {result.reason}"
+
+    # Step 2: convert to HeadScore (same as validator._proof_to_head_score)
+    from fugal_subnet.head_eval import HeadScore
+    n_correct = proof.n_correct
+    n_scored = proof.n_total
+    total_head_cost = proof.total_cost_usd
+    if proof.per_model_costs:
+        cheapest = min(proof.per_model_costs.values())
+        total_oracle_cost = cheapest * max(len(proof.results), 1)
+    else:
+        total_oracle_cost = total_head_cost
+    cost_efficiency = min(1.0, total_oracle_cost / max(total_head_cost, 1e-10))
+
+    score = HeadScore(
+        accuracy=proof.accuracy,
+        cost_efficiency=cost_efficiency,
+        kl_score=0.0,
+        routing_decisions=np.array([0, 1, 0, 1, 0], dtype=np.int32),
+        correct_mask=np.array([r.correct for r in proof.results], dtype=bool),
+        coverage=1.0,
+        n_correct=n_correct,
+        n_scored=n_scored,
+        total_head_cost=total_head_cost,
+        total_oracle_cost=total_oracle_cost,
+        total_kl=0.0,
+    )
+    assert score.accuracy == proof.accuracy
+    assert 0.0 <= score.cost_efficiency <= 1.0
+    assert score.n_correct == 4
+    assert score.n_scored == 5

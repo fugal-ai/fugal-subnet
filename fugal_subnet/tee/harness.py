@@ -23,7 +23,7 @@ from fugal_subnet.benchmarks.slicer import select_slice
 from fugal_subnet.config import ROUTING_LAMBDA
 from fugal_subnet.graders import grade
 from fugal_subnet.head_eval import HeadArtifact, load_head_from_npz, quantize_utility
-from fugal_subnet.tee.proof import BenchmarkProof, QuestionResult
+from fugal_subnet.tee.proof import BenchmarkProof, QuestionResult, compute_questions_hash
 from fugal_subnet.tee.runtime import MeteringProxy
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ def run_benchmark(
     questions = select_slice(nonce_bytes, benchmark_pool, slice_size)
 
     question_ids = [q["question_id"] for q in questions]
-    questions_hash = _compute_questions_hash(question_ids)
+    questions_hash = compute_questions_hash(question_ids)
 
     pool_ids = [q["question_id"] for q in benchmark_pool]
     q_to_pool_idx = {qid: i for i, qid in enumerate(pool_ids)}
@@ -87,6 +87,7 @@ def run_benchmark(
         response_text = _call_model(proxy, model_id, q)
         response_hash = hashlib.sha256(response_text.encode()).hexdigest()
 
+        # allow_exec=False: no code execution inside TEE (security boundary)
         correct = bool(grade(q, response_text, allow_exec=False))
 
         cost = proxy.records[-1].cost_usd if proxy.records else 0.0
@@ -168,6 +169,3 @@ def _call_model(
         return ""
 
 
-def _compute_questions_hash(question_ids: list[str]) -> str:
-    canonical = json.dumps(sorted(question_ids), separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()

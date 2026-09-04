@@ -523,14 +523,19 @@ def _proof_to_head_score(proof):
     n_scored = proof.n_total
     accuracy = proof.accuracy
 
-    # Cost efficiency: ratio of cheapest-correct to actual cost
+    # Cost efficiency: ratio of cheapest model's cost to actual cost
     # Under TEE, costs come from the attested MeteringProxy
     total_head_cost = proof.total_cost_usd
-    total_oracle_cost = total_head_cost * 0.8  # Approximation until oracle assembly
+    if proof.per_model_costs:
+        cheapest = min(proof.per_model_costs.values())
+        n_questions = max(len(proof.results), 1)
+        total_oracle_cost = cheapest * n_questions
+    else:
+        total_oracle_cost = total_head_cost
 
     cost_efficiency = min(1.0, total_oracle_cost / max(total_head_cost, 1e-10))
 
-    # KL divergence placeholder — requires oracle distribution
+    # KL divergence — requires oracle distribution assembly (post-launch)
     total_kl = 0.0
 
     return HeadScore(

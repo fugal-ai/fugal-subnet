@@ -6,13 +6,16 @@ and cost consistency — without ever calling a model.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from dataclasses import dataclass
 
 from fugal_subnet.tee.attestation import extract_report_data, verify_dcap
-from fugal_subnet.tee.proof import BenchmarkProof
+from fugal_subnet.tee.proof import (
+    BenchmarkProof,
+)
+from fugal_subnet.tee.proof import (
+    compute_questions_hash as compute_questions_hash,  # noqa: F401 — re-export
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,16 +115,16 @@ def verify_proof(
         if result.question_id not in gold_answers:
             warnings.append(f"Unknown question_id: {result.question_id}")
 
-    # 7. Cost consistency
+    # 7. Cost consistency (relative + absolute tolerance)
     per_q_sum = sum(r.cost_usd for r in proof.results)
-    if abs(per_q_sum - proof.total_cost_usd) > 0.01:
+    if not _costs_consistent(per_q_sum, proof.total_cost_usd):
         warnings.append(
             f"Cost inconsistency: per-question sum {per_q_sum:.4f} vs "
             f"reported total {proof.total_cost_usd:.4f}"
         )
 
     per_model_sum = sum(proof.per_model_costs.values())
-    if abs(per_model_sum - proof.total_cost_usd) > 0.01:
+    if not _costs_consistent(per_model_sum, proof.total_cost_usd):
         warnings.append(
             f"Per-model cost sum {per_model_sum:.4f} vs "
             f"reported total {proof.total_cost_usd:.4f}"
@@ -134,7 +137,9 @@ def verify_proof(
     )
 
 
-def compute_questions_hash(question_ids: list[str]) -> str:
-    """Compute the canonical hash for a set of question IDs."""
-    canonical = json.dumps(sorted(question_ids), separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
+def _costs_consistent(a: float, b: float) -> bool:
+    """Check cost consistency using both relative (5%) and absolute ($0.001) tolerance."""
+    diff = abs(a - b)
+    return diff <= max(0.05 * max(abs(a), abs(b)), 0.001)
+
+

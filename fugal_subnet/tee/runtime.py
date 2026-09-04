@@ -94,10 +94,11 @@ class MeteringProxy:
                     self.end_headers()
                     self.wfile.write(resp_body)
 
-                except Exception as e:
+                except Exception:
+                    logger.exception("Proxy upstream error")
                     self.send_response(502)
                     self.end_headers()
-                    self.wfile.write(json.dumps({"error": str(e)}).encode())
+                    self.wfile.write(json.dumps({"error": "upstream request failed"}).encode())
 
             def _estimate_cost(self, model_id: str, pin: int, pout: int) -> float:
                 # TODO: fetch real pricing from OpenRouter when available

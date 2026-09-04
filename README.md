@@ -32,13 +32,21 @@ pip install -e ".[dev]"
 # Local testnet (Docker chain + full epoch pipeline, no API spend)
 python scripts/launch_testnet.py --mock --epochs 3
 
+# Or the single-command container demo (chain + miner + validator, one epoch)
+docker compose up --abort-on-container-exit
+
+# Full dress rehearsal: multi-miner, multi-validator, multi-epoch, on a real chain
+python scripts/dress_rehearsal.py --scenario all
+
 # Train a reference head (synthetic data, no API spend)
 python scripts/train_head.py --synthetic --n-questions 200 \
   --models deepseek/deepseek-v4-flash meta-llama/llama-4-maverick openai/gpt-5.4-nano \
   --output data/my_head.npz
 
-# Run the miner (commits the head hash on-chain, then serves it)
-python neurons/miner.py --netuid 1 --head-path data/my_head.npz
+# Run the miner (commits the head hash on-chain, benchmarks, serves proofs)
+python neurons/miner.py --netuid 1 \
+  --head-path data/my_head.npz \
+  --benchmark-pool data/pool.json
 
 # Run the validator (mock mode — no API spend)
 python neurons/validator.py --netuid 1 --mock
@@ -57,12 +65,12 @@ default. Review the [Validator Guide](docs/VALIDATOR_GUIDE.md) first.
 
 ## How It Works
 
-1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks) — every honest validator gets the identical slice.
-2. Miners respond to the validator's query with their `.npz` head artifact (W, b, model list). A head is only scoreable if its SHA256 was **committed on-chain at or before the boundary block** — heads swapped after the nonce is knowable are rejected.
-3. The validator calls all models in the (priced, capped, budget-checked) union pool on those questions, grades responses with mechanical checkers, and builds an N×M binary matrix.
-4. Each head is evaluated: routing accuracy, cost efficiency (capped at 1.0 — the oracle's cheapest-correct routing is the ceiling), and KL divergence against soft targets. Questions no model answered correctly are excluded for everyone.
-5. Composite scores (accuracy 55%, cost efficiency 35%, KL 10%) determine weights. Copied heads are deduplicated — earliest on-chain commitment wins. Weights are set on-chain; emissions flow.
-6. The validator publishes the full epoch artifact (`results/epochs/<epoch>/reveal.json`): questions, the complete matrix, model costs, scores, and weights. Miners download it, retrain, submit improved heads.
+1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks) — every honest validator derives the identical slice, and neither side can know it in advance.
+2. **Miners run the benchmark themselves, inside an Intel TDX enclave.** The enclave loads the miner's `.npz` head, routes each question, calls the chosen model through a metering proxy, grades the reply with the hash-pinned graders, and produces a hardware-attested `BenchmarkProof`. Miners pay for their own inference. A head is only scoreable if its SHA256 was **committed on-chain at or before the boundary block** — a head swapped after the nonce is knowable is rejected.
+3. **Miners also answer a nonce-chosen ~5% of extra questions using a model they do not pick.** These are never scored against them; they are the only unbiased samples of how good each model actually is, and a proof missing them is rejected.
+4. **Validators never call a model.** They verify the proof: the Intel DCAP signature, the hardware's own measurement registers against the approved runtime image, the attested content hash, the head against its on-chain commitment, the answers against the assigned slice, the exploration set against the nonce, and the cost figures against each other.
+5. **Scoring is quality per dollar against the best single model.** `quality = wilson_lcb(accuracy) / acc_best`, `thrift = ref_cost / miner_cost`, and `score = quality^0.8 * thrift^0.2`. A score of 1.0 means "matched the best single model's quality per dollar"; above 1.0 means "beat it". Evidence accumulates per head artifact across epochs, so noise cancels and a lucky epoch does not dethrone. Copied heads are deduplicated — earliest on-chain commitment wins.
+6. The validator publishes the full epoch artifact (`results/epochs/<epoch>/reveal.json`): questions, results, the reference frame, scores, and weights. Miners download it, retrain, and commit improved heads.
 
 ## Benchmarks
 
@@ -85,6 +93,10 @@ dataset requiring `huggingface-cli login` and accepted terms, or add `gpqa` to
 
 - **[Miner Guide](docs/MINER_GUIDE.md)** — train a router head, register, commit, run the miner
 - **[Validator Guide](docs/VALIDATOR_GUIDE.md)** — set up API keys, sandboxing, run the validator, monitor epochs
+- **[Consensus Invariants](docs/INVARIANTS.md)** — the nine properties the subnet rests on, what enforces each, and the known gaps
+- **[Design Decisions](docs/design-decisions.md)** — why the scoring formula, the reference frame and the TEE architecture are what they are
+- **[TDX Validation](docs/TDX_VALIDATION.md)** — the two attestation checks that need real confidential hardware, and how to run them
+- **[Live API Validation](docs/LIVE_API_VALIDATION.md)** — confirming the pinned price table against what OpenRouter actually bills
 
 ## Contributing and Security
 

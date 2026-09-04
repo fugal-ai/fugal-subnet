@@ -28,7 +28,20 @@ def _make_results(n=5, accuracy=0.8):
     return results
 
 
-def _make_proof(results=None, nonce="abc123", epoch_id="epoch_1") -> BenchmarkProof:
+def _make_proof(
+    results=None,
+    nonce="abc123",
+    epoch_id="epoch_1",
+    source_hash="approved_measurement_1",
+    total_cost_usd=None,
+    per_model_costs=None,
+) -> BenchmarkProof:
+    """Build an internally consistent, correctly attested proof.
+
+    Overrides are applied BEFORE attestation, so a proof built here is always
+    self-consistent — a test that wants to model tampering must mutate the
+    returned object, which is exactly what report_data binding then catches.
+    """
     if results is None:
         results = _make_results()
     per_model = {}
@@ -40,10 +53,10 @@ def _make_proof(results=None, nonce="abc123", epoch_id="epoch_1") -> BenchmarkPr
         nonce=nonce,
         questions_hash=compute_questions_hash([r.question_id for r in results]),
         weights_hash="deadbeef" * 8,
-        source_hash="approved_measurement_1",
+        source_hash=source_hash,
         results=results,
-        total_cost_usd=total,
-        per_model_costs=per_model,
+        total_cost_usd=total if total_cost_usd is None else total_cost_usd,
+        per_model_costs=per_model if per_model_costs is None else per_model_costs,
         attestation_quote=b"",
         timestamp=time.time(),
     )
@@ -153,10 +166,14 @@ def test_verify_proof_wrong_questions():
     assert "Questions hash mismatch" in result.reason
 
 
-def test_verify_proof_mock_skips_measurement_check():
-    """In mock mode, DCAP and measurement checks are skipped."""
-    proof = _make_proof()
-    proof.source_hash = "unapproved_hash"
+def test_verify_proof_mock_skips_hardware_trust_checks():
+    """Mock skips DCAP and approved-image matching — there is no real hardware.
+
+    Everything else still applies: mock is not a bypass, it is the absence of a
+    machine to attest. source_hash is set before attestation here, so the proof
+    is internally consistent; it is simply not an approved image.
+    """
+    proof = _make_proof(source_hash="an_unapproved_image")
     gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
     result = verify_proof(
         proof,
@@ -166,7 +183,28 @@ def test_verify_proof_mock_skips_measurement_check():
         gold_answers=gold,
         mock=True,
     )
-    assert result.valid  # mock=True skips DCAP + measurement check
+    assert result.valid, result.reason
+
+
+def test_post_attestation_tamper_caught_even_in_mock():
+    """Editing any attested field after the fact breaks the report_data binding.
+
+    This is enforced in mock too: the structural hash chain costs nothing to
+    check and is what makes a local testnet a meaningful rehearsal.
+    """
+    proof = _make_proof()
+    proof.source_hash = "swapped_after_attestation"
+    gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce=proof.nonce,
+        gold_answers=gold,
+        mock=True,
+    )
+    assert not result.valid
+    assert "report_data mismatch" in result.reason
 
 
 def test_verify_proof_nonmock_order():
@@ -184,9 +222,16 @@ def test_verify_proof_nonmock_order():
         )
 
 
-def test_verify_proof_cost_inconsistency():
-    proof = _make_proof()
-    proof.total_cost_usd = 999.0  # Tamper with total
+def test_verify_proof_cost_inconsistency_is_rejected():
+    """An internally inconsistent cost report is a rejection, not a warning.
+
+    Understating total_cost_usd raises a miner's thrift score, so treating the
+    inconsistency as advisory paid the attacker. Under real attestation every
+    figure comes from the same metered image, so this can never legitimately
+    fail — if it does, the proof is not what it claims to be.
+    """
+    results = _make_results()
+    proof = _make_proof(results=results, total_cost_usd=0.0001)
     gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
     result = verify_proof(
         proof,
@@ -196,8 +241,8 @@ def test_verify_proof_cost_inconsistency():
         gold_answers=gold,
         mock=True,
     )
-    assert result.valid  # Cost inconsistency is a warning, not a failure
-    assert result.warnings
+    assert not result.valid
+    assert "Cost inconsistency" in result.reason
 
 
 def test_compute_questions_hash_deterministic():
@@ -399,3 +444,135 @@ def test_tee_verify_then_score_pipeline():
     assert 0.0 <= score.cost_efficiency <= 1.0
     assert score.n_correct == 4
     assert score.n_scored == 5
+
+
+# --- Binding tests: each covers a hole that was open before hardening ---
+
+def _gold(n=5):
+    return {f"q{i}": {"question_id": f"q{i}"} for i in range(n)}
+
+
+def test_results_must_match_the_assigned_slice():
+    """questions_hash is public, so matching it proves nothing on its own.
+
+    A miner can copy the expected hash while grading an easier set of its own
+    choosing. Only comparing the result ids against the assigned slice closes it.
+    """
+    assigned = {f"q{i}" for i in range(5)}
+    easy = [
+        QuestionResult(f"easy{i}", "model-a", True, 0.001,
+                       hashlib.sha256(b"x").hexdigest())
+        for i in range(5)
+    ]
+    proof = _make_proof(results=easy)
+    proof.questions_hash = compute_questions_hash(sorted(assigned))
+    # Re-attest so only the slice binding, not report_data, is under test.
+    proof.attestation_quote = TEERuntime(mock=True).generate_attestation(
+        bytes.fromhex(proof.content_hash())
+    )
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce=proof.nonce,
+        gold_answers={**_gold(), **{f"easy{i}": {} for i in range(5)}},
+        expected_question_ids=assigned,
+        mock=True,
+    )
+    assert not result.valid
+    assert "does not match the assigned slice" in result.reason
+
+
+def test_proof_must_run_the_head_committed_on_chain():
+    """Commit head A, run head B: the evidence key would otherwise be free."""
+    proof = _make_proof()
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce=proof.nonce,
+        gold_answers=_gold(),
+        expected_weights_hash="cafe" * 16,  # what the chain says
+        mock=True,
+    )
+    assert not result.valid
+    assert "Head mismatch" in result.reason
+
+
+def test_bundled_head_must_hash_to_the_attested_weights_hash():
+    proof = _make_proof()
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce=proof.nonce,
+        gold_answers=_gold(),
+        head_bytes=b"not the head that ran",
+        mock=True,
+    )
+    assert not result.valid
+    assert "Bundled head does not match" in result.reason
+
+
+def test_downloaded_bundle_must_match_the_advertised_hash():
+    proof = _make_proof()
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce=proof.nonce,
+        gold_answers=_gold(),
+        expected_proof_hash="f" * 64,
+        mock=True,
+    )
+    assert not result.valid
+    assert "Bundle mismatch" in result.reason
+
+
+def test_all_bindings_satisfied_verifies():
+    """The honest path: every expectation supplied and every one satisfied."""
+    head_bytes = b"a real head artifact"
+    results = _make_results()
+    proof = _make_proof(results=results)
+    proof.weights_hash = hashlib.sha256(head_bytes).hexdigest()
+    proof.attestation_quote = TEERuntime(mock=True).generate_attestation(
+        bytes.fromhex(proof.content_hash())
+    )
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce=proof.nonce,
+        gold_answers=_gold(),
+        expected_question_ids={r.question_id for r in results},
+        expected_weights_hash=proof.weights_hash,
+        expected_proof_hash=proof.content_hash(),
+        head_bytes=head_bytes,
+        mock=True,
+    )
+    assert result.valid, result.reason
+
+
+def test_measurement_comes_from_the_quote_not_the_proof():
+    """The approved-image check must read hardware registers, not a claim.
+
+    An attacker with real TDX hardware produces a genuine Intel-signed quote
+    while running modified code. What separates them from an honest miner is
+    the measurement register the CPU filled in — so measurement_id must be a
+    function of the quote alone.
+    """
+    from fugal_subnet.tee.attestation import measurement_id
+
+    proof = _make_proof(source_hash="i-claim-to-be-the-approved-image")
+    quote = parse_quote(proof.attestation_quote)
+    assert measurement_id(quote) != proof.source_hash
+    # It is derived purely from the measurement registers.
+    assert measurement_id(quote) == measurement_id(parse_quote(proof.attestation_quote))
+
+
+def test_parse_quote_rejects_non_tdx():
+    import struct
+    bad = bytearray(_mock_quote(b"x" * 64))
+    struct.pack_into("<I", bad, 4, 0x0)  # tee_type: not TDX
+    with pytest.raises(ValueError, match="not TDX"):
+        parse_quote(bytes(bad))

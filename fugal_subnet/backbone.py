@@ -5,6 +5,8 @@ Frozen backbone, mean-pooling, L2-normalization.
 """
 from __future__ import annotations
 
+import ctypes
+import gc
 import logging
 import os
 
@@ -128,8 +130,28 @@ def compute_hidden_states(
 
 
 def release_backbone():
-    """Free GPU memory by clearing the cached model."""
+    """Release the cached backbone and return its memory to the OS.
+
+    Dropping the cache is not enough on CPU. glibc's allocator keeps freed
+    blocks in its arenas rather than returning them, so RSS stays high long
+    after the model is unreachable: measured 3206 MB while embedding, 2578 MB
+    after clearing the cache, and 751 MB only once the arenas are trimmed.
+
+    That 1.8 GB matters. A miner holds the backbone only to embed the pool
+    once at startup and then never needs it again, so without the trim every
+    miner idles for the rest of its life holding memory it cannot use — and on
+    a machine running several, the kernel starts killing them (observed:
+    SIGKILL on the third concurrent miner).
+    """
     global _model_cache
     _model_cache.clear()
+    gc.collect()
     torch.cuda.empty_cache()
-    logger.info("Backbone released from GPU")
+
+    # glibc only; a no-op elsewhere. Not required for correctness.
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+    logger.info("Backbone released")

@@ -12,13 +12,14 @@ WORKDIR /app
 
 # Cache third-party wheels independently from project sources.
 COPY pyproject.toml uv.lock README.md LICENSE ./
-RUN uv sync --frozen --no-dev --no-install-project
+# --extra tee installs dcap-qvl, required for --live attestation verification.
+RUN uv sync --frozen --no-dev --extra tee --no-install-project
 
 COPY fugal_subnet/ fugal_subnet/
 COPY neurons/ neurons/
 COPY scripts/ scripts/
 COPY data/ data/
-RUN uv sync --frozen --no-dev \
+RUN uv sync --frozen --no-dev --extra tee \
     && groupadd --gid 10001 fugal \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/fugal fugal \
     && mkdir -p /app/results /app/data /home/fugal/.bittensor \

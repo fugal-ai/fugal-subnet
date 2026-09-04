@@ -21,6 +21,7 @@ TDX quote v4 binary layout:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import struct
 from dataclasses import dataclass
@@ -45,6 +46,8 @@ _FIELDS = [
     ("report_data",    568,  64),
 ]
 _MIN_QUOTE_LEN = 632
+_TDX_QUOTE_VERSION = 4
+_TEE_TYPE_TDX = 0x00000081
 
 
 @dataclass
@@ -81,6 +84,15 @@ def parse_quote(data: bytes) -> TDXQuote:
         )
     version = struct.unpack_from("<H", data, 0)[0]
     tee_type = struct.unpack_from("<I", data, 4)[0]
+    if version != _TDX_QUOTE_VERSION:
+        raise ValueError(
+            f"Unsupported quote version {version} (expected {_TDX_QUOTE_VERSION}); "
+            "the field offsets below are v4-specific"
+        )
+    if tee_type != _TEE_TYPE_TDX:
+        raise ValueError(
+            f"Quote tee_type is 0x{tee_type:x}, not TDX (0x{_TEE_TYPE_TDX:x})"
+        )
     fields = {name: data[off: off + size].hex() for name, off, size in _FIELDS}
     return TDXQuote(
         version=version,
@@ -88,6 +100,25 @@ def parse_quote(data: bytes) -> TDXQuote:
         raw=data,
         **fields,
     )
+
+
+def measurement_id(quote: TDXQuote) -> str:
+    """Identity of the runtime image the hardware actually measured.
+
+    This is what an approved-image check must compare against. It is derived
+    from the quote's own measurement registers, which the CPU fills in and the
+    Intel-signed attestation covers — not from any value the workload chose.
+
+    MRTD is the initial TD measurement (the VM image). RTMR0-2 cover firmware,
+    bootloader, and kernel/initrd. RTMR3 is deliberately excluded: it is the
+    application-extendable register, so including it would make the identity
+    change with runtime data and no image could ever stay on an approved list.
+
+    A workload can put anything it likes in report_data, and it can claim any
+    `source_hash` it likes inside its own proof. It cannot forge these.
+    """
+    payload = bytes.fromhex(quote.mrtd + quote.rtmr0 + quote.rtmr1 + quote.rtmr2)
+    return hashlib.sha256(payload).hexdigest()
 
 
 def verify_dcap(quote_bytes: bytes) -> bool:

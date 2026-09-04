@@ -36,6 +36,14 @@ def find_duplicates(
     if len(uids) < 2:
         return set()
 
+    # Decision arrays must already be indexed in a GLOBAL model space (see
+    # neurons/validator._extract_routing_decisions). When each miner numbered
+    # its own models, index 0 meant a different model for every miner, and the
+    # comparison broke in both directions: two miners each routing 100% to a
+    # different single model produced identical all-zero vectors and were
+    # clustered as clones, while a real copy that re-routed one question to an
+    # alphabetically-earlier model renumbered its whole vector and escaped —
+    # 96.7% identical routing, zero similarity detected.
     n_models = max(
         (int(d.max()) + 1 for d in head_outputs.values() if len(d) > 0),
         default=1,

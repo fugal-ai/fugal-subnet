@@ -16,8 +16,16 @@ rules.
 5. **NEVER log any part of `OPENROUTER_API_KEY`.**
 6. **`fugal_subnet/graders.py` is immutable.** It is hash-pinned
    (SHA256 checked in CI). Any byte change breaks consensus. It is excluded from
-   ruff via `per-file-ignores`.
-7. **Consensus invariants live in `docs/INVARIANTS.md`.** Read it before
+   ruff via `per-file-ignores`. `grading_task.py` is not the grader, but it
+   decides what the grader sees — a change there changes every grade.
+7. **`data/models.json` is hash-pinned too.** It is the consensus cost
+   denominator: an unreviewed price edit silently re-scores every miner. Update
+   the pin in `scripts/check_safety_invariants.py` in the same commit, and say
+   why.
+8. **Epoch identity has one source**, `slicer.epoch_id_for_block`. A second
+   formatting of the epoch id is a consensus break — it already happened once,
+   and it stopped the subnet setting weights at all.
+9. **Consensus invariants live in `docs/INVARIANTS.md`.** Read it before
    changing anything that affects scoring, determinism, or the miner
    interface. Consensus-affecting changes update it and add a check.
 
@@ -30,9 +38,10 @@ ruff check .
 # Unit + integration tests (no API spend)
 python tests/test_integration.py
 
-# Attack suites (grader verification, then hostile miner input)
+# Attack suites (grader output, hostile miner input, forged TEE proofs)
 python -m fugal_subnet.attacks.run_attacks
 python -m fugal_subnet.attacks.run_miner_attacks
+python -m fugal_subnet.attacks.run_tee_attacks
 
 # Scoring determinism (I1) — --perturb simulates a second host
 python scripts/check_determinism.py --perturb

@@ -91,7 +91,12 @@ def grader_hash() -> str:
 
 def environment_fingerprint() -> dict:
     """A JSON-serializable record of everything that can change a score."""
-    from fugal_subnet.config import ROUTING_DECISION_QUANTUM, ROUTING_LAMBDA
+    from fugal_subnet.config import (
+        EPOCH_INTERVAL,
+        EXPLORE_FRACTION,
+        ROUTING_DECISION_QUANTUM,
+        SLICE_SIZE,
+    )
 
     return {
         "fugal_version": fugal_subnet.__version__,
@@ -106,8 +111,19 @@ def environment_fingerprint() -> dict:
         "cpu_dispatch": {k: os.environ.get(k, "unset") for k in DETERMINISM_ENV},
         "grader_sha256": grader_hash(),
         "routing": {
-            "lambda": ROUTING_LAMBDA,
             "decision_quantum": ROUTING_DECISION_QUANTUM,
+        },
+        # Epoch shape. These are env-overridable and consensus-critical: two
+        # neurons with different slice sizes select different questions and
+        # every proof fails on questions_hash, with nothing in the error naming
+        # the cause. A miner running the default 300 against a validator set to
+        # 50 produced an identical questions_hash every epoch — it was slicing
+        # the entire pool — and the mismatch read only as "questions hash
+        # mismatch".
+        "epoch": {
+            "slice_size": SLICE_SIZE,
+            "epoch_interval_s": EPOCH_INTERVAL,
+            "explore_fraction": EXPLORE_FRACTION,
         },
     }
 
@@ -123,6 +139,7 @@ def consensus_digest(fingerprint: dict | None = None) -> str:
     """
     fp = fingerprint if fingerprint is not None else environment_fingerprint()
     material = {
+        "epoch": fp["epoch"],
         "packages": fp["packages"],
         "numpy_blas": fp["numpy_blas"],
         "cpu_dispatch": fp["cpu_dispatch"],

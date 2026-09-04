@@ -52,10 +52,18 @@ logger = logging.getLogger("fugal.launch")
 
 LOCAL_ENDPOINT = "ws://127.0.0.1:9944"
 DOCKER_IMAGE = "ghcr.io/raofoundation/subtensor-localnet"
+# Same digest docker-compose.yml pins. :latest carries a Drand txpool crash
+# around block 18 — well inside the range a multi-epoch run reaches — so an
+# unpinned tag makes long runs fail for reasons that have nothing to do with
+# this subnet.
+DOCKER_IMAGE_DIGEST = (
+    "sha256:2354832a7c45ceb35703d64bd6f9477439f9a966e34a1d460965b8faf19439e2"
+)
 DOCKER_CONTAINER = "fugal_local_chain"
 OWNER_WALLET = "fugal_owner"
 VALIDATOR_WALLET = "fugal_validator"
 MINER_WALLET = "fugal_miner"
+MINER_LOG_PATH = "results/miner.log"
 MINER_PORT = 8091
 
 ALICE_SEED = "0xe5be9a5092b81bca64be81d212e7f2f9eba183bb7a90954f7b76361f6edb5c0a"
@@ -108,9 +116,13 @@ def check_docker():
     return True
 
 
-def start_local_chain(image_tag: str = "devnet") -> bool:
+def start_local_chain(image_tag: str = "v432") -> bool:
     """Start a local subtensor chain via Docker."""
-    image = f"{DOCKER_IMAGE}:{image_tag}"
+    # Pin by digest for the default tag; an explicit --image-tag overrides.
+    image = (
+        f"{DOCKER_IMAGE}:{image_tag}@{DOCKER_IMAGE_DIGEST}"
+        if image_tag == "v432" else f"{DOCKER_IMAGE}:{image_tag}"
+    )
 
     result = subprocess.run(
         ["docker", "inspect", DOCKER_CONTAINER],
@@ -402,11 +414,103 @@ def train_head(output_path: str = "data/testnet_head.npz") -> str:
     return output_path
 
 
+def write_benchmark_pool(path: str = "data/testnet_pool.json",
+                         n: int = 120) -> str:
+    """Write the question pool the miner benchmarks against.
+
+    neurons/miner.py requires --benchmark-pool. A local testnet has no reason
+    to pull the real 21K-question HuggingFace pool: the miner runs the real
+    backbone over every question in this file, so a small deterministic pool is
+    what keeps a local run to minutes instead of hours. The schema is exactly
+    the loader's, so the grader path is identical to production.
+    """
+    import json
+    import random
+
+    if os.path.exists(path):
+        print(f"  Benchmark pool already exists at {path}, reusing", flush=True)
+        return path
+
+    rng = random.Random(1234)
+    benches = ["gsm8k", "math", "mmlu", "aime"]
+    pool = []
+    for i in range(n):
+        a, b = rng.randint(1, 99), rng.randint(1, 99)
+        pool.append({
+            "question_id": f"local_{i:04d}",
+            "prompt": f"What is {a} + {b}? Give only the number.",
+            "gold": str(a + b),
+            "grader_id": "numeric_final",
+            "benchmark": benches[i % len(benches)],
+            "metadata": {},
+        })
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pool, f)
+    print(f"  Benchmark pool written: {path} ({n} questions)", flush=True)
+    return path
+
+
 # ── Step 6: Start miner ──
 
+def _head_models(head_path: str) -> list[str]:
+    import numpy as np
+    with np.load(head_path, allow_pickle=False) as npz:
+        return [str(m) for m in npz["models"]]
+
+
+def _wait_for_miner_epoch(timeout: int = 240) -> str | None:
+    """Wait until the miner holds a proof for the CURRENT epoch.
+
+    The validator queries for the epoch it is in; the miner only serves a proof
+    for the epoch it actually benchmarked. Running the validator the instant a
+    boundary passes asks for an epoch the miner has not reached yet, and every
+    proof is refused with an epoch mismatch.
+    """
+    import bittensor as bt
+
+    from fugal_subnet.benchmarks.slicer import (
+        blocks_per_epoch,
+        epoch_id_for_block,
+        epoch_index_for_block,
+    )
+
+    st = bt.Subtensor(network=LOCAL_ENDPOINT)
+    bpe = blocks_per_epoch(int(os.getenv("FUGAL_EPOCH_INTERVAL", LOCAL_EPOCH_INTERVAL)))
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        epoch = epoch_id_for_block(epoch_index_for_block(st.get_current_block(), bpe))
+        if f"Epoch {epoch} complete" in _read_miner_log(tail=400):
+            return epoch
+        time.sleep(5)
+    return None
+
+
+def _read_miner_log(tail: int = 40) -> str:
+    """Meaningful tail of the miner log, minus progress-bar noise."""
+    try:
+        with open(MINER_LOG_PATH, encoding="utf-8") as f:
+            lines = [
+                ln for ln in f.read().splitlines()
+                if ln.strip() and "Loading weights" not in ln
+                and not ln.startswith("\x1b[")
+            ]
+        return "\n".join(lines[-tail:])
+    except OSError:
+        return ""
+
+
 def start_miner_process(wallet_name: str, netuid: int,
-                        head_path: str) -> subprocess.Popen:
-    """Start the miner as a background process."""
+                        head_path: str,
+                        pool_path: str) -> subprocess.Popen:
+    """Start the miner as a background process.
+
+    --benchmark-pool is required by neurons/miner.py. It was missing here, so
+    the miner subprocess exited immediately on a Click error and this script
+    aborted at the "wait for miner" step — meaning the README's own
+    `launch_testnet.py --mock --epochs 3` never got past step 6.
+    """
     cmd = [
         sys.executable, "neurons/miner.py",
         "--network", LOCAL_ENDPOINT,
@@ -414,6 +518,7 @@ def start_miner_process(wallet_name: str, netuid: int,
         "--coldkey", wallet_name,
         "--hotkey", "default",
         "--head-path", head_path,
+        "--benchmark-pool", pool_path,
         "--port", str(MINER_PORT),
     ]
     env = os.environ.copy()
@@ -421,18 +526,25 @@ def start_miner_process(wallet_name: str, netuid: int,
     env["FUGAL_AXON_IP"] = local_ip
 
     print(f"  Starting miner on port {MINER_PORT} (axon IP={local_ip})...", flush=True)
+    # A log FILE, not a PIPE. Nothing ever drained the pipe, so once the miner
+    # had written ~64KB — the backbone load alone does that — it blocked
+    # forever on write and never produced a proof. The symptom was a miner that
+    # started cleanly and then silently did nothing.
+    os.makedirs("results", exist_ok=True)
+    log_file = open(MINER_LOG_PATH, "w", encoding="utf-8")
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
+        stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True,
         env=env,
+        stdin=subprocess.DEVNULL,
     )
 
     for wait in range(6):
         time.sleep(5)
         if proc.poll() is not None:
-            output = proc.stdout.read() if proc.stdout else ""
+            output = _read_miner_log()
             print(f"  Miner exited unexpectedly: {output[-500:]}", flush=True)
             raise RuntimeError("Miner failed to start")
 
@@ -452,7 +564,10 @@ def wait_for_next_epoch_boundary(timeout: int = 120):
     """Block until the chain crosses the next epoch boundary, so the miner's
     on-chain head commitment predates the boundary the validator will use."""
     import bittensor as bt
-    bpe = max(1, int(os.getenv("FUGAL_EPOCH_INTERVAL", LOCAL_EPOCH_INTERVAL)) // 12)
+
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch
+    bpe = blocks_per_epoch(int(os.getenv("FUGAL_EPOCH_INTERVAL",
+                                         LOCAL_EPOCH_INTERVAL)))
     sub = bt.Subtensor(network=LOCAL_ENDPOINT)
     start_block = sub.get_current_block()
     target = ((start_block // bpe) + 1) * bpe
@@ -470,7 +585,11 @@ def wait_for_next_epoch_boundary(timeout: int = 120):
 
 # Short epochs for local testing: 24s = 2 blocks per epoch at 12s block time,
 # so consecutive --once runs land on distinct epoch boundaries.
-LOCAL_EPOCH_INTERVAL = "24"
+# Set at runtime from the chain's measured block rate; this is only the
+# fallback. See setup_local_testnet.calibrate_epoch_interval — a devnet
+# produces blocks ~34x faster than mainnet, so a fixed interval leaves the
+# miner permanently an epoch or three behind the validator.
+LOCAL_EPOCH_INTERVAL = "3600"
 
 
 def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
@@ -494,9 +613,15 @@ def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
     if mock:
         cmd.append("--mock")
     else:
-        # The resolved --epoch-budget wins outright; passing it explicitly stops
-        # an ambient FUGAL_EPOCH_BUDGET from silently raising the validator's cap.
-        cmd.extend(["--live", "--epoch-budget", str(epoch_budget)])
+        # No --epoch-budget: under the TEE architecture the validator never
+        # calls a model, so it has no API budget to cap. Miners pay for their
+        # own inference inside the TEE. Passing the flag would now be a hard
+        # error from click, and test_paid_safety asserts the validator has no
+        # epoch_budget parameter precisely so this cannot creep back.
+        #
+        # --epoch-budget still governs what THIS script authorises for the
+        # miner-side runs it launches; it is passed through the environment.
+        cmd.append("--live")
 
     mode_str = "(mock)" if mock else "(REAL API — costs money)"
     print(f"  Running validator epoch {epoch_num} {mode_str}...", flush=True)
@@ -509,11 +634,15 @@ def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
     elapsed = time.time() - start
 
     output = result.stdout + result.stderr
+    # A clean exit is necessary but nowhere near sufficient: a validator that
+    # verifies nothing and sets no weights exits 0 and did nothing. Reporting
+    # that as PASS is how a broken pipeline looks healthy — the same trap
+    # setup_local_testnet fell into by forcing success on a failed weight-set.
     success = result.returncode == 0
 
     epoch_result = {
         "epoch": epoch_num,
-        "success": success,
+        "success": success,   # refined below once the epoch log is read
         "elapsed_s": round(elapsed, 1),
         "mock": mock,
         "returncode": result.returncode,
@@ -540,12 +669,27 @@ def run_validator_epoch(wallet_name: str, netuid: int, mock: bool,
             entry = json.loads(last_line)
             epoch_result["n_heads"] = entry.get("n_heads_valid", 0)
             epoch_result["weights_set"] = entry.get("set_weights_success", False)
+            epoch_result["weights_confirmed"] = entry.get(
+                "weights_confirmed_on_chain", False
+            )
             if entry.get("scores"):
                 epoch_result["matrix_built"] = True
+
+            # An epoch that verified nothing, or whose weights never reached
+            # the chain, is a failed epoch however cleanly the process exited.
+            if epoch_result["n_heads"] < 1:
+                epoch_result["success"] = False
+                epoch_result["reason"] = "no proofs verified"
+            elif not epoch_result["weights_confirmed"]:
+                epoch_result["success"] = False
+                epoch_result["reason"] = (
+                    "weights not confirmed on chain: "
+                    f"{entry.get('weights_confirm_detail', 'no detail')}"
+                )
         except (json.JSONDecodeError, IndexError):
             pass
 
-    if not success:
+    if not epoch_result["success"]:
         epoch_result["error_tail"] = output[-500:]
 
     return epoch_result
@@ -572,10 +716,12 @@ def print_report(results: list[dict], total_start: float):
         mode = "mock" if r.get("mock") else "real"
         cost = f"${r.get('api_cost', 0):.4f}" if not r.get("mock") else "n/a"
         heads = r.get("n_heads", "?")
-        weights = "yes" if r.get("weights_set") else "no"
+        weights = "yes" if r.get("weights_confirmed") else "no"
         print(f"  Epoch {r['epoch']}: [{status}] {mode}  "
-              f"heads={heads}  weights={weights}  "
+              f"heads={heads}  weights-confirmed={weights}  "
               f"cost={cost}  time={r['elapsed_s']}s", flush=True)
+        if r.get("reason"):
+            print(f"    reason: {r['reason']}", flush=True)
 
         if not r["success"] and "error_tail" in r:
             for line in r["error_tail"].strip().split("\n")[-5:]:
@@ -653,7 +799,7 @@ Examples:
                    help="Force retrain the head even if one exists")
     p.add_argument("--head-path", type=str, default="data/testnet_head.npz",
                    help="Path to head .npz file")
-    p.add_argument("--image-tag", type=str, default="devnet",
+    p.add_argument("--image-tag", type=str, default="v432",
                    help="Docker image tag (default: devnet)")
     p.add_argument("--keep-chain", action="store_true",
                    help="Don't stop the chain container after running")
@@ -786,6 +932,21 @@ def main():
                 print("Chain not reachable. Start it first or remove --skip-setup.", flush=True)
                 return 1
 
+        # Epoch geometry must match this chain's speed, and the validator
+        # needs stake to earn a permit or set_weights is rejected.
+        import bittensor as bt
+
+        from scripts.setup_local_testnet import (
+            calibrate_epoch_interval,
+            stake_validator,
+        )
+        _st = bt.Subtensor(network=LOCAL_ENDPOINT)
+        os.environ["FUGAL_EPOCH_INTERVAL"] = calibrate_epoch_interval(
+            _st, target_seconds=90, default=LOCAL_EPOCH_INTERVAL,
+        )
+        _val = bt.Wallet(name=VALIDATOR_WALLET, hotkey="default")
+        stake_validator(_st, _val, netuid)
+
         # Step 5: Train head
         section("Step 5: Train Head")
         if args.retrain and os.path.exists(args.head_path):
@@ -798,7 +959,61 @@ def main():
         if not args.skip_setup and os.path.exists(state_path):
             os.remove(state_path)
             print(f"  Cleared stale validator state: {state_path}", flush=True)
-        miner_proc = start_miner_process(MINER_WALLET, netuid, head_path)
+        pool_path = write_benchmark_pool()
+        with open(pool_path, encoding="utf-8") as _f:
+            _pool = json.load(_f)
+        # BOTH neurons must derive the same pool: the slice comes from it, so a
+        # mismatch means the miner benchmarks questions the validator never
+        # asked about and every proof fails on questions_hash. The miner used
+        # to take this file while the validator called load_all() over real
+        # HuggingFace datasets — guaranteed to disagree.
+        os.environ["FUGAL_BENCHMARK_POOL"] = os.path.abspath(pool_path)
+        # Slice size is consensus-critical and env-overridable, so it has to be
+        # set for BOTH neurons. It used to be set only for the validator, so the
+        # miner sliced with the default 300 over a 120-question pool — the whole
+        # pool, identically every epoch — and every proof failed on
+        # questions_hash.
+        os.environ["FUGAL_SLICE_SIZE"] = os.environ.get("FUGAL_SLICE_SIZE", "50")
+
+        # MONEY SAFETY. --mock controls TEE attestation strictness; it does not,
+        # on its own, stop the miner calling real models. Point the metering
+        # proxy at a local stub so a mock run cannot reach OpenRouter even if a
+        # key happens to be in the environment. Without this, `--mock` spent
+        # real money on any machine with OPENROUTER_API_KEY set.
+        stub = None
+        if args.mock:
+            from scripts.setup_local_testnet import StubUpstream
+            stub = StubUpstream(
+                {q["prompt"]: q["gold"] for q in _pool},
+                {m: 0.3 + 0.25 * i for i, m in enumerate(sorted({
+                    m for m in _head_models(head_path)
+                }))},
+            )
+            stub.start()
+            os.environ["FUGAL_OPENROUTER_BASE"] = "http://127.0.0.1:8799/v1"
+            os.environ.pop("OPENROUTER_API_KEY", None)
+        miner_proc = start_miner_process(
+            MINER_WALLET, netuid, head_path, pool_path,
+        )
+
+        # The miner must finish loading the backbone and produce its first
+        # proof before the validator asks for one, or epoch 1 is guaranteed to
+        # find nothing — the validator would be querying an epoch the miner has
+        # not benchmarked yet.
+        print("  Waiting for the miner's first proof...", flush=True)
+        _warm = time.time() + 420
+        while time.time() < _warm:
+            if "complete:" in _read_miner_log(tail=400):
+                print("  Miner is producing proofs", flush=True)
+                break
+            if miner_proc.poll() is not None:
+                print("  Miner exited early:", flush=True)
+                print(_read_miner_log(tail=15), flush=True)
+                break
+            time.sleep(5)
+        else:
+            print("  Miner produced no proof within 420s; "
+                  "see results/miner.log", flush=True)
 
         # Step 7: Run epochs
         section("Step 7: Run Validator Epochs")
@@ -807,6 +1022,10 @@ def main():
             # Ensure the miner's head commitment predates the epoch boundary,
             # and that each run lands on a fresh boundary (fresh slice).
             wait_for_next_epoch_boundary()
+            ready = _wait_for_miner_epoch()
+            if ready is None:
+                print("  Miner never reached the current epoch; "
+                      "see results/miner.log", flush=True)
             result = run_validator_epoch(VALIDATOR_WALLET, netuid, args.mock, i,
                                          epoch_budget=args.epoch_budget)
             results.append(result)

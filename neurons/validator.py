@@ -39,7 +39,6 @@ import numpy as np  # noqa: E402
 logger = logging.getLogger("fugal.validator")
 
 STATE_PATH = os.getenv("FUGAL_STATE_PATH", "results/validator_state.json")
-BLOCK_TIME_S = 12
 
 
 def load_state(records_cls) -> dict:
@@ -65,6 +64,7 @@ def load_state(records_cls) -> dict:
                 str(hk): int(blk)
                 for hk, blk in (raw.get("first_commit_blocks") or {}).items()
             },
+            "frame": raw.get("frame"),
         }
     except FileNotFoundError:
         return _empty_state()
@@ -75,11 +75,12 @@ def load_state(records_cls) -> dict:
 
 def _empty_state() -> dict:
     return {"records": {}, "prev_uids": [], "prev_weights": [],
-            "last_epoch_index": -1, "first_commit_blocks": {}}
+            "last_epoch_index": -1, "first_commit_blocks": {}, "frame": None}
 
 
 def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
-               last_epoch_index: int, first_commit_blocks: dict[str, int]):
+               last_epoch_index: int, first_commit_blocks: dict[str, int],
+               frame=None):
     """Persist validator state."""
     os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
     payload = {
@@ -88,6 +89,7 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
         "prev_weights": prev_weights,
         "last_epoch_index": last_epoch_index,
         "first_commit_blocks": first_commit_blocks or {},
+        "frame": frame.to_dict() if frame is not None else None,
     }
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
@@ -126,6 +128,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     from fugal_subnet.config import (
         EPOCH_INTERVAL,
+        EXPLORE_FRACTION,
+        FRAME_DEFAULT_COMPLETION_TOKENS,
         REQUIRE_COMMITMENT,
         SLICE_SIZE,
         TEE_APPROVED_MEASUREMENTS,
@@ -142,8 +146,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     import bittensor as bt
 
-    from fugal_subnet.benchmarks.loader import load_all
-    from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
+    # After bittensor: importing it disables every logger that already exists,
+    # so without this the neuron's own output — including every error and
+    # traceback — is silently discarded. See fugal_subnet/logging_setup.
+    from fugal_subnet.logging_setup import configure_logging
+    configure_logging(log_level)
+
+    from fugal_subnet.api import load_prices
+    from fugal_subnet.benchmarks.loader import load_all, pool_hash
+    from fugal_subnet.benchmarks.slicer import (
+        blocks_per_epoch as blocks_per_epoch_fn,
+    )
+    from fugal_subnet.benchmarks.slicer import (
+        derive_nonce,
+        epoch_id_for_block,
+        epoch_index_for_block,
+        select_slice,
+    )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
     from fugal_subnet.commitments import get_commitments_with_blocks
     from fugal_subnet.dedup import find_duplicates
@@ -153,8 +172,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         detect_anomalies,
         write_epoch_log,
     )
+    from fugal_subnet.exploration import expected_exploration as expected_exploration_map
     from fugal_subnet.head_eval import HeadScore
     from fugal_subnet.protocol import FugalProofSynapse
+    from fugal_subnet.reference_frame import (
+        ReferenceFrame,
+        accumulate_exploration,
+        best_model,
+        load_bootstrap,
+        reference_cost,
+    )
     from fugal_subnet.rewards import cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
     from fugal_subnet.tee.proof import BenchmarkProof
@@ -181,12 +208,26 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     logger.info("Loading benchmark pool...")
     benchmark_pool = load_all()
-    logger.info("Benchmark pool: %d questions", len(benchmark_pool))
+    logger.info("Benchmark pool: %d questions, pool_hash=%s",
+                len(benchmark_pool), pool_hash(benchmark_pool)[:16])
     if not benchmark_pool:
         raise click.ClickException("Benchmark pool is empty — nothing to score")
 
     gold_answers = {q["question_id"]: q for q in benchmark_pool}
     approved_measurements = set(TEE_APPROVED_MEASUREMENTS)
+
+    # Pinned price table — the consensus cost denominator. Loaded once so every
+    # epoch prices against the same rates, and so a missing table fails at
+    # startup rather than mid-epoch.
+    prices = load_prices()
+    # One global, sorted model space. Used for exploration targets and for
+    # dedup indices, so every miner's routing vector is directly comparable.
+    pool_models = sorted(prices)
+    model_index = {m: i for i, m in enumerate(pool_models)}
+    explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
+    logger.info("Price table: %d models; exploration quota %d questions/epoch",
+                len(prices), explore_size)
+
 
     state = load_state(MinerRecord)
     scoring_state = ScoringState(records=state["records"])
@@ -195,12 +236,21 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     last_epoch_index: int = state["last_epoch_index"]
     first_commit_blocks: dict[str, int] = state["first_commit_blocks"]
 
-    blocks_per_epoch = max(1, EPOCH_INTERVAL // BLOCK_TIME_S)
+    # The reference frame is subnet-level state accumulated over TIME, not over
+    # the miner field — a miner's score must not move because other miners came
+    # online or went dark (I4). Seeded from the shipped bootstrap prior so it is
+    # well-defined at epoch 1 with zero samples.
+    frame = (
+        ReferenceFrame.from_dict(state["frame"])
+        if state["frame"] else load_bootstrap()
+    )
+
+    blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 
     while True:
         try:
             current_block = subtensor.get_current_block()
-            epoch_index = current_block // blocks_per_epoch
+            epoch_index = epoch_index_for_block(current_block, blocks_per_epoch)
 
             if epoch_index <= last_epoch_index and not once:
                 time.sleep(30)
@@ -210,7 +260,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
             boundary_block = epoch_index * blocks_per_epoch
             block_hash = subtensor.get_block_hash(boundary_block)
-            epoch_id = f"e{epoch_index:08d}"
+            epoch_id = epoch_id_for_block(epoch_index)
 
             timer = EpochTimer()
             metagraph = subtensor.metagraph(netuid)
@@ -223,6 +273,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             questions = select_slice(nonce, benchmark_pool, SLICE_SIZE)
             question_ids = [q["question_id"] for q in questions]
             expected_questions_hash = compute_questions_hash(question_ids)
+            expected_question_ids = set(question_ids)
+            explore_map = expected_exploration_map(
+                nonce, benchmark_pool, expected_question_ids,
+                pool_models, explore_size,
+            )
+            # Gold for the assigned slice only. Handing over the whole pool
+            # would let a proof reference any question in it and still verify.
+            slice_gold = {
+                qid: gold_answers[qid]
+                for qid in list(question_ids) + list(explore_map)
+                if qid in gold_answers
+            }
             logger.info("Slice: %d questions, hash=%s...",
                         len(questions), expected_questions_hash[:16])
 
@@ -255,6 +317,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # --- VERIFY PROOFS ---
             timer.start_phase("verify_proofs")
             verified_proofs: dict[int, BenchmarkProof] = {}
+            verified_heads: dict[int, bytes] = {}
             head_hashes: dict[int, str] = {}
             commit_blocks: dict[int, float] = {}
             n_invalid = 0
@@ -288,27 +351,31 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 else:
                     commit_blocks[uid] = math.inf
 
-                # In a full implementation, download the proof bundle from
-                # resp.proof_bundle_url. For now, the proof is served inline
-                # or via a separate channel. Mock mode constructs synthetic proofs.
                 try:
-                    proof = _get_proof_for_uid(uid, resp, mock)
+                    bundle = _get_bundle_for_uid(uid, resp)
                 except Exception as e:
                     n_invalid += 1
-                    logger.warning("UID %d: failed to get proof: %s", uid, e)
+                    logger.warning("UID %d: failed to get bundle: %s", uid, e)
                     continue
 
-                if proof is None:
+                if bundle is None:
                     n_invalid += 1
                     continue
+                proof, head_bytes = bundle
 
-                # Verify the proof
+                # Every binding is passed explicitly. A check the validator does
+                # not supply an expectation for is a check that does not happen.
                 result = verify_proof(
                     proof,
                     approved_measurements=approved_measurements,
                     expected_questions_hash=expected_questions_hash,
                     expected_nonce=nonce_hex,
-                    gold_answers=gold_answers,
+                    gold_answers=slice_gold,
+                    expected_question_ids=expected_question_ids,
+                    expected_exploration=explore_map,
+                    expected_weights_hash=weights_hash,
+                    expected_proof_hash=getattr(resp, "proof_hash", ""),
+                    head_bytes=head_bytes,
                     mock=mock,
                 )
 
@@ -322,7 +389,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         logger.info("UID %d proof warning: %s", uid, w)
 
                 verified_proofs[uid] = proof
-                head_hashes[uid] = weights_hash
+                verified_heads[uid] = head_bytes
+                # Keyed on the hash the attestation forced to be true, not the
+                # value the miner asserted over the axon.
+                head_hashes[uid] = proof.weights_hash
 
             if not verified_proofs:
                 logger.warning("No valid proofs received, skipping epoch")
@@ -338,7 +408,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 write_epoch_log(epoch_log)
                 last_epoch_index = epoch_index
                 save_state(scoring_state.records, prev_uids, prev_weights,
-                           last_epoch_index, first_commit_blocks)
+                           last_epoch_index, first_commit_blocks, frame)
                 if once:
                     break
                 time.sleep(60)
@@ -346,20 +416,48 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
             logger.info("Verified %d proofs", len(verified_proofs))
 
+            # --- REFERENCE FRAME ---
+            # Exploration samples from every verified proof, pooled. The frame
+            # accumulates over TIME: this epoch's samples are one decayed
+            # contribution to a long-running estimate, so the reference a miner
+            # is measured against does not lurch when the field size changes.
+            timer.start_phase("frame")
+            samples = [
+                (r.routed_model, r.correct, r.prompt_tokens, r.completion_tokens)
+                for proof in verified_proofs.values()
+                for r in proof.exploration_results
+            ]
+            frame = accumulate_exploration(frame, samples)
+            ref_model, acc_best = best_model(frame, prices)
+            logger.info(
+                "Reference frame: %d samples this epoch, best model %s "
+                "(acc_lcb=%.3f, %.0f trials)",
+                len(samples), ref_model, acc_best, frame.trials.get(ref_model, 0.0),
+            )
+
             # --- SCORE FROM PROOFS ---
             timer.start_phase("score")
             epoch_scores: dict[int, HeadScore] = {}
             for uid, proof in verified_proofs.items():
-                score = _proof_to_head_score(proof)
+                scored = proof.scored_results
+                ref_cost = reference_cost(
+                    frame, prices, ref_model,
+                    prompt_tokens=sum(r.prompt_tokens for r in scored),
+                    n_questions=len(scored),
+                    default_completion_tokens=FRAME_DEFAULT_COMPLETION_TOKENS,
+                )
+                score = _proof_to_head_score(proof, ref_cost)
                 epoch_scores[uid] = score
-                logger.info("  UID %d: acc=%.3f cost=$%.4f (%d/%d correct)",
-                            uid, score.accuracy, proof.total_cost_usd,
-                            score.n_correct, score.n_scored)
+                logger.info(
+                    "  UID %d: acc=%.3f cost=$%.4f ref=$%.4f (%d/%d correct)",
+                    uid, score.accuracy, score.total_head_cost, ref_cost,
+                    score.n_correct, score.n_scored,
+                )
 
             # --- DEDUP ---
             timer.start_phase("dedup_score_weight")
             routing_decisions = {
-                uid: _extract_routing_decisions(proof)
+                uid: _extract_routing_decisions(proof, model_index)
                 for uid, proof in verified_proofs.items()
             }
             dupes = find_duplicates(routing_decisions, commit_blocks)
@@ -369,7 +467,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # --- EVIDENCE ACCUMULATION ---
             scoring_state = update_scores(
                 scoring_state, epoch_scores, head_hashes,
+                acc_best=acc_best,
+                hotkeys={
+                    uid: metagraph.hotkeys[uid]
+                    for uid in verified_proofs
+                    if uid < len(metagraph.hotkeys)
+                },
                 n_questions=len(questions),
+                pool_size=len(benchmark_pool),
             )
 
             # --- WEIGHTS ---
@@ -388,37 +493,45 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # --- REVEAL ---
             timer.start_phase("reveal")
             epoch_score_dicts = {
-                uid: {"acc": s.accuracy, "cost_eff": s.cost_efficiency, "kl": s.kl_score}
+                uid: {
+                    "accuracy": s.accuracy,
+                    "quality": scoring_state.records[uid].quality,
+                    "thrift": scoring_state.records[uid].thrift,
+                    "score": scoring_state.records[uid].composite_score,
+                }
                 for uid, s in epoch_scores.items()
+                if uid in scoring_state.records
             }
             epoch_weight_map = dict(zip(uids, weights))
 
-            # Build a minimal matrix from proof results for the reveal
-            all_models = sorted(set(
-                r.routed_model
-                for proof in verified_proofs.values()
-                for r in proof.results
-            ))
-            matrix = np.zeros((len(questions), max(len(all_models), 1)), dtype=np.int32)
-            model_costs: dict[str, float] = {}
+            # Observation matrix for the reveal, in the SAME global model index
+            # space dedup uses, so a column means the same model in every
+            # artifact. -1 means "no miner routed this question to this model",
+            # which is distinct from 0 ("routed, and got it wrong") — as a plain
+            # zero matrix the two were indistinguishable and any consumer would
+            # read unexplored cells as failures.
+            q_idx_map = {q["question_id"]: i for i, q in enumerate(questions)}
+            matrix = np.full(
+                (len(questions), max(len(pool_models), 1)), -1, dtype=np.int32,
+            )
+            model_spend: dict[str, float] = {}
             for proof in verified_proofs.values():
                 for r in proof.results:
-                    if r.routed_model in all_models:
-                        model_idx = all_models.index(r.routed_model)
-                        q_idx_map = {q["question_id"]: i for i, q in enumerate(questions)}
-                        if r.question_id in q_idx_map:
-                            matrix[q_idx_map[r.question_id], model_idx] = int(r.correct)
-                    model_costs[r.routed_model] = (
-                        model_costs.get(r.routed_model, 0.0) + r.cost_usd
+                    m_idx = model_index.get(r.routed_model)
+                    q_idx = q_idx_map.get(r.question_id)
+                    if m_idx is not None and q_idx is not None:
+                        matrix[q_idx, m_idx] = int(r.correct)
+                    model_spend[r.routed_model] = (
+                        model_spend.get(r.routed_model, 0.0) + r.cost_usd
                     )
 
             routing_for_reveal = {
-                uid: _extract_routing_decisions(proof).tolist()
-                for uid, proof in verified_proofs.items()
+                uid: decisions.tolist()
+                for uid, decisions in routing_decisions.items()
             }
             reveal_ok = reveal_epoch(
                 epoch_id, questions,
-                matrix, all_models, model_costs,
+                matrix, pool_models, model_spend,
                 head_hashes, routing_for_reveal,
                 epoch_score_dicts, epoch_weight_map,
             )
@@ -433,10 +546,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 wait_for_finalization=True,
             )
             success, msg = response
+            weights_confirmed = False
+            confirm_detail = "not attempted"
             if success:
                 logger.info("Weights set successfully")
                 prev_uids = uids
                 prev_weights = weights
+                weights_confirmed, confirm_detail = confirm_weights_on_chain(
+                    subtensor, netuid, my_uid, uids, weights,
+                )
+                if weights_confirmed:
+                    logger.info("Weights confirmed on chain: %s", confirm_detail)
+                else:
+                    logger.error(
+                        "Weights NOT confirmed on chain: %s — the extrinsic "
+                        "reported success but the chain disagrees",
+                        confirm_detail,
+                    )
             else:
                 logger.warning("Weight-setting failed: %s", msg)
 
@@ -460,6 +586,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 weight_capped=weight_capped,
                 set_weights_success=success,
                 set_weights_msg=str(msg) if msg else "",
+                weights_confirmed_on_chain=weights_confirmed,
+                weights_confirm_detail=confirm_detail,
                 anomalies=anomalies,
                 duration_s=timer.total_s,
             )
@@ -467,7 +595,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
             last_epoch_index = epoch_index
             save_state(scoring_state.records, prev_uids, prev_weights,
-                       last_epoch_index, first_commit_blocks)
+                       last_epoch_index, first_commit_blocks, frame)
 
         except KeyboardInterrupt:
             logger.info("Validator stopped by user")
@@ -481,87 +609,182 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         logger.info("Waiting for next epoch boundary (every %d blocks)...", blocks_per_epoch)
         time.sleep(60)
 
+    # Close the dendrite's HTTP session. Without this the process keeps a
+    # non-daemon worker alive and `--once` never returns — an orchestrator or
+    # an operator running a single epoch waits forever on a validator that has
+    # already finished and said so.
+    try:
+        dendrite.close_session()
+    except Exception as e:
+        logger.debug("Dendrite session close: %s", e)
+
     logger.info("Validator shutdown complete")
 
     if once:
-        sys.exit(0)
+        # os._exit, not sys.exit. async_substrate_interface's __del__ closes its
+        # websocket during interpreter finalization and joins a thread that
+        # never finishes, so a normal exit hangs forever — a --once run in a
+        # systemd oneshot, a cron job, or an orchestrator would appear to run
+        # indefinitely despite having completed its epoch and said so.
+        #
+        # Safe here because everything durable is already committed: the state
+        # file was written through os.replace, the epoch log was appended and
+        # closed, and the weights extrinsic was confirmed on chain above. The
+        # only thing skipped is teardown of connections the OS reclaims anyway.
+        logging.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
-def _get_proof_for_uid(uid, resp, mock):
-    """Download and parse a BenchmarkProof for a given UID.
+def _get_bundle_for_uid(uid, resp):
+    """Parse a miner's inline bundle, returning (proof, head_bytes) or None.
 
-    Downloads the proof bundle from the HuggingFace URL in
-    resp.proof_bundle_url. Returns None if the URL is empty or
-    the download/parse fails.
+    Everything here is miner-controlled input, so it is bounded before it is
+    parsed (I2). The pydantic field caps in protocol.py are the first bound;
+    HEAD_MAX_BYTES is the second, applied before the head reaches a loader.
     """
-    from fugal_subnet.tee.proof import BenchmarkProof
-    from fugal_subnet.tee.store import download_proof
+    import base64
 
-    url = getattr(resp, "proof_bundle_url", "") or ""
-    if not url:
-        logger.debug("UID %d: no proof_bundle_url", uid)
+    from fugal_subnet.config import HEAD_MAX_BYTES
+    from fugal_subnet.tee.proof import BenchmarkProof
+
+    proof_json = getattr(resp, "proof_json", "") or ""
+    head_b64 = getattr(resp, "head_npz_b64", "") or ""
+    if not proof_json or not head_b64:
+        logger.debug("UID %d: incomplete bundle in response", uid)
         return None
 
     try:
-        proof = download_proof(url)
+        proof = BenchmarkProof.from_dict(json.loads(proof_json))
     except Exception as e:
-        logger.warning("UID %d: failed to download proof from %s: %s", uid, url[:60], e)
+        logger.warning("UID %d: unparseable proof: %s", uid, e)
         return None
 
-    if not isinstance(proof, BenchmarkProof):
-        logger.warning("UID %d: downloaded object is not a BenchmarkProof", uid)
+    try:
+        head_bytes = base64.b64decode(head_b64, validate=True)
+    except Exception as e:
+        logger.warning("UID %d: undecodable head: %s", uid, e)
         return None
 
-    return proof
+    if len(head_bytes) > HEAD_MAX_BYTES:
+        logger.warning("UID %d: head is %d bytes (max %d)",
+                       uid, len(head_bytes), HEAD_MAX_BYTES)
+        return None
+
+    return proof, head_bytes
 
 
-def _proof_to_head_score(proof):
-    """Convert a verified BenchmarkProof into a HeadScore for scoring."""
+def confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights, tol=1e-3):
+    """Read the weights back off chain and check they match what we submitted.
+
+    `set_weights` returning success means the extrinsic was included, not that
+    the chain now holds what we meant. Nothing in this repo used to check the
+    difference, so "weights set successfully" was an unverified claim in every
+    log and every epoch artifact.
+
+    On a commit-reveal subnet the weights are NOT readable straight away: the
+    extrinsic commits an encrypted hash and the values only appear after the
+    reveal period. An immediate read finds nothing, correctly — so on those
+    subnets this confirms the commit was recorded (LastUpdate advanced to this
+    block) rather than pretending to read values that cannot exist yet.
+
+    Returns (confirmed, detail). Never raises — a readback failure must not
+    take down an epoch that otherwise succeeded.
+    """
+    try:
+        if subtensor.commit_reveal_enabled(netuid=netuid):
+            last_update = subtensor.query_subtensor("LastUpdate", params=[netuid])
+            block = subtensor.get_current_block()
+            recorded = int(last_update[my_uid])
+            # Allow a few blocks of slack for inclusion.
+            if block - recorded > 25:
+                return False, (
+                    f"commit-reveal subnet, but LastUpdate for uid {my_uid} is "
+                    f"block {recorded} and the chain is at {block} — the commit "
+                    "was not recorded"
+                )
+            return True, (
+                f"commit recorded at block {recorded}; values reveal after the "
+                "reveal period (commit-reveal subnet)"
+            )
+    except Exception as e:
+        logger.debug("commit-reveal probe failed, falling back to readback: %s", e)
+
+    try:
+        on_chain = subtensor.weights(netuid=netuid)
+    except Exception as e:
+        return False, f"readback failed: {e}"
+
+    row = next((w for uid, w in on_chain if uid == my_uid), None)
+    if row is None:
+        return False, f"no weight row on chain for validator uid {my_uid}"
+
+    # Chain stores u16-normalized weights; compare as proportions.
+    got = {int(u): float(v) for u, v in row}
+    total = sum(got.values()) or 1.0
+    got = {u: v / total for u, v in got.items()}
+    want = dict(zip(uids, weights))
+
+    for uid in set(want) | set(got):
+        if abs(want.get(uid, 0.0) - got.get(uid, 0.0)) > tol:
+            return False, (
+                f"uid {uid}: submitted {want.get(uid, 0.0):.4f}, "
+                f"chain has {got.get(uid, 0.0):.4f}"
+            )
+    return True, f"{len(got)} weights match within {tol}"
+
+
+def _proof_to_head_score(proof, ref_cost):
+    """Convert a verified BenchmarkProof into a HeadScore for scoring.
+
+    `ref_cost` is what the reference model would have cost on this same
+    question set — a fact about the model pool, identical for every miner in
+    the epoch and independent of how many miners are online.
+
+    Only scored routes count. Exploration is a cost the subnet imposed, not a
+    choice the miner made, so billing it against their thrift would penalise
+    them for the sampling that makes everyone's scores meaningful.
+    """
     from fugal_subnet.head_eval import HeadScore
 
-    n_correct = proof.n_correct
-    n_scored = proof.n_total
-    accuracy = proof.accuracy
-
-    # Cost efficiency: ratio of cheapest model's cost to actual cost
-    # Under TEE, costs come from the attested MeteringProxy
-    total_head_cost = proof.total_cost_usd
-    if proof.per_model_costs:
-        cheapest = min(proof.per_model_costs.values())
-        n_questions = max(len(proof.results), 1)
-        total_oracle_cost = cheapest * n_questions
-    else:
-        total_oracle_cost = total_head_cost
-
-    cost_efficiency = min(1.0, total_oracle_cost / max(total_head_cost, 1e-10))
-
-    # KL divergence — requires oracle distribution assembly (post-launch)
-    total_kl = 0.0
-
+    scored = proof.scored_results
     return HeadScore(
-        accuracy=accuracy,
-        cost_efficiency=cost_efficiency,
+        accuracy=proof.accuracy,
+        cost_efficiency=0.0,   # superseded by thrift; see scoring.composite
         kl_score=0.0,
-        routing_decisions=_extract_routing_decisions(proof),
-        correct_mask=np.array([r.correct for r in proof.results], dtype=bool),
+        routing_decisions=np.array([], dtype=np.int32),
+        correct_mask=np.array([r.correct for r in scored], dtype=bool),
         coverage=1.0,
-        n_correct=n_correct,
-        n_scored=n_scored,
-        total_head_cost=total_head_cost,
-        total_oracle_cost=total_oracle_cost,
-        total_kl=total_kl,
+        n_correct=proof.n_correct,
+        n_scored=proof.n_total,
+        total_head_cost=proof.scored_cost_usd,
+        total_oracle_cost=ref_cost,
+        total_kl=0.0,
     )
 
 
-def _extract_routing_decisions(proof):
-    """Extract routing decisions from a proof as a numpy array for dedup."""
-    models = sorted(set(r.routed_model for r in proof.results))
-    model_to_idx = {m: i for i, m in enumerate(models)}
-    decisions = np.array(
-        [model_to_idx.get(r.routed_model, 0) for r in proof.results],
+def _extract_routing_decisions(proof, model_index):
+    """Routing decisions as a numpy array for dedup, in a GLOBAL model space.
+
+    `model_index` maps every model in the pinned price table to a fixed index
+    shared by all miners, so index 5 means the same model in every vector.
+
+    Previously the index space was built per-proof from that miner's own routed
+    models, which broke the comparison both ways: two miners each routing 100%
+    to a *different* single model both produced all-zero vectors and were
+    clustered as clones, while a genuine copy that re-routed a single question
+    to an alphabetically-earlier model renumbered its entire vector and evaded
+    detection at 96.7% identical routing.
+
+    Ordered by question id so two miners' vectors line up element-wise
+    regardless of the order results appear in their proofs.
+    """
+    scored = sorted(proof.scored_results, key=lambda r: r.question_id)
+    return np.array(
+        [model_index.get(r.routed_model, -1) for r in scored],
         dtype=np.int32,
     )
-    return decisions
 
 
 if __name__ == "__main__":

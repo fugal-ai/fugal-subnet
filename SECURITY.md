@@ -34,11 +34,14 @@ Please do not exploit a vulnerability against public infrastructure, access data
 |---|---|
 | Pickle/code execution through `.npz` | `allow_pickle=False`, size limits, shape/dtype validation |
 | Head swapping after question selection | On-chain hash commitment before the epoch boundary |
-| Copied routing behavior | Cosine-similarity deduplication; earliest commitment wins |
-| Validator budget exhaustion | Per-epoch budget, model pool caps, per-query price cap, timeouts, bounded concurrency |
+| Copied routing behavior | Cosine-similarity deduplication in a global model index space; earliest commitment wins |
+| Validator budget exhaustion | Resolved architecturally: validators never call models, so there is no budget to exhaust. Miners pay for their own inference inside the TEE |
+| Forged or tampered TEE proofs | Approved-image matching against the quote's own measurement registers (MRTD, RTMR0-2), report_data binding, slice binding, head-to-commitment binding, bundle-to-advertised-hash binding, cost consistency as a rejection — each with an executable exploit in `run_tee_attacks.py` |
+| Understated or fabricated costs | Costs priced from the hash-pinned `data/models.json`, metered inside the attested enclave, and reconciled per-question and per-model against the attested total |
+| Steering the shared reference frame | Exploration questions and target models are nonce-derived, not miner-chosen; the frame pools over time rather than over miners |
 | Credential disclosure | Environment-based secrets, no-key logging rule, ignored `.env` and key files |
 | Malicious executable answers | Trusted parent-side output comparison (`exec_io` grader), time/resource/output caps, Docker isolation recommended for validators |
-| Validator disagreement | CPU kernel dispatch pinning (torch + numpy/OpenBLAS), quantized routing decisions, pinned HF dataset revisions, deterministic HMAC-seeded slicing, immutable hash-pinned graders, commit-reveal epoch artifacts, environment fingerprint + startup assertion, two-process differential harness in CI |
+| Validator disagreement | Single-source epoch identity (structurally enforced), pinned backbone batch size, CPU kernel dispatch pinning (torch + numpy/OpenBLAS), quantized routing decisions, pinned HF dataset revisions, deterministic HMAC-seeded slicing, immutable hash-pinned graders, commit-reveal epoch artifacts, environment fingerprint + startup assertion, two-process differential harness in CI |
 
 ## Known limitations
 

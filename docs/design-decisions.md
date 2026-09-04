@@ -49,7 +49,31 @@ score = headroom - λ * normalized_cost     (λ = 0.02, small)
 - Saturated pools correctly score as "nothing to route"
 - On a 95%-accurate pool, old formula gives everyone ~95%. This gives 0-1 routing skill scale.
 
-**Priority:** Medium. Formula swap in scoring module. Can implement after TEE.
+**Outcome (implemented, revised):** The headroom form was replaced by a
+weighted geometric mean against the *best single model* rather than a
+per-question oracle:
+
+```
+quality = wilson_lcb(accuracy) / acc_best
+thrift  = ref_cost / miner_cost
+score   = quality^0.8 * thrift^0.2
+```
+
+Three revisions to the sketch above, each forced by something concrete:
+
+1. **Best single model, not per-question oracle.** The oracle needs a dense
+   question-by-model matrix (~21K x 30 cells); the best model needs ~30
+   marginals, converges within a few epochs, and is stable at any field size.
+   It is also literally the product claim, so a score of 1.0 means "matched the
+   frontier model's quality per dollar" — a number worth reporting.
+2. **Product, not `headroom - lambda*cost`.** A subtraction still asserts an
+   exchange rate, just a small one. A product asserts none, and stops either
+   degenerate strategy from collecting its axis's weight regardless of the other.
+3. **Exponent 0.8, derived not chosen.** "Match quality at a fraction of the
+   cost" makes quality a near-constraint: giving up 40% of quality must not
+   outscore matching the best model at its own price, which forces
+   `w > ln6/(ln6-ln0.6) = 0.778`. An unweighted sqrt fails that test (1.095 vs
+   1.000); 0.8 passes it (0.951).
 
 ---
 
@@ -117,6 +141,21 @@ score = headroom - λ * normalized_cost     (λ = 0.02, small)
 - Time-to-crown: monotone in true edge
 
 **Tradeoff:** Updating your head is costly — you lose accumulated evidence. Miners should retrain in big steps, not continuous tweaks. This is a feature: it makes dethroning expensive and rankings stable.
+
+**Correction found in implementation:** reset is *symmetric*. It clears
+accumulated penalties exactly as readily as accumulated credit, so on its own it
+was a free penalty wash — a miner with a poisoned record flips one weight bit
+and is immediately back at full score. Measured: 20 bad epochs dropped a score
+from 0.897 to 0.468, and recommitting restored it to 0.897 instantly.
+
+Fixed with a burn-in ramp (`score *= min(1, n_total/BURN_IN_QUESTIONS)`) rather
+than by weakening the reset. Reset stays cheap to *do* and expensive to *profit
+from*: climbing back costs exactly what earning the position cost.
+
+**Second correction:** the Wilson LCB assumed independent Bernoulli trials, but
+at steady state `n_total` reaches ~86,550 over a ~21,000-question pool — about
+4x reuse, not 86,550 independent draws. The effective n is now capped at the
+distinct-question count.
 
 **Implementation:** Adapt ThirtySpokes' `Evidence` dataclass. Their version handles multi-benchmark + frontier scoring. Ours is simpler (single routing benchmark).
 
@@ -216,26 +255,59 @@ Miner discovers which questions are in the pool and overfits.
 
 | Step | Status | Notes |
 |---|---|---|
-| Step 3: TEE infrastructure | **Implemented** | `fugal_subnet/tee/` package — attestation, runtime, confine, proof, verify, harness. Forked TDX patterns from ThirtySpokes/Chutes (MIT). |
-| Step 4: Evidence accumulation | **Implemented** | `fugal_subnet/evidence.py` — EWMA-decayed binomial with Wilson LCB scoring, artifact-keyed reset, miss=0 accounting. |
-| Step 2: Headroom scoring | Pending | Formula swap in scoring module. Can implement after launch. |
-| Step 5: Anti-gaming (held-out) | Pending | Held-out matmul evaluation. Easy once TEE is in place on real hardware. |
-| Step 6: Weight-setting | Pending | Proportional is fine for launch, iterate later. |
+| Step 3: TEE infrastructure | **Implemented** | `fugal_subnet/tee/` — attestation, runtime, confine, proof, verify, harness. TDX patterns forked from ThirtySpokes/Chutes (MIT). |
+| Step 3: TEE *bindings* | **Implemented** | Measurement from the quote's own registers, slice binding, head binding, bundle binding, cost consistency as rejection. `run_tee_attacks.py` keeps an exploit for each. |
+| Step 4: Evidence accumulation | **Implemented** | EWMA-decayed binomial, artifact-keyed reset, miss=0, effective-n capped by pool size, burn-in ramp. |
+| Step 2: Scoring formula | **Implemented** | `quality^0.8 * thrift^0.2` against the best single model. Exponent derived from the product claim. |
+| Step 2: Cost model | **Implemented** | Pinned `data/models.json` as the consensus denominator; attested provider spend recorded alongside for drift detection. |
+| — : Exploration + reference frame | **Implemented** | Nonce-derived quota recovers the counterfactual the TEE removes; frame pooled over time, not over miners. |
+| Step 5: Anti-gaming (held-out) | **Deferred, deliberately** | See below. |
+| Step 6: Weight-setting | Proportional | Fine for launch; revisit as the field grows. |
 
-### What was implemented
+### The one thing deliberately not built
 
-- **TEE package** (`fugal_subnet/tee/`): TDX quote parsing, DCAP verification, MeteringProxy, TEERuntime, network confinement, BenchmarkProof model, proof verification, benchmark harness.
-- **Evidence accumulation** (`fugal_subnet/evidence.py`): EWMA decay with configurable half-life, Wilson LCB scoring, artifact-keyed reset on retrain, miss=0 for absent miners.
-- **New miner** (`neurons/miner.py`): TEE miner that runs benchmarks each epoch inside TDX, pays for its own inference, produces hardware-attested proofs.
-- **New validator** (`neurons/validator.py`): Verify-only validator that checks TEE proofs, never calls models. Zero inference cost.
-- **New protocol** (`fugal_subnet/protocol.py`): `FugalProofSynapse` — validator sends epoch_id + nonce, miner returns proof_bundle_url + proof_hash + weights_hash.
-- **Safety checks**: `check_tee_safety()` in `scripts/check_safety_invariants.py`, 20 TEE tests + 5 attack tests in `tests/test_tee.py`.
+**Held-out evaluation.** The head is now bound and shipped in the proof bundle
+specifically so a validator *could* run it on questions the miner was not scored
+on. Running it was not built, and that is a decision rather than an omission.
 
----
+Doing it requires the validator to compute backbone embeddings — which puts
+per-validator floating-point computation back into consensus, exactly what the
+TEE architecture removed. Two honest validators whose embeddings differ in the
+last bits would disagree on near-tie routing and diverge. Half-building it would
+trade a known gap for an unknown one.
+
+The gap it leaves is real and recorded in `docs/INVARIANTS.md`: the question
+pool is public and finite, so a miner willing to pay once to evaluate every
+model on every question could publish a lookup table rather than a router.
+Closing it properly needs either an agreed embedding artifact or held-out
+questions outside the public pool.
+
+## What measurement changed
+
+Three values in this design came out different from the first guess, because
+they were measured rather than reasoned about:
+
+- **The frame prior strength** was going to be 200 (matching ThirtySpokes).
+  Measured against field-size sensitivity it was far too strong: ceiling spread
+  between a 3-miner and 50-miner field was still 0.100 at epoch 200. At K=20 it
+  is 0.020. All values converge to the same truth; K only sets how fast.
+- **The ceiling statistic** was going to be the accuracy lower bound. An LCB's
+  width shrinks with sample count, so the ceiling moved with field size — 0.14 of
+  score between a 3-miner and a 50-miner field. The LCB now selects the
+  reference model; the posterior mean values it.
+- **The scoring exponent** was going to be an unweighted sqrt. It scores a
+  router that lost 40% of quality at 1.095, above a perfect quality match at
+  1.000 — which contradicts the product claim it was supposed to encode.
 
 ## Open questions for further examination
 
-- What's the right evidence half-life? Currently defaulting to 200 epochs (same as ThirtySpokes). Calibrate on testnet.
-- What's the right held-out slice size? Bigger = more anti-memorization power but more variance in held-out scores.
-- Should the headroom formula use per-question oracle or per-epoch oracle? Per-question is more precise but requires the full matrix.
-- Exact TEE VM cost for miners — need to benchmark to set expectations in docs.
+- Evidence half-life is 200 epochs and the frame's is 500. Both are guesses that
+  should be calibrated on testnet, the same way the frame prior was.
+- The reference-frame prior accuracy is a neutral 0.5 for every model. Honest —
+  nothing has been measured yet — but wrong for real models, and it biases the
+  ceiling low until real evidence outweighs it. Recalibrate from testnet data.
+- The thrift cap (10x) bounds how much cost saving can be rewarded. It is above
+  the ~6x the product targets, but it is still a chosen number and should be
+  revisited once real routers exist.
+- Exploration is 5% of the slice. Enough to converge the frame in a reasonable
+  number of epochs at moderate field sizes; unmeasured at very small ones.

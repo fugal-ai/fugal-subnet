@@ -13,17 +13,14 @@ validator:
 1. Derives a nonce from the epoch **boundary block's** hash
 2. Selects ~300 questions, stratified across benchmarks
 3. Commits the question slice + grader hash (commit-reveal integrity)
-4. Queries all registered miners for TEE-attested benchmark proofs
-5. Verifies each proof:
-   - TDX attestation (DCAP certificate chain)
-   - Runtime measurement matches approved image
-   - Nonce and question hash match expected values
-   - Cost consistency (metered via attested proxy)
-6. Checks each miner's weights hash against its **on-chain commitment**
-7. Scores from verified proof results using evidence accumulation
-8. Deduplicates copied routing behavior (earliest on-chain commitment wins)
-9. Computes composite scores and weights, sets weights on-chain
-10. Publishes the epoch reveal artifact
+4. Derives the epoch's exploration assignment from the same nonce
+5. Queries all registered miners for TEE-attested benchmark proofs
+6. Verifies each proof against every binding (see "TEE Proof Verification")
+7. Pools the verified exploration samples into the **reference frame**
+8. Scores each miner as quality per dollar against the best single model
+9. Deduplicates copied routing behavior (earliest on-chain commitment wins)
+10. Computes weights, sets weights on-chain
+11. Publishes the epoch reveal artifact
 
 ## Requirements
 
@@ -139,7 +136,11 @@ All settings are configurable via environment variables (see `fugal_subnet/confi
 | `FUGAL_TEE_PROOF_TIMEOUT` | `600` | Timeout for proof verification (seconds) |
 | `FUGAL_REQUIRE_COMMITMENT` | `1` | Require on-chain commitment before scoring |
 | `FUGAL_EVIDENCE_HALF_LIFE` | `200` | EWMA decay half-life for evidence accumulation |
-| `FUGAL_LAMBDA` | `2.0` | Cost-quality routing tradeoff |
+| `FUGAL_LAMBDA` | `2.0` | Miner-side TRAINING hyperparameter only. The routing rule has no cost term — see `TRAINING_COST_LAMBDA` in config.py |
+| `FUGAL_EXPLORE_FRACTION` | `0.05` | Exploration quota, as a fraction of the slice |
+| `FUGAL_FRAME_HALF_LIFE` | `500` | Reference-frame decay half-life, in epochs |
+| `FUGAL_FRAME_PRIOR_STRENGTH` | `20` | Frame prior strength, in pseudo-observations (calibrated by measurement — see config.py) |
+| `FUGAL_BURN_IN_QUESTIONS` | `3000` | Scored questions before a fresh head reaches full score |
 | `FUGAL_WILSON_CONFIDENCE` | `0.95` | Wilson LCB confidence level |
 | `FUGAL_MAX_WEIGHT_DELTA` | `0.3` | Max weight change per UID per epoch |
 | `FUGAL_STATE_PATH` | `results/validator_state.json` | Persisted scoring state |
@@ -166,19 +167,46 @@ When a miner submits a proof, the validator checks:
    Intel's DCAP infrastructure. The quote proves the benchmark ran inside a
    genuine Intel TDX confidential VM.
 
-2. **Measurement Match** — The `source_hash` in the proof must match one of
-   the approved runtime image measurements (`FUGAL_TEE_MEASUREMENTS`). This
-   ensures the miner ran the official benchmark harness, not a tampered version.
+2. **Measurement Match** — `measurement_id(quote)` — sha256 over the quote's
+   MRTD and RTMR0-2, which the CPU fills in and Intel's signature covers — must
+   match one of `FUGAL_TEE_MEASUREMENTS`.
+
+   This deliberately does **not** use the proof's `source_hash` field. DCAP
+   proves the hardware is real; it says nothing about the code inside it, so an
+   attacker with a genuine TDX machine can run a modified harness and still
+   produce a valid quote. What distinguishes them is the measurement register,
+   which they cannot choose — unlike a field the workload writes about itself.
 
 3. **Report Data Binding** — The proof's content hash is embedded in the TDX
    quote's `report_data` field. Tampering with any proof field after attestation
    invalidates the binding.
 
 4. **Nonce and Questions** — The proof's nonce and questions hash must match
-   the expected values for this epoch. Prevents proof replay across epochs.
+   this epoch's. Prevents replay across epochs.
 
-5. **Cost Consistency** — Per-question costs must sum to the reported total.
-   Costs come from the attested MeteringProxy inside the TEE.
+5. **Assigned Slice** — The result question ids must equal the assigned slice
+   exactly. The questions hash is a public value, so matching it proves nothing
+   on its own: a miner can copy it while grading an easier set of its own
+   choosing.
+
+6. **Exploration Set** — Every nonce-assigned exploration question must be
+   present and routed to the model the nonce assigned. Exploration costs the
+   miner money and earns it nothing directly, so rejection is the only thing
+   that makes it happen.
+
+7. **Committed Head** — `proof.weights_hash` must equal the on-chain commitment
+   *and* the sha256 of the head shipped in the bundle. Otherwise a miner
+   commits one head, runs another, and keeps a stable evidence key while
+   swapping heads every epoch.
+
+8. **Advertised Bundle** — The downloaded proof must hash to the `proof_hash`
+   the miner advertised over its axon.
+
+9. **Cost Consistency** — Per-question and per-model costs must both reconcile
+   with the attested total. This is a **rejection**, not a warning: understating
+   the total raises the miner's thrift score, and under real attestation every
+   figure comes from the same metered image, so an inconsistency means the proof
+   is not what it claims to be.
 
 ## Monitoring
 
@@ -188,7 +216,7 @@ Structured JSONL logs are written to `results/epoch_logs/`. Each entry includes:
 
 - Epoch ID and block hash
 - Number of miners queried, valid/invalid proofs
-- Per-miner scores (accuracy, cost efficiency)
+- Per-miner scores (quality, thrift, composite)
 - Weight assignments
 - Anomaly flags
 - Phase timing breakdown

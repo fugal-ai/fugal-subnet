@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -14,6 +15,13 @@ AXON_PROTOCOL_FILES = (
 )
 IMMUTABLE_V1_GRADER_SHA256 = (
     "895809dedf0d14c45d9ec046bcbec2f50a09fcf7d31d9996a178e35f3539c55f"
+)
+# The price table is the consensus cost denominator: every validator prices
+# every proof against it, so an unreviewed edit silently re-scores the whole
+# subnet. Pinned for the same reason graders.py is. Changing prices is a
+# deliberate act — update this hash in the same commit and say why.
+PINNED_PRICE_TABLE_SHA256 = (
+    "26b54ef396d5a92f3a03e6c1bb5a87011eb40ec007803addce0c65ac5bcb7e4a"
 )
 
 
@@ -70,9 +78,30 @@ def check_runtime_annotations(errors: list[str]) -> None:
 
 
 def check_deserialize_contract(errors: list[str]) -> None:
+    """Every Axon-attached Synapse must define deserialize() returning self.
+
+    Checked against whatever Synapse subclasses protocol.py actually declares,
+    rather than a hardcoded list — a hardcoded list silently stops covering a
+    synapse that gets renamed, and silently fails on one that gets deleted.
+    """
     path = ROOT / "fugal_subnet" / "protocol.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for synapse_name in ("FugalSynapse", "FugalProofSynapse"):
+
+    synapse_names = [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and any(
+            (isinstance(b, ast.Attribute) and b.attr == "Synapse")
+            or (isinstance(b, ast.Name) and b.id == "Synapse")
+            for b in node.bases
+        )
+    ]
+    if not synapse_names:
+        errors.append("fugal_subnet/protocol.py: no bt.Synapse subclass found")
+        return
+
+    for synapse_name in synapse_names:
         found = False
         for node in tree.body:
             if isinstance(node, ast.ClassDef) and node.name == synapse_name:
@@ -102,6 +131,85 @@ def check_immutable_v1_grader(errors: list[str]) -> None:
             f"immutable v1 pin {IMMUTABLE_V1_GRADER_SHA256[:16]}... — "
             "a grader change is a consensus break"
         )
+
+
+def check_epoch_id_single_source(errors: list[str]) -> None:
+    """Both neurons must derive epoch identity from the same helper.
+
+    The nonce is sha256(f"{epoch_id}:{block_hash}"), so if the miner and the
+    validator format the identifier differently they derive different nonces,
+    select different question slices, and every proof fails the nonce check.
+    That shipped: the miner used f"e_{block_hash[:16]}" and the validator used
+    f"e{epoch_index:08d}", their slices overlapped 45/300, and the subnet could
+    not have set weights.
+
+    A behavioural test cannot catch this — a test naturally derives the id once
+    and passes it to both sides, which is exactly the divergence it needs to
+    detect. So the invariant is structural: neither neuron may build an
+    epoch_id itself.
+    """
+    for name in ("miner.py", "validator.py"):
+        path = ROOT / "neurons" / name
+        if not path.exists():
+            continue
+        source = path.read_text(encoding="utf-8")
+        if "epoch_id_for_block" not in source:
+            errors.append(
+                f"neurons/{name}: must derive epoch identity from "
+                "slicer.epoch_id_for_block, the single source of truth"
+            )
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if "epoch_id" not in targets:
+                continue
+            # A locally constructed string is the bug; a call is the fix.
+            if isinstance(node.value, (ast.JoinedStr, ast.Constant, ast.BinOp)):
+                errors.append(
+                    f"neurons/{name}:{node.lineno}: epoch_id is built locally. "
+                    "Call slicer.epoch_id_for_block instead — a second "
+                    "formatting of the epoch id is a consensus break"
+                )
+
+
+def check_price_table_pinned(errors: list[str]) -> None:
+    """The consensus price table must match its pin, and be well-formed."""
+    path = ROOT / "data" / "models.json"
+    if not path.exists():
+        errors.append("data/models.json is missing — validators cannot price proofs")
+        return
+
+    actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    if actual != PINNED_PRICE_TABLE_SHA256:
+        errors.append(
+            f"data/models.json: price table hash {actual[:16]}... does not match "
+            f"pin {PINNED_PRICE_TABLE_SHA256[:16]}... — a price change re-scores "
+            "every miner, so update the pin deliberately"
+        )
+
+    try:
+        models = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        errors.append(f"data/models.json is not valid JSON: {e}")
+        return
+
+    seen = set()
+    for entry in models:
+        mid = entry.get("id")
+        if not mid:
+            errors.append("data/models.json: an entry has no 'id'")
+            continue
+        if mid in seen:
+            errors.append(f"data/models.json: duplicate model id {mid!r}")
+        seen.add(mid)
+        for key in ("in", "out"):
+            price = entry.get(key)
+            if not isinstance(price, (int, float)) or price < 0:
+                errors.append(
+                    f"data/models.json: {mid!r} has non-numeric or negative {key!r} price"
+                )
 
 
 def check_paid_call_guards(errors: list[str]) -> None:
@@ -227,6 +335,8 @@ def main() -> None:
     check_runtime_annotations(errors)
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
+    check_price_table_pinned(errors)
+    check_epoch_id_single_source(errors)
     check_paid_call_guards(errors)
     check_tee_safety(errors)
     check_documented_flags(errors)

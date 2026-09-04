@@ -37,7 +37,7 @@ from fugal_subnet.head_eval import (
     load_head_from_npz,
 )
 from fugal_subnet.matrix import build_matrix_mock
-from fugal_subnet.protocol import FugalSynapse
+from fugal_subnet.protocol import FugalProofSynapse
 from fugal_subnet.rewards import cap_weight_change, compute_weights
 from fugal_subnet.scoring import ScoringState, update_scores
 from fugal_subnet.soft_targets import compute_soft_targets
@@ -90,19 +90,44 @@ def test_miner_loads_head():
 
 
 def test_synapse_roundtrip():
-    """FugalSynapse can carry head data end-to-end."""
+    """FugalProofSynapse carries a full bundle inline, end to end.
+
+    The bundle travels in the response rather than as a URL the validator
+    fetches — see fugal_subnet/protocol.py. This asserts a realistically sized
+    payload survives the synapse's own field caps.
+    """
+    import json
+
     data, h = make_synthetic_head(MODEL_POOL)
     b64 = base64.b64encode(data).decode("ascii")
 
-    synapse = FugalSynapse(epoch_id="e000001_abc12345", benchmark_hash="deadbeef")
+    results = [{
+        "question_id": f"q{i}", "routed_model": MODEL_POOL[i % len(MODEL_POOL)],
+        "correct": bool(i % 3), "cost_usd": 0.001,
+        "response_hash": "ab" * 32, "prompt_tokens": 500,
+        "completion_tokens": 300, "is_exploration": False,
+    } for i in range(SLICE_SIZE)]
+    proof_json = json.dumps({
+        "epoch_id": "e00000001", "nonce": "cd" * 32, "questions_hash": "ef" * 32,
+        "weights_hash": h, "source_hash": "01" * 32, "results": results,
+        "total_cost_usd": 0.3, "per_model_costs": {m: 0.1 for m in MODEL_POOL},
+        "attestation_quote": "00" * 632, "timestamp": 0.0,
+    }, separators=(",", ":"))
+
+    synapse = FugalProofSynapse(epoch_id="e00000001", nonce="cd" * 32)
+    synapse.proof_json = proof_json
     synapse.head_npz_b64 = b64
-    synapse.model_pool = MODEL_POOL
-    synapse.head_commit_hash = h
+    synapse.weights_hash = h
+    synapse.proof_hash = "ff" * 32
 
     head = load_head_from_b64(synapse.head_npz_b64)
     assert head.W.shape == (len(MODEL_POOL), HEAD_HIDDEN_DIM)
     assert head.b.shape == (len(MODEL_POOL),)
     assert list(head.models) == MODEL_POOL
+    assert len(json.loads(synapse.proof_json)["results"]) == SLICE_SIZE
+
+    kb = (len(synapse.proof_json) + len(synapse.head_npz_b64)) // 1024
+    print(f"  Inline bundle: {kb} KB ({SLICE_SIZE} results + head)")
     print("  [PASS] Synapse roundtrip")
 
 
@@ -168,9 +193,9 @@ def test_full_validator_pipeline():
 
     # 6. Evaluate heads
     score1 = evaluate_head(head1, hidden, matrix_result.matrix,
-                           MODEL_POOL, soft, model_costs, lam=2.0)
+                           MODEL_POOL, soft, model_costs)
     score2 = evaluate_head(head2, hidden, matrix_result.matrix,
-                           MODEL_POOL, soft, model_costs, lam=2.0)
+                           MODEL_POOL, soft, model_costs)
     print(f"  Head 1: acc={score1.accuracy:.3f} cost_eff={score1.cost_efficiency:.3f} kl={score1.kl_score:.3f}")
     print(f"  Head 2: acc={score2.accuracy:.3f} cost_eff={score2.cost_efficiency:.3f} kl={score2.kl_score:.3f}")
 
@@ -178,7 +203,7 @@ def test_full_validator_pipeline():
     state = ScoringState()
     epoch_scores = {1: score1, 2: score2}
     head_hashes = {1: hash_1, 2: hash_2}
-    state = update_scores(state, epoch_scores, head_hashes)
+    state = update_scores(state, epoch_scores, head_hashes, acc_best=0.8)
 
     for uid, rec in state.records.items():
         print(f"  UID {uid}: composite={rec.composite_score:.4f} epochs_seen={rec.epochs_seen}")
@@ -210,30 +235,33 @@ def test_full_validator_pipeline():
 
 
 def test_dendrite_query_flow():
-    """Simulate validator querying miner via dendrite."""
+    """Simulate a validator querying a miner and parsing the inline bundle."""
+    import json
 
     data, h = make_synthetic_head(MODEL_POOL)
     b64 = base64.b64encode(data).decode("ascii")
+    proof_json = json.dumps({"epoch_id": "e00000001", "results": []},
+                            separators=(",", ":"))
 
-    # Simulate miner's forward function
-    def miner_forward(synapse: FugalSynapse) -> FugalSynapse:
+    def miner_forward(synapse: FugalProofSynapse) -> FugalProofSynapse:
+        synapse.proof_json = proof_json
         synapse.head_npz_b64 = b64
-        synapse.model_pool = MODEL_POOL
-        synapse.head_commit_hash = h
+        synapse.weights_hash = h
+        synapse.proof_hash = "ab" * 32
         return synapse
 
-    # Validator creates synapse and queries
-    synapse = FugalSynapse(epoch_id="e000001_abc", benchmark_hash="deadbeef")
+    synapse = FugalProofSynapse(epoch_id="e00000001", nonce="cd" * 32)
     response = miner_forward(synapse)
 
     assert response.head_npz_b64 == b64
-    assert response.model_pool == MODEL_POOL
-    assert response.head_commit_hash == h
+    assert response.proof_json == proof_json
+    assert response.weights_hash == h
 
-    # Validator loads and validates the head
+    # The validator recovers the head from the response and validates it.
     head = load_head_from_b64(response.head_npz_b64)
     assert head.W.shape[0] == len(MODEL_POOL)
     assert head.W.shape[1] == HEAD_HIDDEN_DIM
+    assert hashlib.sha256(base64.b64decode(response.head_npz_b64)).hexdigest() == h
 
     print("  [PASS] Dendrite query flow")
 
@@ -492,7 +520,7 @@ def test_cost_efficiency_cap():
     W = np.zeros((3, HEAD_HIDDEN_DIM), dtype=np.float32)
     b = np.array([10.0, 0.0, 0.0], dtype=np.float32)
     head = HeadArtifact(W=W, b=b, models=models, commit_hash="")
-    score = evaluate_head(head, hidden, matrix, models, soft, costs, lam=2.0)
+    score = evaluate_head(head, hidden, matrix, models, soft, costs)
     assert score.cost_efficiency <= 1.0, f"cost_efficiency uncapped: {score.cost_efficiency}"
     assert score.accuracy == 1.0
     print(f"  cost_eff={score.cost_efficiency:.3f} (capped) acc={score.accuracy:.3f}")
@@ -501,7 +529,7 @@ def test_cost_efficiency_cap():
     dead_matrix = matrix.copy()
     dead_matrix[:10, :] = 0
     soft_dead = compute_soft_targets(dead_matrix)
-    score_dead = evaluate_head(head, hidden, dead_matrix, models, soft_dead, costs, lam=2.0)
+    score_dead = evaluate_head(head, hidden, dead_matrix, models, soft_dead, costs)
     assert score_dead.accuracy == 1.0, "dead rows must not count against accuracy"
     print("  Dead rows excluded from scoring")
     print("  [PASS] Cost efficiency cap")
@@ -533,52 +561,46 @@ def test_stratified_slicer():
     print("  [PASS] Stratified slicer")
 
 
-def test_build_model_pool():
-    """Union pool policy: priced-only, cost cap, budget trim, no sybil eviction."""
-    print("\n  [TEST] Model pool policy")
-    from fugal_subnet.head_eval import HeadArtifact
-    from neurons.validator_legacy import build_model_pool
+def test_unpriced_and_expensive_models():
+    """What replaced the pre-TEE model-pool policy.
 
-    def _head(models):
-        d = 8
-        return HeadArtifact(
-            W=np.zeros((len(models), d), dtype=np.float32),
-            b=np.zeros(len(models), dtype=np.float32),
-            models=models,
-            commit_hash="test",
-        )
+    The validator used to assemble a shared, priced, cost-capped model pool
+    because it paid for every call in it. Under TEE there is no shared pool and
+    the miner pays, so both halves of that policy are re-expressed:
 
-    prices = {"a/cheap": (0.1 / 1e6, 0.2 / 1e6), "b/mid": (1 / 1e6, 2 / 1e6),
-              "c/pricey": (500 / 1e6, 500 / 1e6)}
-    heads = {1: _head(["a/cheap", "b/mid", "zz/unknown"]),
-             2: _head(["a/cheap", "c/pricey"])}
-    out = build_model_pool(heads, prices, 300, max_models_per_miner=30,
-                           max_cost_per_query=0.10, budget_usd=1000)
-    assert "zz/unknown" not in out, "unpriced model must be excluded"
-    assert "c/pricey" not in out, "cost-capped model must be excluded"
-    assert set(out) == {"a/cheap", "b/mid"}
-    print("  Unpriced + over-cap models excluded")
+      - unpriced model  -> a hard error, because an uncosted route cannot be
+                           scored (it used to be silently excluded)
+      - expensive model -> allowed, and it lowers only that miner's own thrift
+                           (it used to be excluded to protect a shared budget)
+    """
+    print("\n  [TEST] Unpriced and expensive models")
+    from fugal_subnet.evidence import Evidence
+    from fugal_subnet.scoring import composite
+    from fugal_subnet.tee.runtime import MeteringProxy, UnpricedModel
 
-    # Sybil heads route to 5 junk models; two honest heads route to "zz/popular".
-    # Under the old fixed-cap pool, the sybil could evict "zz/popular".
-    # Under the routed-model pool, all models are included (budget permitting).
-    sybil_models = [f"aaa/m{i:02d}" for i in range(5)]
-    heads2 = {1: _head(sybil_models), 2: _head(["zz/popular"]), 3: _head(["zz/popular"])}
-    prices2 = {m: (0.1 / 1e6, 0.1 / 1e6) for m in sybil_models + ["zz/popular"]}
-    out2 = build_model_pool(heads2, prices2, 300, max_models_per_miner=30,
-                            max_cost_per_query=0.1, budget_usd=1000)
-    assert "zz/popular" in out2, "honest model evicted by sybil"
-    assert set(out2) == set(sybil_models + ["zz/popular"]), "all routed models should be in pool"
-    print("  Sybil cannot evict honest models from pool")
+    proxy = MeteringProxy(port=0)
+    proxy.prices = {"a/cheap": (1e-7, 2e-7), "c/pricey": (5e-6, 3e-5)}
 
-    # Budget trim drops the least-routed model first (fewest heads use it)
-    prices3 = {"a/x": (10 / 1e6, 10 / 1e6), "b/y": (100 / 1e6, 100 / 1e6)}
-    heads3 = {1: _head(["a/x", "b/y"])}
-    out3 = build_model_pool(heads3, prices3, 300, max_models_per_miner=30,
-                            max_cost_per_query=1.0, budget_usd=4.0)
-    assert out3 == ["a/x"], f"budget trim wrong: {out3}"
-    print("  Budget pre-flight trim works")
-    print("  [PASS] Model pool policy")
+    try:
+        proxy.price_call("zz/unknown", 500, 300)
+        raise AssertionError("unpriced model must not be costable")
+    except UnpricedModel:
+        pass
+    print("  Unpriced model is a hard error, never a default rate")
+
+    cheap = proxy.price_call("a/cheap", 500, 300)
+    pricey = proxy.price_call("c/pricey", 500, 300)
+    assert pricey > cheap * 50, "price table must distinguish models"
+    print(f"  Price table distinguishes models: ${cheap:.6f} vs ${pricey:.6f}")
+
+    # Routing expensively is permitted and self-punishing.
+    frugal = Evidence("h", n_correct=9000.0, n_total=10000.0,
+                      cost_sum=1.0, ref_cost_sum=6.0, pool_size=1e9)
+    lavish = Evidence("h", n_correct=9000.0, n_total=10000.0,
+                      cost_sum=36.0, ref_cost_sum=6.0, pool_size=1e9)
+    assert composite(frugal, 0.9) > composite(lavish, 0.9)
+    print("  Expensive routing costs the miner, not the validator")
+    print("  [PASS] Unpriced and expensive models")
 
 
 def main():
@@ -597,7 +619,7 @@ def main():
     test_head_security()
     test_cost_efficiency_cap()
     test_stratified_slicer()
-    test_build_model_pool()
+    test_unpriced_and_expensive_models()
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASS")

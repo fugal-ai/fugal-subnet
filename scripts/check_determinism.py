@@ -79,7 +79,7 @@ def run_pipeline(seed: int) -> dict:
     import numpy as np
 
     from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
-    from fugal_subnet.config import HEAD_HIDDEN_DIM, ROUTING_LAMBDA
+    from fugal_subnet.config import HEAD_HIDDEN_DIM
     from fugal_subnet.head_eval import HeadArtifact, evaluate_head
     from fugal_subnet.matrix import build_matrix_mock
     from fugal_subnet.rewards import compute_weights
@@ -121,8 +121,7 @@ def run_pipeline(seed: int) -> dict:
         W = (hrng.randn(len(models), HEAD_HIDDEN_DIM) * 0.01).astype(np.float32)
         b = (hrng.randn(len(models)) * 1e-6).astype(np.float32)
         head = HeadArtifact(W=W, b=b, models=list(models), commit_hash=f"h{uid}")
-        hs = evaluate_head(head, hidden, matrix, models, soft, model_costs,
-                           lam=ROUTING_LAMBDA)
+        hs = evaluate_head(head, hidden, matrix, models, soft, model_costs)
         routing[uid] = [int(x) for x in hs.routing_decisions]
         scores_out[uid] = {
             "accuracy": float(hs.accuracy),
@@ -133,7 +132,8 @@ def run_pipeline(seed: int) -> dict:
         head_hashes[uid] = f"h{uid}"
 
     state = update_scores(ScoringState(), epoch_scores, head_hashes,
-                          n_questions=len(questions))
+                          acc_best=0.8, n_questions=len(questions),
+                          pool_size=len(pool))
     uids, weight_values = compute_weights(state.records)
 
     return {

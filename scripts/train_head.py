@@ -41,7 +41,7 @@ import torch.nn.functional as F  # noqa: E402
 from fugal_subnet.config import (  # noqa: E402
     BACKBONE_MODEL,
     HEAD_HIDDEN_DIM,
-    ROUTING_LAMBDA,
+    TRAINING_COST_LAMBDA,
     SOFT_TARGET_TAU,
 )
 from fugal_subnet.soft_targets import compute_soft_targets  # noqa: E402
@@ -64,7 +64,7 @@ def parse_args():
     p.add_argument("--n-questions", type=int, default=300, help="Number of questions (synthetic mode)")
     p.add_argument("--hidden-dim", type=int, default=HEAD_HIDDEN_DIM)
     p.add_argument("--tau", type=float, default=SOFT_TARGET_TAU)
-    p.add_argument("--lam", type=float, default=ROUTING_LAMBDA)
+    p.add_argument("--lam", type=float, default=TRAINING_COST_LAMBDA)
 
     sft = p.add_argument_group("SFT (Stage 1)")
     sft.add_argument("--sft-epochs", type=int, default=100)

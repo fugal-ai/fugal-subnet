@@ -65,6 +65,7 @@ def verify_proof(
     gold_answers: dict[str, dict],
     *,
     expected_question_ids: set[str] | None = None,
+    expected_exploration: dict[str, str] | None = None,
     expected_weights_hash: str = "",
     expected_proof_hash: str = "",
     head_bytes: bytes | None = None,
@@ -84,6 +85,7 @@ def verify_proof(
         expected_nonce: The expected epoch nonce.
         gold_answers: {question_id: task_dict} for the assigned slice.
         expected_question_ids: The exact question set the miner was assigned.
+        expected_exploration: {question_id: required_model} for this epoch.
         expected_weights_hash: Head hash committed on-chain before the boundary.
         expected_proof_hash: content_hash the miner advertised over the axon.
         head_bytes: The head artifact shipped in the bundle.
@@ -149,7 +151,7 @@ def verify_proof(
     #    miner can copy it while grading an easier set entirely of its own
     #    choosing. Only comparing the result ids against the slice closes that.
     if expected_question_ids is not None:
-        actual_ids = {r.question_id for r in proof.results}
+        actual_ids = {r.question_id for r in proof.scored_results}
         if actual_ids != expected_question_ids:
             missing = expected_question_ids - actual_ids
             extra = actual_ids - expected_question_ids
@@ -159,11 +161,37 @@ def verify_proof(
                 f"{len(missing)} missing, {len(extra)} unassigned "
                 f"(e.g. {sorted(extra)[:3] or sorted(missing)[:3]})",
             )
-        if len(proof.results) != len(expected_question_ids):
+        if len(proof.scored_results) != len(expected_question_ids):
             return VerifyResult(
                 False,
-                f"Duplicate results: {len(proof.results)} entries for "
+                f"Duplicate results: {len(proof.scored_results)} entries for "
                 f"{len(expected_question_ids)} questions",
+            )
+
+    # 6b. The exploration set must be exactly what the nonce assigned.
+    #     Exploration costs the miner money and earns it nothing directly, so
+    #     the only thing making it happen is that an incomplete or re-targeted
+    #     set is a rejected proof. Both sides derive the assignment from public
+    #     inputs, so this never relies on the miner's account of it.
+    if expected_exploration is not None:
+        explored = {r.question_id: r.routed_model for r in proof.exploration_results}
+        if set(explored) != set(expected_exploration):
+            return VerifyResult(
+                False,
+                f"Exploration set mismatch: {len(expected_exploration)} questions "
+                f"assigned, {len(explored)} answered",
+            )
+        wrong = [
+            qid for qid, model in expected_exploration.items()
+            if explored.get(qid) != model
+        ]
+        if wrong:
+            return VerifyResult(
+                False,
+                f"{len(wrong)} exploration questions routed to a model other than "
+                f"the one the nonce assigned (e.g. {wrong[0]}: got "
+                f"{explored.get(wrong[0])!r}, required "
+                f"{expected_exploration[wrong[0]]!r})",
             )
 
     # 7. The head that ran must be the head committed on-chain before the nonce

@@ -68,10 +68,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     import bittensor as bt
 
+    from fugal_subnet.api import load_prices
     from fugal_subnet.benchmarks.slicer import epoch_index_for_block
     from fugal_subnet.commitments import ensure_commitment
     from fugal_subnet.config import (
         EPOCH_INTERVAL,
+        EXPLORE_FRACTION,
         MIN_VALIDATOR_STAKE,
         SLICE_SIZE,
         TEE_BUNDLE_STORE,
@@ -88,13 +90,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         pool = json.load(f)
     logger.info("Loaded benchmark pool: %d questions", len(pool))
 
-    model_costs: dict[str, float] = {}
-    if TEE_MODEL_PRICES_PATH and os.path.isfile(TEE_MODEL_PRICES_PATH):
-        with open(TEE_MODEL_PRICES_PATH) as f:
-            model_costs = json.load(f)
-        logger.info("Loaded model prices for %d models", len(model_costs))
-    else:
-        logger.warning("No model prices file configured (FUGAL_MODEL_PRICES) — routing will ignore costs")
+    # The globally agreed model space. Exploration targets are drawn from this
+    # sorted list, never from the miner's own head, so the samples the reference
+    # frame is built from cannot be steered.
+    prices = load_prices(TEE_MODEL_PRICES_PATH or None)
+    pool_models = sorted(prices)
+    explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
+    logger.info("Price table: %d models; exploration quota %d questions/epoch",
+                len(pool_models), explore_size)
 
     logger.info("Head loaded: %s (%d bytes)", head_path, len(head_data))
     logger.info("Weights hash: %s", weights_hash[:16])
@@ -242,7 +245,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     proxy_port=TEE_PROXY_PORT,
                     bundle_repo=TEE_BUNDLE_STORE,
                     hotkey_ss58=my_hotkey,
-                    model_costs=model_costs,
+                    explore_models=pool_models,
+                    explore_size=explore_size,
                 )
                 consecutive_failures = 0
             except Exception:
@@ -279,7 +283,8 @@ def _run_epoch(
     proxy_port,
     bundle_repo,
     hotkey_ss58,
-    model_costs,
+    explore_models,
+    explore_size,
 ):
     """Run a single benchmark epoch."""
     from fugal_subnet.benchmarks.slicer import derive_nonce, epoch_id_for_block
@@ -306,7 +311,8 @@ def _run_epoch(
             slice_size=slice_size,
             epoch_id=epoch_id,
             source_hash=_get_source_hash(),
-            model_costs=model_costs,
+            explore_models=explore_models,
+            explore_size=explore_size,
         )
 
         content_hash_bytes = bytes.fromhex(proof.content_hash())

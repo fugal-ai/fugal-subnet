@@ -30,6 +30,10 @@ class QuestionResult:
     # comparisons need no assumed "typical question" constant anywhere.
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # True for nonce-forced exploration routes. These never count toward the
+    # miner's own score — being made to route randomly must not be a penalty —
+    # they exist only to sample the model pool for the reference frame.
+    is_exploration: bool = False
 
 
 @dataclass
@@ -46,18 +50,37 @@ class BenchmarkProof:
     timestamp: float
 
     @property
+    def scored_results(self) -> list[QuestionResult]:
+        """Results the miner is judged on — exploration is excluded."""
+        return [r for r in self.results if not r.is_exploration]
+
+    @property
+    def exploration_results(self) -> list[QuestionResult]:
+        return [r for r in self.results if r.is_exploration]
+
+    @property
     def n_correct(self) -> int:
-        return sum(1 for r in self.results if r.correct)
+        return sum(1 for r in self.scored_results if r.correct)
 
     @property
     def n_total(self) -> int:
-        return len(self.results)
+        return len(self.scored_results)
 
     @property
     def accuracy(self) -> float:
-        if not self.results:
+        scored = self.scored_results
+        if not scored:
             return 0.0
-        return self.n_correct / self.n_total
+        return self.n_correct / len(scored)
+
+    @property
+    def scored_cost_usd(self) -> float:
+        """Cost of the scored routes only.
+
+        Exploration is a forced cost the miner did not choose, so billing it
+        against their thrift would punish them for the subnet's own sampling.
+        """
+        return sum(r.cost_usd for r in self.scored_results)
 
     def content_hash(self) -> str:
         """SHA256 of the proof content (excluding attestation).
@@ -80,6 +103,7 @@ class BenchmarkProof:
                     "response_hash": r.response_hash,
                     "prompt_tokens": r.prompt_tokens,
                     "completion_tokens": r.completion_tokens,
+                    "is_exploration": r.is_exploration,
                 }
                 for r in self.results
             ],
@@ -106,6 +130,7 @@ class BenchmarkProof:
                     "response_hash": r.response_hash,
                     "prompt_tokens": r.prompt_tokens,
                     "completion_tokens": r.completion_tokens,
+                    "is_exploration": r.is_exploration,
                 }
                 for r in self.results
             ],

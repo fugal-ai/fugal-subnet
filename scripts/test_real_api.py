@@ -159,7 +159,7 @@ def main():
 
     score = evaluate_head(
         head, hidden, matrix_result.matrix,
-        MODELS, soft, model_costs, lam=2.0,
+        MODELS, soft, model_costs,
     )
     print(f"  Accuracy: {score.accuracy:.3f}")
     print(f"  Cost efficiency: {score.cost_efficiency:.3f}")

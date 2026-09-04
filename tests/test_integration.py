@@ -168,9 +168,9 @@ def test_full_validator_pipeline():
 
     # 6. Evaluate heads
     score1 = evaluate_head(head1, hidden, matrix_result.matrix,
-                           MODEL_POOL, soft, model_costs, lam=2.0)
+                           MODEL_POOL, soft, model_costs)
     score2 = evaluate_head(head2, hidden, matrix_result.matrix,
-                           MODEL_POOL, soft, model_costs, lam=2.0)
+                           MODEL_POOL, soft, model_costs)
     print(f"  Head 1: acc={score1.accuracy:.3f} cost_eff={score1.cost_efficiency:.3f} kl={score1.kl_score:.3f}")
     print(f"  Head 2: acc={score2.accuracy:.3f} cost_eff={score2.cost_efficiency:.3f} kl={score2.kl_score:.3f}")
 
@@ -178,7 +178,7 @@ def test_full_validator_pipeline():
     state = ScoringState()
     epoch_scores = {1: score1, 2: score2}
     head_hashes = {1: hash_1, 2: hash_2}
-    state = update_scores(state, epoch_scores, head_hashes)
+    state = update_scores(state, epoch_scores, head_hashes, acc_best=0.8)
 
     for uid, rec in state.records.items():
         print(f"  UID {uid}: composite={rec.composite_score:.4f} epochs_seen={rec.epochs_seen}")
@@ -492,7 +492,7 @@ def test_cost_efficiency_cap():
     W = np.zeros((3, HEAD_HIDDEN_DIM), dtype=np.float32)
     b = np.array([10.0, 0.0, 0.0], dtype=np.float32)
     head = HeadArtifact(W=W, b=b, models=models, commit_hash="")
-    score = evaluate_head(head, hidden, matrix, models, soft, costs, lam=2.0)
+    score = evaluate_head(head, hidden, matrix, models, soft, costs)
     assert score.cost_efficiency <= 1.0, f"cost_efficiency uncapped: {score.cost_efficiency}"
     assert score.accuracy == 1.0
     print(f"  cost_eff={score.cost_efficiency:.3f} (capped) acc={score.accuracy:.3f}")
@@ -501,7 +501,7 @@ def test_cost_efficiency_cap():
     dead_matrix = matrix.copy()
     dead_matrix[:10, :] = 0
     soft_dead = compute_soft_targets(dead_matrix)
-    score_dead = evaluate_head(head, hidden, dead_matrix, models, soft_dead, costs, lam=2.0)
+    score_dead = evaluate_head(head, hidden, dead_matrix, models, soft_dead, costs)
     assert score_dead.accuracy == 1.0, "dead rows must not count against accuracy"
     print("  Dead rows excluded from scoring")
     print("  [PASS] Cost efficiency cap")

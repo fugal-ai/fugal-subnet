@@ -20,7 +20,6 @@ from fugal_subnet.config import (
     HEAD_MAX_MODEL_ID_LEN,
     HEAD_MAX_MODELS,
     ROUTING_DECISION_QUANTUM,
-    ROUTING_LAMBDA,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,7 +140,6 @@ def evaluate_head(
     models_in_matrix: list[str],
     soft_targets: np.ndarray,
     model_costs: dict[str, float],
-    lam: float = ROUTING_LAMBDA,
 ) -> HeadScore:
     """Evaluate a head's routing decisions against the ground truth matrix.
 
@@ -152,7 +150,6 @@ def evaluate_head(
         models_in_matrix: M_full model IDs matching matrix columns.
         soft_targets: (N, M_full) oracle soft target distributions.
         model_costs: {model_id: cost_per_query}.
-        lam: Cost-quality tradeoff parameter.
 
     Returns:
         HeadScore with accuracy, cost efficiency, KL divergence, and decisions.
@@ -174,7 +171,6 @@ def evaluate_head(
             coverage=0.0,
         )
 
-    head_costs = np.array([model_costs.get(m, 0.01) for m in head.models], dtype=np.float64)
     routing_decisions = np.zeros(N, dtype=np.int32)
     correct_mask = np.zeros(N, dtype=bool)
     total_kl = 0.0
@@ -187,12 +183,16 @@ def evaluate_head(
         logits = head.W @ h + head.b
         p = _softmax(logits)
 
+        # No cost term: the routing rule is argmax over the head's own
+        # preference. See config.TRAINING_COST_LAMBDA for why the subnet no
+        # longer dictates a quality/cost exchange rate.
+        #
         # Quantize before the argmax. See config.ROUTING_DECISION_QUANTUM:
         # raw argmax is a discontinuity, so any cross-validator float
         # difference flips the routing decision on a near-tie. Rounding to a
         # fixed step makes the decision agree unless validators differ by a
         # whole quantum, and exact ties fall to the lowest index.
-        utility = quantize_utility(p - lam * head_costs)
+        utility = quantize_utility(p)
         selected_head_idx = int(np.argmax(utility))
         routing_decisions[q_idx] = selected_head_idx
 

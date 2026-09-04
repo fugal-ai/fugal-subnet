@@ -235,7 +235,6 @@ def run_epoch(validator_wallet, subtensor, netuid):
 
     from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
-    from fugal_subnet.config import ROUTING_LAMBDA
     from fugal_subnet.dedup import find_duplicates
     from fugal_subnet.head_eval import evaluate_head, load_head_from_b64
     from fugal_subnet.matrix import build_matrix_mock
@@ -332,7 +331,7 @@ def run_epoch(validator_wallet, subtensor, netuid):
     epoch_scores = {}
     for uid, head in heads.items():
         score = evaluate_head(head, hidden, matrix_result.matrix,
-                              all_models, soft, model_costs, lam=ROUTING_LAMBDA)
+                              all_models, soft, model_costs)
         epoch_scores[uid] = score
         print(f"  UID {uid}: acc={score.accuracy:.3f} cost_eff={score.cost_efficiency:.3f} kl={score.kl_score:.3f}", flush=True)
 

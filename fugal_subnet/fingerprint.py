@@ -91,7 +91,7 @@ def grader_hash() -> str:
 
 def environment_fingerprint() -> dict:
     """A JSON-serializable record of everything that can change a score."""
-    from fugal_subnet.config import ROUTING_DECISION_QUANTUM, ROUTING_LAMBDA
+    from fugal_subnet.config import ROUTING_DECISION_QUANTUM
 
     return {
         "fugal_version": fugal_subnet.__version__,
@@ -106,7 +106,6 @@ def environment_fingerprint() -> dict:
         "cpu_dispatch": {k: os.environ.get(k, "unset") for k in DETERMINISM_ENV},
         "grader_sha256": grader_hash(),
         "routing": {
-            "lambda": ROUTING_LAMBDA,
             "decision_quantum": ROUTING_DECISION_QUANTUM,
         },
     }

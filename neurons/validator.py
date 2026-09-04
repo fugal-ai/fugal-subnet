@@ -65,6 +65,7 @@ def load_state(records_cls) -> dict:
                 str(hk): int(blk)
                 for hk, blk in (raw.get("first_commit_blocks") or {}).items()
             },
+            "frame": raw.get("frame"),
         }
     except FileNotFoundError:
         return _empty_state()
@@ -75,11 +76,12 @@ def load_state(records_cls) -> dict:
 
 def _empty_state() -> dict:
     return {"records": {}, "prev_uids": [], "prev_weights": [],
-            "last_epoch_index": -1, "first_commit_blocks": {}}
+            "last_epoch_index": -1, "first_commit_blocks": {}, "frame": None}
 
 
 def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
-               last_epoch_index: int, first_commit_blocks: dict[str, int]):
+               last_epoch_index: int, first_commit_blocks: dict[str, int],
+               frame=None):
     """Persist validator state."""
     os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
     payload = {
@@ -88,6 +90,7 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
         "prev_weights": prev_weights,
         "last_epoch_index": last_epoch_index,
         "first_commit_blocks": first_commit_blocks or {},
+        "frame": frame.to_dict() if frame is not None else None,
     }
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
@@ -126,6 +129,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     from fugal_subnet.config import (
         EPOCH_INTERVAL,
+        EXPLORE_FRACTION,
+        FRAME_DEFAULT_COMPLETION_TOKENS,
         REQUIRE_COMMITMENT,
         SLICE_SIZE,
         TEE_APPROVED_MEASUREMENTS,
@@ -159,8 +164,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         detect_anomalies,
         write_epoch_log,
     )
+    from fugal_subnet.exploration import expected_exploration as expected_exploration_map
     from fugal_subnet.head_eval import HeadScore
     from fugal_subnet.protocol import FugalProofSynapse
+    from fugal_subnet.reference_frame import (
+        ReferenceFrame,
+        accumulate_exploration,
+        best_model,
+        load_bootstrap,
+        reference_cost,
+    )
     from fugal_subnet.rewards import cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
     from fugal_subnet.tee.proof import BenchmarkProof
@@ -198,9 +211,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # epoch prices against the same rates, and so a missing table fails at
     # startup rather than mid-epoch.
     prices = load_prices()
-    floor_rates = _floor_cost(prices)
-    logger.info("Price table: %d models, cheapest blended rate %.3g/%.3g per token",
-                len(prices), floor_rates[0], floor_rates[1])
+    # One global, sorted model space. Used for exploration targets and for
+    # dedup indices, so every miner's routing vector is directly comparable.
+    pool_models = sorted(prices)
+    model_index = {m: i for i, m in enumerate(pool_models)}
+    explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
+    logger.info("Price table: %d models; exploration quota %d questions/epoch",
+                len(prices), explore_size)
+
 
     state = load_state(MinerRecord)
     scoring_state = ScoringState(records=state["records"])
@@ -208,6 +226,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     prev_weights: list[float] = state["prev_weights"]
     last_epoch_index: int = state["last_epoch_index"]
     first_commit_blocks: dict[str, int] = state["first_commit_blocks"]
+
+    # The reference frame is subnet-level state accumulated over TIME, not over
+    # the miner field — a miner's score must not move because other miners came
+    # online or went dark (I4). Seeded from the shipped bootstrap prior so it is
+    # well-defined at epoch 1 with zero samples.
+    frame = (
+        ReferenceFrame.from_dict(state["frame"])
+        if state["frame"] else load_bootstrap()
+    )
 
     blocks_per_epoch = max(1, EPOCH_INTERVAL // BLOCK_TIME_S)
 
@@ -238,9 +265,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             question_ids = [q["question_id"] for q in questions]
             expected_questions_hash = compute_questions_hash(question_ids)
             expected_question_ids = set(question_ids)
+            explore_map = expected_exploration_map(
+                nonce, benchmark_pool, expected_question_ids,
+                pool_models, explore_size,
+            )
             # Gold for the assigned slice only. Handing over the whole pool
             # would let a proof reference any question in it and still verify.
-            slice_gold = {qid: gold_answers[qid] for qid in question_ids}
+            slice_gold = {
+                qid: gold_answers[qid]
+                for qid in list(question_ids) + list(explore_map)
+                if qid in gold_answers
+            }
             logger.info("Slice: %d questions, hash=%s...",
                         len(questions), expected_questions_hash[:16])
 
@@ -328,6 +363,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     expected_nonce=nonce_hex,
                     gold_answers=slice_gold,
                     expected_question_ids=expected_question_ids,
+                    expected_exploration=explore_map,
                     expected_weights_hash=weights_hash,
                     expected_proof_hash=getattr(resp, "proof_hash", ""),
                     head_bytes=head_bytes,
@@ -363,7 +399,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 write_epoch_log(epoch_log)
                 last_epoch_index = epoch_index
                 save_state(scoring_state.records, prev_uids, prev_weights,
-                           last_epoch_index, first_commit_blocks)
+                           last_epoch_index, first_commit_blocks, frame)
                 if once:
                     break
                 time.sleep(60)
@@ -371,20 +407,48 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
             logger.info("Verified %d proofs", len(verified_proofs))
 
+            # --- REFERENCE FRAME ---
+            # Exploration samples from every verified proof, pooled. The frame
+            # accumulates over TIME: this epoch's samples are one decayed
+            # contribution to a long-running estimate, so the reference a miner
+            # is measured against does not lurch when the field size changes.
+            timer.start_phase("frame")
+            samples = [
+                (r.routed_model, r.correct, r.prompt_tokens, r.completion_tokens)
+                for proof in verified_proofs.values()
+                for r in proof.exploration_results
+            ]
+            frame = accumulate_exploration(frame, samples)
+            ref_model, acc_best = best_model(frame, prices)
+            logger.info(
+                "Reference frame: %d samples this epoch, best model %s "
+                "(acc_lcb=%.3f, %.0f trials)",
+                len(samples), ref_model, acc_best, frame.trials.get(ref_model, 0.0),
+            )
+
             # --- SCORE FROM PROOFS ---
             timer.start_phase("score")
             epoch_scores: dict[int, HeadScore] = {}
             for uid, proof in verified_proofs.items():
-                score = _proof_to_head_score(proof, floor_rates)
+                scored = proof.scored_results
+                ref_cost = reference_cost(
+                    frame, prices, ref_model,
+                    prompt_tokens=sum(r.prompt_tokens for r in scored),
+                    n_questions=len(scored),
+                    default_completion_tokens=FRAME_DEFAULT_COMPLETION_TOKENS,
+                )
+                score = _proof_to_head_score(proof, ref_cost)
                 epoch_scores[uid] = score
-                logger.info("  UID %d: acc=%.3f cost=$%.4f (%d/%d correct)",
-                            uid, score.accuracy, proof.total_cost_usd,
-                            score.n_correct, score.n_scored)
+                logger.info(
+                    "  UID %d: acc=%.3f cost=$%.4f ref=$%.4f (%d/%d correct)",
+                    uid, score.accuracy, score.total_head_cost, ref_cost,
+                    score.n_correct, score.n_scored,
+                )
 
             # --- DEDUP ---
             timer.start_phase("dedup_score_weight")
             routing_decisions = {
-                uid: _extract_routing_decisions(proof)
+                uid: _extract_routing_decisions(proof, model_index)
                 for uid, proof in verified_proofs.items()
             }
             dupes = find_duplicates(routing_decisions, commit_blocks)
@@ -394,7 +458,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # --- EVIDENCE ACCUMULATION ---
             scoring_state = update_scores(
                 scoring_state, epoch_scores, head_hashes,
+                acc_best=acc_best,
+                hotkeys={
+                    uid: metagraph.hotkeys[uid]
+                    for uid in verified_proofs
+                    if uid < len(metagraph.hotkeys)
+                },
                 n_questions=len(questions),
+                pool_size=len(benchmark_pool),
             )
 
             # --- WEIGHTS ---
@@ -492,7 +563,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
             last_epoch_index = epoch_index
             save_state(scoring_state.records, prev_uids, prev_weights,
-                       last_epoch_index, first_commit_blocks)
+                       last_epoch_index, first_commit_blocks, frame)
 
         except KeyboardInterrupt:
             logger.info("Validator stopped by user")
@@ -535,70 +606,56 @@ def _get_bundle_for_uid(uid, resp):
     return proof, head_bytes
 
 
-def _floor_cost(prices):
-    """Cheapest per-token rate pair in the pinned table, as (p_in, p_out).
-
-    Chosen by blended rate so a model cannot look cheapest by having a free
-    input price and an extortionate output price.
-    """
-    return min(prices.values(), key=lambda pr: pr[0] + pr[1])
-
-
-def _proof_to_head_score(proof, floor_rates):
+def _proof_to_head_score(proof, ref_cost):
     """Convert a verified BenchmarkProof into a HeadScore for scoring.
 
-    The cost reference is what the cheapest priced model would have cost on
-    the *same attested token counts*. That is a fact about the model pool and
-    this question set — identical for every miner, and computable exactly
-    because the proof now carries token counts.
+    `ref_cost` is what the reference model would have cost on this same
+    question set — a fact about the model pool, identical for every miner in
+    the epoch and independent of how many miners are online.
 
-    The previous denominator was `min(proof.per_model_costs.values()) * n`,
-    wrong twice over: per_model_costs holds *totals*, not per-query prices, and
-    every term came from the miner's own proof. A miner routing every question
-    to one model scored a perfect 1.0 however expensive that model was, so the
-    incentive ran backwards — a genuinely cheap router scored 0.177 against an
-    all-frontier router's 1.000.
+    Only scored routes count. Exploration is a cost the subnet imposed, not a
+    choice the miner made, so billing it against their thrift would penalise
+    them for the sampling that makes everyone's scores meaningful.
     """
     from fugal_subnet.head_eval import HeadScore
 
-    n_correct = proof.n_correct
-    n_scored = proof.n_total
-    accuracy = proof.accuracy
-
-    p_in, p_out = floor_rates
-    total_head_cost = proof.total_cost_usd
-    total_oracle_cost = sum(
-        p_in * r.prompt_tokens + p_out * r.completion_tokens for r in proof.results
-    )
-    cost_efficiency = min(1.0, total_oracle_cost / max(total_head_cost, 1e-12))
-
-    # KL divergence — requires oracle distribution assembly (post-launch)
-    total_kl = 0.0
-
+    scored = proof.scored_results
     return HeadScore(
-        accuracy=accuracy,
-        cost_efficiency=cost_efficiency,
+        accuracy=proof.accuracy,
+        cost_efficiency=0.0,   # superseded by thrift; see scoring.composite
         kl_score=0.0,
-        routing_decisions=_extract_routing_decisions(proof),
-        correct_mask=np.array([r.correct for r in proof.results], dtype=bool),
+        routing_decisions=np.array([], dtype=np.int32),
+        correct_mask=np.array([r.correct for r in scored], dtype=bool),
         coverage=1.0,
-        n_correct=n_correct,
-        n_scored=n_scored,
-        total_head_cost=total_head_cost,
-        total_oracle_cost=total_oracle_cost,
-        total_kl=total_kl,
+        n_correct=proof.n_correct,
+        n_scored=proof.n_total,
+        total_head_cost=proof.scored_cost_usd,
+        total_oracle_cost=ref_cost,
+        total_kl=0.0,
     )
 
 
-def _extract_routing_decisions(proof):
-    """Extract routing decisions from a proof as a numpy array for dedup."""
-    models = sorted(set(r.routed_model for r in proof.results))
-    model_to_idx = {m: i for i, m in enumerate(models)}
-    decisions = np.array(
-        [model_to_idx.get(r.routed_model, 0) for r in proof.results],
+def _extract_routing_decisions(proof, model_index):
+    """Routing decisions as a numpy array for dedup, in a GLOBAL model space.
+
+    `model_index` maps every model in the pinned price table to a fixed index
+    shared by all miners, so index 5 means the same model in every vector.
+
+    Previously the index space was built per-proof from that miner's own routed
+    models, which broke the comparison both ways: two miners each routing 100%
+    to a *different* single model both produced all-zero vectors and were
+    clustered as clones, while a genuine copy that re-routed a single question
+    to an alphabetically-earlier model renumbered its entire vector and evaded
+    detection at 96.7% identical routing.
+
+    Ordered by question id so two miners' vectors line up element-wise
+    regardless of the order results appear in their proofs.
+    """
+    scored = sorted(proof.scored_results, key=lambda r: r.question_id)
+    return np.array(
+        [model_index.get(r.routed_model, -1) for r in scored],
         dtype=np.int32,
     )
-    return decisions
 
 
 if __name__ == "__main__":

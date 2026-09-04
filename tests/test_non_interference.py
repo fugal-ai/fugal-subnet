@@ -167,55 +167,113 @@ def test_sybil_pool_stuffing_does_not_zero_victim():
     assert sybil_score.coverage == 5 / M
 
 
-def test_coverage_multiplier_prevents_narrow_surface_gaming():
-    """A head covering 2 models with 100% accuracy must not beat a head
-    covering all 10 models with 80% accuracy after the coverage multiplier.
+_MODELS = [f"model/{i}" for i in range(10)]
+# Fixed true accuracies — facts about the world, not about the miner field.
+_TRUE_ACC = {m: 0.3 + 0.05 * i for i, m in enumerate(_MODELS)}
+_TRUE_BEST = max(_TRUE_ACC.values())
+
+
+def _frame_from_field(n_miners, epochs, samples_per_miner=15, seed=0):
+    """Build a reference frame from `n_miners` miners' exploration samples."""
+    import random
+
+    from fugal_subnet.reference_frame import ReferenceFrame, accumulate_exploration
+
+    rng = random.Random(seed)
+    frame = ReferenceFrame()
+    for _ in range(epochs):
+        samples = []
+        for _ in range(n_miners):
+            for _ in range(samples_per_miner):
+                m = rng.choice(_MODELS)
+                samples.append((m, rng.random() < _TRUE_ACC[m], 500, 300))
+        frame = accumulate_exploration(frame, samples)
+    return frame
+
+
+def _ceiling(frame):
+    from fugal_subnet.reference_frame import best_model
+
+    prices = {m: (1e-6, 2e-6) for m in _MODELS}
+    return best_model(frame, prices)[1]
+
+
+def test_reference_frame_converges_to_the_same_place_at_any_field_size():
+    """I4, restated for the TEE architecture.
+
+    A miner's score must depend on its own behaviour and on facts about the
+    world — never on how many other miners are online. The frame therefore
+    pools exploration over TIME rather than over MINERS: field size changes how
+    fast the estimate converges, not what it converges to.
+
+    Some early sensitivity is unavoidable — a small field simply gathers
+    evidence more slowly — so the property to hold is convergence, not instant
+    equality. That is also why the prior is weak (see FRAME_PRIOR_STRENGTH):
+    a strong neutral prior biases the ceiling low for longer in a thin field,
+    which is precisely field-size dependence.
     """
-    d = 8
-    n_questions = 20
-    all_models = [f"model/{i}" for i in range(10)]
-    M = len(all_models)
+    ceilings = [_ceiling(_frame_from_field(n, epochs=300)) for n in (3, 20, 50)]
 
-    np.random.seed(99)
-    hidden = np.random.randn(n_questions, d).astype(np.float32)
-
-    # Every model answers correctly.
-    matrix = np.ones((n_questions, M), dtype=np.int8)
-    soft = np.ones((n_questions, M), dtype=np.float64) / M
-    costs = {m: 0.01 for m in all_models}
-
-    # Narrow head: only 2 models.
-    narrow = HeadArtifact(
-        W=np.random.randn(2, d).astype(np.float32),
-        b=np.zeros(2, dtype=np.float32),
-        models=all_models[:2],
-        commit_hash="narrow",
-    )
-    # Broad head: all 10 models.
-    broad = HeadArtifact(
-        W=np.random.randn(10, d).astype(np.float32),
-        b=np.zeros(10, dtype=np.float32),
-        models=all_models,
-        commit_hash="broad",
+    for c in ceilings:
+        assert abs(c - _TRUE_BEST) < 0.05, (
+            f"ceiling {c:.3f} did not converge to the true best accuracy "
+            f"{_TRUE_BEST:.3f}"
+        )
+    spread = max(ceilings) - min(ceilings)
+    assert spread < 0.05, (
+        f"ceiling moved by {spread:.4f} purely because the number of miners "
+        f"changed (3 -> 20 -> 50 gave {[round(c, 3) for c in ceilings]}) — "
+        "that is I4 non-interference broken"
     )
 
-    narrow_score = evaluate_head(narrow, hidden, matrix, all_models, soft, costs)
-    broad_score = evaluate_head(broad, hidden, matrix, all_models, soft, costs)
 
-    assert narrow_score.coverage == 2 / M
-    assert broad_score.coverage == 1.0
+def test_one_miner_cannot_materially_move_the_frame():
+    """The sharpest form of non-interference: no single actor steers the frame.
 
-    # Even if the narrow head has perfect accuracy, the coverage multiplier
-    # should give the broad head a higher effective composite.
-    from fugal_subnet.config import COMPOSITE_W_ACC, COMPOSITE_W_COST, COMPOSITE_W_KL
+    Even a miner feeding deliberately unrepresentative results — every
+    exploration answer wrong — must not meaningfully shift the reference the
+    rest of the field is scored against.
+    """
+    from fugal_subnet.reference_frame import accumulate_exploration
 
-    def effective_composite(s):
-        from fugal_subnet.scoring import _normalize_kl
-        raw = (COMPOSITE_W_ACC * s.accuracy
-               + COMPOSITE_W_COST * s.cost_efficiency
-               + COMPOSITE_W_KL * _normalize_kl(s.kl_score))
-        return raw * s.coverage
+    honest = _frame_from_field(20, epochs=300)
+    baseline = _ceiling(honest)
 
-    assert effective_composite(broad_score) > effective_composite(narrow_score), (
-        "broad coverage must beat narrow coverage after multiplier"
+    poisoned = accumulate_exploration(
+        honest, [(m, False, 500, 300) for m in _MODELS for _ in range(15)],
     )
+    assert abs(_ceiling(poisoned) - baseline) < 0.02, (
+        "a single miner's exploration samples moved the shared reference"
+    )
+
+
+def test_exploration_targets_are_not_miner_chosen():
+    """A miner must not be able to steer what the frame observes.
+
+    Targets derive from the epoch nonce and the global model list, so two
+    miners in the same epoch are assigned identical exploration work, and no
+    miner can bias the sample toward a model that flatters it.
+    """
+    from fugal_subnet.exploration import expected_exploration
+
+    pool = [
+        {"question_id": f"q{i}", "benchmark": "mmlu", "prompt": "x"}
+        for i in range(500)
+    ]
+    models = [f"model/{i}" for i in range(10)]
+    nonce = b"\x11" * 32
+    scored = {f"q{i}" for i in range(100)}
+
+    a = expected_exploration(nonce, pool, scored, models, 15)
+    b = expected_exploration(nonce, pool, scored, models, 15)
+    assert a == b and len(a) == 15
+
+    # Disjoint from the scored slice: never graded on a forced misroute.
+    assert not (set(a) & scored)
+
+    # A different epoch assigns different work.
+    other = expected_exploration(b"\x22" * 32, pool, scored, models, 15)
+    assert set(other) != set(a)
+
+    # Targets spread across the pool rather than collapsing onto one model.
+    assert len(set(a.values())) > 1

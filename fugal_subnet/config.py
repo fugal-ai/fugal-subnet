@@ -26,9 +26,41 @@ HEAD_MAX_MODEL_ID_LEN = int(os.getenv("FUGAL_HEAD_MAX_MODEL_ID_LEN", "256"))
 
 # --- Scoring ---
 WILSON_CONFIDENCE = float(os.getenv("FUGAL_WILSON_CONFIDENCE", "0.95"))
-COMPOSITE_W_ACC = float(os.getenv("FUGAL_W_ACC", "0.55"))
-COMPOSITE_W_COST = float(os.getenv("FUGAL_W_COST", "0.35"))
-COMPOSITE_W_KL = float(os.getenv("FUGAL_W_KL", "0.10"))
+
+# score = quality^w * thrift^(1-w), both measured against the best single model.
+#
+# A weighted GEOMETRIC mean, not a weighted sum. Additive terms substitute: a
+# miner trades accuracy for cost at whatever rate the designer picked, and each
+# degenerate strategy (all-cheapest, all-frontier) collects its own term's
+# weight regardless of the other. Under a product, neither axis can rescue the
+# other and both degenerates score badly.
+#
+# w is DERIVED from the product claim, not chosen. The claim is "match frontier
+# quality at a fraction of the cost", so quality is a near-constraint rather
+# than a freely tradeable axis: a router that gives up 40% of quality has not
+# delivered the product, however cheap, and must not outscore simply matching
+# the best model at the best model's price. That is
+#
+#     0.6^w * 6^(1-w) < 1      =>      w > ln 6 / (ln 6 - ln 0.6) = 0.778
+#
+# An unweighted sqrt (w=0.5) fails this: it scores that router 1.095, above the
+# 1.000 of a perfect quality match. w=0.8 scores it 0.951, correctly below.
+SCORE_QUALITY_EXPONENT = float(os.getenv("FUGAL_SCORE_QUALITY_EXPONENT", "0.8"))
+
+# Caps stop a degenerate running away with an unbounded ratio — a near-free
+# model would otherwise drive thrift toward infinity. The thrift cap is well
+# above the ~6x saving the product targets, so a genuinely frugal router is
+# rewarded for all of its advantage rather than having it truncated; the
+# quality exponent, not the cap, is what keeps cheap-and-wrong from winning.
+SCORE_QUALITY_CAP = float(os.getenv("FUGAL_SCORE_QUALITY_CAP", "2.0"))
+SCORE_THRIFT_CAP = float(os.getenv("FUGAL_SCORE_THRIFT_CAP", "10.0"))
+
+# A fresh artifact's score ramps in over this many scored questions. This is
+# what makes evidence reset symmetric: resetting clears accumulated PENALTIES
+# as readily as accumulated credit, so without a ramp any miner could wash a
+# bad record by flipping one weight bit. With it, climbing back costs exactly
+# what earning the position cost in the first place.
+BURN_IN_QUESTIONS = int(os.getenv("FUGAL_BURN_IN_QUESTIONS", "3000"))
 
 # --- Soft targets ---
 SOFT_TARGET_TAU = float(os.getenv("FUGAL_TAU", "1.0"))
@@ -43,6 +75,47 @@ LIVENESS_MAX_MISSED = int(os.getenv("FUGAL_MAX_MISSED_EPOCHS", "3"))
 EVIDENCE_HALF_LIFE = int(os.getenv("FUGAL_EVIDENCE_HALF_LIFE", "200"))
 LIVENESS_MAX_MISSED_EVIDENCE = int(os.getenv("FUGAL_MAX_MISSED_EVIDENCE", "10"))
 
+# --- Exploration (recovers the counterfactual the TEE architecture removes) ---
+# Fraction of the scored slice size, answered with a nonce-chosen model the
+# miner does not pick. These answers are never scored against the miner; they
+# are the only unbiased samples of the model pool anyone has.
+EXPLORE_FRACTION = float(os.getenv("FUGAL_EXPLORE_FRACTION", "0.05"))
+
+# --- Reference frame ---
+# Per-model evidence decays on its own half-life. Longer than the per-miner
+# half-life on purpose: the frame describes the model pool, which changes far
+# more slowly than a miner's head does, and a steadier reference means scores
+# stay comparable across time.
+FRAME_HALF_LIFE = int(os.getenv("FUGAL_FRAME_HALF_LIFE", "500"))
+# Beta prior strength, in pseudo-observations. Makes the frame well-defined at
+# epoch 1 with zero samples, and washes out once real evidence exceeds it.
+#
+# Calibrated by measurement, not taste. The prior is deliberately neutral (0.5)
+# and therefore *wrong* for real models, so while it dominates it biases the
+# ceiling low — and it dominates for longer in a small field, which makes a
+# miner's score depend on how many other miners are online. Measured ceiling
+# spread between a 3-miner and a 50-miner field, 30-model pool:
+#
+#     epoch:        10      25      50     100     200     400
+#     K=200:     0.113   0.145   0.155   0.128   0.100   0.063
+#     K=50:      0.112   0.103   0.104   0.076   0.041   0.019
+#     K=20:      0.054   0.046   0.053   0.052   0.020   0.005
+#
+# All three converge to the same true value — field size changes how fast, not
+# where — but K=20 gets there soonest and is the least field-sensitive at every
+# horizon. Its cost is a noisier ceiling in the first few epochs, which weight
+# capping and the burn-in ramp already absorb.
+FRAME_PRIOR_STRENGTH = float(os.getenv("FUGAL_FRAME_PRIOR_STRENGTH", "20"))
+# Deliberately neutral: the subnet does not claim to know any model's accuracy
+# before measuring it. Under a flat prior every model ties, and best_model()
+# breaks the tie toward the cheapest — the coherent reference for quality per
+# dollar among equals. Recalibrate from testnet data, do not guess.
+FRAME_PRIOR_ACCURACY = float(os.getenv("FUGAL_FRAME_PRIOR_ACCURACY", "0.5"))
+# Fallback completion length for a model the frame has never observed.
+FRAME_DEFAULT_COMPLETION_TOKENS = float(
+    os.getenv("FUGAL_FRAME_DEFAULT_COMPLETION_TOKENS", "256")
+)
+
 # --- TEE (Trusted Execution Environment) ---
 TEE_APPROVED_MEASUREMENTS = [
     m.strip() for m in os.getenv("FUGAL_TEE_MEASUREMENTS", "").split(",") if m.strip()
@@ -53,7 +126,18 @@ TEE_PROXY_PORT = int(os.getenv("FUGAL_TEE_PROXY_PORT", "8199"))
 TEE_MODEL_PRICES_PATH = os.getenv("FUGAL_MODEL_PRICES", "")
 
 # --- Routing ---
-ROUTING_LAMBDA = float(os.getenv("FUGAL_LAMBDA", "2.0"))
+# The routing rule is argmax(softmax(W@h + b)) — no cost term, no exchange rate.
+#
+# The old rule was `p - lambda*cost`, which mixes a probability with dollars and
+# so implicitly asserts what a correct answer is worth (lambda=2.0 asserted
+# $0.50). The subnet has no business asserting that. It states the objective —
+# quality per dollar against the best single model — and lets each miner's head
+# discover its own tradeoff. Judging the outcome instead of dictating the rule
+# removes the last hardcoded exchange rate from consensus.
+#
+# This remains available to miners as a TRAINING hyperparameter: a head still
+# has to learn cost-awareness, it just is not handed the tradeoff.
+TRAINING_COST_LAMBDA = float(os.getenv("FUGAL_LAMBDA", "2.0"))
 
 # Routing utilities are quantized to this step before argmax picks a model.
 # Deliberately NOT env-overridable: it is consensus-critical, and two validators
@@ -125,8 +209,3 @@ EXEC_MAX_BYTES = int(os.getenv("FUGAL_EXEC_MAX_BYTES", str(512 * 1024)))  # 512 
 
 # --- Model cost cap ---
 MAX_MODEL_COST_PER_QUERY = float(os.getenv("FUGAL_MAX_MODEL_COST", "0.10"))
-
-# --- Validation ---
-_w_sum = COMPOSITE_W_ACC + COMPOSITE_W_COST + COMPOSITE_W_KL
-if abs(_w_sum - 1.0) > 1e-6:
-    _log.warning("Composite weights sum to %.4f, not 1.0 — scores will be scaled", _w_sum)

@@ -235,25 +235,94 @@ def _mock_quote(report_data: bytes) -> bytes:
     return header + body + signature_area
 
 
+_CONFIGFS_TSM = "/sys/kernel/config/tsm/report"
+
+
+def _quote_via_configfs(report_data: bytes) -> bytes | None:
+    """Ask the kernel for a TDX quote through configfs-tsm.
+
+    This is the standard interface on Linux 6.7+ and is what GCP c3 and Azure
+    DCesv5 confidential guests actually expose. Create a report directory,
+    write the 64-byte report_data to `inblob`, read the quote from `outblob`.
+
+    Returns None if the interface is not present, so the caller can fall back.
+    Requires write access to configfs — run the miner as root, or grant it.
+    """
+    import os
+    import uuid
+    from pathlib import Path
+
+    base = Path(_CONFIGFS_TSM)
+    if not base.is_dir():
+        return None
+
+    report_dir = base / f"fugal-{uuid.uuid4().hex[:12]}"
+    try:
+        report_dir.mkdir()
+    except OSError as e:
+        raise RuntimeError(
+            f"configfs-tsm is present at {base} but a report could not be "
+            f"created ({e}). This usually means insufficient privilege — the "
+            "quote generator needs write access to configfs."
+        ) from e
+
+    try:
+        (report_dir / "inblob").write_bytes(report_data)
+        quote = (report_dir / "outblob").read_bytes()
+    except OSError as e:
+        raise RuntimeError(f"configfs-tsm quote generation failed: {e}") from e
+    finally:
+        try:
+            os.rmdir(report_dir)
+        except OSError:
+            logger.warning("Could not clean up %s", report_dir)
+
+    if not quote:
+        raise RuntimeError(
+            "configfs-tsm returned an empty quote — the guest reports a TSM "
+            "provider but produced nothing."
+        )
+    return quote
+
+
 def _real_quote(report_data: bytes) -> bytes:
-    """Generate a real TDX quote using the system quote generator."""
+    """Generate a real TDX quote.
+
+    Two paths, tried in order:
+
+    1. **configfs-tsm** (`/sys/kernel/config/tsm/report`) — the kernel's own
+       interface on Linux 6.7+, and what the confidential guests on GCP and
+       Azure actually provide. No vendor package required.
+    2. A vendor quote-generator binary, if one happens to be installed.
+
+    NOTE: this path cannot be exercised without TDX silicon, so it is verified
+    by `scripts/tdx_measurement.py --verify` on a real confidential VM rather
+    than by any test in this repo. See docs/TDX_VALIDATION.md.
+    """
     import subprocess
     import tempfile
     from pathlib import Path
 
-    padded_hex = report_data[:64].ljust(64, b"\x00").hex()
-    generator = "/usr/bin/tdx-quote-generator"
+    padded = report_data[:64].ljust(64, b"\x00")
 
+    quote = _quote_via_configfs(padded)
+    if quote is not None:
+        logger.info("TDX quote obtained via configfs-tsm (%d bytes)", len(quote))
+        return quote
+
+    generator = "/usr/bin/tdx-quote-generator"
     if not Path(generator).exists():
         raise RuntimeError(
-            f"{generator} not found — is libtdx-attest installed? "
-            "This requires an Intel TDX-capable VM."
+            f"No TDX quote source. Neither {_CONFIGFS_TSM} (the kernel's "
+            f"configfs-tsm interface, Linux 6.7+) nor {generator} is present.\n"
+            "This requires an Intel TDX guest — see docs/TDX_VALIDATION.md. "
+            "Check with: ls /dev/tdx_guest"
         )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         out = Path(tmpdir) / "quote.bin"
         result = subprocess.run(
-            [generator, "--report-data", padded_hex, "--hex", "--output", str(out)],
+            [generator, "--report-data", padded.hex(), "--hex", "--output", str(out)],
             capture_output=True,
             text=True,
             timeout=30,

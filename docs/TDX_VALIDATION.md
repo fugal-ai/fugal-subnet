@@ -25,9 +25,14 @@ is why a mock run is still worth something and why it is not sufficient.
 
 ## Provisioning a confidential VM
 
-Either works; pick whichever account you already have.
+Pick whichever cloud you already have an account with. Both cost roughly
+$0.20/hour; the whole exercise is under an hour, so budget ~$1.
 
-**GCP** — a `c3-standard-4` with confidential computing enabled:
+TDX is only available on 4th-gen Xeon Scalable (Sapphire Rapids) and newer, and
+only in some regions. If a zone rejects the machine type, that zone has no TDX
+capacity — try another rather than changing the type.
+
+### GCP
 
 ```bash
 gcloud compute instances create fugal-tdx \
@@ -36,37 +41,70 @@ gcloud compute instances create fugal-tdx \
   --confidential-compute-type=TDX \
   --maintenance-policy=TERMINATE \
   --image-family=ubuntu-2404-lts-amd64 \
-  --image-project=ubuntu-os-cloud
+  --image-project=ubuntu-os-cloud \
+  --boot-disk-size=50GB
+
+gcloud compute ssh fugal-tdx --zone=us-central1-a
 ```
 
-**Azure** — a DCesv5-series confidential VM:
+### Azure
 
 ```bash
-az vm create --name fugal-tdx --resource-group <rg> \
+az group create --name fugal-tdx-rg --location eastus2
+
+az vm create \
+  --resource-group fugal-tdx-rg \
+  --name fugal-tdx \
   --size Standard_DC4es_v5 \
   --image Canonical:ubuntu-24_04-lts:cvm:latest \
   --security-type ConfidentialVM \
-  --enable-vtpm true --enable-secure-boot true
+  --os-disk-security-encryption-type VMGuestStateOnly \
+  --enable-vtpm true \
+  --enable-secure-boot true \
+  --admin-username azureuser \
+  --generate-ssh-keys
+
+az ssh vm --resource-group fugal-tdx-rg --name fugal-tdx
 ```
 
-Confirm the guest really is a TD before going further:
+Ubuntu 24.04 is specified deliberately: its kernel (6.8) has the configfs-tsm
+interface the quote generator uses. An older image will not expose it.
+
+## Verify you actually got a TD
+
+Before anything else. Every step below is meaningless if this fails.
 
 ```bash
-ls -l /dev/tdx_guest        # must exist
+ls -l /dev/tdx_guest                       # must exist
+ls -d /sys/kernel/config/tsm/report        # the quote interface
 ```
 
-If that device is missing, confidential compute is not actually enabled and
-nothing below will work.
+If `/dev/tdx_guest` is missing, confidential compute is not enabled on this VM —
+you have an ordinary machine. Delete it and re-create with the flags above.
+
+If the configfs path is missing but `/dev/tdx_guest` exists, load the module:
+
+```bash
+sudo modprobe tsm 2>/dev/null || true
+sudo mount -t configfs none /sys/kernel/config 2>/dev/null || true
+ls -d /sys/kernel/config/tsm/report
+```
 
 ## Setup
 
 ```bash
-git clone <repo> && cd fugal-subnet
-uv sync --extra tee          # installs dcap-qvl, pinned
+sudo apt-get update && sudo apt-get install -y git curl
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+git clone https://github.com/fugal-ai/fugal-subnet.git
+cd fugal-subnet
+git checkout mainnet-hardening
+uv sync --extra tee                        # installs dcap-qvl, pinned
 ```
 
-`dcap-qvl` is a declared dependency of the `tee` extra, not a manual install.
-A validator running `--live` without it cannot verify any attestation.
+`dcap-qvl` is a declared dependency of the `tee` extra, not a manual install. A
+validator running `--live` without it cannot verify any attestation.
 
 ## Getting the measurement of your image
 
@@ -80,10 +118,10 @@ RTMR3 is excluded because it is application-extendable; including it would make
 the identity move with runtime data and no image could stay on an approved list.
 
 Run this on the TD to print the measurement of the image you are about to
-approve:
+approve. Quote generation needs write access to configfs, so run it as root:
 
 ```bash
-python scripts/tdx_measurement.py
+sudo -E $(which uv) run python scripts/tdx_measurement.py
 ```
 
 Add the value it prints to the validator's environment:
@@ -98,7 +136,7 @@ published — a change to this list is a change to what code the subnet accepts.
 ## The two checks
 
 ```bash
-python scripts/tdx_measurement.py --verify
+sudo -E $(which uv) run python scripts/tdx_measurement.py --verify
 ```
 
 This asserts what cannot be asserted anywhere else:
@@ -112,6 +150,18 @@ This asserts what cannot be asserted anywhere else:
 
 Both must pass before mainnet. The second is the one that matters: passing DCAP
 only proves the hardware is real.
+
+## Tearing down
+
+Do not leave a confidential VM running.
+
+```bash
+# GCP
+gcloud compute instances delete fugal-tdx --zone=us-central1-a --quiet
+
+# Azure
+az group delete --name fugal-tdx-rg --yes --no-wait
+```
 
 ## Running live
 

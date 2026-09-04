@@ -24,30 +24,66 @@ logger = logging.getLogger(__name__)
 _OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
 
+class UnpricedModel(RuntimeError):
+    """Raised when a routed model has no entry in the pinned price table."""
+
+
 @dataclass
 class APICallRecord:
     model_id: str
     prompt_tokens: int
     completion_tokens: int
-    cost_usd: float
+    cost_usd: float           # priced from the pinned table — the consensus figure
     timestamp: float
     response_hash: str
+    provider_cost_usd: float = 0.0  # what the provider itself reported, if any
 
 
 @dataclass
 class MeteringProxy:
     """Records API calls for attestation. In real TEE mode, this runs
-    inside the confidential VM so its records are hardware-attested."""
+    inside the confidential VM so its records are hardware-attested.
+
+    Cost is priced from the pinned table (`data/models.json`), not from
+    whatever the provider happened to bill. That split is deliberate:
+
+    - The **pinned table** is the consensus denominator. Every validator must
+      reach the same cost for the same proof, and provider prices move without
+      warning, so two miners benchmarking hours apart would otherwise be scored
+      against different denominators.
+    - The **provider's own figure** is recorded alongside it, attested, so a
+      drift between the table and reality is detectable rather than silent.
+    """
 
     port: int = 8199
     api_key: str = ""
     records: list[APICallRecord] = field(default_factory=list)
+    prices: dict[str, tuple[float, float]] = field(default_factory=dict)
     _server: HTTPServer | None = field(default=None, repr=False)
     _thread: Thread | None = field(default=None, repr=False)
+
+    def price_call(self, model_id: str, prompt_tokens: int, completion_tokens: int) -> float:
+        """Cost of one call under the pinned price table.
+
+        An unpriced model is a hard error, never a default. A silent fallback
+        rate is what let every model cost the same and made routing to a cheap
+        model indistinguishable from routing to a frontier one.
+        """
+        if model_id not in self.prices:
+            raise UnpricedModel(
+                f"Model {model_id!r} is not in the pinned price table "
+                f"({len(self.prices)} models). Routing to an unpriced model "
+                "cannot be costed, so it cannot be scored."
+            )
+        p_in, p_out = self.prices[model_id]
+        return prompt_tokens * p_in + completion_tokens * p_out
 
     def start(self) -> None:
         if not self.api_key:
             self.api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not self.prices:
+            from fugal_subnet.api import load_prices
+            self.prices = load_prices()
         proxy = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -77,8 +113,14 @@ class MeteringProxy:
                     prompt_tokens = usage.get("prompt_tokens", 0)
                     completion_tokens = usage.get("completion_tokens", 0)
 
-                    cost = self._estimate_cost(model_id, prompt_tokens, completion_tokens)
+                    cost = proxy.price_call(model_id, prompt_tokens, completion_tokens)
                     resp_hash = hashlib.sha256(resp_body).hexdigest()
+
+                    provider_cost = 0.0
+                    try:
+                        provider_cost = float(usage.get("cost") or 0.0)
+                    except (TypeError, ValueError):
+                        provider_cost = 0.0
 
                     proxy.records.append(APICallRecord(
                         model_id=model_id,
@@ -87,6 +129,7 @@ class MeteringProxy:
                         cost_usd=cost,
                         timestamp=time.time(),
                         response_hash=resp_hash,
+                        provider_cost_usd=provider_cost,
                     ))
 
                     self.send_response(200)
@@ -99,11 +142,6 @@ class MeteringProxy:
                     self.send_response(502)
                     self.end_headers()
                     self.wfile.write(json.dumps({"error": "upstream request failed"}).encode())
-
-            def _estimate_cost(self, model_id: str, pin: int, pout: int) -> float:
-                # TODO: fetch real pricing from OpenRouter when available
-                # For now use a reasonable per-token estimate
-                return pin * 1e-6 + pout * 2e-6
 
             def log_message(self, format, *args):
                 logger.debug(format, *args)
@@ -124,6 +162,11 @@ class MeteringProxy:
     @property
     def total_cost(self) -> float:
         return sum(r.cost_usd for r in self.records)
+
+    @property
+    def provider_total_cost(self) -> float:
+        """What the provider itself reported, where it reported anything."""
+        return sum(r.provider_cost_usd for r in self.records)
 
     @property
     def per_model_costs(self) -> dict[str, float]:

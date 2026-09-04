@@ -85,7 +85,16 @@ def run_benchmark(
         routing_decision = _route_question(head, h, model_costs)
         model_id = head.models[routing_decision]
 
+        # Cost is attributed from the records this call actually appended.
+        # Reading proxy.records[-1] unconditionally re-bills the PREVIOUS
+        # question whenever a call fails and appends nothing, so the
+        # per-question costs stop summing to the attested total.
+        calls_before = len(proxy.records)
         response_text = _call_model(proxy, model_id, q)
+        new_calls = proxy.records[calls_before:]
+        cost = sum(r.cost_usd for r in new_calls)
+        prompt_tokens = sum(r.prompt_tokens for r in new_calls)
+        completion_tokens = sum(r.completion_tokens for r in new_calls)
         response_hash = hashlib.sha256(response_text.encode()).hexdigest()
 
         # grade() needs a grader task dict, not a raw loader question: it reads
@@ -95,14 +104,14 @@ def run_benchmark(
         # allow_exec=False: no code execution inside TEE (security boundary)
         correct = bool(grade(build_grader_task(q), response_text, allow_exec=False))
 
-        cost = proxy.records[-1].cost_usd if proxy.records else 0.0
-
         results.append(QuestionResult(
             question_id=q["question_id"],
             routed_model=model_id,
             correct=correct,
             cost_usd=cost,
             response_hash=response_hash,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         ))
 
     proof = BenchmarkProof(

@@ -142,6 +142,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     import bittensor as bt
 
+    from fugal_subnet.api import load_prices
     from fugal_subnet.benchmarks.loader import load_all
     from fugal_subnet.benchmarks.slicer import (
         derive_nonce,
@@ -192,6 +193,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     gold_answers = {q["question_id"]: q for q in benchmark_pool}
     approved_measurements = set(TEE_APPROVED_MEASUREMENTS)
+
+    # Pinned price table — the consensus cost denominator. Loaded once so every
+    # epoch prices against the same rates, and so a missing table fails at
+    # startup rather than mid-epoch.
+    prices = load_prices()
+    floor_rates = _floor_cost(prices)
+    logger.info("Price table: %d models, cheapest blended rate %.3g/%.3g per token",
+                len(prices), floor_rates[0], floor_rates[1])
 
     state = load_state(MinerRecord)
     scoring_state = ScoringState(records=state["records"])
@@ -366,7 +375,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             timer.start_phase("score")
             epoch_scores: dict[int, HeadScore] = {}
             for uid, proof in verified_proofs.items():
-                score = _proof_to_head_score(proof)
+                score = _proof_to_head_score(proof, floor_rates)
                 epoch_scores[uid] = score
                 logger.info("  UID %d: acc=%.3f cost=$%.4f (%d/%d correct)",
                             uid, score.accuracy, proof.total_cost_usd,
@@ -526,25 +535,42 @@ def _get_bundle_for_uid(uid, resp):
     return proof, head_bytes
 
 
-def _proof_to_head_score(proof):
-    """Convert a verified BenchmarkProof into a HeadScore for scoring."""
+def _floor_cost(prices):
+    """Cheapest per-token rate pair in the pinned table, as (p_in, p_out).
+
+    Chosen by blended rate so a model cannot look cheapest by having a free
+    input price and an extortionate output price.
+    """
+    return min(prices.values(), key=lambda pr: pr[0] + pr[1])
+
+
+def _proof_to_head_score(proof, floor_rates):
+    """Convert a verified BenchmarkProof into a HeadScore for scoring.
+
+    The cost reference is what the cheapest priced model would have cost on
+    the *same attested token counts*. That is a fact about the model pool and
+    this question set — identical for every miner, and computable exactly
+    because the proof now carries token counts.
+
+    The previous denominator was `min(proof.per_model_costs.values()) * n`,
+    wrong twice over: per_model_costs holds *totals*, not per-query prices, and
+    every term came from the miner's own proof. A miner routing every question
+    to one model scored a perfect 1.0 however expensive that model was, so the
+    incentive ran backwards — a genuinely cheap router scored 0.177 against an
+    all-frontier router's 1.000.
+    """
     from fugal_subnet.head_eval import HeadScore
 
     n_correct = proof.n_correct
     n_scored = proof.n_total
     accuracy = proof.accuracy
 
-    # Cost efficiency: ratio of cheapest model's cost to actual cost
-    # Under TEE, costs come from the attested MeteringProxy
+    p_in, p_out = floor_rates
     total_head_cost = proof.total_cost_usd
-    if proof.per_model_costs:
-        cheapest = min(proof.per_model_costs.values())
-        n_questions = max(len(proof.results), 1)
-        total_oracle_cost = cheapest * n_questions
-    else:
-        total_oracle_cost = total_head_cost
-
-    cost_efficiency = min(1.0, total_oracle_cost / max(total_head_cost, 1e-10))
+    total_oracle_cost = sum(
+        p_in * r.prompt_tokens + p_out * r.completion_tokens for r in proof.results
+    )
+    cost_efficiency = min(1.0, total_oracle_cost / max(total_head_cost, 1e-12))
 
     # KL divergence — requires oracle distribution assembly (post-launch)
     total_kl = 0.0

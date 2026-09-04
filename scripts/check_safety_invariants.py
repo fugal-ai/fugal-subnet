@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -14,6 +15,13 @@ AXON_PROTOCOL_FILES = (
 )
 IMMUTABLE_V1_GRADER_SHA256 = (
     "895809dedf0d14c45d9ec046bcbec2f50a09fcf7d31d9996a178e35f3539c55f"
+)
+# The price table is the consensus cost denominator: every validator prices
+# every proof against it, so an unreviewed edit silently re-scores the whole
+# subnet. Pinned for the same reason graders.py is. Changing prices is a
+# deliberate act — update this hash in the same commit and say why.
+PINNED_PRICE_TABLE_SHA256 = (
+    "26b54ef396d5a92f3a03e6c1bb5a87011eb40ec007803addce0c65ac5bcb7e4a"
 )
 
 
@@ -102,6 +110,44 @@ def check_immutable_v1_grader(errors: list[str]) -> None:
             f"immutable v1 pin {IMMUTABLE_V1_GRADER_SHA256[:16]}... — "
             "a grader change is a consensus break"
         )
+
+
+def check_price_table_pinned(errors: list[str]) -> None:
+    """The consensus price table must match its pin, and be well-formed."""
+    path = ROOT / "data" / "models.json"
+    if not path.exists():
+        errors.append("data/models.json is missing — validators cannot price proofs")
+        return
+
+    actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    if actual != PINNED_PRICE_TABLE_SHA256:
+        errors.append(
+            f"data/models.json: price table hash {actual[:16]}... does not match "
+            f"pin {PINNED_PRICE_TABLE_SHA256[:16]}... — a price change re-scores "
+            "every miner, so update the pin deliberately"
+        )
+
+    try:
+        models = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        errors.append(f"data/models.json is not valid JSON: {e}")
+        return
+
+    seen = set()
+    for entry in models:
+        mid = entry.get("id")
+        if not mid:
+            errors.append("data/models.json: an entry has no 'id'")
+            continue
+        if mid in seen:
+            errors.append(f"data/models.json: duplicate model id {mid!r}")
+        seen.add(mid)
+        for key in ("in", "out"):
+            price = entry.get(key)
+            if not isinstance(price, (int, float)) or price < 0:
+                errors.append(
+                    f"data/models.json: {mid!r} has non-numeric or negative {key!r} price"
+                )
 
 
 def check_paid_call_guards(errors: list[str]) -> None:
@@ -227,6 +273,7 @@ def main() -> None:
     check_runtime_annotations(errors)
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
+    check_price_table_pinned(errors)
     check_paid_call_guards(errors)
     check_tee_safety(errors)
     check_documented_flags(errors)

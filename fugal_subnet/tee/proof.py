@@ -24,6 +24,12 @@ class QuestionResult:
     correct: bool
     cost_usd: float
     response_hash: str
+    # Attested token counts. Carrying them makes every model's counterfactual
+    # cost on this question exactly computable from the pinned price table
+    # (cost_m = p_in_m * prompt_tokens + p_out_m * completion_tokens), so cost
+    # comparisons need no assumed "typical question" constant anywhere.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 @dataclass
@@ -72,6 +78,8 @@ class BenchmarkProof:
                     "correct": r.correct,
                     "cost_usd": r.cost_usd,
                     "response_hash": r.response_hash,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
                 }
                 for r in self.results
             ],
@@ -96,6 +104,8 @@ class BenchmarkProof:
                     "correct": r.correct,
                     "cost_usd": r.cost_usd,
                     "response_hash": r.response_hash,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
                 }
                 for r in self.results
             ],

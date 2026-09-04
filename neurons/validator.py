@@ -228,6 +228,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             questions = select_slice(nonce, benchmark_pool, SLICE_SIZE)
             question_ids = [q["question_id"] for q in questions]
             expected_questions_hash = compute_questions_hash(question_ids)
+            expected_question_ids = set(question_ids)
+            # Gold for the assigned slice only. Handing over the whole pool
+            # would let a proof reference any question in it and still verify.
+            slice_gold = {qid: gold_answers[qid] for qid in question_ids}
             logger.info("Slice: %d questions, hash=%s...",
                         len(questions), expected_questions_hash[:16])
 
@@ -260,6 +264,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # --- VERIFY PROOFS ---
             timer.start_phase("verify_proofs")
             verified_proofs: dict[int, BenchmarkProof] = {}
+            verified_heads: dict[int, bytes] = {}
             head_hashes: dict[int, str] = {}
             commit_blocks: dict[int, float] = {}
             n_invalid = 0
@@ -293,27 +298,30 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 else:
                     commit_blocks[uid] = math.inf
 
-                # In a full implementation, download the proof bundle from
-                # resp.proof_bundle_url. For now, the proof is served inline
-                # or via a separate channel. Mock mode constructs synthetic proofs.
                 try:
-                    proof = _get_proof_for_uid(uid, resp, mock)
+                    bundle = _get_bundle_for_uid(uid, resp)
                 except Exception as e:
                     n_invalid += 1
-                    logger.warning("UID %d: failed to get proof: %s", uid, e)
+                    logger.warning("UID %d: failed to get bundle: %s", uid, e)
                     continue
 
-                if proof is None:
+                if bundle is None:
                     n_invalid += 1
                     continue
+                proof, head_bytes = bundle
 
-                # Verify the proof
+                # Every binding is passed explicitly. A check the validator does
+                # not supply an expectation for is a check that does not happen.
                 result = verify_proof(
                     proof,
                     approved_measurements=approved_measurements,
                     expected_questions_hash=expected_questions_hash,
                     expected_nonce=nonce_hex,
-                    gold_answers=gold_answers,
+                    gold_answers=slice_gold,
+                    expected_question_ids=expected_question_ids,
+                    expected_weights_hash=weights_hash,
+                    expected_proof_hash=getattr(resp, "proof_hash", ""),
+                    head_bytes=head_bytes,
                     mock=mock,
                 )
 
@@ -327,7 +335,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         logger.info("UID %d proof warning: %s", uid, w)
 
                 verified_proofs[uid] = proof
-                head_hashes[uid] = weights_hash
+                verified_heads[uid] = head_bytes
+                # Keyed on the hash the attestation forced to be true, not the
+                # value the miner asserted over the axon.
+                head_hashes[uid] = proof.weights_hash
 
             if not verified_proofs:
                 logger.warning("No valid proofs received, skipping epoch")
@@ -492,15 +503,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         sys.exit(0)
 
 
-def _get_proof_for_uid(uid, resp, mock):
-    """Download and parse a BenchmarkProof for a given UID.
-
-    Downloads the proof bundle from the HuggingFace URL in
-    resp.proof_bundle_url. Returns None if the URL is empty or
-    the download/parse fails.
-    """
+def _get_bundle_for_uid(uid, resp):
+    """Download a miner's bundle, returning (proof, head_bytes) or None."""
     from fugal_subnet.tee.proof import BenchmarkProof
-    from fugal_subnet.tee.store import download_proof
+    from fugal_subnet.tee.store import download_bundle
 
     url = getattr(resp, "proof_bundle_url", "") or ""
     if not url:
@@ -508,16 +514,16 @@ def _get_proof_for_uid(uid, resp, mock):
         return None
 
     try:
-        proof = download_proof(url)
+        proof, head_bytes = download_bundle(url)
     except Exception as e:
-        logger.warning("UID %d: failed to download proof from %s: %s", uid, url[:60], e)
+        logger.warning("UID %d: failed to download bundle from %s: %s", uid, url[:60], e)
         return None
 
     if not isinstance(proof, BenchmarkProof):
         logger.warning("UID %d: downloaded object is not a BenchmarkProof", uid)
         return None
 
-    return proof
+    return proof, head_bytes
 
 
 def _proof_to_head_score(proof):

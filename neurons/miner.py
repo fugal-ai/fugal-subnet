@@ -284,7 +284,7 @@ def _run_epoch(
     """Run a single benchmark epoch."""
     from fugal_subnet.benchmarks.slicer import derive_nonce, epoch_id_for_block
     from fugal_subnet.tee.harness import run_benchmark
-    from fugal_subnet.tee.store import upload_proof
+    from fugal_subnet.tee.store import upload_bundle
 
     # Must match the validator exactly — see slicer.epoch_id_for_block.
     epoch_id = epoch_id_for_block(epoch_index)
@@ -315,7 +315,9 @@ def _run_epoch(
         bundle_url = ""
         if bundle_repo:
             try:
-                bundle_url = upload_proof(proof, bundle_repo, hotkey=hotkey_ss58)
+                bundle_url = upload_bundle(
+                    proof, head_data, bundle_repo, hotkey=hotkey_ss58,
+                )
             except Exception as e:
                 logger.error("Failed to upload proof bundle: %s", e)
 

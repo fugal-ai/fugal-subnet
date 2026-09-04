@@ -47,6 +47,13 @@ dev = [
     "pip-audit>=2.7.0",
     "hypothesis>=6.100.0",
 ]
+# Required for --live validation: DCAP quote verification against Intel
+# collateral. A validator running --live without this cannot verify any
+# attestation, so it is a declared dependency rather than a manual install
+# mentioned only in the guide.
+tee = [
+    "dcap-qvl>=0.2.0",
+]
 
 [project.scripts]
 fugal-validator = "neurons.validator:main"

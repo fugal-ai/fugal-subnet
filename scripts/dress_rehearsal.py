@@ -117,30 +117,6 @@ def stop_chain() -> None:
     subprocess.run(["docker", "rm", "-f", CHAIN_NAME], capture_output=True, text=True)
 
 
-def calibrate_epoch_interval(subtensor) -> str:
-    """Choose FUGAL_EPOCH_INTERVAL so one epoch lasts ~TARGET_EPOCH_SECONDS.
-
-    Measured rather than assumed: the neurons define an epoch as
-    EPOCH_INTERVAL // 12 blocks, so how long that takes in wall-clock depends
-    entirely on the chain, and this chain is ~34x faster than mainnet.
-    """
-    from fugal_subnet.benchmarks.slicer import BLOCK_TIME_S
-
-    b0 = subtensor.get_current_block()
-    t0 = time.time()
-    time.sleep(8)
-    rate = (subtensor.get_current_block() - b0) / max(time.time() - t0, 1e-6)
-    if rate <= 0:
-        print("  Could not measure block rate; using default interval", flush=True)
-        return EPOCH_INTERVAL_S
-    want_blocks = max(2, int(TARGET_EPOCH_SECONDS * rate))
-    interval = str(want_blocks * BLOCK_TIME_S)
-    print(f"  Chain produces {rate:.2f} blocks/s; "
-          f"epoch = {want_blocks} blocks (~{TARGET_EPOCH_SECONDS}s), "
-          f"FUGAL_EPOCH_INTERVAL={interval}", flush=True)
-    return interval
-
-
 def wait_for_chain(timeout: int = 180):
     import bittensor as bt
 
@@ -220,89 +196,6 @@ def biased_head(path: str, model_index: int) -> str:
 
 # ── running the real binaries ─────────────────────────────────────────────────
 
-class StubUpstream:
-    """An OpenAI-compatible endpoint the REAL metering proxy forwards to.
-
-    Deliberately not a monkeypatch. The miner runs its real harness, which
-    calls its real MeteringProxy, which makes a real HTTP request — the only
-    substitution is where that request lands. So token accounting, pricing
-    against the pinned table, cost reconciliation and record-keeping are all
-    the production code paths, and no API key exists anywhere in this run.
-
-    Replies are a deterministic function of (question, model), so two runs and
-    two validators see byte-identical results — which is what makes the
-    agreement assertions meaningful rather than coincidental.
-    """
-
-    def __init__(self, gold_by_prompt: dict, skill: dict, port: int = 8799):
-        self.gold = gold_by_prompt
-        self.skill = skill
-        self.port = port
-        self._server = None
-        self._thread = None
-        self.calls = 0
-
-    def start(self):
-        import hashlib
-        import threading
-        from http.server import BaseHTTPRequestHandler, HTTPServer
-
-        outer = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-                req = json.loads(body)
-                model = req.get("model", "")
-                prompt = req["messages"][0]["content"]
-
-                digest = hashlib.sha256(f"{prompt}|{model}".encode()).digest()
-                correct = (digest[0] / 255.0) < outer.skill.get(model, 0.5)
-                text = outer.gold.get(prompt, "0") if correct else "0"
-                outer.calls += 1
-
-                payload = json.dumps({
-                    "choices": [{"message": {"content": text}}],
-                    # Token counts vary a little per model so cost is not a
-                    # constant, and thrift has something real to measure.
-                    "usage": {
-                        "prompt_tokens": 400 + (digest[1] % 200),
-                        "completion_tokens": 100 + (digest[2] % 100),
-                    },
-                }).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-
-            def log_message(self, *a):
-                pass
-
-        self._server = HTTPServer(("127.0.0.1", self.port), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-        print(f"  Stub upstream on 127.0.0.1:{self.port} (no API key, no spend)",
-              flush=True)
-
-    def stop(self):
-        if self._server:
-            self._server.shutdown()
-            self._server = None
-
-
-def _lan_ip() -> str:
-    """A routable local address the chain will accept for serve_axon."""
-    import socket
-
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    finally:
-        s.close()
-
-
 def miner_env(extra=None):
     env = os.environ.copy()
     env["FUGAL_EPOCH_INTERVAL"] = EPOCH_INTERVAL_S
@@ -312,7 +205,8 @@ def miner_env(extra=None):
     # NOT 127.0.0.1: the chain rejects loopback for serve_axon at pool
     # validation, so the axon would never register and no validator could
     # reach the miner.
-    env["FUGAL_AXON_IP"] = _lan_ip()
+    from scripts.setup_local_testnet import lan_ip
+    env["FUGAL_AXON_IP"] = lan_ip()
     env["PYTHONUNBUFFERED"] = "1"
     # The real proxy, pointed at the local stub. No key is set, so even a bug
     # that reached the real OpenRouter would be unauthenticated rather than
@@ -506,6 +400,7 @@ def run_scenarios(args, report: Report) -> int:
         pool = json.load(f)
     gold_by_prompt = {q["prompt"]: q["gold"] for q in pool}
 
+    from scripts.setup_local_testnet import StubUpstream
     stub = StubUpstream(gold_by_prompt, SKILL)
     stub.start()
 
@@ -844,8 +739,11 @@ def main() -> int:
     try:
         start_chain()
         subtensor0 = wait_for_chain()
+        from scripts.setup_local_testnet import calibrate_epoch_interval
         global EPOCH_INTERVAL_S
-        EPOCH_INTERVAL_S = calibrate_epoch_interval(subtensor0)
+        EPOCH_INTERVAL_S = calibrate_epoch_interval(
+            subtensor0, TARGET_EPOCH_SECONDS, EPOCH_INTERVAL_S,
+        )
         print("\nScenario harness ready.\n", flush=True)
         # Scenario bodies are added below; see run_scenarios().
         rc = run_scenarios(args, report)

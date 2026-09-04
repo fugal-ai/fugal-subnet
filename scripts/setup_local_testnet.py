@@ -149,6 +149,141 @@ def register_wallet(subtensor, wallet, netuid):
         logger.warning("  Registration: %s", e)
 
 
+def lan_ip() -> str:
+    """A routable local address the chain will accept for serve_axon.
+
+    Not 127.0.0.1: subtensor rejects loopback for serve_axon at pool validation
+    (Custom error 11), bt.Axon.serve() swallows the rejection, and the only
+    symptom is an axon stuck at 0.0.0.0 and a miner that silently earns nothing.
+    """
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+class StubUpstream:
+    """An OpenAI-compatible endpoint the REAL metering proxy forwards to.
+
+    Deliberately not a monkeypatch. The miner runs its real harness, which
+    calls its real MeteringProxy, which makes a real HTTP request — the only
+    substitution is where that request lands. So token accounting, pricing
+    against the pinned table, cost reconciliation and record-keeping are all
+    the production code paths, and no API key exists anywhere in this run.
+
+    Replies are a deterministic function of (question, model), so two runs and
+    two validators see byte-identical results — which is what makes the
+    agreement assertions meaningful rather than coincidental.
+    """
+
+    def __init__(self, gold_by_prompt: dict, skill: dict, port: int = 8799):
+        self.gold = gold_by_prompt
+        self.skill = skill
+        self.port = port
+        self._server = None
+        self._thread = None
+        self.calls = 0
+
+    def start(self):
+        import hashlib
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                req = json.loads(body)
+                model = req.get("model", "")
+                prompt = req["messages"][0]["content"]
+
+                digest = hashlib.sha256(f"{prompt}|{model}".encode()).digest()
+                correct = (digest[0] / 255.0) < outer.skill.get(model, 0.5)
+                text = outer.gold.get(prompt, "0") if correct else "0"
+                outer.calls += 1
+
+                payload = json.dumps({
+                    "choices": [{"message": {"content": text}}],
+                    # Token counts vary a little per model so cost is not a
+                    # constant, and thrift has something real to measure.
+                    "usage": {
+                        "prompt_tokens": 400 + (digest[1] % 200),
+                        "completion_tokens": 100 + (digest[2] % 100),
+                    },
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        self._server = HTTPServer(("127.0.0.1", self.port), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        print(f"  Stub upstream on 127.0.0.1:{self.port} (no API key, no spend)",
+              flush=True)
+
+    def stop(self):
+        if self._server:
+            self._server.shutdown()
+            self._server = None
+
+
+def _lan_ip() -> str:
+    """A routable local address the chain will accept for serve_axon."""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+
+def calibrate_epoch_interval(subtensor, target_seconds: int = 90,
+                             default: str = "3600") -> str:
+    """Choose FUGAL_EPOCH_INTERVAL so one epoch lasts ~target_seconds.
+
+    Measured, not assumed. An epoch is EPOCH_INTERVAL // BLOCK_TIME_S blocks,
+    so how long it takes in wall-clock depends entirely on the chain — and a
+    devnet producing a block every 0.35s runs through a nominal "1 hour" epoch
+    in 100 seconds. With a hardcoded interval the miner is structurally unable
+    to keep up: it polls every 30s, so it completed epoch e00000042 while the
+    validator was already asking about e00000045, and no proof ever matched.
+    """
+    from fugal_subnet.benchmarks.slicer import BLOCK_TIME_S
+
+    try:
+        b0 = subtensor.get_current_block()
+        t0 = time.time()
+        time.sleep(8)
+        rate = (subtensor.get_current_block() - b0) / max(time.time() - t0, 1e-6)
+    except Exception as e:
+        logger.warning("Could not measure block rate (%s); using default", e)
+        return default
+    if rate <= 0:
+        logger.warning("Chain is not producing blocks; using default interval")
+        return default
+
+    want_blocks = max(2, int(target_seconds * rate))
+    interval = str(want_blocks * BLOCK_TIME_S)
+    logger.info(
+        "Chain produces %.2f blocks/s; epoch = %d blocks (~%ds), "
+        "FUGAL_EPOCH_INTERVAL=%s", rate, want_blocks, target_seconds, interval,
+    )
+    return interval
+
+
 def activate_subnet(subtensor, netuid: int) -> None:
     """Start the subnet. Without this it has no first-emission block, staking is
     rejected with SubtokenDisabled, validators never earn a permit, and

@@ -4,6 +4,50 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — first run against a real chain
+
+`scripts/dress_rehearsal.py` runs the shipped binaries against a real local
+subtensor node. Its first run surfaced eight defects no in-process test could
+see, every one of them in the gap between "the library works" and "the program
+works":
+
+- **The neurons' own logging was disabled.** Importing bittensor runs a
+  dictConfig with `disable_existing_loggers` at its default of True, disabling
+  every logger created before it. A miner failing every epoch logged nothing
+  and looked idle; the traceback went nowhere.
+- **`--once` never exited**, hanging in a websocket teardown during interpreter
+  finalization — so any orchestrator, cron job or systemd oneshot waited
+  forever on a validator that had already finished.
+- **The reveal block crashed** on a call site missed during the scoring rework.
+  The epoch verified, scored and built the frame, then died.
+- **Weights were reported set while the chain held none.** The subnet uses
+  commit-reveal, so values appear only after the reveal period. The new
+  confirmation handles both modes and turned the claim into a fact.
+- **The miner made itself unreachable**, committing its head hash immediately
+  before serving its axon; per-hotkey rate limits rejected the second
+  extrinsic and the axon stayed at 0.0.0.0. It also now explains that
+  subtensor rejects loopback addresses, instead of retrying silently.
+- **The pool was re-embedded every epoch** though embeddings never change.
+  Computed once at startup now, and `release_backbone()` returns the memory to
+  the OS — 3194 MB to 749 MB, measured — rather than leaving it in allocator
+  arenas where the kernel eventually OOM-kills a co-tenant miner.
+- **The two neurons loaded different question pools.** The miner took a file
+  while the validator called `load_all()`. Both now use the same source, with
+  `pool_hash()` making a mismatch nameable.
+- **Epoch geometry was duplicated** across both neurons — the same class of
+  divergence as the epoch_id bug — and now lives in `slicer` with it.
+
+### Changed — proof delivery
+
+The bundle now travels inline in the synapse instead of through a HuggingFace
+dataset repo, and `tee/store.py` is deleted. The HF pattern was inherited from
+ThirtySpokes, whose artifact is a multi-gigabyte model; Fugal's is ~230KB,
+where the ecosystem does the opposite. An external store's only remaining job
+here was availability — for one party, once, from a miner provably online —
+so it bought a round trip, a second party that must be up, and an account per
+miner, in exchange for nothing.
+
+
 ### Fixed — the TEE path had never run end to end
 
 - **Epoch identity diverged between the neurons.** The miner built its epoch_id

@@ -168,6 +168,34 @@ deterministic, but it does not track provider price changes on its own. The
 metering proxy records the provider's reported cost alongside the table price
 so drift is *detectable*; acting on it is a manual, deliberate update.
 
+## The dress rehearsal
+
+Everything above runs in-process against a mocked chain. `scripts/dress_rehearsal.py`
+runs the shipped binaries — `neurons/miner.py` and `neurons/validator.py` as
+real OS processes — against a real local subtensor node, with real wallets,
+real registration, real axon/dendrite traffic and real `set_weights`.
+
+That distinction is not cosmetic. The TEE pipeline shipped with three fatal
+bugs behind a green CI because CI exercised a different path than production
+did, and the first real-chain run surfaced eight more that no in-process test
+could see: the neurons' own logging silently disabled by importing bittensor,
+`--once` never exiting, a crash in the reveal block, weights reported as set
+while the chain held none, a miner rendering itself unreachable by ordering two
+extrinsics wrongly, the pool re-embedded every epoch, the two neurons loading
+different question pools, and epoch geometry duplicated across both.
+
+| | Asserts |
+|---|---|
+| **A** | A proof verifies against a real chain; weights land **and are confirmed** |
+| **B** | Dedup disqualifies a copy and not the original; a real router outranks an always-cheapest one |
+| **C** | Two independent validators produce byte-identical weights and frames (I1, I9) |
+| **D** | Evidence accumulates, the frame fills, weight capping engages, weights confirm every epoch |
+| **E** | The real backbone path works end to end and a full bundle round-trips over a real axon |
+
+```bash
+python scripts/dress_rehearsal.py --scenario all
+```
+
 ## Running the checks
 
 ```bash
@@ -198,3 +226,10 @@ spend.
    subnet has measured nothing yet) but is wrong for real models and biases the
    ceiling low until real evidence outweighs it.
 5. Close or consciously accept the pool-memorization gap above.
+6. Validate real TDX attestation on a confidential VM —
+   `docs/TDX_VALIDATION.md`. DCAP signature verification and `measurement_id`
+   matching are the only checks no local run can make; a consumer CPU cannot
+   produce a genuine quote. Mock mode is their absence, not a weaker form.
+7. Validate the cost path against real OpenRouter —
+   `docs/LIVE_API_VALIDATION.md`. The pinned price table is deterministic, not
+   necessarily correct; only a live comparison distinguishes the two.

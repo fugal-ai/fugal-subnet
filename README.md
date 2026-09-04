@@ -93,6 +93,10 @@ dataset requiring `huggingface-cli login` and accepted terms, or add `gpqa` to
 
 - **[Miner Guide](docs/MINER_GUIDE.md)** — train a router head, register, commit, run the miner
 - **[Validator Guide](docs/VALIDATOR_GUIDE.md)** — set up API keys, sandboxing, run the validator, monitor epochs
+- **[Consensus Invariants](docs/INVARIANTS.md)** — the nine properties the subnet rests on, what enforces each, and the known gaps
+- **[Design Decisions](docs/design-decisions.md)** — why the scoring formula, the reference frame and the TEE architecture are what they are
+- **[TDX Validation](docs/TDX_VALIDATION.md)** — the two attestation checks that need real confidential hardware, and how to run them
+- **[Live API Validation](docs/LIVE_API_VALIDATION.md)** — confirming the pinned price table against what OpenRouter actually bills
 
 ## Contributing and Security
 

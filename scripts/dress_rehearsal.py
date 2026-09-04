@@ -330,13 +330,20 @@ def miner_env(extra=None):
 def start_miner(coldkey: str, netuid: int, head: str, pool: str,
                 port: int, log_path: str) -> subprocess.Popen:
     log = open(log_path, "w", encoding="utf-8")
+    # Each miner needs its own metering-proxy port: several miners on one host
+    # would otherwise race to bind the same one. In production a miner has its
+    # own TEE VM, so the default is fine there.
+    env = miner_env({"FUGAL_TEE_PROXY_PORT": str(port + 1000)})
     return subprocess.Popen(
         [sys.executable, "neurons/miner.py",
          "--network", ENDPOINT, "--netuid", str(netuid),
          "--coldkey", coldkey, "--hotkey", "default",
          "--head-path", head, "--benchmark-pool", pool,
          "--port", str(port), "--mock"],
-        stdout=log, stderr=subprocess.STDOUT, env=miner_env(), text=True,
+        stdout=log, stderr=subprocess.STDOUT, env=env, text=True,
+        # Detached stdin: several miners inheriting one terminal race for the
+        # wallet password prompt, and the losers block forever or exit.
+        stdin=subprocess.DEVNULL,
     )
 
 
@@ -445,8 +452,11 @@ def setup_subnet(subtensor, coldkeys: list[str]) -> tuple[int, dict]:
     for name in coldkeys:
         w = bt.Wallet(name=name, hotkey="default")
         if not w.coldkey_file.exists_on_device():
-            w.create_new_coldkey(use_password=False, overwrite=True)
-            w.create_new_hotkey(overwrite=True)
+            # suppress=True keeps mnemonics out of the log and, with
+            # use_password=False, keeps creation non-interactive — a prompt
+            # here blocks a miner subprocess that has no stdin.
+            w.create_new_coldkey(use_password=False, overwrite=True, suppress=True)
+            w.create_new_hotkey(use_password=False, overwrite=True, suppress=True)
         wallets[name] = w
         fund_wallet(subtensor, w, amount_tao=10000)
 
@@ -503,7 +513,7 @@ def wait_for_proof(procs, timeout=600) -> bool:
     return _wait(procs, "complete:", timeout)
 
 
-def wait_for_epoch(procs, subtensor, timeout=600) -> str | None:
+def wait_for_epoch(procs, subtensor, timeout=600, after: str | None = None) -> str | None:
     """Wait until every miner holds a proof for the SAME current epoch.
 
     The miner only serves a proof for the epoch the validator asks about, so
@@ -514,7 +524,12 @@ def wait_for_epoch(procs, subtensor, timeout=600) -> str | None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         epoch = current_epoch_id(subtensor)
-        if _wait(procs, f"Epoch {epoch} complete", timeout=90, quiet=True):
+        if after is not None and epoch == after:
+            # Same epoch as last time — wait for the chain to roll over rather
+            # than re-querying a proof the validator has already scored.
+            time.sleep(5)
+            continue
+        if _wait(procs, f"Epoch {epoch} complete", timeout=120, quiet=True):
             # Still the same epoch? If it rolled while we waited, try again.
             if current_epoch_id(subtensor) == epoch:
                 return epoch
@@ -535,10 +550,18 @@ def _wait(procs, marker: str, timeout: int, quiet: bool = False) -> bool:
         if ready == len(procs):
             return True
         for proc, log_path in procs:
-            if proc.poll() is not None:
+            rc = proc.poll()
+            if rc is not None:
                 with open(log_path, encoding="utf-8") as f:
-                    tail = f.read()[-1500:]
-                raise RuntimeError(f"miner exited early:\n{tail}")
+                    lines = [
+                        ln for ln in f.read().splitlines()
+                        if ln.strip() and not ln.startswith("\x1b[")
+                        and "Loading weights" not in ln
+                    ]
+                tail = "\n".join(lines[-12:])
+                raise RuntimeError(
+                    f"miner {os.path.basename(log_path)} exited with code {rc}:\n{tail}"
+                )
         time.sleep(3)
     return False
 
@@ -562,29 +585,47 @@ def run_scenarios(args, report: Report) -> int:
     coldkeys = ["dr_val1", "dr_val2", "dr_m1", "dr_m2", "dr_m3"]
     netuid, wallets = setup_subnet(subtensor, coldkeys)
 
-    procs: list = []
+    scenarios = {
+        "a": lambda p: scenario_a(report, subtensor, netuid, wallets, pool_path, p),
+        "b": lambda p: scenario_b(report, subtensor, netuid, wallets, pool_path, p),
+        "c": lambda p: scenario_c(report, subtensor, netuid, wallets, pool_path, p),
+        "d": lambda p: scenario_d(report, subtensor, netuid, wallets, pool_path, p,
+                                  args.epochs),
+        "e": lambda p: scenario_e(report, subtensor, netuid, wallets, pool_path, p,
+                                  stub),
+    }
+
     try:
-        if "a" in want:
-            scenario_a(report, subtensor, netuid, wallets, pool_path, procs)
-        if "b" in want:
-            scenario_b(report, subtensor, netuid, wallets, pool_path, procs)
-        if "c" in want:
-            scenario_c(report, subtensor, netuid, wallets, pool_path, procs)
-        if "d" in want:
-            scenario_d(report, subtensor, netuid, wallets, pool_path, procs,
-                       args.epochs)
-        if "e" in want:
-            scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub)
-    finally:
-        for proc, _ in procs:
-            proc.terminate()
-        for proc, _ in procs:
+        for key in want:
+            # Each scenario owns its miners and stops them afterwards. Leaving
+            # them running exhausts memory and, worse, reuses the same hotkeys:
+            # a second axon for one hotkey overwrites the first's address on
+            # chain, so the earlier scenario's miner silently becomes
+            # unreachable.
+            procs: list = []
             try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+                scenarios[key](procs)
+            except Exception as e:
+                report.check(key, f"scenario {key} ran to completion", False, str(e))
+            finally:
+                _stop(procs)
+    finally:
         stub.stop()
     return 0
+
+
+def _stop(procs) -> None:
+    for proc, _ in procs:
+        proc.terminate()
+    for proc, _ in procs:
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    if procs:
+        # Give the OS a moment to release ports and memory before the next
+        # scenario starts loading a backbone.
+        time.sleep(5)
 
 
 def _launch(procs, coldkey, netuid, head, pool_path, port, tag):
@@ -592,6 +633,25 @@ def _launch(procs, coldkey, netuid, head, pool_path, port, tag):
     proc = start_miner(coldkey, netuid, head, pool_path, port, log)
     procs.append((proc, log))
     return proc, log
+
+
+def _launch_sequential(procs, netuid, pool_path, specs, timeout=300):
+    """Start miners one at a time, each waiting for the previous to embed.
+
+    Every miner loads Qwen3-0.6B (~2.4GB) at startup. Three at once exceeds
+    this machine's memory and the kernel kills one mid-load. The miner releases
+    the backbone as soon as embeddings exist, so serialising just the embedding
+    phase keeps peak memory at one model rather than N — which is only possible
+    because embedding moved to startup and the backbone is freed after it.
+    """
+    started = []
+    for coldkey, head, port, tag in specs:
+        proc, log = _launch(procs, coldkey, netuid, head, pool_path, port, tag)
+        started.append((proc, log))
+        if not _wait([(proc, log)], "backbone released", timeout, quiet=True):
+            raise RuntimeError(f"miner {tag} did not finish embedding in {timeout}s")
+        print(f"    {tag}: embeddings ready, backbone released", flush=True)
+    return started
 
 
 def scenario_a(report, subtensor, netuid, wallets, pool_path, procs):
@@ -633,14 +693,11 @@ def scenario_b(report, subtensor, netuid, wallets, pool_path, procs):
     copier = write_head(os.path.join(RESULTS, "head_copier.npz"), seed=1)  # identical
     cheap = biased_head(os.path.join(RESULTS, "head_cheap.npz"), 0)
 
-    started = []
-    for i, (ck, head, port, tag) in enumerate([
+    _launch_sequential(procs, netuid, pool_path, [
         ("dr_m1", honest, 8111, "b_honest"),
         ("dr_m2", copier, 8112, "b_copier"),
         ("dr_m3", cheap, 8113, "b_cheap"),
-    ]):
-        started.append(_launch(procs, ck, netuid, head, pool_path, port, tag))
-        time.sleep(3)   # stagger: each loads the backbone at startup
+    ])
 
     if not wait_for_proof(procs[-3:]):
         report.check("b", "all three miners produced proofs", False)
@@ -682,10 +739,19 @@ def scenario_b(report, subtensor, netuid, wallets, pool_path, procs):
 
 def scenario_c(report, subtensor, netuid, wallets, pool_path, procs):
     print("\n[Scenario C] two validators, same proofs", flush=True)
-    head = write_head(os.path.join(RESULTS, "head_c.npz"), seed=5)
-    _launch(procs, "dr_m1", netuid, head, pool_path, 8121, "c")
-    if not wait_for_proof(procs[-1:]) or not wait_for_epoch(procs[-1:], subtensor):
-        report.check("c", "miner produced a proof for the current epoch", False)
+    # Three miners with genuinely different routing, so the weight vector both
+    # validators must agree on is non-trivial. With one miner it is {uid: 1.0},
+    # which two validators would match by construction rather than by agreeing.
+    _launch_sequential(procs, netuid, pool_path, [
+        ("dr_m1", write_head(os.path.join(RESULTS, "head_c1.npz"), seed=5),
+         8121, "c1"),
+        ("dr_m2", write_head(os.path.join(RESULTS, "head_c2.npz"), seed=6),
+         8122, "c2"),
+        ("dr_m3", biased_head(os.path.join(RESULTS, "head_c3.npz"), 2),
+         8123, "c3"),
+    ])
+    if not wait_for_proof(procs[-3:]) or not wait_for_epoch(procs[-3:], subtensor):
+        report.check("c", "miners produced proofs for the current epoch", False)
         return
 
     entries = []
@@ -699,12 +765,16 @@ def scenario_c(report, subtensor, netuid, wallets, pool_path, procs):
         ))
 
     a, b = entries
-    report.check("c", "both validators verified the same proof",
-                 a.get("n_heads_valid") == b.get("n_heads_valid") >= 1,
+    report.check("c", "both validators verified the same proofs",
+                 a.get("n_heads_valid") == b.get("n_heads_valid") >= 2,
                  f"{a.get('n_heads_valid')} vs {b.get('n_heads_valid')}")
+    weights_a = a.get("weights") or {}
+    report.check("c", "the weight vector is non-trivial (a real comparison)",
+                 len([w for w in weights_a.values() if w > 0]) >= 2,
+                 f"weights={weights_a}")
     report.check("c", "both computed identical weight vectors (I1)",
-                 a.get("weights") == b.get("weights"),
-                 f"{a.get('weights')} vs {b.get('weights')}")
+                 weights_a == b.get("weights"),
+                 f"{weights_a} vs {b.get('weights')}")
     report.check("c", "both computed identical scores",
                  a.get("scores") == b.get("scores"))
 
@@ -734,12 +804,19 @@ def scenario_d(report, subtensor, netuid, wallets, pool_path, procs, epochs):
     log_path = os.path.join(RESULTS, "val_d.log")
 
     seen = []
-    for _ in range(epochs):
-        if not wait_for_epoch(procs[-1:], subtensor):
+    last_epoch = None
+    for i in range(epochs):
+        epoch = wait_for_epoch(procs[-1:], subtensor, after=last_epoch)
+        if epoch is None:
+            print(f"    (gave up waiting for a new epoch after {i})", flush=True)
             break
+        last_epoch = epoch
         entry = run_validator_once("dr_val1", netuid, state_path, log_path)
-        if entry and entry.get("epoch_id") not in {e.get("epoch_id") for e in seen}:
+        if entry:
             seen.append(entry)
+            print(f"    epoch {i + 1}/{epochs}: {epoch} "
+                  f"valid={entry.get('n_heads_valid')} "
+                  f"weights={entry.get('weights')}", flush=True)
 
     report.check("d", f"ran {epochs} epochs without an unhandled error",
                  len(seen) == epochs, f"completed {len(seen)}/{epochs}")
@@ -804,6 +881,15 @@ def scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub):
     report.check("e", "validator verified a real-backbone proof",
                  entry.get("n_heads_valid", 0) >= 1,
                  f"valid={entry.get('n_heads_valid')}")
+
+    # The bundle now rides inline in the synapse instead of being fetched from
+    # an external store, so a full-size payload must survive a real axon round
+    # trip. Asserted rather than inferred from the field's max_length.
+    with open(log, encoding="utf-8") as f:
+        served = [ln for ln in f.read().splitlines() if "serving bundle" in ln]
+    report.check("e", "a full bundle round-tripped over a real axon",
+                 bool(served), served[-1].split("INFO")[-1].strip() if served
+                 else "miner never served a bundle")
 
 
 def main() -> int:

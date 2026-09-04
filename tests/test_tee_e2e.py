@@ -281,3 +281,45 @@ def test_a_cheaper_router_of_equal_quality_scores_higher(stubbed_model_call):
     frugal = Evidence("h2", n_correct=9000.0, n_total=10000.0,
                       cost_sum=1.0, ref_cost_sum=6.0, pool_size=1e9)
     assert composite(frugal, 0.9) > composite(expensive, 0.9)
+
+
+def test_neuron_logging_survives_importing_bittensor():
+    """The neurons' own logging must not be silently disabled.
+
+    Importing bittensor runs a dictConfig with disable_existing_loggers at its
+    default of True, which sets .disabled on every logger created before it —
+    including the module-level loggers in this package. The failure is total
+    and silent: a miner failing every epoch logs nothing at all and looks
+    identical to an idle one, and the traceback explaining why is discarded.
+
+    This is asserted rather than assumed because it is invisible by
+    construction: the symptom of a broken logger is the absence of output.
+    """
+    import logging
+
+    import bittensor  # noqa: F401  — the import is what does the damage
+
+    from fugal_subnet.logging_setup import configure_logging
+
+    # Simulate a logger created before bittensor was imported.
+    lg = logging.getLogger("fugal.regression_probe")
+    lg.disabled = True
+
+    configure_logging("INFO", root_name="fugal")
+
+    assert not lg.disabled, (
+        "configure_logging() did not re-enable a fugal logger — the neurons' "
+        "own output, including every error, would be discarded"
+    )
+    assert lg.isEnabledFor(logging.INFO)
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    lg.addHandler(handler)
+    try:
+        lg.info("probe")
+        lg.error("probe-error")
+    finally:
+        lg.removeHandler(handler)
+    assert len(records) == 2, f"logger emitted {len(records)}/2 records"

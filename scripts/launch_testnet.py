@@ -52,6 +52,13 @@ logger = logging.getLogger("fugal.launch")
 
 LOCAL_ENDPOINT = "ws://127.0.0.1:9944"
 DOCKER_IMAGE = "ghcr.io/raofoundation/subtensor-localnet"
+# Same digest docker-compose.yml pins. :latest carries a Drand txpool crash
+# around block 18 — well inside the range a multi-epoch run reaches — so an
+# unpinned tag makes long runs fail for reasons that have nothing to do with
+# this subnet.
+DOCKER_IMAGE_DIGEST = (
+    "sha256:2354832a7c45ceb35703d64bd6f9477439f9a966e34a1d460965b8faf19439e2"
+)
 DOCKER_CONTAINER = "fugal_local_chain"
 OWNER_WALLET = "fugal_owner"
 VALIDATOR_WALLET = "fugal_validator"
@@ -108,9 +115,13 @@ def check_docker():
     return True
 
 
-def start_local_chain(image_tag: str = "devnet") -> bool:
+def start_local_chain(image_tag: str = "v432") -> bool:
     """Start a local subtensor chain via Docker."""
-    image = f"{DOCKER_IMAGE}:{image_tag}"
+    # Pin by digest for the default tag; an explicit --image-tag overrides.
+    image = (
+        f"{DOCKER_IMAGE}:{image_tag}@{DOCKER_IMAGE_DIGEST}"
+        if image_tag == "v432" else f"{DOCKER_IMAGE}:{image_tag}"
+    )
 
     result = subprocess.run(
         ["docker", "inspect", DOCKER_CONTAINER],
@@ -402,11 +413,56 @@ def train_head(output_path: str = "data/testnet_head.npz") -> str:
     return output_path
 
 
+def write_benchmark_pool(path: str = "data/testnet_pool.json",
+                         n: int = 120) -> str:
+    """Write the question pool the miner benchmarks against.
+
+    neurons/miner.py requires --benchmark-pool. A local testnet has no reason
+    to pull the real 21K-question HuggingFace pool: the miner runs the real
+    backbone over every question in this file, so a small deterministic pool is
+    what keeps a local run to minutes instead of hours. The schema is exactly
+    the loader's, so the grader path is identical to production.
+    """
+    import json
+    import random
+
+    if os.path.exists(path):
+        print(f"  Benchmark pool already exists at {path}, reusing", flush=True)
+        return path
+
+    rng = random.Random(1234)
+    benches = ["gsm8k", "math", "mmlu", "aime"]
+    pool = []
+    for i in range(n):
+        a, b = rng.randint(1, 99), rng.randint(1, 99)
+        pool.append({
+            "question_id": f"local_{i:04d}",
+            "prompt": f"What is {a} + {b}? Give only the number.",
+            "gold": str(a + b),
+            "grader_id": "numeric_final",
+            "benchmark": benches[i % len(benches)],
+            "metadata": {},
+        })
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pool, f)
+    print(f"  Benchmark pool written: {path} ({n} questions)", flush=True)
+    return path
+
+
 # ── Step 6: Start miner ──
 
 def start_miner_process(wallet_name: str, netuid: int,
-                        head_path: str) -> subprocess.Popen:
-    """Start the miner as a background process."""
+                        head_path: str,
+                        pool_path: str) -> subprocess.Popen:
+    """Start the miner as a background process.
+
+    --benchmark-pool is required by neurons/miner.py. It was missing here, so
+    the miner subprocess exited immediately on a Click error and this script
+    aborted at the "wait for miner" step — meaning the README's own
+    `launch_testnet.py --mock --epochs 3` never got past step 6.
+    """
     cmd = [
         sys.executable, "neurons/miner.py",
         "--network", LOCAL_ENDPOINT,
@@ -414,6 +470,7 @@ def start_miner_process(wallet_name: str, netuid: int,
         "--coldkey", wallet_name,
         "--hotkey", "default",
         "--head-path", head_path,
+        "--benchmark-pool", pool_path,
         "--port", str(MINER_PORT),
     ]
     env = os.environ.copy()
@@ -659,7 +716,7 @@ Examples:
                    help="Force retrain the head even if one exists")
     p.add_argument("--head-path", type=str, default="data/testnet_head.npz",
                    help="Path to head .npz file")
-    p.add_argument("--image-tag", type=str, default="devnet",
+    p.add_argument("--image-tag", type=str, default="v432",
                    help="Docker image tag (default: devnet)")
     p.add_argument("--keep-chain", action="store_true",
                    help="Don't stop the chain container after running")
@@ -804,7 +861,10 @@ def main():
         if not args.skip_setup and os.path.exists(state_path):
             os.remove(state_path)
             print(f"  Cleared stale validator state: {state_path}", flush=True)
-        miner_proc = start_miner_process(MINER_WALLET, netuid, head_path)
+        pool_path = write_benchmark_pool()
+        miner_proc = start_miner_process(
+            MINER_WALLET, netuid, head_path, pool_path,
+        )
 
         # Step 7: Run epochs
         section("Step 7: Run Validator Epochs")

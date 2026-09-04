@@ -1,0 +1,846 @@
+#!/usr/bin/env python3
+"""Full dress rehearsal against a real Substrate chain.
+
+Every other check in this repo runs in-process against a mocked chain. This one
+runs the shipped binaries — `neurons/miner.py` and `neurons/validator.py` — as
+real OS processes, against a real local subtensor node, with real wallets, real
+registration, real axon/dendrite traffic and real `set_weights` extrinsics.
+
+That distinction is the whole point. The TEE pipeline shipped with three fatal
+bugs behind a green CI because CI exercised a different path than production
+did. A rehearsal that reimplemented the neurons would reproduce exactly that
+mistake, so this drives the real ones and compares them the way an operator
+would: through the artifacts they publish.
+
+    python scripts/dress_rehearsal.py --scenario all
+    python scripts/dress_rehearsal.py --scenario c --keep-chain
+
+Scenarios
+  a  one miner, one validator, one epoch; weights land AND read back
+  b  three miners (honest / copier / cheap-but-wrong); dedup and ranking
+  c  two validators on the same proofs; byte-identical weights and frames
+  d  many epochs; evidence, burn-in, frame convergence, weight capping
+  e  the real backbone path end to end
+
+No API spend is possible: model replies are stubbed deterministically and
+priced through the real pinned table.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+CHAIN_NAME = "fugal_rehearsal_chain"
+CHAIN_IMAGE = "ghcr.io/raofoundation/subtensor-localnet:v432"
+CHAIN_DIGEST = "sha256:2354832a7c45ceb35703d64bd6f9477439f9a966e34a1d460965b8faf19439e2"
+ENDPOINT = "ws://127.0.0.1:9944"
+RESULTS = os.path.join(os.path.dirname(__file__), "..", "results", "rehearsal")
+
+# Long enough that the miner's 30s poll lands inside every epoch, short enough
+# that a multi-epoch scenario finishes in minutes. At 24s the miner structurally
+# could not keep up — it completed epoch e00000218 while the validator was
+# asking about e00000235 — even though the benchmark itself takes ~0.1s.
+# Set at runtime from the chain's MEASURED block rate. Epoch geometry is
+# defined in blocks, so a devnet producing a block every 0.35s runs through a
+# "1 hour" epoch in 100 seconds. Hardcoding an interval made the miner
+# structurally unable to keep up: it completed e00000042 while the validator
+# was already asking about e00000045.
+EPOCH_INTERVAL_S = "3600"
+TARGET_EPOCH_SECONDS = 90
+
+
+# ── assertions ────────────────────────────────────────────────────────────────
+
+class Report:
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str, bool, str]] = []
+
+    def check(self, scenario: str, name: str, ok: bool, detail: str = "") -> bool:
+        self.rows.append((scenario, name, bool(ok), detail))
+        mark = "PASS" if ok else "FAIL"
+        print(f"    [{mark}] {name}" + (f" — {detail}" if detail else ""), flush=True)
+        return bool(ok)
+
+    def summary(self) -> int:
+        print("\n" + "=" * 78)
+        print(f"{'DRESS REHEARSAL':<52}{'SCENARIO':<12}{'RESULT':>8}")
+        print("-" * 78)
+        for scenario, name, ok, detail in self.rows:
+            print(f"{'OK ' if ok else '!! '}{name[:48]:<49}{scenario:<12}"
+                  f"{'PASS' if ok else 'FAIL':>8}")
+            if not ok and detail:
+                print(f"     ↳ {detail}")
+        print("-" * 78)
+        failed = [r for r in self.rows if not r[2]]
+        print(f"{len(self.rows) - len(failed)} passed, {len(failed)} failed")
+        if failed:
+            print("\nFAIL — the subnet is not ready.")
+            return 1
+        print("\nPASS — the shipped binaries work against a real chain.")
+        return 0
+
+
+# ── chain lifecycle ───────────────────────────────────────────────────────────
+
+def chain_running() -> bool:
+    out = subprocess.run(
+        ["docker", "ps", "--filter", f"name={CHAIN_NAME}", "--format", "{{.Names}}"],
+        capture_output=True, text=True,
+    )
+    return CHAIN_NAME in out.stdout
+
+
+def start_chain() -> None:
+    if chain_running():
+        print("  Chain already running, reusing", flush=True)
+        return
+    subprocess.run(["docker", "rm", "-f", CHAIN_NAME],
+                   capture_output=True, text=True)
+    print(f"  Starting pinned chain ({CHAIN_IMAGE})...", flush=True)
+    proc = subprocess.run([
+        "docker", "run", "-d", "--name", CHAIN_NAME,
+        "-p", "9944:9944", "-p", "9945:9945",
+        f"{CHAIN_IMAGE}@{CHAIN_DIGEST}",
+    ], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"could not start chain: {proc.stderr.strip()}")
+
+
+def stop_chain() -> None:
+    subprocess.run(["docker", "rm", "-f", CHAIN_NAME], capture_output=True, text=True)
+
+
+def calibrate_epoch_interval(subtensor) -> str:
+    """Choose FUGAL_EPOCH_INTERVAL so one epoch lasts ~TARGET_EPOCH_SECONDS.
+
+    Measured rather than assumed: the neurons define an epoch as
+    EPOCH_INTERVAL // 12 blocks, so how long that takes in wall-clock depends
+    entirely on the chain, and this chain is ~34x faster than mainnet.
+    """
+    from fugal_subnet.benchmarks.slicer import BLOCK_TIME_S
+
+    b0 = subtensor.get_current_block()
+    t0 = time.time()
+    time.sleep(8)
+    rate = (subtensor.get_current_block() - b0) / max(time.time() - t0, 1e-6)
+    if rate <= 0:
+        print("  Could not measure block rate; using default interval", flush=True)
+        return EPOCH_INTERVAL_S
+    want_blocks = max(2, int(TARGET_EPOCH_SECONDS * rate))
+    interval = str(want_blocks * BLOCK_TIME_S)
+    print(f"  Chain produces {rate:.2f} blocks/s; "
+          f"epoch = {want_blocks} blocks (~{TARGET_EPOCH_SECONDS}s), "
+          f"FUGAL_EPOCH_INTERVAL={interval}", flush=True)
+    return interval
+
+
+def wait_for_chain(timeout: int = 180):
+    import bittensor as bt
+
+    deadline = time.time() + timeout
+    last = ""
+    while time.time() < deadline:
+        try:
+            st = bt.Subtensor(network=ENDPOINT)
+            block = st.get_current_block()
+            print(f"  Chain ready at block {block}", flush=True)
+            return st
+        except Exception as e:
+            last = str(e)
+            time.sleep(3)
+    raise RuntimeError(f"chain not ready after {timeout}s: {last}")
+
+
+# ── fixtures ──────────────────────────────────────────────────────────────────
+
+MODELS = [
+    "deepseek/deepseek-v4-flash",     # cheapest
+    "meta-llama/llama-4-maverick",
+    "openai/gpt-5.4-nano",
+]
+# Ground truth for the stub: pricier models answer more questions correctly, so
+# there is a genuine quality/cost tradeoff for a router to find.
+SKILL = {MODELS[0]: 0.30, MODELS[1]: 0.60, MODELS[2]: 0.85}
+
+
+def write_pool(path: str, n: int = 120) -> str:
+    import random
+
+    rng = random.Random(20260904)
+    benches = ["gsm8k", "math", "mmlu", "aime"]
+    pool = [{
+        "question_id": f"dr_{i:04d}",
+        "prompt": f"What is {rng.randint(1, 99)} + {rng.randint(1, 99)}?",
+        "gold": str(rng.randint(2, 198)),
+        "grader_id": "numeric_final",
+        "benchmark": benches[i % len(benches)],
+        "metadata": {},
+    } for i in range(n)]
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pool, f)
+    return path
+
+
+def write_head(path: str, seed: int, models=None) -> str:
+    """Write a real .npz head. A different seed routes differently."""
+    import numpy as np
+
+    from fugal_subnet.config import HEAD_HIDDEN_DIM
+
+    models = models or MODELS
+    rng = np.random.RandomState(seed)
+    W = (rng.randn(len(models), HEAD_HIDDEN_DIM) * 0.02).astype(np.float32)
+    b = rng.randn(len(models)).astype(np.float32)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    np.savez(path, W=W, b=b, models=np.array(models, dtype="U100"))
+    return path
+
+
+def biased_head(path: str, model_index: int) -> str:
+    """A head that always routes to one model — the degenerate strategies."""
+    import numpy as np
+
+    from fugal_subnet.config import HEAD_HIDDEN_DIM
+
+    W = np.zeros((len(MODELS), HEAD_HIDDEN_DIM), dtype=np.float32)
+    b = np.full(len(MODELS), -10.0, dtype=np.float32)
+    b[model_index] = 10.0
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    np.savez(path, W=W, b=b, models=np.array(MODELS, dtype="U100"))
+    return path
+
+
+# ── running the real binaries ─────────────────────────────────────────────────
+
+class StubUpstream:
+    """An OpenAI-compatible endpoint the REAL metering proxy forwards to.
+
+    Deliberately not a monkeypatch. The miner runs its real harness, which
+    calls its real MeteringProxy, which makes a real HTTP request — the only
+    substitution is where that request lands. So token accounting, pricing
+    against the pinned table, cost reconciliation and record-keeping are all
+    the production code paths, and no API key exists anywhere in this run.
+
+    Replies are a deterministic function of (question, model), so two runs and
+    two validators see byte-identical results — which is what makes the
+    agreement assertions meaningful rather than coincidental.
+    """
+
+    def __init__(self, gold_by_prompt: dict, skill: dict, port: int = 8799):
+        self.gold = gold_by_prompt
+        self.skill = skill
+        self.port = port
+        self._server = None
+        self._thread = None
+        self.calls = 0
+
+    def start(self):
+        import hashlib
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                req = json.loads(body)
+                model = req.get("model", "")
+                prompt = req["messages"][0]["content"]
+
+                digest = hashlib.sha256(f"{prompt}|{model}".encode()).digest()
+                correct = (digest[0] / 255.0) < outer.skill.get(model, 0.5)
+                text = outer.gold.get(prompt, "0") if correct else "0"
+                outer.calls += 1
+
+                payload = json.dumps({
+                    "choices": [{"message": {"content": text}}],
+                    # Token counts vary a little per model so cost is not a
+                    # constant, and thrift has something real to measure.
+                    "usage": {
+                        "prompt_tokens": 400 + (digest[1] % 200),
+                        "completion_tokens": 100 + (digest[2] % 100),
+                    },
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        self._server = HTTPServer(("127.0.0.1", self.port), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        print(f"  Stub upstream on 127.0.0.1:{self.port} (no API key, no spend)",
+              flush=True)
+
+    def stop(self):
+        if self._server:
+            self._server.shutdown()
+            self._server = None
+
+
+def _lan_ip() -> str:
+    """A routable local address the chain will accept for serve_axon."""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+def miner_env(extra=None):
+    env = os.environ.copy()
+    env["FUGAL_EPOCH_INTERVAL"] = EPOCH_INTERVAL_S
+    env["FUGAL_SLICE_SIZE"] = "40"
+    env["FUGAL_EXPLORE_FRACTION"] = "0.10"
+    env["FUGAL_REQUIRE_COMMITMENT"] = "0"
+    # NOT 127.0.0.1: the chain rejects loopback for serve_axon at pool
+    # validation, so the axon would never register and no validator could
+    # reach the miner.
+    env["FUGAL_AXON_IP"] = _lan_ip()
+    env["PYTHONUNBUFFERED"] = "1"
+    # The real proxy, pointed at the local stub. No key is set, so even a bug
+    # that reached the real OpenRouter would be unauthenticated rather than
+    # billable.
+    env["FUGAL_OPENROUTER_BASE"] = "http://127.0.0.1:8799/v1"
+    # One pool, one source, both neurons. Also keeps the run off HuggingFace.
+    env["FUGAL_BENCHMARK_POOL"] = os.path.abspath(
+        os.path.join(RESULTS, "pool.json")
+    )
+    env.pop("OPENROUTER_API_KEY", None)
+    env.update(extra or {})
+    return env
+
+
+def start_miner(coldkey: str, netuid: int, head: str, pool: str,
+                port: int, log_path: str) -> subprocess.Popen:
+    log = open(log_path, "w", encoding="utf-8")
+    return subprocess.Popen(
+        [sys.executable, "neurons/miner.py",
+         "--network", ENDPOINT, "--netuid", str(netuid),
+         "--coldkey", coldkey, "--hotkey", "default",
+         "--head-path", head, "--benchmark-pool", pool,
+         "--port", str(port), "--mock"],
+        stdout=log, stderr=subprocess.STDOUT, env=miner_env(), text=True,
+    )
+
+
+def run_validator_once(coldkey: str, netuid: int, state_path: str,
+                       log_path: str, timeout: int = 300) -> dict:
+    """Run one real validator epoch; return its parsed epoch-log entry."""
+    env = miner_env({
+        "FUGAL_STATE_PATH": state_path,
+        "FUGAL_EPOCH_LOG_DIR": os.path.dirname(state_path),
+        "FUGAL_EPOCH_DIR": os.path.join(os.path.dirname(state_path), "epochs"),
+    })
+    with open(log_path, "a", encoding="utf-8") as log:
+        subprocess.run(
+            [sys.executable, "neurons/validator.py",
+             "--network", ENDPOINT, "--netuid", str(netuid),
+             "--coldkey", coldkey, "--hotkey", "default",
+             "--once", "--mock"],
+            stdout=log, stderr=subprocess.STDOUT, env=env,
+            text=True, timeout=timeout,
+        )
+    log_file = os.path.join(os.path.dirname(state_path), "epochs.jsonl")
+    if not os.path.exists(log_file):
+        return {}
+    with open(log_file, encoding="utf-8") as f:
+        lines = [ln for ln in f.read().splitlines() if ln.strip()]
+    return json.loads(lines[-1]) if lines else {}
+
+
+
+# ── chain fixtures ────────────────────────────────────────────────────────────
+
+def relax_chain_limits(subtensor, netuid: int) -> None:
+    """Drop the localnet's transaction rate limits via sudo (Alice).
+
+    A fresh chain ships with TxRateLimit=1000 blocks and ServingRateLimit=50,
+    so a miner that commits its head hash and then serves its axon has the
+    second extrinsic rejected — `Custom error: 11` — and stays unreachable at
+    0.0.0.0 forever. Mainnet spaces these naturally across hour-long epochs;
+    a rehearsal running an epoch every 24 seconds cannot.
+
+    This is test-chain configuration, not a subnet change: it makes the local
+    chain behave like a chain with room to breathe, so the thing under test is
+    the subnet rather than the rate limiter.
+    """
+    from scripts.setup_local_testnet import get_alice_keypair, submit_extrinsic
+
+    alice = get_alice_keypair()
+    for call_name, params in (
+        ("sudo_set_tx_rate_limit", {"tx_rate_limit": 0}),
+        ("sudo_set_serving_rate_limit", {"netuid": netuid, "serving_rate_limit": 0}),
+        ("sudo_set_weights_set_rate_limit",
+         {"netuid": netuid, "weights_set_rate_limit": 0}),
+    ):
+        try:
+            inner = subtensor.substrate.compose_call(
+                call_module="AdminUtils", call_function=call_name, call_params=params,
+            )
+            sudo = subtensor.substrate.compose_call(
+                call_module="Sudo", call_function="sudo", call_params={"call": inner},
+            )
+            submit_extrinsic(subtensor, sudo, alice)
+            print(f"  chain config: {call_name} -> {list(params.values())[-1]}",
+                  flush=True)
+        except Exception as e:
+            print(f"  chain config: {call_name} failed: {e}", flush=True)
+
+
+def stake_validator(subtensor, wallet, netuid: int, amount: float = 1000.0) -> None:
+    """Give a validator enough stake to earn a permit.
+
+    Without stake there is no validator permit and set_weights is rejected, so
+    the weight path — the thing this rehearsal exists to prove — never runs.
+    """
+    try:
+        subtensor.add_stake(
+            wallet=wallet, netuid=netuid,
+            hotkey_ss58=wallet.hotkey.ss58_address,
+            amount=bt_balance(amount),
+            wait_for_inclusion=True,
+        )
+        print(f"  staked {amount} TAO to {wallet.name}", flush=True)
+    except Exception as e:
+        print(f"  staking {wallet.name} failed: {e}", flush=True)
+
+
+def bt_balance(tao: float):
+    import bittensor as bt
+    return bt.Balance.from_tao(tao)
+
+
+def setup_subnet(subtensor, coldkeys: list[str]) -> tuple[int, dict]:
+    """Create a subnet and register every wallet on it. Reuses the working
+    primitives in setup_local_testnet rather than reimplementing extrinsics."""
+    import bittensor as bt
+
+    from scripts.setup_local_testnet import (
+        create_subnet,
+        fund_wallet,
+        register_wallet,
+    )
+
+    netuid = create_subnet(subtensor)
+    print(f"  Subnet created: netuid {netuid}", flush=True)
+
+    wallets = {}
+    for name in coldkeys:
+        w = bt.Wallet(name=name, hotkey="default")
+        if not w.coldkey_file.exists_on_device():
+            w.create_new_coldkey(use_password=False, overwrite=True)
+            w.create_new_hotkey(overwrite=True)
+        wallets[name] = w
+        fund_wallet(subtensor, w, amount_tao=10000)
+
+    # Activate the subnet. Without start_call the subnet has no first-emission
+    # block, staking is rejected with SubtokenDisabled, and validators never
+    # earn a permit — so set_weights, the thing this rehearsal exists to prove,
+    # can never run.
+    from scripts.setup_local_testnet import get_alice_keypair, submit_extrinsic
+    try:
+        call = subtensor.substrate.compose_call(
+            call_module="SubtensorModule", call_function="start_call",
+            call_params={"netuid": netuid},
+        )
+        submit_extrinsic(subtensor, call, get_alice_keypair())
+        print(f"  Subnet {netuid} activated (start_call)", flush=True)
+    except Exception as e:
+        print(f"  start_call failed: {e}", flush=True)
+
+    relax_chain_limits(subtensor, netuid)
+
+    for name, w in wallets.items():
+        register_wallet(subtensor, w, netuid)
+        print(f"  Registered {name}", flush=True)
+
+    for name in ("dr_val1", "dr_val2"):
+        if name in wallets:
+            stake_validator(subtensor, wallets[name], netuid)
+
+    return netuid, wallets
+
+
+def uid_of(subtensor, netuid: int, wallet) -> int:
+    mg = subtensor.metagraph(netuid)
+    hk = wallet.hotkey.ss58_address
+    return mg.hotkeys.index(hk) if hk in mg.hotkeys else -1
+
+
+def current_epoch_id(subtensor) -> str:
+    """The epoch id both neurons will independently derive right now."""
+    from fugal_subnet.benchmarks.slicer import (
+        blocks_per_epoch,
+        epoch_id_for_block,
+        epoch_index_for_block,
+    )
+
+    bpe = blocks_per_epoch(int(EPOCH_INTERVAL_S))
+    return epoch_id_for_block(
+        epoch_index_for_block(subtensor.get_current_block(), bpe)
+    )
+
+
+def wait_for_proof(procs, timeout=600) -> bool:
+    """Wait until every miner has computed its first proof."""
+    return _wait(procs, "complete:", timeout)
+
+
+def wait_for_epoch(procs, subtensor, timeout=600) -> str | None:
+    """Wait until every miner holds a proof for the SAME current epoch.
+
+    The miner only serves a proof for the epoch the validator asks about, so
+    the rehearsal has to line them up rather than assume they agree — which is
+    exactly the failure the epoch-id single-source fix was about, seen from the
+    other side.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        epoch = current_epoch_id(subtensor)
+        if _wait(procs, f"Epoch {epoch} complete", timeout=90, quiet=True):
+            # Still the same epoch? If it rolled while we waited, try again.
+            if current_epoch_id(subtensor) == epoch:
+                return epoch
+    return None
+
+
+def _wait(procs, marker: str, timeout: int, quiet: bool = False) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ready = 0
+        for _, log_path in procs:
+            try:
+                with open(log_path, encoding="utf-8") as f:
+                    if marker in f.read():
+                        ready += 1
+            except FileNotFoundError:
+                pass
+        if ready == len(procs):
+            return True
+        for proc, log_path in procs:
+            if proc.poll() is not None:
+                with open(log_path, encoding="utf-8") as f:
+                    tail = f.read()[-1500:]
+                raise RuntimeError(f"miner exited early:\n{tail}")
+        time.sleep(3)
+    return False
+
+
+# ── scenarios ─────────────────────────────────────────────────────────────────
+
+def run_scenarios(args, report: Report) -> int:
+    import bittensor as bt
+
+    pool_path = write_pool(os.path.join(RESULTS, "pool.json"))
+    with open(pool_path, encoding="utf-8") as f:
+        pool = json.load(f)
+    gold_by_prompt = {q["prompt"]: q["gold"] for q in pool}
+
+    stub = StubUpstream(gold_by_prompt, SKILL)
+    stub.start()
+
+    want = ["a", "b", "c", "d", "e"] if args.scenario == "all" else [args.scenario]
+    subtensor = bt.Subtensor(network=ENDPOINT)
+
+    coldkeys = ["dr_val1", "dr_val2", "dr_m1", "dr_m2", "dr_m3"]
+    netuid, wallets = setup_subnet(subtensor, coldkeys)
+
+    procs: list = []
+    try:
+        if "a" in want:
+            scenario_a(report, subtensor, netuid, wallets, pool_path, procs)
+        if "b" in want:
+            scenario_b(report, subtensor, netuid, wallets, pool_path, procs)
+        if "c" in want:
+            scenario_c(report, subtensor, netuid, wallets, pool_path, procs)
+        if "d" in want:
+            scenario_d(report, subtensor, netuid, wallets, pool_path, procs,
+                       args.epochs)
+        if "e" in want:
+            scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub)
+    finally:
+        for proc, _ in procs:
+            proc.terminate()
+        for proc, _ in procs:
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        stub.stop()
+    return 0
+
+
+def _launch(procs, coldkey, netuid, head, pool_path, port, tag):
+    log = os.path.join(RESULTS, f"miner_{tag}.log")
+    proc = start_miner(coldkey, netuid, head, pool_path, port, log)
+    procs.append((proc, log))
+    return proc, log
+
+
+def scenario_a(report, subtensor, netuid, wallets, pool_path, procs):
+    print("\n[Scenario A] one miner, one validator, one epoch", flush=True)
+    head = write_head(os.path.join(RESULTS, "head_a.npz"), seed=1)
+    _launch(procs, "dr_m1", netuid, head, pool_path, 8101, "a")
+
+    if not wait_for_proof(procs[-1:]):
+        report.check("a", "miner produces a proof", False, "no proof within timeout")
+        return
+    report.check("a", "miner produces a proof", True)
+
+    epoch = wait_for_epoch(procs[-1:], subtensor)
+    report.check("a", "miner and validator agree on the current epoch",
+                 epoch is not None, f"epoch={epoch}")
+    if not epoch:
+        return
+
+    state = os.path.join(RESULTS, "val_a")
+    os.makedirs(state, exist_ok=True)
+    entry = run_validator_once("dr_val1", netuid,
+                               os.path.join(state, "state.json"),
+                               os.path.join(RESULTS, "val_a.log"))
+
+    report.check("a", "validator verified the proof",
+                 entry.get("n_heads_valid", 0) >= 1,
+                 f"valid={entry.get('n_heads_valid')} invalid={entry.get('n_heads_invalid')}")
+    report.check("a", "set_weights extrinsic succeeded",
+                 bool(entry.get("set_weights_success")),
+                 str(entry.get("set_weights_msg", ""))[:120])
+    report.check("a", "weights confirmed by reading them back off chain",
+                 bool(entry.get("weights_confirmed_on_chain")),
+                 str(entry.get("weights_confirm_detail", ""))[:160])
+
+
+def scenario_b(report, subtensor, netuid, wallets, pool_path, procs):
+    print("\n[Scenario B] three miners: honest, copier, cheap-but-wrong", flush=True)
+    honest = write_head(os.path.join(RESULTS, "head_honest.npz"), seed=1)
+    copier = write_head(os.path.join(RESULTS, "head_copier.npz"), seed=1)  # identical
+    cheap = biased_head(os.path.join(RESULTS, "head_cheap.npz"), 0)
+
+    started = []
+    for i, (ck, head, port, tag) in enumerate([
+        ("dr_m1", honest, 8111, "b_honest"),
+        ("dr_m2", copier, 8112, "b_copier"),
+        ("dr_m3", cheap, 8113, "b_cheap"),
+    ]):
+        started.append(_launch(procs, ck, netuid, head, pool_path, port, tag))
+        time.sleep(3)   # stagger: each loads the backbone at startup
+
+    if not wait_for_proof(procs[-3:]):
+        report.check("b", "all three miners produced proofs", False)
+        return
+    report.check("b", "all three miners produced proofs", True)
+    if not wait_for_epoch(procs[-3:], subtensor):
+        report.check("b", "all three miners reached the same epoch", False)
+        return
+    report.check("b", "all three miners reached the same epoch", True)
+
+    state = os.path.join(RESULTS, "val_b")
+    os.makedirs(state, exist_ok=True)
+    entry = run_validator_once("dr_val1", netuid,
+                               os.path.join(state, "state.json"),
+                               os.path.join(RESULTS, "val_b.log"))
+
+    report.check("b", "validator verified all three proofs",
+                 entry.get("n_heads_valid", 0) == 3,
+                 f"valid={entry.get('n_heads_valid')}")
+
+    dq = set(entry.get("dedup_disqualified") or [])
+    weights = entry.get("weights") or {}
+    honest_uid = uid_of(subtensor, netuid, wallets["dr_m1"])
+    copier_uid = uid_of(subtensor, netuid, wallets["dr_m2"])
+    cheap_uid = uid_of(subtensor, netuid, wallets["dr_m3"])
+
+    report.check("b", "dedup disqualified exactly one of the identical pair",
+                 len(dq & {honest_uid, copier_uid}) == 1,
+                 f"disqualified={sorted(dq)} honest={honest_uid} copier={copier_uid}")
+    report.check("b", "the disqualified copy earns no weight",
+                 all(weights.get(str(u), 0.0) == 0.0 for u in dq),
+                 f"weights={weights}")
+    survivor = ({honest_uid, copier_uid} - dq)
+    surv = max((weights.get(str(u), 0.0) for u in survivor), default=0.0)
+    report.check("b", "a real router outranks the always-cheapest router",
+                 surv > weights.get(str(cheap_uid), 0.0),
+                 f"router={surv:.4f} cheap-only={weights.get(str(cheap_uid), 0.0):.4f}")
+
+
+def scenario_c(report, subtensor, netuid, wallets, pool_path, procs):
+    print("\n[Scenario C] two validators, same proofs", flush=True)
+    head = write_head(os.path.join(RESULTS, "head_c.npz"), seed=5)
+    _launch(procs, "dr_m1", netuid, head, pool_path, 8121, "c")
+    if not wait_for_proof(procs[-1:]) or not wait_for_epoch(procs[-1:], subtensor):
+        report.check("c", "miner produced a proof for the current epoch", False)
+        return
+
+    entries = []
+    for name in ("val_c1", "val_c2"):
+        state = os.path.join(RESULTS, name)
+        os.makedirs(state, exist_ok=True)
+        entries.append(run_validator_once(
+            "dr_val1" if name.endswith("1") else "dr_val2", netuid,
+            os.path.join(state, "state.json"),
+            os.path.join(RESULTS, f"{name}.log"),
+        ))
+
+    a, b = entries
+    report.check("c", "both validators verified the same proof",
+                 a.get("n_heads_valid") == b.get("n_heads_valid") >= 1,
+                 f"{a.get('n_heads_valid')} vs {b.get('n_heads_valid')}")
+    report.check("c", "both computed identical weight vectors (I1)",
+                 a.get("weights") == b.get("weights"),
+                 f"{a.get('weights')} vs {b.get('weights')}")
+    report.check("c", "both computed identical scores",
+                 a.get("scores") == b.get("scores"))
+
+    frames = []
+    for name in ("val_c1", "val_c2"):
+        sp = os.path.join(RESULTS, name, "state.json")
+        try:
+            with open(sp, encoding="utf-8") as f:
+                frames.append(json.load(f).get("frame"))
+        except FileNotFoundError:
+            frames.append(None)
+    report.check("c", "both derived identical reference frames (I9)",
+                 frames[0] is not None and frames[0] == frames[1])
+
+
+def scenario_d(report, subtensor, netuid, wallets, pool_path, procs, epochs):
+    print(f"\n[Scenario D] {epochs} epochs, evidence and frame over time", flush=True)
+    head = write_head(os.path.join(RESULTS, "head_d.npz"), seed=9)
+    _launch(procs, "dr_m1", netuid, head, pool_path, 8131, "d")
+    if not wait_for_proof(procs[-1:]):
+        report.check("d", "miner produced a proof", False)
+        return
+
+    state = os.path.join(RESULTS, "val_d")
+    os.makedirs(state, exist_ok=True)
+    state_path = os.path.join(state, "state.json")
+    log_path = os.path.join(RESULTS, "val_d.log")
+
+    seen = []
+    for _ in range(epochs):
+        if not wait_for_epoch(procs[-1:], subtensor):
+            break
+        entry = run_validator_once("dr_val1", netuid, state_path, log_path)
+        if entry and entry.get("epoch_id") not in {e.get("epoch_id") for e in seen}:
+            seen.append(entry)
+
+    report.check("d", f"ran {epochs} epochs without an unhandled error",
+                 len(seen) == epochs, f"completed {len(seen)}/{epochs}")
+    if len(seen) < 2:
+        return
+
+    with open(state_path, encoding="utf-8") as f:
+        final = json.load(f)
+    rec = next(iter(final.get("records", {}).values()), {})
+    ev = rec.get("evidence") or {}
+
+    report.check("d", "evidence accumulated across epochs",
+                 ev.get("n_total", 0) > 40,
+                 f"n_total={ev.get('n_total')}")
+    report.check("d", "evidence stayed keyed to one unchanged artifact",
+                 ev.get("epochs_accumulated", 0) >= 2,
+                 f"epochs_accumulated={ev.get('epochs_accumulated')}")
+
+    frame = final.get("frame") or {}
+    trials = sum((frame.get("trials") or {}).values())
+    report.check("d", "reference frame accumulated exploration samples",
+                 trials > 0, f"trials={trials:.0f}")
+
+    caps = [e.get("weight_capped") for e in seen[1:]]
+    report.check("d", "weight capping engaged after the first epoch",
+                 all(caps) if caps else False, f"capped={caps}")
+
+    confirmed = [bool(e.get("weights_confirmed_on_chain")) for e in seen]
+    report.check("d", "weights confirmed on chain every epoch",
+                 all(confirmed), f"{sum(confirmed)}/{len(confirmed)} confirmed")
+
+
+def scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub):
+    print("\n[Scenario E] real backbone through the shipped binary", flush=True)
+    head = write_head(os.path.join(RESULTS, "head_e.npz"), seed=11)
+    calls_before = stub.calls
+    proc, log = _launch(procs, "dr_m1", netuid, head, pool_path, 8141, "e")
+
+    ready = wait_for_proof([(proc, log)], timeout=600)
+    if ready:
+        wait_for_epoch([(proc, log)], subtensor)
+    with open(log, encoding="utf-8") as f:
+        text = f.read()
+
+    report.check("e", "miner computed real Qwen3-0.6B embeddings",
+                 "Embeddings ready" in text,
+                 [ln for ln in text.splitlines() if "Embeddings" in ln][:1])
+    report.check("e", "backbone released after embedding (not held per-epoch)",
+                 "backbone released" in text)
+    report.check("e", "miner produced a proof with the real backbone", ready)
+    report.check("e", "the real metering proxy made real HTTP calls",
+                 stub.calls > calls_before,
+                 f"{stub.calls - calls_before} calls through the proxy")
+
+    if not ready:
+        return
+    state = os.path.join(RESULTS, "val_e")
+    os.makedirs(state, exist_ok=True)
+    entry = run_validator_once("dr_val1", netuid,
+                               os.path.join(state, "state.json"),
+                               os.path.join(RESULTS, "val_e.log"))
+    report.check("e", "validator verified a real-backbone proof",
+                 entry.get("n_heads_valid", 0) >= 1,
+                 f"valid={entry.get('n_heads_valid')}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--scenario", default="all",
+                    choices=["a", "b", "c", "d", "e", "all"])
+    ap.add_argument("--keep-chain", action="store_true",
+                    help="Leave the chain container running afterwards")
+    ap.add_argument("--epochs", type=int, default=12,
+                    help="Epochs for scenario d (default 12)")
+    args = ap.parse_args()
+
+    report = Report()
+    shutil.rmtree(RESULTS, ignore_errors=True)
+    os.makedirs(RESULTS, exist_ok=True)
+
+    print("=" * 78)
+    print("FUGAL DRESS REHEARSAL — real chain, real binaries, no API spend")
+    print("=" * 78)
+
+    try:
+        start_chain()
+        subtensor0 = wait_for_chain()
+        global EPOCH_INTERVAL_S
+        EPOCH_INTERVAL_S = calibrate_epoch_interval(subtensor0)
+        print("\nScenario harness ready.\n", flush=True)
+        # Scenario bodies are added below; see run_scenarios().
+        rc = run_scenarios(args, report)
+    finally:
+        if not args.keep_chain:
+            stop_chain()
+        else:
+            print(f"\nChain left running as {CHAIN_NAME} (--keep-chain)")
+
+    return rc or report.summary()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

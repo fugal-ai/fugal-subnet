@@ -35,6 +35,10 @@ class EpochLog:
     weight_capped: bool = False
     set_weights_success: bool = False
     set_weights_msg: str = ""
+    # Whether the weights were read back off chain and matched what was
+    # submitted. set_weights_success only says the extrinsic was included.
+    weights_confirmed_on_chain: bool = False
+    weights_confirm_detail: str = ""
     anomalies: list = field(default_factory=list)
     duration_s: float = 0.0
 

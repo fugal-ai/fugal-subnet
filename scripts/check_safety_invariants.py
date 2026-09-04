@@ -78,9 +78,30 @@ def check_runtime_annotations(errors: list[str]) -> None:
 
 
 def check_deserialize_contract(errors: list[str]) -> None:
+    """Every Axon-attached Synapse must define deserialize() returning self.
+
+    Checked against whatever Synapse subclasses protocol.py actually declares,
+    rather than a hardcoded list — a hardcoded list silently stops covering a
+    synapse that gets renamed, and silently fails on one that gets deleted.
+    """
     path = ROOT / "fugal_subnet" / "protocol.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for synapse_name in ("FugalSynapse", "FugalProofSynapse"):
+
+    synapse_names = [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and any(
+            (isinstance(b, ast.Attribute) and b.attr == "Synapse")
+            or (isinstance(b, ast.Name) and b.id == "Synapse")
+            for b in node.bases
+        )
+    ]
+    if not synapse_names:
+        errors.append("fugal_subnet/protocol.py: no bt.Synapse subclass found")
+        return
+
+    for synapse_name in synapse_names:
         found = False
         for node in tree.body:
             if isinstance(node, ast.ClassDef) and node.name == synapse_name:

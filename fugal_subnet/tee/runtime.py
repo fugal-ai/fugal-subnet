@@ -21,7 +21,14 @@ from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
-_OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+# Upstream the metering proxy forwards to. Configurable because operators
+# legitimately front OpenRouter with a gateway, a regional endpoint, or an
+# OpenAI-compatible provider — and because it lets a local testnet point the
+# REAL proxy at a local stub, so the metering, pricing and token accounting
+# under test are the production ones rather than a monkeypatch.
+_OPENROUTER_BASE = os.getenv(
+    "FUGAL_OPENROUTER_BASE", "https://openrouter.ai/api/v1",
+).rstrip("/")
 
 
 class UnpricedModel(RuntimeError):

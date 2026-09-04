@@ -37,7 +37,7 @@ from fugal_subnet.head_eval import (
     load_head_from_npz,
 )
 from fugal_subnet.matrix import build_matrix_mock
-from fugal_subnet.protocol import FugalSynapse
+from fugal_subnet.protocol import FugalProofSynapse
 from fugal_subnet.rewards import cap_weight_change, compute_weights
 from fugal_subnet.scoring import ScoringState, update_scores
 from fugal_subnet.soft_targets import compute_soft_targets
@@ -90,19 +90,44 @@ def test_miner_loads_head():
 
 
 def test_synapse_roundtrip():
-    """FugalSynapse can carry head data end-to-end."""
+    """FugalProofSynapse carries a full bundle inline, end to end.
+
+    The bundle travels in the response rather than as a URL the validator
+    fetches — see fugal_subnet/protocol.py. This asserts a realistically sized
+    payload survives the synapse's own field caps.
+    """
+    import json
+
     data, h = make_synthetic_head(MODEL_POOL)
     b64 = base64.b64encode(data).decode("ascii")
 
-    synapse = FugalSynapse(epoch_id="e000001_abc12345", benchmark_hash="deadbeef")
+    results = [{
+        "question_id": f"q{i}", "routed_model": MODEL_POOL[i % len(MODEL_POOL)],
+        "correct": bool(i % 3), "cost_usd": 0.001,
+        "response_hash": "ab" * 32, "prompt_tokens": 500,
+        "completion_tokens": 300, "is_exploration": False,
+    } for i in range(SLICE_SIZE)]
+    proof_json = json.dumps({
+        "epoch_id": "e00000001", "nonce": "cd" * 32, "questions_hash": "ef" * 32,
+        "weights_hash": h, "source_hash": "01" * 32, "results": results,
+        "total_cost_usd": 0.3, "per_model_costs": {m: 0.1 for m in MODEL_POOL},
+        "attestation_quote": "00" * 632, "timestamp": 0.0,
+    }, separators=(",", ":"))
+
+    synapse = FugalProofSynapse(epoch_id="e00000001", nonce="cd" * 32)
+    synapse.proof_json = proof_json
     synapse.head_npz_b64 = b64
-    synapse.model_pool = MODEL_POOL
-    synapse.head_commit_hash = h
+    synapse.weights_hash = h
+    synapse.proof_hash = "ff" * 32
 
     head = load_head_from_b64(synapse.head_npz_b64)
     assert head.W.shape == (len(MODEL_POOL), HEAD_HIDDEN_DIM)
     assert head.b.shape == (len(MODEL_POOL),)
     assert list(head.models) == MODEL_POOL
+    assert len(json.loads(synapse.proof_json)["results"]) == SLICE_SIZE
+
+    kb = (len(synapse.proof_json) + len(synapse.head_npz_b64)) // 1024
+    print(f"  Inline bundle: {kb} KB ({SLICE_SIZE} results + head)")
     print("  [PASS] Synapse roundtrip")
 
 
@@ -210,30 +235,33 @@ def test_full_validator_pipeline():
 
 
 def test_dendrite_query_flow():
-    """Simulate validator querying miner via dendrite."""
+    """Simulate a validator querying a miner and parsing the inline bundle."""
+    import json
 
     data, h = make_synthetic_head(MODEL_POOL)
     b64 = base64.b64encode(data).decode("ascii")
+    proof_json = json.dumps({"epoch_id": "e00000001", "results": []},
+                            separators=(",", ":"))
 
-    # Simulate miner's forward function
-    def miner_forward(synapse: FugalSynapse) -> FugalSynapse:
+    def miner_forward(synapse: FugalProofSynapse) -> FugalProofSynapse:
+        synapse.proof_json = proof_json
         synapse.head_npz_b64 = b64
-        synapse.model_pool = MODEL_POOL
-        synapse.head_commit_hash = h
+        synapse.weights_hash = h
+        synapse.proof_hash = "ab" * 32
         return synapse
 
-    # Validator creates synapse and queries
-    synapse = FugalSynapse(epoch_id="e000001_abc", benchmark_hash="deadbeef")
+    synapse = FugalProofSynapse(epoch_id="e00000001", nonce="cd" * 32)
     response = miner_forward(synapse)
 
     assert response.head_npz_b64 == b64
-    assert response.model_pool == MODEL_POOL
-    assert response.head_commit_hash == h
+    assert response.proof_json == proof_json
+    assert response.weights_hash == h
 
-    # Validator loads and validates the head
+    # The validator recovers the head from the response and validates it.
     head = load_head_from_b64(response.head_npz_b64)
     assert head.W.shape[0] == len(MODEL_POOL)
     assert head.W.shape[1] == HEAD_HIDDEN_DIM
+    assert hashlib.sha256(base64.b64decode(response.head_npz_b64)).hexdigest() == h
 
     print("  [PASS] Dendrite query flow")
 

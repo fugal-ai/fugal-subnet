@@ -32,13 +32,21 @@ pip install -e ".[dev]"
 # Local testnet (Docker chain + full epoch pipeline, no API spend)
 python scripts/launch_testnet.py --mock --epochs 3
 
+# Or the single-command container demo (chain + miner + validator, one epoch)
+docker compose up --abort-on-container-exit
+
+# Full dress rehearsal: multi-miner, multi-validator, multi-epoch, on a real chain
+python scripts/dress_rehearsal.py --scenario all
+
 # Train a reference head (synthetic data, no API spend)
 python scripts/train_head.py --synthetic --n-questions 200 \
   --models deepseek/deepseek-v4-flash meta-llama/llama-4-maverick openai/gpt-5.4-nano \
   --output data/my_head.npz
 
-# Run the miner (commits the head hash on-chain, then serves it)
-python neurons/miner.py --netuid 1 --head-path data/my_head.npz
+# Run the miner (commits the head hash on-chain, benchmarks, serves proofs)
+python neurons/miner.py --netuid 1 \
+  --head-path data/my_head.npz \
+  --benchmark-pool data/pool.json
 
 # Run the validator (mock mode — no API spend)
 python neurons/validator.py --netuid 1 --mock

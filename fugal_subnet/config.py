@@ -121,7 +121,9 @@ TEE_APPROVED_MEASUREMENTS = [
     m.strip() for m in os.getenv("FUGAL_TEE_MEASUREMENTS", "").split(",") if m.strip()
 ]
 TEE_PROOF_TIMEOUT = int(os.getenv("FUGAL_TEE_PROOF_TIMEOUT", "600"))
-TEE_BUNDLE_STORE = os.getenv("FUGAL_TEE_BUNDLE_STORE", "")
+# No bundle store: proofs travel inline in the synapse response. See
+# fugal_subnet/protocol.py for why an external artifact store earned nothing
+# at this payload size.
 TEE_PROXY_PORT = int(os.getenv("FUGAL_TEE_PROXY_PORT", "8199"))
 TEE_MODEL_PRICES_PATH = os.getenv("FUGAL_MODEL_PRICES", "")
 

@@ -73,6 +73,19 @@ def select_slice(
     return out
 
 
+# Nominal chain block time. Epoch geometry is defined in BLOCKS, so both
+# neurons agree regardless of how fast a given chain actually produces them —
+# a devnet at 0.35s/block and mainnet at 12s/block both give the same epoch
+# boundaries. What must never differ is this arithmetic, which is why it lives
+# here rather than being restated in each neuron.
+BLOCK_TIME_S = 12
+
+
+def blocks_per_epoch(epoch_interval_s: int) -> int:
+    """Blocks in one epoch. Consensus-critical: both neurons must agree."""
+    return max(1, int(epoch_interval_s) // BLOCK_TIME_S)
+
+
 def epoch_id_for_block(epoch_index: int) -> str:
     """Canonical epoch identifier for a block-derived epoch index.
 

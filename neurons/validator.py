@@ -39,7 +39,6 @@ import numpy as np  # noqa: E402
 logger = logging.getLogger("fugal.validator")
 
 STATE_PATH = os.getenv("FUGAL_STATE_PATH", "results/validator_state.json")
-BLOCK_TIME_S = 12
 
 
 def load_state(records_cls) -> dict:
@@ -147,8 +146,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     import bittensor as bt
 
+    # After bittensor: importing it disables every logger that already exists,
+    # so without this the neuron's own output — including every error and
+    # traceback — is silently discarded. See fugal_subnet/logging_setup.
+    from fugal_subnet.logging_setup import configure_logging
+    configure_logging(log_level)
+
     from fugal_subnet.api import load_prices
-    from fugal_subnet.benchmarks.loader import load_all
+    from fugal_subnet.benchmarks.loader import load_all, pool_hash
+    from fugal_subnet.benchmarks.slicer import (
+        blocks_per_epoch as blocks_per_epoch_fn,
+    )
     from fugal_subnet.benchmarks.slicer import (
         derive_nonce,
         epoch_id_for_block,
@@ -200,7 +208,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     logger.info("Loading benchmark pool...")
     benchmark_pool = load_all()
-    logger.info("Benchmark pool: %d questions", len(benchmark_pool))
+    logger.info("Benchmark pool: %d questions, pool_hash=%s",
+                len(benchmark_pool), pool_hash(benchmark_pool)[:16])
     if not benchmark_pool:
         raise click.ClickException("Benchmark pool is empty — nothing to score")
 
@@ -236,7 +245,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         if state["frame"] else load_bootstrap()
     )
 
-    blocks_per_epoch = max(1, EPOCH_INTERVAL // BLOCK_TIME_S)
+    blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 
     while True:
         try:
@@ -484,37 +493,45 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # --- REVEAL ---
             timer.start_phase("reveal")
             epoch_score_dicts = {
-                uid: {"acc": s.accuracy, "cost_eff": s.cost_efficiency, "kl": s.kl_score}
+                uid: {
+                    "accuracy": s.accuracy,
+                    "quality": scoring_state.records[uid].quality,
+                    "thrift": scoring_state.records[uid].thrift,
+                    "score": scoring_state.records[uid].composite_score,
+                }
                 for uid, s in epoch_scores.items()
+                if uid in scoring_state.records
             }
             epoch_weight_map = dict(zip(uids, weights))
 
-            # Build a minimal matrix from proof results for the reveal
-            all_models = sorted(set(
-                r.routed_model
-                for proof in verified_proofs.values()
-                for r in proof.results
-            ))
-            matrix = np.zeros((len(questions), max(len(all_models), 1)), dtype=np.int32)
-            model_costs: dict[str, float] = {}
+            # Observation matrix for the reveal, in the SAME global model index
+            # space dedup uses, so a column means the same model in every
+            # artifact. -1 means "no miner routed this question to this model",
+            # which is distinct from 0 ("routed, and got it wrong") — as a plain
+            # zero matrix the two were indistinguishable and any consumer would
+            # read unexplored cells as failures.
+            q_idx_map = {q["question_id"]: i for i, q in enumerate(questions)}
+            matrix = np.full(
+                (len(questions), max(len(pool_models), 1)), -1, dtype=np.int32,
+            )
+            model_spend: dict[str, float] = {}
             for proof in verified_proofs.values():
                 for r in proof.results:
-                    if r.routed_model in all_models:
-                        model_idx = all_models.index(r.routed_model)
-                        q_idx_map = {q["question_id"]: i for i, q in enumerate(questions)}
-                        if r.question_id in q_idx_map:
-                            matrix[q_idx_map[r.question_id], model_idx] = int(r.correct)
-                    model_costs[r.routed_model] = (
-                        model_costs.get(r.routed_model, 0.0) + r.cost_usd
+                    m_idx = model_index.get(r.routed_model)
+                    q_idx = q_idx_map.get(r.question_id)
+                    if m_idx is not None and q_idx is not None:
+                        matrix[q_idx, m_idx] = int(r.correct)
+                    model_spend[r.routed_model] = (
+                        model_spend.get(r.routed_model, 0.0) + r.cost_usd
                     )
 
             routing_for_reveal = {
-                uid: _extract_routing_decisions(proof).tolist()
-                for uid, proof in verified_proofs.items()
+                uid: decisions.tolist()
+                for uid, decisions in routing_decisions.items()
             }
             reveal_ok = reveal_epoch(
                 epoch_id, questions,
-                matrix, all_models, model_costs,
+                matrix, pool_models, model_spend,
                 head_hashes, routing_for_reveal,
                 epoch_score_dicts, epoch_weight_map,
             )
@@ -529,10 +546,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 wait_for_finalization=True,
             )
             success, msg = response
+            weights_confirmed = False
+            confirm_detail = "not attempted"
             if success:
                 logger.info("Weights set successfully")
                 prev_uids = uids
                 prev_weights = weights
+                weights_confirmed, confirm_detail = confirm_weights_on_chain(
+                    subtensor, netuid, my_uid, uids, weights,
+                )
+                if weights_confirmed:
+                    logger.info("Weights confirmed on chain: %s", confirm_detail)
+                else:
+                    logger.error(
+                        "Weights NOT confirmed on chain: %s — the extrinsic "
+                        "reported success but the chain disagrees",
+                        confirm_detail,
+                    )
             else:
                 logger.warning("Weight-setting failed: %s", msg)
 
@@ -556,6 +586,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 weight_capped=weight_capped,
                 set_weights_success=success,
                 set_weights_msg=str(msg) if msg else "",
+                weights_confirmed_on_chain=weights_confirmed,
+                weights_confirm_detail=confirm_detail,
                 anomalies=anomalies,
                 duration_s=timer.total_s,
             )
@@ -577,33 +609,130 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         logger.info("Waiting for next epoch boundary (every %d blocks)...", blocks_per_epoch)
         time.sleep(60)
 
+    # Close the dendrite's HTTP session. Without this the process keeps a
+    # non-daemon worker alive and `--once` never returns — an orchestrator or
+    # an operator running a single epoch waits forever on a validator that has
+    # already finished and said so.
+    try:
+        dendrite.close_session()
+    except Exception as e:
+        logger.debug("Dendrite session close: %s", e)
+
     logger.info("Validator shutdown complete")
 
     if once:
-        sys.exit(0)
+        # os._exit, not sys.exit. async_substrate_interface's __del__ closes its
+        # websocket during interpreter finalization and joins a thread that
+        # never finishes, so a normal exit hangs forever — a --once run in a
+        # systemd oneshot, a cron job, or an orchestrator would appear to run
+        # indefinitely despite having completed its epoch and said so.
+        #
+        # Safe here because everything durable is already committed: the state
+        # file was written through os.replace, the epoch log was appended and
+        # closed, and the weights extrinsic was confirmed on chain above. The
+        # only thing skipped is teardown of connections the OS reclaims anyway.
+        logging.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 def _get_bundle_for_uid(uid, resp):
-    """Download a miner's bundle, returning (proof, head_bytes) or None."""
-    from fugal_subnet.tee.proof import BenchmarkProof
-    from fugal_subnet.tee.store import download_bundle
+    """Parse a miner's inline bundle, returning (proof, head_bytes) or None.
 
-    url = getattr(resp, "proof_bundle_url", "") or ""
-    if not url:
-        logger.debug("UID %d: no proof_bundle_url", uid)
+    Everything here is miner-controlled input, so it is bounded before it is
+    parsed (I2). The pydantic field caps in protocol.py are the first bound;
+    HEAD_MAX_BYTES is the second, applied before the head reaches a loader.
+    """
+    import base64
+
+    from fugal_subnet.config import HEAD_MAX_BYTES
+    from fugal_subnet.tee.proof import BenchmarkProof
+
+    proof_json = getattr(resp, "proof_json", "") or ""
+    head_b64 = getattr(resp, "head_npz_b64", "") or ""
+    if not proof_json or not head_b64:
+        logger.debug("UID %d: incomplete bundle in response", uid)
         return None
 
     try:
-        proof, head_bytes = download_bundle(url)
+        proof = BenchmarkProof.from_dict(json.loads(proof_json))
     except Exception as e:
-        logger.warning("UID %d: failed to download bundle from %s: %s", uid, url[:60], e)
+        logger.warning("UID %d: unparseable proof: %s", uid, e)
         return None
 
-    if not isinstance(proof, BenchmarkProof):
-        logger.warning("UID %d: downloaded object is not a BenchmarkProof", uid)
+    try:
+        head_bytes = base64.b64decode(head_b64, validate=True)
+    except Exception as e:
+        logger.warning("UID %d: undecodable head: %s", uid, e)
+        return None
+
+    if len(head_bytes) > HEAD_MAX_BYTES:
+        logger.warning("UID %d: head is %d bytes (max %d)",
+                       uid, len(head_bytes), HEAD_MAX_BYTES)
         return None
 
     return proof, head_bytes
+
+
+def confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights, tol=1e-3):
+    """Read the weights back off chain and check they match what we submitted.
+
+    `set_weights` returning success means the extrinsic was included, not that
+    the chain now holds what we meant. Nothing in this repo used to check the
+    difference, so "weights set successfully" was an unverified claim in every
+    log and every epoch artifact.
+
+    On a commit-reveal subnet the weights are NOT readable straight away: the
+    extrinsic commits an encrypted hash and the values only appear after the
+    reveal period. An immediate read finds nothing, correctly — so on those
+    subnets this confirms the commit was recorded (LastUpdate advanced to this
+    block) rather than pretending to read values that cannot exist yet.
+
+    Returns (confirmed, detail). Never raises — a readback failure must not
+    take down an epoch that otherwise succeeded.
+    """
+    try:
+        if subtensor.commit_reveal_enabled(netuid=netuid):
+            last_update = subtensor.query_subtensor("LastUpdate", params=[netuid])
+            block = subtensor.get_current_block()
+            recorded = int(last_update[my_uid])
+            # Allow a few blocks of slack for inclusion.
+            if block - recorded > 25:
+                return False, (
+                    f"commit-reveal subnet, but LastUpdate for uid {my_uid} is "
+                    f"block {recorded} and the chain is at {block} — the commit "
+                    "was not recorded"
+                )
+            return True, (
+                f"commit recorded at block {recorded}; values reveal after the "
+                "reveal period (commit-reveal subnet)"
+            )
+    except Exception as e:
+        logger.debug("commit-reveal probe failed, falling back to readback: %s", e)
+
+    try:
+        on_chain = subtensor.weights(netuid=netuid)
+    except Exception as e:
+        return False, f"readback failed: {e}"
+
+    row = next((w for uid, w in on_chain if uid == my_uid), None)
+    if row is None:
+        return False, f"no weight row on chain for validator uid {my_uid}"
+
+    # Chain stores u16-normalized weights; compare as proportions.
+    got = {int(u): float(v) for u, v in row}
+    total = sum(got.values()) or 1.0
+    got = {u: v / total for u, v in got.items()}
+    want = dict(zip(uids, weights))
+
+    for uid in set(want) | set(got):
+        if abs(want.get(uid, 0.0) - got.get(uid, 0.0)) > tol:
+            return False, (
+                f"uid {uid}: submitted {want.get(uid, 0.0):.4f}, "
+                f"chain has {got.get(uid, 0.0):.4f}"
+            )
+    return True, f"{len(got)} weights match within {tol}"
 
 
 def _proof_to_head_score(proof, ref_cost):

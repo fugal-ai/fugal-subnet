@@ -461,11 +461,26 @@ def run_epoch(validator_wallet, subtensor, netuid, pool, models, proof_cache,
         success, msg = False, str(e)
     if success:
         print("[Validator] Weights set successfully!", flush=True)
-    else:
-        print(f"[Validator] Weight-setting failed: {msg}", flush=True)
-        print("[Validator] (Chain config issue — pipeline itself completed OK)",
+        # An extrinsic reporting success only means it was included, not that
+        # the chain holds what we meant. Read it back.
+        from neurons.validator import confirm_weights_on_chain
+        my_uid = (
+            metagraph.hotkeys.index(validator_wallet.hotkey.ss58_address)
+            if validator_wallet.hotkey.ss58_address in metagraph.hotkeys else -1
+        )
+        confirmed, detail = confirm_weights_on_chain(
+            subtensor, netuid, my_uid, uids, weights,
+        )
+        print(f"[Validator] On-chain confirmation: {confirmed} ({detail})",
               flush=True)
-        success = True
+        success = confirmed
+    else:
+        # This used to force success = True with the note "chain config issue —
+        # pipeline itself completed OK", which meant the demo could report a
+        # green run while no weights ever landed. A failed weight-set is a
+        # failed epoch.
+        print(f"[Validator] Weight-setting FAILED: {msg}", flush=True)
+        success = False
 
     all_models = sorted(prices)
     matrix = np.zeros((len(questions), len(all_models)), dtype=np.int32)

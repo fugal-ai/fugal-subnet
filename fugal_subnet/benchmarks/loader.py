@@ -15,7 +15,9 @@ times must build byte-identical pools, so loaders never track a moving
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import logging
 import os
 
@@ -55,14 +57,45 @@ def load_benchmark(name: str) -> list[dict]:
     return mod.load()
 
 
+def pool_hash(pool: list[dict]) -> str:
+    """Identity of a question pool.
+
+    The pool is consensus state: the slice is drawn from it, so two neurons
+    holding different pools derive different slices and every proof fails on
+    questions_hash — correctly, but for a reason that looks nothing like the
+    cause. This makes the real cause nameable in a log line.
+    """
+    ids = sorted(q["question_id"] for q in pool)
+    canonical = json.dumps(ids, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def load_all(strict: bool = True) -> list[dict]:
     """Load the full benchmark pool.
+
+    Both neurons call this, so both derive the same pool from the same pinned
+    dataset revisions. FUGAL_BENCHMARK_POOL overrides it with a local JSON file
+    — for offline work and local testnets, where reaching HuggingFace is either
+    impossible or pointlessly slow. The override applies to miner and validator
+    alike, which is the point: a pool one side can load and the other cannot is
+    how the two end up disagreeing.
 
     Benchmarks named in FUGAL_SKIP_BENCHMARKS (comma-separated) are skipped
     deliberately. Any OTHER load failure raises when strict=True: a validator
     running with a silently incomplete pool would select a different slice
     than its peers and diverge on every epoch. Fail loudly instead.
     """
+    override = os.getenv("FUGAL_BENCHMARK_POOL", "").strip()
+    if override:
+        with open(override, encoding="utf-8") as f:
+            pool = json.load(f)
+        logger.info(
+            "Benchmark pool loaded from FUGAL_BENCHMARK_POOL=%s "
+            "(%d questions, pool_hash=%s)",
+            override, len(pool), pool_hash(pool)[:16],
+        )
+        return pool
+
     skip = set(os.getenv("FUGAL_SKIP_BENCHMARKS", "").split(",")) - {""}
     pool = []
     for name in sorted(_BENCHMARKS):
@@ -83,4 +116,6 @@ def load_all(strict: bool = True) -> list[dict]:
         if not items:
             logger.warning("Benchmark %s loaded 0 questions", name)
         pool.extend(items)
+    logger.info("Benchmark pool: %d questions, pool_hash=%s",
+                len(pool), pool_hash(pool)[:16])
     return pool

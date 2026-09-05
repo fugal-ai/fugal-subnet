@@ -188,6 +188,61 @@ distinction above written down, not discovered afterwards.
 The general form, worth keeping: *an exclusion justified by an assumption
 survives the assumption's death unless someone re-reads the justification.*
 
+### I8 — two changes made now, ahead of the image work
+
+Neither closes the gap above. Both are prerequisites for closing it, and both
+are cheap enough that deferring them to the image migration only means doing
+them under more pressure.
+
+**1. RTMR0 is no longer part of `measurement_id()`.** It records the TDVF
+configuration the host builds — virtual hardware setup, CPU count, memory size,
+device layout — which the cloud provider chooses and we do not. It is not a
+per-image discriminator: the same pinned image on two machine shapes produces
+two identities, so an approved list forks by instance size while proving
+nothing about the code. Measured on live TDX, and dstack documents the same
+behaviour. Thirty Spokes (Bittensor SN99), whose attestation patterns this
+module was forked from, excludes RTMR0 for exactly this reason; the fork kept
+RTMR0 and dropped RTMR3, which is backwards on both counts.
+
+The identity is now `sha256(MRTD || RTMR1 || RTMR2)` — the image, the kernel,
+and the cmdline/initrd. **Every previously published measurement value changes.**
+Nothing is live on the old values, so there is no migration; a `--live` subnet
+would have needed a coordinated approved-list update.
+
+Checks: `tests/test_tee.py::test_measurement_id_ignores_rtmr0_machine_shape`,
+`::test_measurement_id_ignores_rtmr3_application_register`,
+`::test_measurement_id_tracks_the_boot_chain`.
+
+**2. The runtime now extends RTMR3 at startup, and this is ADVISORY.**
+`attestation.runtime_identity()` is `sha384(source_hash || pool_hash ||
+grader_hash)` — the three things that decide what a proof means — and
+`extend_rtmr3()` writes it through the kernel's tsm-mr interface
+(`/sys/class/misc/tdx_guest/mr/rtmr3`) before any proof exists.
+
+It proves nothing today, for the reason stated above: an attacker who controls
+the code controls what it extends. It is written anyway because when the image
+is locked, the same value is extended from a measured initrd instead of from
+userspace, and at that point it becomes evidence without a new mechanism. The
+value is deliberately free of per-epoch data — no nonce, no slice, no results —
+so it is fixed for a deployment and computable off-hardware from the repo,
+which makes an approved list of it reviewable in a pull request rather than
+requiring someone to hold a quote.
+
+`extend_rtmr3()` returns False rather than raising when the interface is absent,
+and the miner logs a warning naming what is not bound. A silent success would be
+indistinguishable from a binding that never happened — the same failure shape as
+the humaneval zero.
+
+**Not yet verified on hardware.** The tsm-mr write path has not been exercised
+on a live TD; both validation instances were torn down before this landed. The
+mechanism is the merged unified TSM measurement-register ABI, and the kernel
+that ran the validation (6.17.0-1022-gcp) is new enough to carry it, but
+"should" is not "does". Confirming it is a ten-minute check on one `c3`:
+run a `--live` miner and look for `RTMR3 extended` rather than the warning.
+
+Checks: `tests/test_tee.py::test_runtime_identity_is_register_width_and_deterministic`,
+`::test_extend_rtmr3_reports_failure_rather_than_pretending`.
+
 **Until then `--live` binds less than it appears to**, and no rotation procedure
 changes that: rotating an approved list of measurements that do not cover the
 workload rotates a value proving only which OS booted.

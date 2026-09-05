@@ -157,6 +157,33 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     committed = False
 
     tee_runtime = TEERuntime(mock=mock)
+
+    # Bind what this runtime IS into RTMR3, once, before any proof exists.
+    # Advisory today: on an unmeasured filesystem an attacker extends the value
+    # we expect. It is written anyway so that locking the image turns this into
+    # evidence rather than requiring a new mechanism. Says so out loud either
+    # way — a binding nobody can see is worse than none. See INVARIANTS.md I8.
+    if not mock:
+        from fugal_subnet.benchmarks.loader import pool_hash as _pool_hash
+        from fugal_subnet.graders import grader_hash
+        from fugal_subnet.tee.attestation import extend_rtmr3, runtime_identity
+
+        identity = runtime_identity(
+            source_hash=_get_source_hash(),
+            pool_hash=_pool_hash(pool),
+            grader_hash=grader_hash(),
+        )
+        if extend_rtmr3(identity):
+            logger.info(
+                "Runtime identity %s extended into RTMR3 (ADVISORY: not "
+                "enforced until the image is locked)", identity[:16],
+            )
+        else:
+            logger.warning(
+                "Runtime identity %s could NOT be extended into RTMR3. Nothing "
+                "in this TD's measurement registers binds the code that will "
+                "produce its proofs.", identity[:16],
+            )
     current_proof = {
         "proof": None, "proof_json": "", "epoch_id": "", "lock": threading.Lock(),
     }

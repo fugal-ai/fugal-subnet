@@ -109,16 +109,103 @@ def measurement_id(quote: TDXQuote) -> str:
     from the quote's own measurement registers, which the CPU fills in and the
     Intel-signed attestation covers — not from any value the workload chose.
 
-    MRTD is the initial TD measurement (the VM image). RTMR0-2 cover firmware,
-    bootloader, and kernel/initrd. RTMR3 is deliberately excluded: it is the
-    application-extendable register, so including it would make the identity
-    change with runtime data and no image could ever stay on an approved list.
+    MRTD is the initial TD measurement (the VM image). RTMR1 covers the kernel
+    and RTMR2 the kernel cmdline and initrd — the boot chain that determines
+    which code the image starts.
+
+    RTMR0 is deliberately EXCLUDED. It records the TDVF configuration the host
+    builds: virtual hardware setup, CPU count, memory size, device config. That
+    is chosen by the cloud provider, not by us, and it is not a per-image
+    discriminator — measured directly, two identical images on different machine
+    shapes produce different RTMR0 and therefore different identities. Including
+    it forks the approved list by instance size while proving nothing about the
+    code. See docs/INVARIANTS.md I8.
+
+    RTMR3 is excluded HERE but is not ignorable: it is the application register,
+    and `runtime_identity()` is what belongs in it. It is kept out of this
+    function because a userspace extend is only load-bearing inside a locked
+    image — an attacker on an unlocked image simply extends the expected value.
+    Binding it is a verification step against a replayed event log, not a term
+    in this hash. Until the image is locked, this function proves which OS
+    booted and nothing about which Fugal code ran.
 
     A workload can put anything it likes in report_data, and it can claim any
     `source_hash` it likes inside its own proof. It cannot forge these.
     """
-    payload = bytes.fromhex(quote.mrtd + quote.rtmr0 + quote.rtmr1 + quote.rtmr2)
+    payload = bytes.fromhex(quote.mrtd + quote.rtmr1 + quote.rtmr2)
     return hashlib.sha256(payload).hexdigest()
+
+
+# The kernel's unified TSM measurement-register ABI (tsm-mr). Writing a
+# register-width digest to this file extends that RTMR. Present on guest
+# kernels carrying the tsm-mr series; absent on older ones, which is why
+# extend_rtmr3 reports failure rather than assuming success.
+_TSM_MR_RTMR3 = "/sys/class/misc/tdx_guest/mr/rtmr3"
+
+# RTMRs are SHA384 registers. The value written must be register-width, so the
+# runtime identity is SHA384 and not the SHA256 used everywhere else.
+_RTMR_DIGEST_BYTES = 48
+
+
+def runtime_identity(source_hash: str, pool_hash: str, grader_hash: str) -> str:
+    """Digest of what this runtime *is*, for extension into RTMR3.
+
+    Three things decide what a proof means: the code that produced it, the pool
+    the slice was drawn from, and the grader that judged the answers. A change
+    to any of them changes every grade, so they are the runtime's identity.
+
+    Deliberately excludes anything per-epoch — nonce, slice, results. A register
+    that moves with runtime data can never be on an approved list, which is the
+    reason RTMR3 was dropped from `measurement_id` in the first place. This
+    value is fixed for a given deployment and computable off-hardware from the
+    repo, so an approved list of it is reviewable in a pull request.
+
+    SHA384 to match the RTMR register width.
+    """
+    payload = "|".join(("fugal-runtime-v1", source_hash, pool_hash, grader_hash))
+    return hashlib.sha384(payload.encode()).hexdigest()
+
+
+def extend_rtmr3(identity_hex: str) -> bool:
+    """Extend RTMR3 with the runtime identity. True if the hardware took it.
+
+    ADVISORY UNTIL THE IMAGE IS LOCKED, and the docstring says so because the
+    code cannot. On an unmeasured filesystem an attacker running modified code
+    simply extends the value we expect, so a matching RTMR3 proves nothing on
+    its own. It becomes load-bearing when the extend is performed from a
+    measured initrd inside a dm-verity image, at which point the same value is
+    evidence. Writing it now means that migration completes a design rather
+    than introducing one.
+
+    Never raises: a miner that cannot extend must still run, because the value
+    is not yet enforced. It returns False instead, and callers are expected to
+    say so loudly — a silent failure here would be indistinguishable from a
+    binding that never happened.
+    """
+    try:
+        digest = bytes.fromhex(identity_hex)
+    except ValueError:
+        logger.error("runtime identity %r is not hex; RTMR3 not extended", identity_hex)
+        return False
+    if len(digest) != _RTMR_DIGEST_BYTES:
+        logger.error(
+            "runtime identity is %d bytes, RTMR3 needs %d (SHA384); not extended",
+            len(digest), _RTMR_DIGEST_BYTES,
+        )
+        return False
+    try:
+        with open(_TSM_MR_RTMR3, "wb") as f:
+            f.write(digest)
+    except OSError as e:
+        logger.warning(
+            "RTMR3 not extended (%s): %s. The runtime identity is NOT bound to "
+            "this TD's measurement registers. This kernel may predate the "
+            "tsm-mr interface, or the process may lack write access.",
+            _TSM_MR_RTMR3, e,
+        )
+        return False
+    logger.info("RTMR3 extended with runtime identity %s", identity_hex[:16])
+    return True
 
 
 def verify_dcap(quote_bytes: bytes) -> bool:

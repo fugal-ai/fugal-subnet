@@ -69,3 +69,27 @@ def test_only_the_slicer_derives_the_collection_block():
         "collection block derived outside slicer.collect_block_for_epoch: "
         + ", ".join(offenders)
     )
+
+
+def test_accuracy_anomalies_read_the_key_the_validator_writes():
+    """A warning that is always wrong teaches operators to skip the line.
+
+    detect_anomalies read `acc` while the validator writes `accuracy`, so the
+    low-accuracy anomaly fired on every epoch and the high-accuracy one could
+    never fire. Caught on a live epoch reporting "all miners <10%" while the
+    miners had scored 62% and 46%.
+    """
+    from fugal_subnet.epoch_logger import detect_anomalies
+
+    weights = {2: 0.45, 3: 0.55}
+    healthy = {2: {"accuracy": 0.62}, 3: {"accuracy": 0.46}}
+    assert not [a for a in detect_anomalies(healthy, weights, 3, 3)
+                if "accuracy" in a]
+
+    genuinely_low = {2: {"accuracy": 0.02}, 3: {"accuracy": 0.05}}
+    assert any("universally_low_accuracy" in a
+               for a in detect_anomalies(genuinely_low, weights, 3, 3))
+
+    genuinely_high = {2: {"accuracy": 0.99}, 3: {"accuracy": 0.98}}
+    assert any("suspiciously_high_accuracy" in a
+               for a in detect_anomalies(genuinely_high, weights, 3, 3))

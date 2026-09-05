@@ -85,7 +85,14 @@ def detect_anomalies(
         anomalies.append("single_responder: only 1 of %d miners responded" % n_miners_queried)
 
     if scores:
-        accs = [s.get("acc", 0) for s in scores.values()]
+        # "accuracy", not "acc". The validator builds these dicts with the
+        # full key, so the short one defaulted to 0 for every miner: the
+        # low-accuracy anomaly fired on EVERY epoch regardless of the real
+        # numbers, and the high-accuracy one could never fire at all. Observed
+        # on a live epoch where miners scored 62% and 46% and the log still
+        # reported "all miners <10%". A warning that is always wrong is worse
+        # than no warning, because it teaches an operator to skip the line.
+        accs = [s.get("accuracy", s.get("acc", 0)) for s in scores.values()]
         if all(a > 0.95 for a in accs) and len(accs) > 1:
             anomalies.append("suspiciously_high_accuracy: all miners >95%% accuracy")
         if all(a < 0.1 for a in accs) and len(accs) > 0:

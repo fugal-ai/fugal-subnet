@@ -104,11 +104,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # the same loader the validator calls; --benchmark-pool is an explicit
     # local override, and FUGAL_BENCHMARK_POOL overrides for both sides at once.
     from fugal_subnet.benchmarks.loader import load_all, pool_hash
+    # ONE code path, always. --benchmark-pool used to json.load the file here,
+    # which meant the flag bypassed everything load_all() does — and when the
+    # loader learned to drop questions the harness cannot grade, the validator
+    # served 125 questions while the miner served 150 and every proof failed on
+    # a questions_hash that named neither side. Routing the flag through the
+    # same env var the validator honours makes a second path impossible rather
+    # than merely discouraged. tests/test_pool_single_source.py enforces it.
     if benchmark_pool:
-        with open(benchmark_pool) as f:
-            pool = json.load(f)
-    else:
-        pool = load_all()
+        os.environ["FUGAL_BENCHMARK_POOL"] = os.path.abspath(benchmark_pool)
+    pool = load_all()
     if not pool:
         raise click.ClickException("Benchmark pool is empty — nothing to benchmark")
     logger.info("Benchmark pool: %d questions, pool_hash=%s",

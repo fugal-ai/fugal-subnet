@@ -346,6 +346,43 @@ again, in either direction. Putting them back is
 [CODE_BENCHMARK_PLAN.md](CODE_BENCHMARK_PLAN.md), and its final phase needs the
 measurement rotation procedure that does not exist yet.
 
+**The model upstream is miner-controlled (OPEN, EXPLOITABLE TODAY, breaks I3).**
+`fugal_subnet/tee/runtime.py` reads the endpoint the metering proxy calls from
+`FUGAL_OPENROUTER_BASE`, an environment variable, inside the miner's own TD. The
+pool the TD loads carries `gold` for every question. Nothing in `proof.py` or
+`verify.py` binds the upstream — grep them for it and there is nothing.
+
+So a miner points that variable at a server they run, which answers every
+question with its own gold answer and reports two tokens of usage. The result is
+perfect accuracy at near-zero attested cost, and every other check still passes:
+questions_hash, nonce, weights_hash, content_hash, report_data, DCAP, and the
+approved measurement. The proof is *honest about a dishonest computation*, and
+the miner takes the subnet.
+
+**This survives a perfect TDX deployment.** A fully measured image with the
+upstream delivered as a runtime environment variable is still broken, which
+makes it a requirement on the measured image and not merely a bug behind it:
+
+- the upstream must be inside what is measured (for dstack, `app-compose.json`,
+  which is hashed into RTMR3 — *not* dstack's encrypted env, which is delivered
+  after attestation and is therefore unmeasured by design)
+- container images must be referenced by digest, never by tag, or the hash is
+  stable while the code under it is not
+- TLS validation must remain intact, or a miner who controls the VM's network
+  reaches the same outcome by pointing DNS at themselves
+
+Nothing in the repository prevents this today. The only thing resembling a
+control is a line in `docs/LIVE_API_VALIDATION.md` asking the operator not to
+set the variable — a request addressed to the adversary.
+
+**Why it went unnoticed for so long is the instructive part.**
+`scripts/stub_upstream.py` *is* this attack. It was written as a no-spend
+testing tool, it works exactly as intended, and nobody asked what it meant that
+it worked. A mechanism that lets a local test substitute the model layer is the
+same mechanism that lets a miner substitute it in production. Building the
+exploit as a convenience and never naming it as one is how a hole this size
+stays invisible.
+
 **Price table staleness.** `data/models.json` is hash-pinned, so scoring is
 deterministic, but it does not track provider price changes on its own. The
 metering proxy records the provider's reported cost alongside the table price

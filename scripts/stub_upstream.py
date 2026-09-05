@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """A deterministic OpenAI-compatible endpoint, for running miners without spend.
 
+SECURITY NOTE, READ BEFORE USING THIS ANYWHERE REAL. This script is also an
+exploit. It substitutes the model layer by setting FUGAL_OPENROUTER_BASE, and a
+miner can do exactly the same thing in production: point it at a server that
+returns each question's own gold answer with two tokens of usage, and collect
+perfect accuracy at near-zero attested cost with every hash binding, the DCAP
+signature and the approved measurement still checking out.
+
+That is not a flaw in this file — it is a flaw in the fact that the upstream is
+a runtime environment variable rather than part of what the attestation measures.
+See docs/INVARIANTS.md, "The model upstream is miner-controlled". Until the
+upstream is inside the measured image, a --live subnet is not protected against
+the thing this script does for convenience.
+
 Point a miner's metering proxy here with FUGAL_OPENROUTER_BASE and every
 production code path still runs — the harness, the real MeteringProxy, real
 HTTP, real token accounting, real pricing against the pinned table, real

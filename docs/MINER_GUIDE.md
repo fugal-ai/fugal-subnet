@@ -183,7 +183,7 @@ sudo systemctl enable --now fugal-miner
 | `--wallet-path` | SDK default | Bittensor wallet root directory |
 | `--port` | `8091` | Axon port |
 | `--head-path` | (required) | Path to `.npz` head file |
-| `--benchmark-pool` | (required) | Path to benchmark question pool |
+| `--benchmark-pool` | (optional) | Local pool JSON. Defaults to the same `load_all()` the validator uses, which is what you want on mainnet — override only for offline or local runs. The flag routes through the same loader, so it cannot disagree with a validator reading the same file. |
 | `--mock/--live` | `--mock` | Mock (default) or live TDX attestation |
 | `--log-level` | `INFO` | Logging level |
 

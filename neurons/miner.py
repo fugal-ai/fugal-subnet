@@ -230,6 +230,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
             "and no validator will ever reach this miner. Set it to an address "
             "validators can actually connect to.", external_ip,
         )
+    # Fail before serving if something else already holds the port. bt.Axon
+    # runs its server in a thread and a bind failure there does not surface:
+    # the miner goes on to register the address on chain and log success while
+    # every validator query is answered by whatever process actually owns the
+    # port. Observed exactly that — a stray HTTP server returned 501 to every
+    # dendrite and the miner reported itself healthy throughout.
+    _assert_port_free(port)
     axon = bt.Axon(wallet=wallet, port=port,
                     external_ip=external_ip or None)
     axon.attach(forward_fn=forward, blacklist_fn=blacklist)
@@ -399,6 +406,22 @@ def _run_epoch(
         proxy.stop()
 
 
+def _assert_port_free(port: int) -> None:
+    """Refuse to start if another process is listening on the axon port."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("0.0.0.0", port))
+        except OSError as e:
+            raise click.ClickException(
+                f"Port {port} is already in use ({e}). Another process would "
+                f"answer every validator query while this miner reported "
+                f"itself healthy. Free the port, or pass a different --port."
+            ) from e
+
+
 def _warn_if_unreachable(published_ip: str, port: int) -> None:
     """Try to connect to the address this miner just told the chain to use.
 
@@ -421,7 +444,10 @@ def _warn_if_unreachable(published_ip: str, port: int) -> None:
         return
     try:
         with socket.create_connection((published_ip, port), timeout=5):
-            logger.info("Axon reachability confirmed at %s:%d", published_ip, port)
+            # Something accepted. That is all a TCP connect can tell us — it
+            # does not prove the responder is this axon, which is why the port
+            # is claimed before serving rather than inferred after.
+            logger.info("Axon accepts connections at %s:%d", published_ip, port)
             return
     except OSError as e:
         logger.warning(

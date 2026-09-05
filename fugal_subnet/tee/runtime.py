@@ -9,6 +9,7 @@ for Fugal's model routing benchmark.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -153,7 +154,26 @@ class MeteringProxy:
             def log_message(self, format, *args):
                 logger.debug(format, *args)
 
-        self._server = HTTPServer(("127.0.0.1", self.port), Handler)
+        # Fall back to an ephemeral port if the configured one is taken.
+        # The port is a private detail between this proxy and the harness that
+        # calls it — nothing on the wire and nothing in consensus depends on
+        # its value — but it is a single fixed constant, so two miners sharing
+        # a host collide on it and the second one dies with EADDRINUSE at the
+        # start of every epoch, forever, benchmarking nothing. Binding 0 and
+        # recording what the kernel gave us costs nothing and removes a whole
+        # class of "my second miner earns zero" reports.
+        try:
+            self._server = HTTPServer(("127.0.0.1", self.port), Handler)
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE:
+                raise
+            self._server = HTTPServer(("127.0.0.1", 0), Handler)
+            actual = self._server.server_address[1]
+            logger.warning(
+                "MeteringProxy port %d is in use (another miner on this host?); "
+                "using ephemeral port %d instead", self.port, actual,
+            )
+            self.port = actual
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         logger.info("MeteringProxy started on port %d", self.port)

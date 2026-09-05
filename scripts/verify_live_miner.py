@@ -41,6 +41,8 @@ def main() -> int:
     ap.add_argument("--expect-reject", action="store_true",
                     help="Assert the proof is REFUSED (negative control)")
     ap.add_argument("--timeout", type=int, default=120)
+    ap.add_argument("--save-dir", default="results/live_proofs",
+                    help="Where to persist the fetched proof before verifying")
     args = ap.parse_args()
 
     import bittensor as bt
@@ -62,6 +64,18 @@ def main() -> int:
     from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
 
     configure_logging("INFO")
+
+    # Check the verifier can verify BEFORE querying. verify_dcap raises rather
+    # than returning False when dcap_qvl is missing, which is right — a silent
+    # skip would be a fake pass — but discovering it after the query wasted a
+    # genuine attested proof from a TD that was torn down minutes later.
+    if args.measurements:
+        try:
+            import dcap_qvl  # noqa: F401
+        except ImportError:
+            print("FAIL: --measurements given but dcap-qvl is not installed, so "
+                  "no DCAP check is possible. Install with: uv sync --extra tee")
+            return 2
 
     wallet = bt.Wallet(name=args.coldkey, hotkey=args.hotkey)
     subtensor = bt.Subtensor(network=args.network)
@@ -105,6 +119,27 @@ def main() -> int:
         print("FAIL: no proof returned — the miner is unreachable, still "
               "benchmarking, or answering for a different epoch")
         return 1
+
+    # SAVE FIRST, VERIFY SECOND. A live attested proof costs a running
+    # confidential VM to produce and stops existing the moment it is torn down.
+    # Holding it only in memory meant one failed verification lost the artifact
+    # and the only way back was to rebuild the TD. On disk it can be re-verified
+    # offline, against any approved set, as many times as needed.
+    os.makedirs(args.save_dir, exist_ok=True)
+    saved = os.path.join(
+        args.save_dir, f"proof-uid{args.uid}-{epoch_id}.json")
+    with open(saved, "w", encoding="utf-8") as f:
+        json.dump({
+            "epoch_id": epoch_id,
+            "nonce": nonce.hex(),
+            "expected_questions_hash": compute_questions_hash(qids),
+            "expected_question_ids": qids,
+            "expected_exploration": explore_map,
+            "proof_hash": getattr(resp, "proof_hash", ""),
+            "pool_hash": pool_hash(pool),
+            "proof": json.loads(resp.proof_json),
+        }, f)
+    print(f"proof saved to {saved} — verifiable offline from here on")
 
     proof = BenchmarkProof.from_dict(json.loads(resp.proof_json))
     approved = {m.strip() for m in args.measurements.split(",") if m.strip()}

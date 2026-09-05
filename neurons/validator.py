@@ -404,19 +404,32 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
                 # Every binding is passed explicitly. A check the validator does
                 # not supply an expectation for is a check that does not happen.
-                result = verify_proof(
-                    proof,
-                    approved_measurements=approved_measurements,
-                    expected_questions_hash=expected_questions_hash,
-                    expected_nonce=nonce_hex,
-                    gold_answers=slice_gold,
-                    expected_question_ids=expected_question_ids,
-                    expected_exploration=explore_map,
-                    expected_weights_hash=weights_hash,
-                    expected_proof_hash=getattr(resp, "proof_hash", ""),
-                    head_bytes=head_bytes,
-                    mock=mock,
-                )
+                # Defence in depth. verify_proof is contracted not to raise on
+                # miner input, but the cost of being wrong about that is the
+                # whole epoch, so a bug there must cost one miner instead.
+                try:
+                    result = verify_proof(
+                        proof,
+                        approved_measurements=approved_measurements,
+                        expected_questions_hash=expected_questions_hash,
+                        expected_nonce=nonce_hex,
+                        gold_answers=slice_gold,
+                        expected_question_ids=expected_question_ids,
+                        expected_exploration=explore_map,
+                        expected_weights_hash=weights_hash,
+                        expected_proof_hash=getattr(resp, "proof_hash", ""),
+                        head_bytes=head_bytes,
+                        mock=mock,
+                    )
+                except ImportError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - one miner, not the epoch
+                    n_invalid += 1
+                    logger.warning(
+                        "UID %d proof verification raised %s: %s — rejecting this "
+                        "miner, not the epoch", uid, type(e).__name__, e,
+                    )
+                    continue
 
                 if not result.valid:
                     n_invalid += 1

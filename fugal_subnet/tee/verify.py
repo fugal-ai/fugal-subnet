@@ -98,8 +98,32 @@ def verify_proof(
 
     # 1. DCAP attestation — proves the quote is genuine Intel-signed hardware.
     #    It does NOT prove the code was unmodified; check 3 does that.
-    if not mock and not verify_dcap(proof.attestation_quote):
-        return VerifyResult(False, "DCAP attestation verification failed")
+    #
+    #    VERIFICATION OF UNTRUSTED INPUT RETURNS A VERDICT, IT DOES NOT THROW.
+    #    verify_dcap raises on a quote it cannot parse or whose collateral it
+    #    cannot fetch, and those bytes come from a miner. Unguarded, the
+    #    exception left verify_proof, left the validator's per-miner loop, and
+    #    was caught by the epoch loop's catch-all — abandoning the WHOLE epoch.
+    #    Any registered hotkey could therefore halt every validator on the
+    #    subnet, every epoch, for the price of one registration, by returning
+    #    forty bytes of garbage. That is I6, broken by miner input, and it only
+    #    appears under --live, which is why it was never seen.
+    #
+    #    ImportError is deliberately NOT caught: a missing dcap-qvl is the
+    #    operator's misconfiguration, not a miner's doing, and silently
+    #    downgrading it to "this proof is invalid" would let a --live validator
+    #    reject the entire field while looking like it was working.
+    if not mock:
+        try:
+            dcap_ok = verify_dcap(proof.attestation_quote)
+        except ImportError:
+            raise
+        except Exception as e:  # noqa: BLE001 - miner-controlled bytes
+            return VerifyResult(
+                False, f"DCAP attestation verification failed: {type(e).__name__}: {e}",
+            )
+        if not dcap_ok:
+            return VerifyResult(False, "DCAP attestation verification failed")
 
     # 2. Quote parses, and report_data binds the proof body to the hardware.
     #    Enforced in every mode: the mock quote generator embeds report_data

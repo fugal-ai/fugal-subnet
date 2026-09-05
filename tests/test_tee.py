@@ -207,12 +207,19 @@ def test_post_attestation_tamper_caught_even_in_mock():
     assert "report_data mismatch" in result.reason
 
 
-def test_verify_proof_nonmock_order():
-    """Non-mock mode raises ImportError when dcap_qvl is not installed."""
+def test_verify_proof_nonmock_rejects_a_synthetic_quote():
+    """A mock quote must never verify under --live, whatever the environment.
+
+    This used to assert `pytest.raises(ImportError)`, which tested whether
+    dcap-qvl happened to be installed rather than what the code does. It passed
+    in CI because the extra was absent and failed on any machine that had it —
+    an assertion about the environment wearing the name of an assertion about
+    the code.
+    """
     proof = _make_proof()
     gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
-    with pytest.raises(ImportError, match="dcap_qvl"):
-        verify_proof(
+    try:
+        result = verify_proof(
             proof,
             approved_measurements={"some_other_measurement"},
             expected_questions_hash=proof.questions_hash,
@@ -220,6 +227,12 @@ def test_verify_proof_nonmock_order():
             gold_answers=gold,
             mock=False,
         )
+    except ImportError:
+        # dcap-qvl absent: verification is impossible, so nothing is accepted.
+        # Fail-closed is the correct outcome and is what we are asserting.
+        return
+    assert not result.valid
+    assert "DCAP" in result.reason
 
 
 def test_verify_proof_cost_inconsistency_is_rejected():
@@ -328,12 +341,28 @@ def test_attack_wrong_question_set():
     assert "Questions hash mismatch" in result.reason
 
 
-def test_attack_fabricated_attestation():
-    """Without dcap_qvl, non-mock verification raises ImportError."""
+@pytest.mark.parametrize("quote", [
+    b"",                                  # empty
+    b"\x00" * 8,                          # too short to parse
+    b"garbage-that-is-not-a-tdx-quote",   # wrong shape entirely
+    b"\xff" * 5000,                       # right size, meaningless content
+])
+def test_attack_fabricated_attestation(quote):
+    """A fabricated quote must REJECT THE MINER and never raise past the caller.
+
+    Named as an attack test but previously asserting only that dcap_qvl was
+    missing, so the attack it describes was never attempted. With the library
+    present, verify_dcap raises on unparseable bytes — and those bytes come from
+    a miner. Unguarded that exception escaped verify_proof, escaped the
+    validator's per-miner loop, and was caught by the epoch loop's catch-all,
+    abandoning the entire epoch. Any registered hotkey could halt every
+    validator on the subnet, every epoch, by returning garbage.
+    """
     proof = _make_proof()
+    proof.attestation_quote = quote
     gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
-    with pytest.raises(ImportError, match="dcap_qvl"):
-        verify_proof(
+    try:
+        result = verify_proof(
             proof,
             approved_measurements={"approved_measurement_1"},
             expected_questions_hash=proof.questions_hash,
@@ -341,6 +370,9 @@ def test_attack_fabricated_attestation():
             gold_answers=gold,
             mock=False,
         )
+    except ImportError:
+        return          # no dcap-qvl: fail-closed, nothing accepted
+    assert not result.valid, "a fabricated attestation was accepted"
 
 
 def test_proof_content_hash_changes_on_any_tamper():

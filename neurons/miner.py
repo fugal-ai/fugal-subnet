@@ -473,9 +473,23 @@ def _compute_hidden_states(pool):
     restart is not a startup cost, it is an availability failure — the miner is
     unreachable for hours and earns nothing, and any crash-loop is permanent.
 
-    The cache is a memo, never a trust boundary: it is keyed by pool_hash so a
-    pool change invalidates it, and it is loaded with allow_pickle=False.
-    A corrupt or unreadable file is recomputed, never trusted.
+    The cache is keyed by pool_hash so a pool change invalidates it, and it is
+    loaded with allow_pickle=False so a hostile file cannot execute anything.
+    A corrupt or unreadable file is recomputed.
+
+    WHAT IT DOES NOT DEFEND AGAINST, stated plainly. These embeddings are
+    computed here and passed into run_benchmark, which means they are an input
+    to the attested harness rather than a product of it. Anyone who can write
+    this file chooses the routing the head appears to produce — they could make
+    a head look like it routes well when it does not, which matters because the
+    head is the artifact other people are meant to reuse.
+
+    That is acceptable only because of where this is supposed to run. Under
+    --live the whole miner executes inside the TD, so the file lives in the
+    TD's own storage and is covered by the same protection as the code the
+    measurement attests. Running a --live miner with this cache on storage
+    outside the TD removes a binding the attestation is assumed to provide.
+    Point FUGAL_EMBEDDING_CACHE inside the enclave, or accept recomputing.
 
     The backbone is released afterwards: it is ~2.4GB resident and is not
     needed again once the embeddings exist.

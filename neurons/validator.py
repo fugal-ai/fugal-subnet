@@ -127,6 +127,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
 
     from fugal_subnet.config import (
+        EPOCH_COLLECT_FRACTION,
         EPOCH_INTERVAL,
         EXPLORE_FRACTION,
         FRAME_DEFAULT_COMPLETION_TOKENS,
@@ -171,6 +172,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         blocks_per_epoch as blocks_per_epoch_fn,
     )
     from fugal_subnet.benchmarks.slicer import (
+        collect_block_for_epoch,
         derive_nonce,
         epoch_id_for_block,
         epoch_index_for_block,
@@ -306,12 +308,36 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             commitment = commit_epoch(epoch_id, questions, block_hash)
             logger.info("Committed: %s", commitment.commit_hash)
 
+            # --- WAIT FOR THE COLLECTION BLOCK ---
+            # A miner cannot start benchmarking until this epoch's boundary
+            # block exists, because that block's hash is what picks the
+            # questions. Querying at the boundary therefore asks before any
+            # proof can exist: with real models on a 300-question slice the
+            # miner needs minutes, the validator would collect nothing, and —
+            # worse than merely failing — it marks the epoch done and never
+            # returns to it. Every epoch, forever, logged as "no valid proofs"
+            # as though the miners were at fault.
+            timer.start_phase("await_collect")
+            collect_block = collect_block_for_epoch(
+                epoch_index, blocks_per_epoch, EPOCH_COLLECT_FRACTION,
+            )
+            wait_for_block(subtensor, collect_block)
+
+            # Read the metagraph AT the collection block, not at "now". Both
+            # the block and the offset are derived identically by every honest
+            # validator, so they query the same axons at the same chain state
+            # and any difference in what they collect is a real difference
+            # rather than a timing artefact.
+            metagraph = metagraph_at(subtensor, netuid, collect_block, metagraph)
+
             # --- QUERY MINERS FOR PROOFS ---
             timer.start_phase("query")
             nonce_hex = nonce.hex()
             synapse = FugalProofSynapse(epoch_id=epoch_id, nonce=nonce_hex)
             n_neurons = int(metagraph.n)
-            logger.info("Querying %d miners for proofs...", n_neurons)
+            logger.info("Querying %d miners for proofs at block %d (boundary %d + %d)...",
+                        n_neurons, collect_block, boundary_block,
+                        collect_block - boundary_block)
             responses = dendrite.query(
                 metagraph.axons,
                 synapse,
@@ -686,6 +712,55 @@ def _get_bundle_for_uid(uid, resp):
         return None
 
     return proof, head_bytes
+
+
+# Imported at module scope: wait_for_block is called from the epoch loop but
+# defined here, and the nominal block time is only used to render a human
+# estimate — the wait itself is on block height, never on wall clock.
+from fugal_subnet.benchmarks.slicer import BLOCK_TIME_S as _BLOCK_TIME_S  # noqa: E402
+
+
+def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
+    """Block until the chain reaches `target_block`.
+
+    Cheap and deliberately dumb: one block-height read per poll. The wait is
+    what makes the collection point deterministic, so it is not shortened on
+    the grounds that a miner "looks ready" — that would reintroduce exactly the
+    wall-clock dependence the fixed point exists to remove.
+    """
+    while True:
+        try:
+            current = subtensor.get_current_block()
+        except Exception as e:  # noqa: BLE001 - a dropped socket must not end the epoch
+            logger.warning("Could not read block height (%s); retrying", e)
+            time.sleep(poll_s)
+            continue
+        if current >= target_block:
+            return
+        remaining = target_block - current
+        logger.info("Waiting for collection block %d (%d blocks, ~%.0f min)",
+                    target_block, remaining, remaining * _BLOCK_TIME_S / 60)
+        time.sleep(min(poll_s * max(1, remaining), 60))
+
+
+def metagraph_at(subtensor, netuid: int, block: int, fallback):
+    """Metagraph as of `block`, falling back to the live one.
+
+    Pinning the read is what makes two validators query the same axons. A node
+    that has pruned the state for that block cannot serve it, though, and a
+    validator that refuses to run because it cannot read 40 blocks of history
+    is worse than one that reads the current state and says so.
+    """
+    try:
+        return subtensor.metagraph(netuid, block=block)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "Could not read the metagraph at block %d (%s) — using the current "
+            "one. Two validators reading at different blocks can see different "
+            "axon sets, so a divergence this epoch has a known cause.",
+            block, e,
+        )
+        return fallback
 
 
 def confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights, tol=1e-3):

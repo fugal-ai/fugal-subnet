@@ -99,6 +99,26 @@ def epoch_id_for_block(epoch_index: int) -> str:
     return f"e{int(epoch_index):08d}"
 
 
+def collect_block_for_epoch(
+    epoch_index: int, blocks_per_epoch: int, fraction: float,
+) -> int:
+    """The block at which validators collect proofs for `epoch_index`.
+
+    Consensus-critical and, like epoch_id_for_block, deliberately the only way
+    to compute it. Every honest validator collects at the same block, so they
+    see the same set of proofs; a validator using a different offset samples a
+    different field and publishes different weights for honest reasons, which
+    is exactly the class of divergence that is impossible to diagnose after the
+    fact. Clamped into (boundary, boundary + blocks_per_epoch) so a misconfigured
+    fraction cannot collect before the epoch exists or after it has ended.
+    """
+    bpe = max(1, int(blocks_per_epoch))
+    boundary = int(epoch_index) * bpe
+    offset = int(bpe * float(fraction))
+    offset = max(1, min(offset, bpe - 1)) if bpe > 1 else 0
+    return boundary + offset
+
+
 def epoch_index_for_block(block: int, blocks_per_epoch: int) -> int:
     """Epoch index containing `block`. Shared so both neurons align epochs."""
     return int(block) // max(1, int(blocks_per_epoch))

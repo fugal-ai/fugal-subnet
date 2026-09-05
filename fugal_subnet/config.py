@@ -11,6 +11,26 @@ NETUID = int(os.getenv("FUGAL_NETUID", "1"))
 # --- Epoch ---
 EPOCH_INTERVAL = int(os.getenv("FUGAL_EPOCH_INTERVAL", "3600"))
 SLICE_SIZE = int(os.getenv("FUGAL_SLICE_SIZE", "300"))
+# How far into the epoch validators collect proofs, as a fraction of it.
+#
+# A miner cannot begin benchmarking until the boundary block exists — the block
+# hash is what seeds the question slice, and hiding the slice until that moment
+# is the whole anti-overfitting design. So there is an unavoidable gap between
+# an epoch starting and any proof existing for it, and a validator that queries
+# at the boundary asks before anyone can possibly answer.
+#
+# Retrying until something appears would fix the symptom and break I1: how long
+# a validator happened to wait would decide which miners it scored, so two
+# honest validators would grade different fields and publish different weights.
+# The collection point is therefore derived from the block number, identically
+# for everyone, and lives in the consensus digest — a validator collecting at a
+# different offset diverges visibly instead of silently.
+#
+# Half the epoch splits it evenly: miners get half to benchmark, validators get
+# half to verify, score, set weights and publish the reveal. At the default
+# 3600s epoch that is 150 blocks (~30 min) for a 300-question slice — 6s per
+# question, ample for serial API calls.
+EPOCH_COLLECT_FRACTION = float(os.getenv("FUGAL_COLLECT_FRACTION", "0.5"))
 
 # --- Head constraints ---
 HEAD_MAX_BYTES = int(os.getenv("FUGAL_HEAD_MAX_BYTES", str(1 * 1024 * 1024)))  # 1 MB

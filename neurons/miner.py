@@ -309,6 +309,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
                 last_epoch_index = epoch_index
                 _run_epoch(
+                    blocks_per_epoch=blocks_per_epoch,
                     head_data=head_data,
                     weights_hash=weights_hash,
                     pool=pool,
@@ -346,6 +347,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
 
 def _run_epoch(
+    blocks_per_epoch,
     head_data,
     weights_hash,
     pool,
@@ -368,7 +370,20 @@ def _run_epoch(
     nonce_bytes = derive_nonce(epoch_id, block_hash)
     nonce = nonce_bytes.hex()
 
-    logger.info("Starting epoch %s (nonce=%s...)", epoch_id, nonce[:16])
+    # State the deadline. Validators collect at a fixed block derived from the
+    # epoch, so "my miner earns nothing" is usually "my benchmark did not
+    # finish in time" — which is invisible unless the miner says what the time
+    # was. A miner that consistently overruns this should cut its slice cost,
+    # not wonder why its proofs are ignored.
+    from fugal_subnet.benchmarks.slicer import collect_block_for_epoch
+    from fugal_subnet.config import EPOCH_COLLECT_FRACTION
+    collect_block = collect_block_for_epoch(
+        epoch_index, blocks_per_epoch, EPOCH_COLLECT_FRACTION,
+    )
+    logger.info(
+        "Starting epoch %s (nonce=%s...); proof must be ready by block %d",
+        epoch_id, nonce[:16], collect_block,
+    )
 
     proxy = tee_runtime.setup(proxy_port=proxy_port)
     try:

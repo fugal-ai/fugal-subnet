@@ -92,6 +92,7 @@ def grader_hash() -> str:
 def environment_fingerprint() -> dict:
     """A JSON-serializable record of everything that can change a score."""
     from fugal_subnet.config import (
+        EPOCH_COLLECT_FRACTION,
         EPOCH_INTERVAL,
         EXPLORE_FRACTION,
         ROUTING_DECISION_QUANTUM,
@@ -124,6 +125,7 @@ def environment_fingerprint() -> dict:
             "slice_size": SLICE_SIZE,
             "epoch_interval_s": EPOCH_INTERVAL,
             "explore_fraction": EXPLORE_FRACTION,
+            "collect_fraction": EPOCH_COLLECT_FRACTION,
         },
     }
 

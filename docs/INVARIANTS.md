@@ -31,7 +31,7 @@ here, and a check that enforces it.**
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time |
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
-| **I6** | **Liveness.** No miner behavior can stop a validator completing an epoch and setting weights. | `run_miner_attacks.py`, property test P1, TEE proof timeout |
+| **I6** | **Liveness.** No miner behavior can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py` |
 | **I7** | **Auditability.** Any divergence between two validators is diagnosable after the fact from published artifacts. | `fugal_subnet/fingerprint.py`, `environment` block in every `reveal.json` |
 | **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (11 cases, in CI), `check_tee_safety` |
 | **I9** | **Reference-frame agreement.** Every validator derives the same reference frame from the same published exploration samples, and no single miner can materially move it. | `fugal_subnet/reference_frame.py` (order-independent accumulation), `check_determinism.py` `frame` stage, `tests/test_non_interference.py` |
@@ -73,6 +73,37 @@ deduplicate. Under `--live` that path does not exist. It is recorded here
 rather than fixed because the fix — pinning a cross-architecture backbone — buys
 nothing that the measurement does not already buy.
 
+### I6/I9 — when a validator collects proofs is consensus state
+
+A miner cannot begin benchmarking until its epoch's boundary block exists,
+because that block's hash is what selects the questions — hiding the slice
+until that moment is the whole anti-overfitting design. There is therefore an
+unavoidable gap between an epoch starting and any proof existing for it.
+
+A validator that queries at the boundary asks before anyone can answer. With
+real models on a 300-question slice the miner needs minutes; the validator
+collects nothing, and then marks the epoch processed and never returns to it.
+Every epoch, forever, logged as `no valid proofs` as though the miners were at
+fault. That is a liveness failure (I6) wearing the costume of a miner problem.
+
+Retrying until proofs appear would fix the symptom and break I1. How long a
+validator happened to wait would decide which miners it scored, so two honest
+validators would grade different fields and publish different weights — a
+divergence with no bug behind it and nothing in the artifacts to explain it.
+
+So the collection point is derived, not chosen: `collect_block_for_epoch`
+returns `boundary + fraction × blocks_per_epoch`, clamped strictly inside the
+epoch, and it is the only place that computes it (`tests/test_collection_point.py`
+asserts that structurally, because a test that derives the value once and hands
+it to both sides cannot catch a second implementation — which is exactly how
+the epoch id came to be formatted two different ways). The metagraph is read at
+that same block, so every validator queries the same axons at the same chain
+state. `EPOCH_COLLECT_FRACTION` is in the consensus digest, so a validator
+collecting at a different offset diverges visibly instead of silently.
+
+Half the epoch is the default: miners get half to benchmark, validators get
+half to verify, score, set weights and publish the reveal.
+
 ### I4 — pool manipulation (resolved by architecture)
 
 **Previous vulnerability:** Sybil registrations declaring cheap models could
@@ -91,6 +122,22 @@ architecture — every other Bittensor subnet has miners pay for expensive work.
 **Resolution:** Validators verify proofs, never call models. Zero validator
 inference cost. Miners pay for their own API calls inside the TEE, metered by
 the attested MeteringProxy.
+
+### I8 — verified on real hardware
+
+The negative control has now been run on genuine TDX silicon rather than a
+synthetic quote. A second confidential VM on the same machine type but a
+different image (`ubuntu-2204-jammy-v20260826`, measurement `f83820ad0424…`)
+produced a real Intel-signed quote that **passed** DCAP verification and was
+still **rejected** by `verify_proof` with only the approved 24.04 measurement in
+the set: *"Unapproved runtime image"*. Real hardware, real signature, code we
+did not approve, refused. That is the property the whole attestation design
+rests on, and it is now evidence rather than an argument.
+
+Operational consequence for validators: DCAP collateral is fetched from Intel's
+PCS directly, with no local caching service. A `--live` validator therefore
+needs outbound HTTPS to `api.trustedservices.intel.com`, and an Intel PCS
+outage degrades verification for every validator at once.
 
 ### I8 — what "attested" actually means
 
@@ -197,13 +244,27 @@ fail on `questions_hash`, an error that names the symptom and never the cause.
 Until the pool is published as a hash-pinned artifact and every neuron is
 pointed at it with `FUGAL_BENCHMARK_POOL`, the loader is a consensus hazard.
 
-**A stable TDX measurement does not exist yet (open, blocks `--live`).**
-`measurement_id` is sha256 over MRTD and RTMR0-2. On a stock cloud guest image
-RTMR0 varies with the machine shape — a 4-vCPU and an 8-vCPU instance measure
-differently — and RTMR1/RTMR2 change on every kernel package update. As a
-consensus parameter it would need republishing on each `apt upgrade` and would
-fork the subnet by instance size. A reproducibly-built guest image with a
-pinned kernel and initrd is a prerequisite for `--live`, and is not built.
+**The approved measurement is reproducible but not durable (open, blocks
+`--live`).** `measurement_id` is sha256 over MRTD and RTMR0-2. Measured on real
+TDX hardware rather than reasoned about: two independently created
+`c3-standard-4` instances, both pinned to `ubuntu-2404-noble-amd64-v20260903`,
+created 15 minutes apart with the first deleted in between, produced the
+**bit-identical** measurement `a68d0ccd3473a6c4…` — every register matching.
+
+So the value is reproducible today, provided two variables are pinned:
+
+- **the exact image version.** `--image-family` resolves to whatever is newest
+  at create time, so two runs a week apart silently measure differently.
+- **the machine shape.** RTMR0 moves with it; a 4-vCPU and an 8-vCPU instance
+  measure differently from identical software.
+
+What remains open is durability, not reproducibility. A cloud provider
+eventually retires a pinned image version, so an approved list built this way
+has an expiry date, and rotating it means changing a consensus parameter on a
+schedule set by someone else. There is no rotation procedure, and that is what
+blocks `--live` on mainnet. A reproducibly-built guest image (dstack, or one
+built in-house) removes the dependency entirely and remains the right long-term
+answer — but it is not required to obtain a working measurement now.
 
 **Price table staleness.** `data/models.json` is hash-pinned, so scoring is
 deterministic, but it does not track provider price changes on its own. The

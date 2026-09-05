@@ -398,28 +398,93 @@ def _run_epoch(
         proxy.stop()
 
 
+def _embedding_cache_path(pool) -> str:
+    """Where this pool's embeddings live on disk.
+
+    Keyed by everything the result depends on. Two of these are consensus
+    inputs and one is not: the pool and the batch size are pinned and shared,
+    while the backbone build is local — and x86_64 and aarch64 genuinely
+    disagree in the last bits of float32, so an architecture-blind key would
+    hand a miner another machine's numbers. Keying on the machine makes the
+    cache a pure memo of what this host would have computed anyway.
+    """
+    import platform
+
+    from fugal_subnet.benchmarks.loader import pool_hash
+    from fugal_subnet.config import BACKBONE_BATCH_SIZE, BACKBONE_MODEL
+
+    key = hashlib.sha256("|".join([
+        pool_hash(pool),
+        BACKBONE_MODEL,
+        str(BACKBONE_BATCH_SIZE),
+        platform.machine(),
+    ]).encode("utf-8")).hexdigest()[:32]
+    root = os.getenv("FUGAL_EMBEDDING_CACHE", os.path.join("data", "embeddings"))
+    return os.path.join(root, f"hidden-{key}.npy")
+
+
 def _compute_hidden_states(pool):
-    """Compute backbone hidden states for the benchmark pool, once.
+    """Backbone hidden states for the benchmark pool, computed once and cached.
 
     Called at startup, never per epoch. Embeddings are a pure function of the
     pool, the frozen backbone and the pinned batch size — none of which change
     between epochs — so recomputing them every epoch burned minutes of CPU on a
     21K-question pool for an identical result.
 
+    They do not change between *restarts* either, which is why the result is
+    cached to disk. Measured on the real 21,717-question pool: 2h28m on an
+    x86_64 laptop and 7h20m on a 4-core aarch64 VM. Paying that on every
+    restart is not a startup cost, it is an availability failure — the miner is
+    unreachable for hours and earns nothing, and any crash-loop is permanent.
+
+    The cache is a memo, never a trust boundary: it is keyed by pool_hash so a
+    pool change invalidates it, and it is loaded with allow_pickle=False.
+    A corrupt or unreadable file is recomputed, never trusted.
+
     The backbone is released afterwards: it is ~2.4GB resident and is not
     needed again once the embeddings exist.
     """
+    import numpy as np
+
     from fugal_subnet.backbone import compute_hidden_states, release_backbone
     from fugal_subnet.config import BACKBONE_BATCH_SIZE
+
+    cache_path = _embedding_cache_path(pool)
+    if os.path.exists(cache_path):
+        try:
+            cached = np.load(cache_path, allow_pickle=False)
+            if cached.shape[0] == len(pool):
+                logger.info("Embeddings loaded from cache: %s", cache_path)
+                return cached
+            logger.warning("Cached embeddings have %d rows for a %d-question "
+                           "pool — recomputing", cached.shape[0], len(pool))
+        except Exception as e:  # noqa: BLE001 - a bad cache must never be fatal
+            logger.warning("Could not read embedding cache %s (%s) — recomputing",
+                           cache_path, e)
 
     questions = [q["prompt"] for q in pool]
     # batch_size is pinned in config, not left to the call site: padding is
     # batch-composition dependent, so two hosts using different batch sizes are
     # a latent cross-validator divergence.
     try:
-        return compute_hidden_states(questions, batch_size=BACKBONE_BATCH_SIZE)
+        hidden = compute_hidden_states(questions, batch_size=BACKBONE_BATCH_SIZE)
     finally:
         release_backbone()
+
+    try:
+        os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+        # Write-then-rename: a miner killed mid-write must not leave a
+        # truncated cache that the next start reads as complete.
+        # np.save appends ".npy" unless the name already ends in it, so the
+        # temp name carries the suffix or the rename below looks for a file
+        # that was never written.
+        tmp = f"{cache_path}.{os.getpid()}.tmp.npy"
+        np.save(tmp, hidden, allow_pickle=False)
+        os.replace(tmp, cache_path)
+        logger.info("Embeddings cached to %s", cache_path)
+    except Exception as e:  # noqa: BLE001 - caching is an optimisation
+        logger.warning("Could not cache embeddings to %s: %s", cache_path, e)
+    return hidden
 
 
 def _get_source_hash():

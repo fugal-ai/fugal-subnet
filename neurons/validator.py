@@ -139,6 +139,19 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         "Operation mode: %s",
         "LIVE (requires real TDX attestation)" if live else "mock (accepts unattested proofs)",
     )
+    # A live validator with no approved measurements rejects every proof it
+    # ever receives — `measurement_id(quote) in approved` can never hold against
+    # an empty set — and then sets every miner to zero weight. Fail-closed is
+    # the right default for the check itself, but silently deweighting the whole
+    # subnet is not an acceptable way to learn the variable is unset.
+    if live and not TEE_APPROVED_MEASUREMENTS:
+        raise click.ClickException(
+            "--live requires FUGAL_TEE_MEASUREMENTS. With no approved "
+            "measurement every proof fails the runtime-image check, so this "
+            "validator would score every miner zero and set weights to match. "
+            "Get the value from `scripts/tdx_measurement.py` on the approved "
+            "TDX image (see docs/TDX_VALIDATION.md)."
+        )
 
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
     assert_environment(strict=live)

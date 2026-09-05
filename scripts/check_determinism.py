@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 STAGES = (
     "slice",
     "exploration",
-    "hidden_states",
+    "synthetic_hidden",
     "routing_decisions",
     "proof",
     "verification",
@@ -131,6 +131,18 @@ def run_pipeline(seed: int) -> dict:
     question_ids = [q["question_id"] for q in questions]
     explore_map = expected_exploration(nonce, pool, set(question_ids), models, 8)
 
+    # Synthetic, and named so. These stand in for the backbone's output; they
+    # are NOT the backbone. numpy's RandomState is bit-identical everywhere by
+    # specification, which is exactly why it makes a good fixed input: it holds
+    # the embedding constant so any divergence downstream belongs to the
+    # scoring path, which is what validators must agree on.
+    #
+    # The real Qwen3-0.6B forward pass is NOT covered here, and does not need to
+    # be: validators never run it. It is a miner-side computation whose output
+    # feeds only that miner's own routing, and under --live the architecture is
+    # pinned by the approved TDX measurement. Measured directly, x86_64 and
+    # aarch64 disagree in the last bits of float32 (~2e-9) — see
+    # docs/INVARIANTS.md, I1.
     rng = np.random.RandomState(seed)
     hidden = rng.randn(len(pool), HEAD_HIDDEN_DIM).astype(np.float32)
     hidden /= np.linalg.norm(hidden, axis=1, keepdims=True)
@@ -247,7 +259,7 @@ def run_pipeline(seed: int) -> dict:
     return {
         "slice": _digest(question_ids),
         "exploration": _digest(explore_map),
-        "hidden_states": _digest(hidden),
+        "synthetic_hidden": _digest(hidden),
         "routing_decisions": _digest(routing),
         "proof": _digest(proofs),
         "verification": _digest(verdicts),

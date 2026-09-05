@@ -61,17 +61,62 @@ WILSON_CONFIDENCE = float(os.getenv("FUGAL_WILSON_CONFIDENCE", "0.95"))
 # delivered the product, however cheap, and must not outscore simply matching
 # the best model at the best model's price. That is
 #
-#     0.6^w * 6^(1-w) < 1      =>      w > ln 6 / (ln 6 - ln 0.6) = 0.778
+#     0.6^w * R^(1-w) < 1      =>      w > ln R / (ln R - ln 0.6)
 #
-# An unweighted sqrt (w=0.5) fails this: it scores that router 1.095, above the
-# 1.000 of a perfect quality match. w=0.8 scores it 0.951, correctly below.
-SCORE_QUALITY_EXPONENT = float(os.getenv("FUGAL_SCORE_QUALITY_EXPONENT", "0.8"))
+# An unweighted sqrt (w=0.5) fails this at any interesting R.
+#
+# R IS THE COST RATIO, AND IT IS NOT 6. The original derivation solved this at
+# R=6, the saving the product targets, and got w > 0.778. But R is not bounded
+# by what the product targets — it is bounded by what the scoring function
+# PERMITS, which is SCORE_THRIFT_CAP. Solving the same inequality at the cap:
+#
+#     w > ln 10 / (ln 10 + ln(1/0.6)) = 0.8184
+#
+# w=0.8 fails this. It scores the degraded-but-cheap router 1.0532 against the
+# 1.000 of a full quality match — so the documented claim was already false at
+# the old value, by a margin the 6x derivation hid.
+#
+# Two live runs produced it independently: a 63% router beating a 93% one at
+# 13x cheaper, and a 46% router beating a 62% one. Neither was a corner case.
+#
+# WHY 0.9 AND NOT 0.8184. The claim above compares a miner to a fixed baseline,
+# but weights are set by comparing miners to EACH OTHER, and a pairwise gap
+# spans the whole band rather than half of it: one miner at the cap and another
+# at the floor is a ratio of cap^2 = 100, needing
+#
+#     w > ln 100 / (ln 100 + ln(1/0.6)) = 0.9002
+#
+# 0.9 clears the absolute claim with room (0.795 vs 1.000) and the observed live
+# case with room (that needed 0.8412), but sits 0.00015 BELOW the pairwise
+# bound. It is the knife edge of that bound, not a margin above it — at exactly
+# a 40% quality gap and exactly a 100x cost gap the two tie. Going to 0.91 buys
+# that margin; going to 0.95 (which holds to ~16000x) would make the subnet
+# nearly indifferent to cost and defeat the point of it.
+#
+# The alternative fix is to shrink the thrift band so R can never exceed 6 and
+# the original 0.778 holds. Rejected: it would pay a miner who found a genuinely
+# 10x-cheaper route no more than one who found 2.45x, discarding exactly the
+# signal this subnet exists to find.
+#
+# NOTE ON READING THIS NUMBER. w does not set influence on its own; the
+# exponent times the RANGE does. Quality is a ratio against the best model, so
+# it realistically spans ~3x; thrift spans 100x. That is why w=0.8 read as
+# "quality dominates 4:1" while quality and thrift actually contributed 2.41x
+# and 2.51x of effective range — the cost term had marginally MORE pull than
+# the accuracy term. tests/test_scoring_tradeoff.py pins both claims so this
+# cannot silently regress if either the cap or the exponent moves.
+SCORE_QUALITY_EXPONENT = float(os.getenv("FUGAL_SCORE_QUALITY_EXPONENT", "0.9"))
 
 # Caps stop a degenerate running away with an unbounded ratio — a near-free
 # model would otherwise drive thrift toward infinity. The thrift cap is well
 # above the ~6x saving the product targets, so a genuinely frugal router is
 # rewarded for all of its advantage rather than having it truncated; the
 # quality exponent, not the cap, is what keeps cheap-and-wrong from winning.
+#
+# These two constants are coupled and must move together. The exponent is
+# derived from the widest cost ratio the caps permit (see above), so RAISING
+# SCORE_THRIFT_CAP WITHOUT RAISING THE EXPONENT reopens the gap where a
+# cheap-and-wrong router wins.
 SCORE_QUALITY_CAP = float(os.getenv("FUGAL_SCORE_QUALITY_CAP", "2.0"))
 SCORE_THRIFT_CAP = float(os.getenv("FUGAL_SCORE_THRIFT_CAP", "10.0"))
 

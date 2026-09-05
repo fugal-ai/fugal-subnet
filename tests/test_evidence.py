@@ -166,22 +166,36 @@ def test_composite_uses_wilson_lcb_not_raw_accuracy():
 def test_neither_axis_can_rescue_the_other():
     """The reason for a geometric mean rather than a weighted sum.
 
-    Both degenerate strategies — perfect accuracy at any price, and near-zero
-    cost at any accuracy — must score near zero. Under the old additive
-    composite each collected its own term's weight regardless of the other.
+    Neither degenerate strategy — perfect accuracy at any price, or near-zero
+    cost at any accuracy — may outscore simply matching the reference model.
+    Under the old additive composite each collected its own term's weight
+    regardless of the other.
+
+    This asserts the ordering rather than a magic threshold, deliberately. It
+    previously required the ruinous router to score below 0.05, a number
+    calibrated to w=0.8's cost penalty; raising w to 0.9 to stop the CHEAP
+    degenerate winning necessarily punishes the EXPENSIVE one less, and the
+    threshold failed at 0.09 while the property it was standing in for still
+    held. The property is what matters: at w=0.9 both degenerates land near 79%
+    of the baseline, symmetrically below it, which is what a geometric mean is
+    supposed to produce.
     """
     ev = _epoch(None, n_correct=1000, n_total=1000, pool_size=1e9)
     accurate_but_ruinous = dataclasses.replace(ev, cost_sum=1e6, ref_cost_sum=0.3)
     cheap_but_wrong = dataclasses.replace(
         ev, n_correct=0.0, cost_sum=1e-9, ref_cost_sum=0.3,
     )
-
-    assert composite(accurate_but_ruinous, ACC_BEST) < 0.05
-    assert composite(cheap_but_wrong, ACC_BEST) == 0.0
-
     balanced = dataclasses.replace(ev, cost_sum=0.3, ref_cost_sum=0.3)
-    assert composite(balanced, ACC_BEST) > composite(accurate_but_ruinous, ACC_BEST)
+
+    assert composite(cheap_but_wrong, ACC_BEST) == 0.0
+    assert composite(accurate_but_ruinous, ACC_BEST) < composite(balanced, ACC_BEST)
     assert composite(balanced, ACC_BEST) > composite(cheap_but_wrong, ACC_BEST)
+
+    # And the expensive degenerate must stay a clear loser, not merely a
+    # narrower one: less than half of what routing at the reference price earns.
+    assert composite(accurate_but_ruinous, ACC_BEST) < 0.5 * composite(
+        balanced, ACC_BEST
+    )
 
 
 def test_score_of_one_means_matched_the_reference_model():

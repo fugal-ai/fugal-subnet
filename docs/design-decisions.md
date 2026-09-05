@@ -69,11 +69,32 @@ Three revisions to the sketch above, each forced by something concrete:
 2. **Product, not `headroom - lambda*cost`.** A subtraction still asserts an
    exchange rate, just a small one. A product asserts none, and stops either
    degenerate strategy from collecting its axis's weight regardless of the other.
-3. **Exponent 0.8, derived not chosen.** "Match quality at a fraction of the
-   cost" makes quality a near-constraint: giving up 40% of quality must not
-   outscore matching the best model at its own price, which forces
-   `w > ln6/(ln6-ln0.6) = 0.778`. An unweighted sqrt fails that test (1.095 vs
-   1.000); 0.8 passes it (0.951).
+3. **Exponent 0.9, derived not chosen — corrected from 0.8.** "Match quality
+   at a fraction of the cost" makes quality a near-constraint: giving up 40% of
+   quality must not outscore matching the best model at its own price.
+
+   The original derivation solved that at a **6x** cost ratio, the saving the
+   product targets, giving `w > ln6/(ln6-ln0.6) = 0.778`. That was the error:
+   the ratio is not bounded by what the product targets but by what the scoring
+   function permits, which is `SCORE_THRIFT_CAP`. At the cap the same
+   inequality gives `w > ln10/(ln10 + ln(1/0.6)) = 0.8184`, and **w=0.8 fails
+   it** — 1.0532 against the 1.000 of a full quality match.
+
+   Two live runs produced it independently before it was found: a 63% router
+   beating a 93% one at 13x cheaper, and a 46% router beating a 62% one.
+   Weights are set by comparing miners to *each other*, and a pairwise cost gap
+   spans the whole band (`cap²` = 100x), which needs `w > 0.9002`. 0.9 clears
+   the absolute claim with room and sits on the pairwise bound; 0.95 would hold
+   to ~16000x but leave the subnet nearly indifferent to cost.
+
+   The lesson generalises past this constant: **an exponent does not set
+   influence on its own — the exponent times the range does.** Quality is a
+   ratio against a ceiling and spans ~3x; thrift spans 100x. So `w=0.8` read as
+   "quality dominates 4:1" while the two contributed 2.41x and 2.51x of
+   effective range, and cost had marginally *more* pull than accuracy. Any
+   future change to `SCORE_THRIFT_CAP` must re-derive the exponent;
+   `tests/test_scoring_tradeoff.py` fails loudly if one moves without the
+   other.
 
 ---
 

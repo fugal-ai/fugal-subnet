@@ -132,14 +132,16 @@ Fugal code ran.** Measured directly on a live TD: a line was appended to
     before   a68d0ccd3473a6c44fa9689cfdcf22066bc83e232efeaf33cc0341d0c532ae65
     after    a68d0ccd3473a6c44fa9689cfdcf22066bc83e232efeaf33cc0341d0c532ae65
 
-Identical. **Those two values are now STALE and must not be copied anywhere.**
-They were computed while `measurement_id` still included RTMR0; it no longer
-does, so the current code produces a different number for the same TD. The
-finding they demonstrate — that editing the harness changes nothing — is
-unaffected, because dropping RTMR0 does not bring the filesystem into the
-measurement. Every published measurement needs recomputing on hardware before it
-is used, and none appear in this repository as an approved value. `measurement_id` is sha256 over MRTD and RTMR0-2 — firmware,
-bootloader, kernel, initrd — and `attestation.measurement_id` excludes RTMR3
+Identical. **Those two values are stale and must not be copied into an approved
+list.** They were computed while `measurement_id` still included RTMR0. The same
+image, same machine shape, now measures
+`a1ecb6273d38bd8b5ad629edf12f48d1c3b861fa8f506d1e1e303783e68461f3`. They are
+kept here because they are what the experiment produced, and the finding is
+unaffected either way: editing the harness moves neither the old value nor the
+new one.
+
+`measurement_id` is sha256 over MRTD, RTMR1 and RTMR2 — the image, the kernel,
+the cmdline and initrd — and `attestation.measurement_id` excludes RTMR3
 deliberately, because RTMR3 is application-extendable and including runtime data
 would mean no image could stay on an approved list. That reasoning is sound and
 its consequence is fatal: the repo is git-cloned onto an **unmeasured
@@ -163,7 +165,7 @@ over the wrong bytes.
 
 **What the real-hardware negative control actually proved.** A second VM on the
 same machine type but a **different OS image**
-(`ubuntu-2204-jammy-v20260826`; its measurement is likewise stale post-RTMR0-removal and deliberately not quoted) produced a genuine
+(`ubuntu-2204-jammy-v20260826`, measurement `498288bb2464…`) produced a genuine
 Intel-signed quote that passed DCAP and was still rejected as an unapproved
 runtime image. That is real and worth having: a different boot chain is refused.
 It is *not* what an earlier revision of this document claimed — that modified
@@ -239,12 +241,34 @@ and the miner logs a warning naming what is not bound. A silent success would be
 indistinguishable from a binding that never happened — the same failure shape as
 the humaneval zero.
 
-**Not yet verified on hardware.** The tsm-mr write path has not been exercised
-on a live TD; both validation instances were torn down before this landed. The
-mechanism is the merged unified TSM measurement-register ABI, and the kernel
-that ran the validation (6.17.0-1022-gcp) is new enough to carry it, but
-"should" is not "does". Confirming it is a ten-minute check on one `c3`:
-run a `--live` miner and look for `RTMR3 extended` rather than the warning.
+**Verified on hardware**, and the verification found a bug that testing could
+not. On a live `c3-standard-4` TD (6.17.0-1022-gcp):
+
+- The interface is at
+  `/sys/class/misc/tdx_guest/measurements/rtmr3:sha384`, **not**
+  `/sys/class/misc/tdx_guest/mr/rtmr3` as first written. The directory is
+  `measurements` and the register name carries its hash algorithm. With the
+  wrong path `extend_rtmr3` returned False forever and logged *"this kernel may
+  predate the tsm-mr interface"* — a wrong diagnosis of a path typo,
+  indistinguishable from the feature genuinely being absent. Unit tests passed
+  throughout, because a missing file is exactly what they assert on a
+  non-TDX host.
+- The write succeeds, and the new RTMR3 **appears in the next Intel-signed
+  quote** — sysfs value and quote value identical.
+- `measurement_id` is unchanged by the extend, as designed.
+
+**It is an extend, not a set.** The hardware computes
+`RTMR = SHA384(RTMR || input)` from 48 zero bytes at boot, so the register never
+holds the value written. Confirmed by replay: writing
+`sha384(b"fugal-runtime-test")` to a fresh TD produced
+`f6fdca9f66372d80685dc6be023d9e6ae25a42334f3b59de24c78da941883a64…`, equal to
+`sha384(bytes(48) + input)`.
+
+The consequence is a design constraint for the verifier: **RTMR3 can never be
+compared to `runtime_identity()` directly.** A verifier must replay the chain of
+extends from zero and check the result equals the quote's RTMR3 — the same
+event-log replay dstack requires, now confirmed as a property of the hardware
+rather than a dstack convention.
 
 Checks: `tests/test_tee.py::test_runtime_identity_is_register_width_and_deterministic`,
 `::test_extend_rtmr3_reports_failure_rather_than_pretending`.
@@ -368,9 +392,9 @@ pointed at it with `FUGAL_BENCHMARK_POOL`, the loader is a consensus hazard.
 TDX hardware rather than reasoned about: two independently created
 `c3-standard-4` instances, both pinned to `ubuntu-2404-noble-amd64-v20260903`,
 created 15 minutes apart with the first deleted in between, produced a
-**bit-identical** measurement — every register matching. (The value itself is
-not reproduced here: it predates the removal of RTMR0 from `measurement_id` and
-would be wrong today. The reproducibility result stands; the number does not.)
+**bit-identical** measurement — every register matching. Under the current
+formula that image measures
+`a1ecb6273d38bd8b5ad629edf12f48d1c3b861fa8f506d1e1e303783e68461f3`.
 
 So the value is reproducible today, provided two variables are pinned:
 

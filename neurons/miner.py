@@ -260,8 +260,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     axon.start()
     logger.info("Miner axon serving on port %d (mock=%s)", port, mock)
+    _warn_if_unreachable(metagraph.axons[my_uid].ip, port)
 
-    # Now that the axon is reachable, commit the head hash. Retried in the loop
+    # Now that the axon is serving, commit the head hash. Retried in the loop
     # below if the chain rate-limits this one.
     committed = ensure_commitment(subtensor, wallet, netuid, weights_hash)
     if not committed:
@@ -396,6 +397,41 @@ def _run_epoch(
         )
     finally:
         proxy.stop()
+
+
+def _warn_if_unreachable(published_ip: str, port: int) -> None:
+    """Try to connect to the address this miner just told the chain to use.
+
+    Serving an axon and being reachable are different things, and only the
+    first one is reported anywhere. A miner on a cloud VM whose provider
+    firewall does not allow the port publishes a perfectly valid address,
+    logs "Axon registered on chain", and is never once contacted — it earns
+    nothing for as long as it runs, with no error on either side. That is not
+    hypothetical: netuid 552's miner advertised a public address for months
+    behind a closed security-list rule.
+
+    This is a warning and never fatal. Many hosts do not route their own public
+    address back to themselves (no NAT hairpinning), so a failure here does not
+    prove the miner is unreachable — but a success does prove it is reachable,
+    and a failure is worth a line the operator can act on.
+    """
+    import socket
+
+    if not published_ip or published_ip in ("0.0.0.0", ""):
+        return
+    try:
+        with socket.create_connection((published_ip, port), timeout=5):
+            logger.info("Axon reachability confirmed at %s:%d", published_ip, port)
+            return
+    except OSError as e:
+        logger.warning(
+            "Could not connect to this miner's own published address %s:%d (%s). "
+            "If this host does not route its public IP back to itself this is "
+            "harmless, but if the port is genuinely closed no validator will "
+            "ever reach this miner and it will earn nothing while appearing "
+            "healthy. Verify from another machine: nc -vz %s %d",
+            published_ip, port, e, published_ip, port,
+        )
 
 
 def _embedding_cache_path(pool) -> str:

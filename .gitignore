@@ -27,3 +27,5 @@ results/
 # OS
 .DS_Store
 Thumbs.db
+data/rehearsal/pool_*.json
+data/embeddings/

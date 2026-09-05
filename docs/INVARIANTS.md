@@ -49,6 +49,30 @@ Miners run benchmarks inside Intel TDX confidential VMs and produce
 hardware-attested proofs. All validators verify the same attested proof, so
 they agree by construction. The I1 gap is closed.
 
+**Measured across architectures.** The whole validator scoring path — slice,
+exploration, routing decisions, proof, verification, reference frame, scores,
+weights — was run on x86_64 (AVX2) and on aarch64 (Ampere) and produced
+byte-identical digests at all nine stages. That is the property consensus
+actually rests on, and it is now evidence rather than assertion.
+
+The backbone is a separate question and a weaker one. `check_determinism.py`
+feeds the pipeline `rng.randn` embeddings, not Qwen3-0.6B — the stage is named
+`synthetic_hidden` for that reason. Measured directly, the real forward pass
+differs between x86_64 and aarch64 in the last bits of float32 (~2e-9 per
+element). This does **not** fork consensus:
+
+- Validators never run the backbone. Only miners do, and only for their own
+  routing; a validator recomputes nothing float-dependent from the head.
+- Under `--live` the architecture is pinned by the approved TDX measurement,
+  and TDX is Intel-only, so every attested miner is x86_64 by construction.
+
+The residual is that two miners running an identical head on different
+architectures could in principle diverge on a routing decision whose top two
+logits are within 1e-9, which would make a copied head marginally harder to
+deduplicate. Under `--live` that path does not exist. It is recorded here
+rather than fixed because the fix — pinning a cross-architecture backbone — buys
+nothing that the measurement does not already buy.
+
 ### I4 — pool manipulation (resolved by architecture)
 
 **Previous vulnerability:** Sybil registrations declaring cheap models could
@@ -163,6 +187,24 @@ embeddings differ in the last bits would disagree on near-tie routing and
 diverge. Closing this properly needs either an agreed embedding artifact or
 held-out questions that are not in the public pool.
 
+**Benchmark pool reproducibility (open).** The pool is consensus state, and
+the default loader does not produce the same one for everybody. GPQA is a gated
+Hugging Face dataset, so `load_all()` raises for an operator without a token and
+returns a *larger* pool for one with it. LiveCodeBench loads zero questions on
+current `datasets` versions but loads normally for anyone who has manually
+placed `data/benchmarks/livecode.json`. Either divergence produces proofs that
+fail on `questions_hash`, an error that names the symptom and never the cause.
+Until the pool is published as a hash-pinned artifact and every neuron is
+pointed at it with `FUGAL_BENCHMARK_POOL`, the loader is a consensus hazard.
+
+**A stable TDX measurement does not exist yet (open, blocks `--live`).**
+`measurement_id` is sha256 over MRTD and RTMR0-2. On a stock cloud guest image
+RTMR0 varies with the machine shape — a 4-vCPU and an 8-vCPU instance measure
+differently — and RTMR1/RTMR2 change on every kernel package update. As a
+consensus parameter it would need republishing on each `apt upgrade` and would
+fork the subnet by instance size. A reproducibly-built guest image with a
+pinned kernel and initrd is a prerequisite for `--live`, and is not built.
+
 **Price table staleness.** `data/models.json` is hash-pinned, so scoring is
 deterministic, but it does not track provider price changes on its own. The
 metering proxy records the provider's reported cost alongside the table price
@@ -212,6 +254,12 @@ All of these run in CI on every push. None requires a chain, a network, or API
 spend.
 
 ## Before mainnet
+
+See [MAINNET_LAUNCH.md](MAINNET_LAUNCH.md) for the operational sequence. Item 1
+below was done on netuid 552 and turned up a defect no local run could: the
+subnet had never been activated. `start_call` was never made, so it had no
+first-emission block — staking was rejected, no validator earned a permit, and
+every `set_weights` failed while the neurons reported success.
 
 1. Deploy on testnet with two validators and verify they produce identical
    weights from the same set of TEE proofs, and identical reference frames from

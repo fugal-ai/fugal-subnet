@@ -257,6 +257,34 @@ not. On a live `c3-standard-4` TD (6.17.0-1022-gcp):
   quote** — sysfs value and quote value identical.
 - `measurement_id` is unchanged by the extend, as designed.
 
+### I8 — the approved entry is a PAIR, not a hash
+
+An approved-list entry is `<base_measurement>` or `<base_measurement>:<app_identity>`.
+
+    base_measurement = sha256(MRTD || RTMR1 || RTMR2)     what booted
+    app_identity     = sha384(source || pool || grader || upstream)   what ran
+
+**Kept as two halves rather than one hash, deliberately.** They have different
+lifecycles and different approvers: the base rotates when the image or kernel
+changes, on the cloud provider's schedule; the app identity rotates when our
+code, pool, grader or upstream changes, on ours. Hashing them together would
+force one rotation for either event and make "what code is approved"
+unreadable. Apart, the app identity is computable off-hardware straight from the
+repo — so **what code the subnet accepts is reviewable in a pull request**
+instead of requiring someone to hold a quote.
+
+Rotation follows from the shape rather than needing a mechanism of its own:
+publish the new value, approve both during the transition window, retire the
+old. Each half rotates independently. A bare base remains valid and means "this
+image is approved, nothing is required of RTMR3" — which is the honest state on
+an unlocked image, where an RTMR3 match proves nothing because an attacker
+running modified code simply extends the expected value.
+
+**What locking the image changes is which half is trustworthy, not what the
+halves are.** That is why this definition is not dstack-specific: dstack moves
+the extend into a measured initrd and adds entries to the log, and the pair
+above is unchanged.
+
 **It is an extend, not a set.** The hardware computes
 `RTMR = SHA384(RTMR || input)` from 48 zero bytes at boot, so the register never
 holds the value written. Confirmed by replay: writing

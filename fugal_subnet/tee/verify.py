@@ -35,6 +35,7 @@ import logging
 from dataclasses import dataclass
 
 from fugal_subnet.tee.attestation import (
+    expected_rtmr3,
     extract_report_data,
     measurement_id,
     parse_quote,
@@ -55,6 +56,40 @@ class VerifyResult:
     valid: bool
     reason: str = ""
     warnings: list[str] | None = None
+
+
+def parse_approved(entries) -> dict[str, set[str]]:
+    """Turn the approved list into {base_measurement: {app_identity, ...}}.
+
+    An entry is either
+
+        <base>                 the image is approved, nothing is required of RTMR3
+        <base>:<app_identity>  and the runtime identity must also match
+
+    Two halves rather than one hash, because they have different lifecycles and
+    different approvers. The base rotates when the image or kernel changes,
+    which is the cloud provider's schedule; the app identity rotates when our
+    code, pool or grader changes, which is ours. Hashing them together would
+    force a single rotation for either event and make "what code is approved"
+    unreadable. Kept apart, the app identity is computable off-hardware from the
+    repo, so it is reviewable in a pull request instead of requiring someone to
+    hold a quote.
+
+    A bare base is the pre-existing behaviour and stays valid: on an unlocked
+    image an RTMR3 match proves nothing anyway, since an attacker running
+    modified code extends whatever value is expected. Requiring it becomes
+    meaningful when the extend is performed from a measured initrd.
+    """
+    out: dict[str, set[str]] = {}
+    for raw in entries:
+        entry = str(raw).strip()
+        if not entry:
+            continue
+        base, _, app = entry.partition(":")
+        out.setdefault(base.strip(), set())
+        if app.strip():
+            out[base.strip()].add(app.strip())
+    return out
 
 
 def verify_proof(
@@ -146,13 +181,32 @@ def verify_proof(
 
     # 3. Approved runtime image, from the hardware's own measurement registers.
     if not mock:
+        approved = parse_approved(approved_measurements)
         measured = measurement_id(quote)
-        if measured not in approved_measurements:
+        if measured not in approved:
             return VerifyResult(
                 False,
                 f"Unapproved runtime image: measurement {measured[:16]}... "
-                f"not among {len(approved_measurements)} approved measurements",
+                f"not among {len(approved)} approved measurements",
             )
+
+        # 3b. Runtime identity, when the approved entry names one.
+        #     RTMR3 is an EXTEND, not a set — the register holds
+        #     SHA384(SHA384(...zeros || first) || second)..., never the value
+        #     written. So this replays from zero and compares the result to what
+        #     the CPU signed, which is also what makes an untrusted extend log
+        #     safe to read later: a log that does not reproduce the quote's
+        #     register is discarded before any field of it is believed.
+        required_apps = approved[measured]
+        if required_apps:
+            candidates = {expected_rtmr3(app) for app in required_apps}
+            if quote.rtmr3 not in candidates:
+                return VerifyResult(
+                    False,
+                    f"Runtime identity mismatch: RTMR3 {quote.rtmr3[:16]}... "
+                    f"replays from none of the {len(required_apps)} approved "
+                    f"runtime identities for this image",
+                )
 
     # 4. Nonce — ties the proof to this epoch's unpredictable block hash.
     if proof.nonce != expected_nonce:

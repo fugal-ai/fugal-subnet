@@ -695,3 +695,64 @@ def test_parse_quote_rejects_non_tdx():
     struct.pack_into("<I", bad, 4, 0x0)  # tee_type: not TDX
     with pytest.raises(ValueError, match="not TDX"):
         parse_quote(bytes(bad))
+
+
+# --- runtime identity in the approved list (I8) --------------------------------
+
+def test_parse_approved_accepts_bare_and_paired_entries():
+    """A bare base is the pre-existing behaviour and must keep working."""
+    from fugal_subnet.tee.verify import parse_approved
+
+    parsed = parse_approved(["base1", "base2:app_a", "base2:app_b", " base3 "])
+    assert parsed["base1"] == set()                      # nothing required of RTMR3
+    assert parsed["base2"] == {"app_a", "app_b"}         # transition window: two approved
+    assert "base3" in parsed                             # whitespace tolerated
+    assert not parse_approved(["", "   "])
+
+
+def test_rtmr3_is_replayed_not_compared():
+    """The register never holds the value written to it.
+
+    RTMR = SHA384(RTMR || input) from 48 zero bytes at boot, measured on live
+    TDX. A verifier comparing RTMR3 to the identity directly would reject every
+    honest miner, so this pins the replay.
+    """
+    import hashlib
+
+    from fugal_subnet.tee.attestation import expected_rtmr3, replay_rtmr, runtime_identity
+
+    identity = runtime_identity("src", "pool", "grader", "https://openrouter.ai/api/v1")
+    assert expected_rtmr3(identity) != identity, "compared instead of replayed"
+    assert expected_rtmr3(identity) == hashlib.sha384(
+        bytes(48) + bytes.fromhex(identity)
+    ).hexdigest()
+    assert replay_rtmr([]) == "00" * 48
+    # Order is load-bearing: two extends are not commutative.
+    other = runtime_identity("other", "pool", "grader", "")
+    assert replay_rtmr([identity, other]) != replay_rtmr([other, identity])
+
+
+def test_replay_rejects_wrong_width_extends():
+    from fugal_subnet.tee.attestation import replay_rtmr
+
+    with pytest.raises(ValueError, match="SHA384"):
+        replay_rtmr(["00" * 32])          # a SHA256 digest is the wrong width
+
+
+def test_approved_entry_with_app_identity_binds_rtmr3():
+    """A paired entry must reject a TD whose RTMR3 replays from something else.
+
+    Advisory in trust terms until the image is locked — an attacker on an
+    unlocked filesystem extends whatever is expected — but the machinery has to
+    exist and be correct before locking the image can make it evidence.
+    """
+    from fugal_subnet.tee.attestation import runtime_identity
+    from fugal_subnet.tee.verify import parse_approved
+
+    honest = runtime_identity("src", "pool", "grader", "https://openrouter.ai/api/v1")
+    substituted = runtime_identity("src", "pool", "grader", "http://127.0.0.1:8799")
+    assert honest != substituted, "the upstream must change the identity"
+
+    parsed = parse_approved([f"base:{honest}"])
+    assert parsed["base"] == {honest}
+    assert substituted not in parsed["base"]

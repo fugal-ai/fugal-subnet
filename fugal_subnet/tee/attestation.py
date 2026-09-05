@@ -195,6 +195,46 @@ def runtime_identity(source_hash: str, pool_hash: str, grader_hash: str,
     return hashlib.sha384(payload.encode()).hexdigest()
 
 
+def replay_rtmr(extends, initial: bytes = b"\x00" * _RTMR_DIGEST_BYTES) -> str:
+    """Recompute an RTMR from the sequence of values extended into it.
+
+    THE REGISTER NEVER HOLDS THE VALUE WRITTEN TO IT. The hardware computes
+    `RTMR = SHA384(RTMR || input)` starting from 48 zero bytes at boot, so a
+    verifier can never compare an RTMR to the digest someone claims to have
+    extended — it has to replay the chain and check the result matches what the
+    CPU signed. Confirmed on live TDX rather than assumed: writing
+    sha384(b"fugal-runtime-test") to a fresh TD produced exactly
+    sha384(bytes(48) + input).
+
+    That is also what makes an untrusted extend log safe to read. The log
+    arrives from a miner and is believable only because replaying it must
+    reproduce a value inside the Intel-signed quote; anything invented fails to
+    reproduce it. Verify the replay before trusting a single field.
+    """
+    reg = initial
+    for i, item in enumerate(extends):
+        digest = bytes.fromhex(item) if isinstance(item, str) else bytes(item)
+        if len(digest) != _RTMR_DIGEST_BYTES:
+            raise ValueError(
+                f"extend {i} is {len(digest)} bytes; RTMR extends are "
+                f"{_RTMR_DIGEST_BYTES} (SHA384)"
+            )
+        reg = hashlib.sha384(reg + digest).digest()
+    return reg.hex()
+
+
+def expected_rtmr3(runtime_identity_hex: str) -> str:
+    """RTMR3 as it should read after exactly one extend of this identity.
+
+    The single-entry case of `replay_rtmr`, which is what a Fugal miner
+    produces today: one extend at startup, from a register the hardware zeroed
+    at boot. A dstack image extends RTMR3 several times from its initrd, so
+    that case needs the full event log — this is the shape the verifier grows
+    into, not a different mechanism.
+    """
+    return replay_rtmr([runtime_identity_hex])
+
+
 def extend_rtmr3(identity_hex: str) -> bool:
     """Extend RTMR3 with the runtime identity. True if the hardware took it.
 

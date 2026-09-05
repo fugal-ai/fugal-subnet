@@ -439,17 +439,28 @@ def _warn_if_unreachable(published_ip: str, port: int) -> None:
     and a failure is worth a line the operator can act on.
     """
     import socket
+    import time as _time
 
     if not published_ip or published_ip in ("0.0.0.0", ""):
         return
-    try:
-        with socket.create_connection((published_ip, port), timeout=5):
-            # Something accepted. That is all a TCP connect can tell us — it
-            # does not prove the responder is this axon, which is why the port
-            # is claimed before serving rather than inferred after.
-            logger.info("Axon accepts connections at %s:%d", published_ip, port)
-            return
-    except OSError as e:
+    # axon.start() returns before its server thread is listening, so a single
+    # immediate probe reports "connection refused" on a perfectly healthy
+    # miner. Retry briefly: a false alarm here trains an operator to ignore
+    # the one warning that means their miner earns nothing.
+    deadline = _time.monotonic() + 20
+    e: OSError | None = None
+    while _time.monotonic() < deadline:
+        try:
+            with socket.create_connection((published_ip, port), timeout=5):
+                # Something accepted. That is all a TCP connect can tell us —
+                # it does not prove the responder is this axon, which is why
+                # the port is claimed before serving rather than inferred after.
+                logger.info("Axon accepts connections at %s:%d", published_ip, port)
+                return
+        except OSError as err:
+            e = err
+            _time.sleep(1)
+    if e is not None:
         logger.warning(
             "Could not connect to this miner's own published address %s:%d (%s). "
             "If this host does not route its public IP back to itself this is "

@@ -728,6 +728,8 @@ def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
     the grounds that a miner "looks ready" — that would reintroduce exactly the
     wall-clock dependence the fixed point exists to remove.
     """
+    announced = False
+    last_log = 0.0
     while True:
         try:
             current = subtensor.get_current_block()
@@ -738,8 +740,15 @@ def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
         if current >= target_block:
             return
         remaining = target_block - current
-        logger.info("Waiting for collection block %d (%d blocks, ~%.0f min)",
-                    target_block, remaining, remaining * _BLOCK_TIME_S / 60)
+        # Say it once, then rarely. A line every minute for half an epoch is
+        # noise an operator learns to scroll past, and the next thing they
+        # scroll past is the one that mattered.
+        now = time.monotonic()
+        if not announced or now - last_log >= 300:
+            logger.info("Waiting for collection block %d (%d blocks, ~%.0f min)",
+                        target_block, remaining, remaining * _BLOCK_TIME_S / 60)
+            announced = True
+            last_log = now
         time.sleep(min(poll_s * max(1, remaining), 60))
 
 

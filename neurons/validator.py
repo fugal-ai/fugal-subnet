@@ -194,6 +194,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         ReferenceFrame,
         accumulate_exploration,
         best_model,
+        implausible_exploration,
         load_bootstrap,
         reference_cost,
     )
@@ -479,6 +480,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 for proof in verified_proofs.values()
                 for r in proof.exploration_results
             ]
+            # Detection only, BEFORE folding this epoch's samples in, so a
+            # miner is compared against history rather than against a frame it
+            # has just contributed to. Never touches a score: I4 says a miner's
+            # score cannot depend on other miners, and the frame is built from
+            # everyone. This makes the upstream-substitution attack visible and
+            # attributable; only measuring the upstream closes it.
+            suspicious = implausible_exploration(frame, {
+                uid: [(r.routed_model, r.correct) for r in proof.exploration_results]
+                for uid, proof in verified_proofs.items()
+            })
+            for uid, why in suspicious.items():
+                logger.warning(
+                    "UID %d exploration is implausible: %s. Not penalised — this "
+                    "is advisory. See docs/INVARIANTS.md, 'The model upstream is "
+                    "miner-controlled'.", uid, why,
+                )
+
             frame = accumulate_exploration(frame, samples)
             ref_model, acc_best = best_model(frame, prices)
             logger.info(
@@ -625,6 +643,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
             if not reveal_ok:
                 anomalies.append("commit_reveal_failed")
+            for uid, why in suspicious.items():
+                # In the published epoch log so it is attributable after the
+                # fact by anyone, not just whoever was reading the validator's
+                # console at the time.
+                anomalies.append(f"implausible_exploration: uid {uid}: {why}")
 
             epoch_log = EpochLog(
                 epoch_id=epoch_id, block_hash=block_hash,

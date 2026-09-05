@@ -111,6 +111,69 @@ def decay_factor(half_life: int) -> float:
     return 2.0 ** (-1.0 / max(1, half_life))
 
 
+def implausible_exploration(
+    frame: "ReferenceFrame | None",
+    per_miner: dict[int, list[tuple[str, bool]]],
+    min_samples: int = 8,
+    margin: float = 0.35,
+) -> dict[int, str]:
+    """Miners whose exploration answers are too good for the models they used.
+
+    DETECTION ONLY. It returns descriptions, never a score adjustment, and the
+    caller must not let it move weights — see I4. A miner's score may not depend
+    on other miners, and while this compares against the FRAME (accumulated over
+    time) rather than against this epoch's field, the frame is still built from
+    everyone. Making it advisory keeps I4 intact and still turns an invisible
+    attack into an attributable one.
+
+    WHAT IT CATCHES. The model upstream is read from an environment variable
+    inside the miner's own TD, and that TD holds every question's gold answer,
+    so a miner can serve itself gold and report perfect accuracy at near-zero
+    cost with every hash binding intact. Nothing prevents that today. But
+    exploration questions are answered with a model the NONCE chooses, not the
+    miner, and the frame already knows roughly how good each model is. A miner
+    returning gold for everything reports ~100% on models the frame has measured
+    at 50-70%, on every model, every epoch. Honest miners cannot do that.
+
+    It is a heuristic and it is stated as one: a genuinely lucky epoch on few
+    samples looks the same, which is why `min_samples` exists, and a miner who
+    fakes only plausible accuracy evades it entirely. It raises the cost of the
+    attack from free and invisible to visible and attributable. It does not
+    close the hole; only measuring the upstream does.
+    """
+    if frame is None:
+        return {}
+    flagged: dict[int, str] = {}
+    for uid, results in sorted(per_miner.items()):
+        by_model: dict[str, list[bool]] = {}
+        for model, correct in results:
+            by_model.setdefault(model, []).append(bool(correct))
+        n_total = sum(len(v) for v in by_model.values())
+        if n_total < min_samples:
+            continue
+        # Expected accuracy is the frame's estimate for the models this miner
+        # was actually assigned, weighted by how many of each it answered.
+        expected = 0.0
+        observed = 0.0
+        measured = 0
+        for model, outcomes in by_model.items():
+            if frame.trials.get(model, 0.0) < 1.0:
+                continue                      # frame has never seen it; no basis
+            expected += frame.accuracy(model) * len(outcomes)
+            observed += sum(outcomes)
+            measured += len(outcomes)
+        if measured < min_samples:
+            continue
+        exp_rate, obs_rate = expected / measured, observed / measured
+        if obs_rate - exp_rate > margin:
+            flagged[uid] = (
+                f"exploration accuracy {obs_rate:.0%} against a reference-frame "
+                f"expectation of {exp_rate:.0%} over {measured} samples on "
+                f"{len(by_model)} nonce-chosen models"
+            )
+    return flagged
+
+
 def accumulate_exploration(
     frame: ReferenceFrame | None,
     samples: list[tuple[str, bool, int, int]],

@@ -147,12 +147,30 @@ _TSM_MR_RTMR3 = "/sys/class/misc/tdx_guest/mr/rtmr3"
 _RTMR_DIGEST_BYTES = 48
 
 
-def runtime_identity(source_hash: str, pool_hash: str, grader_hash: str) -> str:
+def runtime_identity(source_hash: str, pool_hash: str, grader_hash: str,
+                     upstream: str = "") -> str:
     """Digest of what this runtime *is*, for extension into RTMR3.
 
-    Three things decide what a proof means: the code that produced it, the pool
-    the slice was drawn from, and the grader that judged the answers. A change
-    to any of them changes every grade, so they are the runtime's identity.
+    Four things decide what a proof means: the code that produced it, the pool
+    the slice was drawn from, the grader that judged the answers, and WHERE THE
+    ANSWERS CAME FROM. A change to any of them changes every grade, so they are
+    the runtime's identity.
+
+    The upstream is here because leaving it out was a complete break of the
+    incentive mechanism. It is read from FUGAL_OPENROUTER_BASE inside the
+    miner's own TD, and the pool in that TD carries every question's gold
+    answer — so a miner pointing it at a server of their own returns gold with
+    two tokens of usage and collects perfect accuracy at near-zero attested
+    cost, with every hash binding, the DCAP signature and the approved
+    measurement still passing. Nothing else in the proof records it.
+
+    Including it does not forbid configuration, which is the right shape: an
+    operator may legitimately front OpenRouter with a gateway or a regional
+    endpoint, and a local testnet may point at a stub. What changes is that a
+    different upstream produces a different identity, so the network decides
+    which configurations it will accept rather than trusting that nobody
+    changed one. Advisory until the image is locked, like everything else in
+    this register — see docs/INVARIANTS.md I8.
 
     Deliberately excludes anything per-epoch — nonce, slice, results. A register
     that moves with runtime data can never be on an approved list, which is the
@@ -162,7 +180,12 @@ def runtime_identity(source_hash: str, pool_hash: str, grader_hash: str) -> str:
 
     SHA384 to match the RTMR register width.
     """
-    payload = "|".join(("fugal-runtime-v1", source_hash, pool_hash, grader_hash))
+    # v2: the version tag is part of the payload, so adding the upstream
+    # deliberately changes every identity rather than silently colliding with
+    # a v1 value computed without it.
+    payload = "|".join(
+        ("fugal-runtime-v2", source_hash, pool_hash, grader_hash, upstream)
+    )
     return hashlib.sha384(payload.encode()).hexdigest()
 
 

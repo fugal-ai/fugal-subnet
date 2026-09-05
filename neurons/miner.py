@@ -167,12 +167,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         from fugal_subnet.benchmarks.loader import pool_hash as _pool_hash
         from fugal_subnet.graders import grader_hash
         from fugal_subnet.tee.attestation import extend_rtmr3, runtime_identity
-
+        from fugal_subnet.tee.runtime import _OPENROUTER_BASE
         identity = runtime_identity(
             source_hash=_get_source_hash(),
             pool_hash=_pool_hash(pool),
             grader_hash=grader_hash(),
+            upstream=_OPENROUTER_BASE,
         )
+        logger.info("Model upstream: %s", _OPENROUTER_BASE)
         if extend_rtmr3(identity):
             logger.info(
                 "Runtime identity %s extended into RTMR3 (ADVISORY: not "

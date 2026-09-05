@@ -277,3 +277,45 @@ def test_exploration_targets_are_not_miner_chosen():
 
     # Targets spread across the pool rather than collapsing onto one model.
     assert len(set(a.values())) > 1
+
+
+def test_implausible_exploration_flags_a_gold_returning_miner():
+    """The upstream-substitution attack must at least become visible.
+
+    A miner that serves itself the gold answers reports ~100% on models the
+    reference frame has measured far lower — on every model, every epoch. This
+    does not prevent the attack and is not allowed to affect a score; it makes
+    it attributable.
+    """
+    from fugal_subnet.reference_frame import ReferenceFrame, implausible_exploration
+
+    frame = ReferenceFrame()
+    for model, acc in (("cheap", 0.5), ("mid", 0.6)):
+        frame.trials[model] = 200.0
+        frame.successes[model] = 200.0 * acc
+
+    honest = [("cheap", i % 2 == 0) for i in range(10)]        # ~50%, as expected
+    cheating = [("cheap", True) for _ in range(10)]            # 100%, impossible
+
+    flagged = implausible_exploration(frame, {1: honest, 2: cheating})
+    assert 2 in flagged, "a miner returning gold for everything was not flagged"
+    assert 1 not in flagged, "an honest miner was flagged"
+    assert "exploration accuracy" in flagged[2]
+
+
+def test_implausible_exploration_needs_evidence_before_it_accuses():
+    """A short lucky run must not be an accusation, and an unmeasured model
+    gives no basis to judge one."""
+    from fugal_subnet.reference_frame import ReferenceFrame, implausible_exploration
+
+    frame = ReferenceFrame()
+    frame.trials["cheap"] = 200.0
+    frame.successes["cheap"] = 100.0
+
+    lucky_but_short = [("cheap", True) for _ in range(3)]
+    assert not implausible_exploration(frame, {1: lucky_but_short})
+
+    unmeasured = [("never-seen", True) for _ in range(20)]
+    assert not implausible_exploration(frame, {1: unmeasured})
+
+    assert not implausible_exploration(None, {1: [("cheap", True)] * 20})

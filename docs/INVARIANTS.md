@@ -132,7 +132,13 @@ Fugal code ran.** Measured directly on a live TD: a line was appended to
     before   a68d0ccd3473a6c44fa9689cfdcf22066bc83e232efeaf33cc0341d0c532ae65
     after    a68d0ccd3473a6c44fa9689cfdcf22066bc83e232efeaf33cc0341d0c532ae65
 
-Identical. `measurement_id` is sha256 over MRTD and RTMR0-2 — firmware,
+Identical. **Those two values are now STALE and must not be copied anywhere.**
+They were computed while `measurement_id` still included RTMR0; it no longer
+does, so the current code produces a different number for the same TD. The
+finding they demonstrate — that editing the harness changes nothing — is
+unaffected, because dropping RTMR0 does not bring the filesystem into the
+measurement. Every published measurement needs recomputing on hardware before it
+is used, and none appear in this repository as an approved value. `measurement_id` is sha256 over MRTD and RTMR0-2 — firmware,
 bootloader, kernel, initrd — and `attestation.measurement_id` excludes RTMR3
 deliberately, because RTMR3 is application-extendable and including runtime data
 would mean no image could stay on an approved list. That reasoning is sound and
@@ -157,7 +163,7 @@ over the wrong bytes.
 
 **What the real-hardware negative control actually proved.** A second VM on the
 same machine type but a **different OS image**
-(`ubuntu-2204-jammy-v20260826`, measurement `f83820ad0424…`) produced a genuine
+(`ubuntu-2204-jammy-v20260826`; its measurement is likewise stale post-RTMR0-removal and deliberately not quoted) produced a genuine
 Intel-signed quote that passed DCAP and was still rejected as an unapproved
 runtime image. That is real and worth having: a different boot chain is refused.
 It is *not* what an earlier revision of this document claimed — that modified
@@ -361,8 +367,10 @@ pointed at it with `FUGAL_BENCHMARK_POOL`, the loader is a consensus hazard.
 `--live`).** `measurement_id` is sha256 over MRTD and RTMR0-2. Measured on real
 TDX hardware rather than reasoned about: two independently created
 `c3-standard-4` instances, both pinned to `ubuntu-2404-noble-amd64-v20260903`,
-created 15 minutes apart with the first deleted in between, produced the
-**bit-identical** measurement `a68d0ccd3473a6c4…` — every register matching.
+created 15 minutes apart with the first deleted in between, produced a
+**bit-identical** measurement — every register matching. (The value itself is
+not reproduced here: it predates the removal of RTMR0 from `measurement_id` and
+would be wrong today. The reproducibility result stands; the number does not.)
 
 So the value is reproducible today, provided two variables are pinned:
 

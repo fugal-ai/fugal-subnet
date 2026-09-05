@@ -123,16 +123,55 @@ architecture — every other Bittensor subnet has miners pay for expensive work.
 inference cost. Miners pay for their own API calls inside the TEE, metered by
 the attested MeteringProxy.
 
-### I8 — verified on real hardware
+### I8 — BROKEN AS IMPLEMENTED: the measurement does not cover the miner's code
 
-The negative control has now been run on genuine TDX silicon rather than a
-synthetic quote. A second confidential VM on the same machine type but a
-different image (`ubuntu-2204-jammy-v20260826`, measurement `f83820ad0424…`)
-produced a real Intel-signed quote that **passed** DCAP verification and was
-still **rejected** by `verify_proof` with only the approved 24.04 measurement in
-the set: *"Unapproved runtime image"*. Real hardware, real signature, code we
-did not approve, refused. That is the property the whole attestation design
-rests on, and it is now evidence rather than an argument.
+**`measurement_id` proves which operating system booted. It does not prove which
+Fugal code ran.** Measured directly on a live TD: a line was appended to
+`fugal_subnet/tee/harness.py` and the TD re-measured.
+
+    before   a68d0ccd3473a6c44fa9689cfdcf22066bc83e232efeaf33cc0341d0c532ae65
+    after    a68d0ccd3473a6c44fa9689cfdcf22066bc83e232efeaf33cc0341d0c532ae65
+
+Identical. `measurement_id` is sha256 over MRTD and RTMR0-2 — firmware,
+bootloader, kernel, initrd — and `attestation.measurement_id` excludes RTMR3
+deliberately, because RTMR3 is application-extendable and including runtime data
+would mean no image could stay on an approved list. That reasoning is sound and
+its consequence is fatal: the repo is git-cloned onto an **unmeasured
+filesystem** at runtime, and nothing measures it.
+
+So a miner can edit the line in `harness.py` that records results, inside a
+genuine TD running a genuinely approved image, and produce a proof that passes
+every check in `verify.py`. The chain this module documents:
+
+    measurement_id(quote) in approved_measurements
+      -> the image that ran is the published one          <- OS only
+    report_data == proof.content_hash()
+      -> the proof body is exactly what that image produced  <- FALSE
+
+The second claim does not hold. It is "exactly what *something running on that
+OS* produced". `verify.py` correctly rejects `proof.source_hash` as
+self-declared and names the exact attack — *"DCAP verification passes for an
+attacker who simply runs modified code on real hardware"* — then defends against
+it with a measurement that does not include the code. The right kind of defence,
+over the wrong bytes.
+
+**What the real-hardware negative control actually proved.** A second VM on the
+same machine type but a **different OS image**
+(`ubuntu-2204-jammy-v20260826`, measurement `f83820ad0424…`) produced a genuine
+Intel-signed quote that passed DCAP and was still rejected as an unapproved
+runtime image. That is real and worth having: a different boot chain is refused.
+It is *not* what an earlier revision of this document claimed — that modified
+*code* is refused. Modified code on an approved image is accepted.
+
+**What would fix it.** The code has to be inside the measured boot chain:
+baked into a purpose-built guest image so it lands in MRTD/RTMR1/RTMR2, or on a
+dm-verity volume whose roothash sits on the kernel command line, which the
+bootloader measures. Extending RTMR3 from the application cannot work — an
+attacker who controls the code controls what it extends.
+
+**Until then `--live` binds less than it appears to**, and no rotation procedure
+changes that: rotating an approved list of measurements that do not cover the
+workload rotates a value proving only which OS booted.
 
 Operational consequence for validators: DCAP collateral is fetched from Intel's
 PCS directly, with no local caching service. A `--live` validator therefore

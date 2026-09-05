@@ -66,14 +66,28 @@ the current defect survived.
 
 ### 2. Build the sandbox — ~2 days
 
-`bubblewrap` needs no root and is already present on the project's machines:
+`bubblewrap`, with two corrections to an earlier draft of this plan that were
+found by trying it on an actual TDX guest rather than on a laptop:
+
+- **It is not installed** on a stock Ubuntu 24.04 TDX image; it has to be added
+  to whatever image is built.
+- **It does not run unprivileged there.** 24.04 sets
+  `kernel.apparmor_restrict_unprivileged_userns=1`, and unprivileged bwrap fails
+  with `loopback: Failed RTM_NEWADDR: Operation not permitted`. It works as
+  root, which the miner already is — it needs root for configfs quote
+  generation — so this is workable, but "no root required" was wrong.
+
+The bind list below is also fuller than the earlier draft, which omitted `/bin`,
+`/etc` and the virtualenv, so `python3` did not resolve at all:
 
 ```
 bwrap --unshare-all --die-with-parent \
-      --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /lib64 /lib64 \
+      --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /etc /etc \
+      --ro-bind /lib /lib --ro-bind /lib64 /lib64 \
+      --ro-bind <venv> <venv> \
       --tmpfs /tmp --proc /proc --dev /dev \
       --chdir /tmp \
-      python3 program.py
+      <venv>/bin/python3 program.py
 ```
 
 `--unshare-all` gives network, PID, IPC, UTS and mount namespaces in one flag.
@@ -120,13 +134,28 @@ derived from the flag, so the benchmarks return automatically — there is no
 second place to edit. Then run a live epoch and confirm HumanEval scores
 non-zero for a competent model, which is the observation that started this.
 
-### 6. Roll out — gated, and the long pole
+### 6. Roll out — NOT gated, for a reason that is itself the problem
 
-Changing `harness.py` changes the TD image, which changes `measurement_id`. Every
-miner must move to a new approved image at the same time or their proofs stop
-verifying. **This requires the measurement rotation procedure, which does not
-exist yet** — see the open gap in `INVARIANTS.md`. Do not schedule phase 6 before
-that is designed.
+An earlier revision of this plan said phase 6 was blocked on measurement
+rotation, because changing `harness.py` would change the TD image and force a
+coordinated miner upgrade.
+
+**That premise is wrong, and it was tested rather than reasoned about.** A line
+was appended to `harness.py` on a live TD and the measurement was identical
+before and after. `measurement_id` covers MRTD and RTMR0-2 — firmware,
+bootloader, kernel, initrd — and the repo is git-cloned onto an unmeasured
+filesystem at runtime. Changing the harness changes nothing the attestation sees.
+
+So this phase needs no coordination and is not blocked. It is also a warning
+about the thing this plan is protecting: if changing the harness does not change
+the measurement, then the approved-measurement check never bound the harness,
+and a miner can edit grading code inside a genuinely approved TD. See I8 in
+`INVARIANTS.md`.
+
+That does not stop phases 1-5, which are worth doing on their own merits — a
+sandbox is right whether or not the measurement covers it. But **the sandbox
+protects an honest miner's enclave from model output; it does not protect the
+subnet from a dishonest miner**, and only a measured code image does that.
 
 ## Sequencing
 

@@ -114,11 +114,36 @@ model is not yet enforced. See [TDX_VALIDATION.md](TDX_VALIDATION.md).
 
 ### 6. Miner startup cost
 
-Backbone embeddings for the 21,717-question pool take **2h28m** on an x86_64
-laptop and **7h20m** on a 4-core aarch64 VM. They are now cached to disk keyed
-by `pool_hash`, backbone, batch size and machine, so this is paid once rather
-than on every restart — but it *is* paid once, and a miner is unreachable for
-the duration. Warm the cache before registering, not after.
+Backbone embeddings for the 21,717-question pool take **13.2 hours** on an
+x86_64 laptop and **36 hours** on a 4-core aarch64 VM. Both measured on real
+pool prompts, which average 330 characters: 0.46 q/s and 0.167 q/s
+respectively. This is startup cost before the miner answers its first query.
+
+Beware benchmarking this with synthetic prompts. Short ones give 2.5 q/s and
+0.8 q/s — five times too optimistic — because cost scales with sequence length
+and the pinned batch size pads every item in a batch to its longest member.
+
+They are now cached to disk keyed by `pool_hash`, backbone, batch size and
+machine, so it is paid once rather than on every restart — but it *is* paid
+once, and the miner is unreachable for the duration. **Warm the cache before
+registering, not after.**
+
+Two consequences worth deciding on before launch, not after:
+
+- **Any pool change costs every miner a day of compute.** The pool is consensus
+  state, so it cannot be changed cheaply or often.
+- **The barrier to entry is a day of CPU.** The embeddings are a pure function
+  of pinned consensus inputs — the pool, the frozen backbone, the pinned batch
+  size — so the subnet could publish them as a hash-pinned artifact and let
+  miners verify rather than recompute. That is not built, and until it is, the
+  practical entry cost for a miner is much higher than the ~14KB head suggests.
+
+Note also that `fugal_subnet/determinism.py` pins the backbone to a single
+thread. That costs roughly a factor of four in throughput, and it buys less
+than it appears to: validators never run the backbone, and its output already
+differs across architectures. Raising the pin to a fixed thread count above one
+is the obvious lever on the figure above, but it is a consensus-adjacent change
+and needs its own verification before anyone reaches for it.
 
 The cache is shared by every miner on a host with the same pool, so three
 miners on one machine pay it once between them.

@@ -10,7 +10,7 @@ or interfering with a running subnet. The full live path in isolation:
 
     python scripts/verify_live_miner.py --netuid 552 --uid 5 \\
         --coldkey fugal_owner2 --hotkey default \\
-        --measurements a68d0ccd...  [--expect-reject]
+        --measurements a1ecb627...  [--expect-reject]
 
 `--expect-reject` inverts the assertion, which is how the negative control is
 run: the same genuine proof against a DIFFERENT approved set must be refused.

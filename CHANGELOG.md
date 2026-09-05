@@ -4,6 +4,8 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-05
+
 ### Fixed — first run against a real chain
 
 `scripts/dress_rehearsal.py` runs the shipped binaries against a real local
@@ -228,5 +230,6 @@ as an executable regression in `fugal_subnet/attacks/run_tee_attacks.py`:
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/fugal-ai/fugal-subnet/releases/tag/v0.1.0

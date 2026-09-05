@@ -602,6 +602,93 @@ def test_measurement_comes_from_the_quote_not_the_proof():
     assert measurement_id(quote) == measurement_id(parse_quote(proof.attestation_quote))
 
 
+def _quote_with_registers(rtmr0=b"\x00" * 48, rtmr1=b"\x00" * 48,
+                          rtmr2=b"\x00" * 48, rtmr3=b"\x00" * 48):
+    """A synthetic v4 quote with the four RTMRs set explicitly."""
+    import struct
+
+    q = bytearray(1000)
+    struct.pack_into("<H", q, 0, 4)             # version
+    struct.pack_into("<I", q, 4, 0x00000081)    # tee_type = TDX
+    q[376:424] = rtmr0
+    q[424:472] = rtmr1
+    q[472:520] = rtmr2
+    q[520:568] = rtmr3
+    return bytes(q)
+
+
+def test_measurement_id_ignores_rtmr0_machine_shape():
+    """RTMR0 must not change the identity. It is the host's TDVF config —
+    CPU count, memory size, device layout — chosen by the cloud provider and
+    not by us. Measured on live TDX: the same pinned image on two machine
+    shapes yields different RTMR0. Including it forked the approved list by
+    instance size while proving nothing about the code. INVARIANTS.md I8.
+    """
+    from fugal_subnet.tee.attestation import measurement_id
+
+    small = measurement_id(parse_quote(_quote_with_registers(rtmr0=b"\x11" * 48)))
+    large = measurement_id(parse_quote(_quote_with_registers(rtmr0=b"\x22" * 48)))
+    assert small == large, "measurement_id must not depend on RTMR0"
+
+
+def test_measurement_id_ignores_rtmr3_application_register():
+    """RTMR3 must not change the identity either. It is where the runtime
+    identity is extended, and a userspace extend is forgeable on an unlocked
+    image — an attacker extends whatever value we expect. Binding it is a
+    verification step against a replayed event log, never a term in this hash.
+    """
+    from fugal_subnet.tee.attestation import measurement_id
+
+    a = measurement_id(parse_quote(_quote_with_registers(rtmr3=b"\x33" * 48)))
+    b = measurement_id(parse_quote(_quote_with_registers(rtmr3=b"\x44" * 48)))
+    assert a == b, "measurement_id must not depend on RTMR3"
+
+
+def test_measurement_id_tracks_the_boot_chain():
+    """It must still change when the code the image boots changes. RTMR1 is
+    the kernel and RTMR2 the cmdline and initrd; a change to either is a
+    different runtime and must not pass as the approved one.
+    """
+    from fugal_subnet.tee.attestation import measurement_id
+
+    base = measurement_id(parse_quote(_quote_with_registers()))
+    kernel = measurement_id(parse_quote(_quote_with_registers(rtmr1=b"\x55" * 48)))
+    initrd = measurement_id(parse_quote(_quote_with_registers(rtmr2=b"\x66" * 48)))
+    assert base != kernel, "a different kernel must be a different identity"
+    assert base != initrd, "a different cmdline/initrd must be a different identity"
+
+
+def test_runtime_identity_is_register_width_and_deterministic():
+    """RTMRs are SHA384. A digest of any other width cannot be extended, and
+    the value must be reproducible off-hardware so an approved list of it is
+    reviewable in a pull request rather than requiring a live quote.
+    """
+    from fugal_subnet.tee.attestation import runtime_identity
+
+    args = ("a" * 64, "b" * 64, "sha256:" + "c" * 64)
+    ident = runtime_identity(*args)
+    assert len(bytes.fromhex(ident)) == 48, "RTMR3 needs a 48-byte SHA384 digest"
+    assert ident == runtime_identity(*args), "runtime identity must be deterministic"
+    # Each component is load-bearing: change any one and the identity moves.
+    assert runtime_identity("z" * 64, args[1], args[2]) != ident
+    assert runtime_identity(args[0], "z" * 64, args[2]) != ident
+    assert runtime_identity(args[0], args[1], "z" * 64) != ident
+
+
+def test_extend_rtmr3_reports_failure_rather_than_pretending():
+    """A miner that cannot extend must still run, because the value is not yet
+    enforced — but it must return False so the caller can say so. A silent
+    success here would be indistinguishable from a binding that never happened,
+    which is the exact shape of the humaneval bug.
+    """
+    from fugal_subnet.tee.attestation import extend_rtmr3
+
+    assert extend_rtmr3("not-hex") is False
+    assert extend_rtmr3("ab" * 32) is False          # 32 bytes, wrong width
+    # No /sys/class/misc/tdx_guest on a non-TDX host: must be False, not a raise.
+    assert extend_rtmr3("ab" * 48) is False
+
+
 def test_parse_quote_rejects_non_tdx():
     import struct
     bad = bytearray(_mock_quote(b"x" * 64))

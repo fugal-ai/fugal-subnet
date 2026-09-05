@@ -114,6 +114,22 @@ def load_all(strict: bool = True) -> list[dict]:
             logger.warning("Skipping benchmark %s: %s", name, e)
             continue
         if not items:
+            # Zero questions is a divergence, not a warning. It is the same
+            # hazard as a load failure and gets the same treatment: a benchmark
+            # that yields nothing here yields its full contents for anyone who
+            # has a local copy of it, so two operators build different pools,
+            # derive different slices, and every proof between them fails on
+            # questions_hash — an error that names the symptom and never the
+            # cause. LiveCodeBench does exactly this on current `datasets`
+            # versions. Absence has to be declared to be reproducible.
+            if strict:
+                raise RuntimeError(
+                    f"Benchmark {name!r} loaded 0 questions. An empty benchmark "
+                    f"is a silent pool divergence: anyone holding a local copy "
+                    f"of it builds a different pool and no proof between you "
+                    f"will verify. Add {name!r} to FUGAL_SKIP_BENCHMARKS to "
+                    f"declare the absence, or fix the load."
+                )
             logger.warning("Benchmark %s loaded 0 questions", name)
         pool.extend(items)
     logger.info("Benchmark pool: %d questions, pool_hash=%s",

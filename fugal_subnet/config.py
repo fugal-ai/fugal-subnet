@@ -32,6 +32,36 @@ SLICE_SIZE = int(os.getenv("FUGAL_SLICE_SIZE", "300"))
 # question, ample for serial API calls.
 EPOCH_COLLECT_FRACTION = float(os.getenv("FUGAL_COLLECT_FRACTION", "0.5"))
 
+# --- Grading policy ---
+# Whether the benchmark harness may EXECUTE model-produced code to grade it.
+#
+# Off, deliberately. graders.py's sandbox is process-level — rlimits, kill-tree,
+# DEVNULL, a size cap — with no filesystem or namespace isolation. Under --live
+# the miner controls where the metering proxy points, so it controls what
+# "model output" the harness receives; executing that inside the TD that
+# produces the attested proof would let a miner run chosen code in its own
+# enclave and walk away with a genuine Intel signature over forged results.
+# That is a total break of I8, not a contained risk.
+#
+# The cost of having it off was invisible and large. exec_io and exec_unittest
+# both return 0 unless permitted, and they are the checkers for humaneval and
+# livecode — so those questions could never score above zero, while miners paid
+# real API money attempting them. Because the slicer equalises benchmarks, that
+# was not humaneval's 0.8% share of the pool but a FULL SIXTH of every graded
+# slice, and routing those questions to a capable model was punished on thrift
+# with no possible quality gain. The scoring was teaching heads to route code to
+# the cheapest model available.
+#
+# So the pool now excludes what the harness cannot score (see loader.load_all),
+# derived from this flag rather than hardcoded: turning execution on re-includes
+# the benchmarks in one place. Doing that safely is docs/CODE_BENCHMARK_PLAN.md.
+HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "", "false", "False")
+
+# Checkers that grade by running the candidate's code, and therefore return 0
+# unless HARNESS_ALLOW_EXEC. Named here rather than in graders.py, which is
+# hash-pinned and must stay byte-identical.
+EXECUTION_CHECKERS = frozenset({"exec_io", "exec_unittest"})
+
 # --- Head constraints ---
 HEAD_MAX_BYTES = int(os.getenv("FUGAL_HEAD_MAX_BYTES", str(1 * 1024 * 1024)))  # 1 MB
 # Decompressed cap: a valid head is ~130 KB even at 64 models; 8 MB blocks zip bombs.

@@ -70,6 +70,35 @@ def pool_hash(pool: list[dict]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _drop_unscoreable(pool: list[dict]) -> list[dict]:
+    """Remove questions no checker can score under the current harness policy.
+
+    Derived from config.HARNESS_ALLOW_EXEC rather than hardcoded, so enabling
+    execution re-includes the benchmarks in exactly one place. A question the
+    harness cannot grade is not neutral: the miner still pays to answer it, and
+    since the slicer equalises benchmarks it was a full sixth of every graded
+    slice, punishing anyone who routed code to a capable model while no quality
+    was reachable. See docs/CODE_BENCHMARK_PLAN.md for putting them back.
+    """
+    from fugal_subnet.config import EXECUTION_CHECKERS, HARNESS_ALLOW_EXEC
+
+    if HARNESS_ALLOW_EXEC:
+        return pool
+    kept = [q for q in pool if q.get("grader_id") not in EXECUTION_CHECKERS]
+    dropped = len(pool) - len(kept)
+    if dropped:
+        from collections import Counter
+        by_bench = Counter(q.get("benchmark", "") for q in pool
+                           if q.get("grader_id") in EXECUTION_CHECKERS)
+        logger.warning(
+            "Excluded %d questions the harness cannot score (%s): their checkers "
+            "run candidate code and FUGAL_HARNESS_ALLOW_EXEC is off. They would "
+            "score zero for every miner while still costing them API spend.",
+            dropped, dict(by_bench),
+        )
+    return kept
+
+
 def load_all(strict: bool = True) -> list[dict]:
     """Load the full benchmark pool.
 
@@ -89,6 +118,7 @@ def load_all(strict: bool = True) -> list[dict]:
     if override:
         with open(override, encoding="utf-8") as f:
             pool = json.load(f)
+        pool = _drop_unscoreable(pool)
         logger.info(
             "Benchmark pool loaded from FUGAL_BENCHMARK_POOL=%s "
             "(%d questions, pool_hash=%s)",
@@ -132,6 +162,7 @@ def load_all(strict: bool = True) -> list[dict]:
                 )
             logger.warning("Benchmark %s loaded 0 questions", name)
         pool.extend(items)
+    pool = _drop_unscoreable(pool)
     logger.info("Benchmark pool: %d questions, pool_hash=%s",
                 len(pool), pool_hash(pool)[:16])
     _verify_against_manifest(pool, skip, strict)

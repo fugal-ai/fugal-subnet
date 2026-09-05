@@ -94,7 +94,10 @@ def main() -> int:
         with open(args.from_file, encoding="utf-8") as f:
             pool = json.load(f)
     else:
-        pool = load_all()
+        # strict=False deliberately: this is the tool that RESOLVES a manifest
+        # mismatch, so it must not be blocked by one. Requiring a valid manifest
+        # to rebuild the manifest is a lock with the key inside.
+        pool = load_all(strict=False)
 
     built = build(pool, skip)
     for k in ("n_questions", "pool_hash", "content_hash", "per_benchmark", "skip_benchmarks"):

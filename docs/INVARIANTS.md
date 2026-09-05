@@ -33,7 +33,7 @@ here, and a check that enforces it.**
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py` |
 | **I7** | **Auditability.** Any divergence between two validators is diagnosable after the fact from published artifacts. | `fugal_subnet/fingerprint.py`, `environment` block in every `reveal.json` |
-| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (11 cases, in CI), `check_tee_safety` |
+| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (11 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
 | **I9** | **Reference-frame agreement.** Every validator derives the same reference frame from the same published exploration samples, and no single miner can materially move it. | `fugal_subnet/reference_frame.py` (order-independent accumulation), `check_determinism.py` `frame` stage, `tests/test_non_interference.py` |
 
 ## How TEE resolves prior gaps
@@ -265,6 +265,28 @@ schedule set by someone else. There is no rotation procedure, and that is what
 blocks `--live` on mainnet. A reproducibly-built guest image (dstack, or one
 built in-house) removes the dependency entirely and remains the right long-term
 answer — but it is not required to obtain a working measurement now.
+
+**Code benchmarks are excluded (open, tracked).** The harness grades with
+`allow_exec=False`, and `exec_io`/`exec_unittest` — the checkers for humaneval
+and livecode — return 0 unless permitted. So those questions scored zero for
+every miner regardless of the answer, and because the slicer equalises
+benchmarks that was a full sixth of every graded slice, not humaneval's 0.8%
+share of the pool. Worse than dead weight: miners paid API cost for an
+impossible score, so routing code to a capable model was punished on thrift with
+no reachable quality, training heads toward the cheapest model on exactly the
+domain where routing matters most.
+
+`allow_exec=False` is correct as it stands. The sandbox in `graders.py` is
+process-level with no filesystem, namespace or network isolation, and under
+`--live` the miner controls what the metering proxy returns — so executing it
+inside the TD would let a miner run chosen code in its own enclave and obtain a
+genuine attestation over forged results. The pool now excludes what the harness
+cannot score, derived from `config.HARNESS_ALLOW_EXEC` so that enabling
+execution re-includes the benchmarks in one place.
+`tests/test_grader_policy.py` fails if the policy and the pool drift apart
+again, in either direction. Putting them back is
+[CODE_BENCHMARK_PLAN.md](CODE_BENCHMARK_PLAN.md), and its final phase needs the
+measurement rotation procedure that does not exist yet.
 
 **Price table staleness.** `data/models.json` is hash-pinned, so scoring is
 deterministic, but it does not track provider price changes on its own. The

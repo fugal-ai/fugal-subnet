@@ -166,8 +166,27 @@ It is *not* what an earlier revision of this document claimed — that modified
 **What would fix it.** The code has to be inside the measured boot chain:
 baked into a purpose-built guest image so it lands in MRTD/RTMR1/RTMR2, or on a
 dm-verity volume whose roothash sits on the kernel command line, which the
-bootloader measures. Extending RTMR3 from the application cannot work — an
-attacker who controls the code controls what it extends.
+bootloader measures. Extending RTMR3 *from the application itself* cannot work —
+an attacker who controls the code controls what it extends.
+
+**RTMR3 is not categorically useless, and this matters for the dstack decision.**
+`measurement_id()` excludes RTMR3 with this reasoning: it is the
+application-extendable register, so including runtime data would mean no image
+could ever stay on an approved list. That is correct for a register extended by
+the workload at arbitrary times with arbitrary values. It is **wrong** for a
+register extended once, at boot, by measured launch code, with a deterministic
+hash of the application — which is exactly what dstack does, extending RTMR3
+with the app/compose hash before the workload runs.
+
+So adopting dstack **without changing `measurement_id()` would reproduce this
+exact gap at the cost of weeks**: a better-built base image, still not binding
+the miner's code, because the register that binds it is the one being thrown
+away. Any decision to adopt dstack must include the consensus change to
+`attestation.py` that brings RTMR3 into the identity — deliberately, with the
+distinction above written down, not discovered afterwards.
+
+The general form, worth keeping: *an exclusion justified by an assumption
+survives the assumption's death unless someone re-reads the justification.*
 
 **Until then `--live` binds less than it appears to**, and no rotation procedure
 changes that: rotating an approved list of measurements that do not cover the

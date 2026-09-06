@@ -792,6 +792,47 @@ because both are decisions rather than typos:
     exactly this. Tightening it is a policy call that would start rejecting
     miners who pass now, so it is recorded here rather than changed silently.
 
+**How the wrong endpoint got recorded, because the shape recurs.** Nobody
+measured Intel. The observation was "no local PCCS is configured and
+verification succeeds", and the conclusion drawn was "therefore it goes to
+Intel directly". The real explanation was a library default nobody looked for.
+An inference was written down as a measurement, and an endpoint appeared in
+this document that had never been seen in a packet or a line of source. The
+correction came from reading `dcap_qvl/__init__.py`, not from observing traffic.
+Fourth instance today of a real observation describing a neighbouring thing.
+
+### I6 — a PCCS hang halts the subnet, and does it invisibly
+
+Two facts recorded separately above are far worse together, so they are stated
+here as one:
+
+  - every validator fetches collateral for every proof from **one host**, with
+    no caching, and they do it **simultaneously** because the collection point
+    is a deterministic block (I6/I9);
+  - the `timeout=30` does not apply on the validator's synchronous path, so a
+    slow PCCS blocks for as long as the HTTP client allows, per proof, serially.
+
+**The outage is the safe case; the hang is the dangerous one.** That is the
+counterintuitive part and it is why this needs writing down:
+
+| Phala state | What happens |
+|---|---|
+| **Down** — fast connection error | `verify_dcap` catches, returns False, every proof invalid, the epoch is skipped and logged with the `no_valid_proofs` anomaly. Visible, recoverable, no weights set. |
+| **Hanging** — accepts and stalls | The validator blocks with no timeout. The epoch never completes. No weights, **no log line, no anomaly** — the code that would record the failure is downstream of the block and never runs. |
+
+So the failure that looks less severe is the one that stops the subnet, and it
+stops it silently, on every validator at once.
+
+**I6 as written does not cover this.** It says *"No **miner** behavior can stop
+a validator completing an epoch and setting weights"*, and its guard is the TEE
+proof timeout — which bounds the miner query, not the collateral fetch. The
+hostile miner who hangs an epoch was anticipated and defended; the same hang
+arriving through a third-party dependency was not, because the invariant names
+miners rather than naming the property. **A liveness invariant scoped to one
+source of delay is not a liveness invariant.** Whatever fix lands here should
+widen I6 to "no external party" and give the fetch a bound that holds on both
+code paths.
+
 ### I8 — what "attested" actually means
 
 DCAP verification proves a quote is genuine and Intel-signed. It proves the

@@ -35,10 +35,27 @@ from fugal_subnet.tee.attestation import (
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
+# `dcap_qvl` is an OPTIONAL extra, and CI runs pytest twice on purpose: the
+# `test` job installs `--extra dev` only, the `tee-verifier` job adds
+# `--extra tee` and asserts the module is importable before running. The two
+# environments differ deliberately, because `verify_dcap` takes a different
+# path when the verifier is absent.
+#
+# So the cases below that drive the REAL binding skip where it is missing and
+# run where it is present. The ones that do not need it -- the `_run_coro`
+# bound, the budget arithmetic, the verification order -- must keep running in
+# BOTH jobs, which is why this is per-test rather than a module-level skip.
+def _needs_dcap():
+    pytest.importorskip(
+        "dcap_qvl",
+        reason="optional [tee] extra; these cases run in the tee-verifier job",
+    )
+
 
 def _REAL_QUOTE():
     """The live-hardware quote, unwrapped. Needed because verify_dcap
     parses before it fetches, so garbage never reaches the code here."""
+    _needs_dcap()
     blob = (FIXTURES / "attestation_A.bin").read_bytes()
     quote, _events = verify_mod.unwrap_attestation(blob)
     return quote
@@ -66,6 +83,7 @@ def real_quote():
     or be reported as an outage -- so garbage bytes never reach the code under
     test here and the timeout would go unexercised while the test still passed.
     """
+    _needs_dcap()
     blob = (FIXTURES / "attestation_A.bin").read_bytes()
     quote, _events = verify_mod.unwrap_attestation(blob)
     return quote
@@ -73,6 +91,7 @@ def real_quote():
 
 @pytest.fixture()
 def stalled_pccs(monkeypatch):
+    _needs_dcap()
     import dcap_qvl
     monkeypatch.setattr(dcap_qvl, "get_collateral", _stalled, raising=False)
     monkeypatch.setattr(
@@ -210,6 +229,7 @@ def test_a_spent_budget_is_exhausted_and_never_reports_negative_time():
 def test_an_exhausted_budget_refuses_without_touching_the_network(real_quote, monkeypatch):
     """Checked BEFORE dialling, not after. A call that will be abandoned anyway
     must never leave the process, or the ceiling bounds nothing."""
+    _needs_dcap()
     called = []
 
     def _record(url, quote):
@@ -306,6 +326,7 @@ def test_an_endpoint_that_errors_between_stalls_is_flaky_not_down(monkeypatch):
     An endpoint that returns an error ANSWERED. No descriptor leaked, and it
     proved it is reachable — the opposite of what this counter accumulates.
     """
+    _needs_dcap()
     import dcap_qvl
 
     calls = {"n": 0}
@@ -343,6 +364,7 @@ def test_a_nearly_spent_budget_does_not_blame_a_healthy_endpoint(monkeypatch):
     0.047 s and would take a strike it did not earn. Same outage-versus-
     accusation distinction the unverifiable path was built for, one level down.
     """
+    _needs_dcap()
     import dcap_qvl
 
     def _prompt(_url, _quote):
@@ -379,6 +401,7 @@ def test_a_miner_cannot_drain_the_budget_with_a_quote_that_does_not_parse():
     locally and rejected without a round trip. The budget is untouched, and the
     verdict is `False` -- the miner's own fault -- not `unverifiable`.
     """
+    _needs_dcap()
     b = CollateralBudget(10.0)
     before = b.remaining
     assert verify_dcap(b"\x00" * 8, pccs_url="https://pccs.invalid", budget=b) is False
@@ -419,6 +442,7 @@ def test_abandoning_a_real_fetch_does_not_crash_the_interpreter(tmp_path):
     SURVIVED it, so this asserts the exit code, in a subprocess, against a
     socket that accepts and never answers. No network, no spend.
     """
+    _needs_dcap()
     script = tmp_path / "abandon.py"
     script.write_text(
         "import socket, threading, pathlib\n"

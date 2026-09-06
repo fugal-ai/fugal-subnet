@@ -93,3 +93,50 @@ def test_accuracy_anomalies_read_the_key_the_validator_writes():
     genuinely_high = {2: {"accuracy": 0.99}, 3: {"accuracy": 0.98}}
     assert any("suspiciously_high_accuracy" in a
                for a in detect_anomalies(genuinely_high, weights, 3, 3))
+
+
+def test_reveal_carries_exploration_observations(tmp_path, monkeypatch):
+    """The published artifact must contain the samples a router can learn from.
+
+    `matrix` only ever holds models a miner CHOSE, so on a field of similar
+    heads it collapses to a couple of columns — measured on netuid 552, 2 of 17
+    models observed, which is untrainable. Exploration answers use a
+    nonce-chosen model the miner does not pick, so they are the only coverage of
+    the rest of the pool and the only unbiased samples in the artifact.
+    """
+    import json
+
+    import numpy as np
+
+    from fugal_subnet import commit_reveal
+
+    monkeypatch.setattr(commit_reveal, "EPOCH_DIR", str(tmp_path))
+    questions = [{"question_id": "q1", "prompt": "p", "gold": "1", "grader_id": "x"}]
+    commit_reveal.commit_epoch("e1", questions, "0xabc")
+
+    exploration = [
+        {"question_id": "z9", "model": "b", "correct": True,
+         "prompt_tokens": 1, "completion_tokens": 1},
+        {"question_id": "z9", "model": "a", "correct": False,
+         "prompt_tokens": 1, "completion_tokens": 1},
+    ]
+    assert commit_reveal.reveal_epoch(
+        "e1", questions, np.array([[1]]), ["a"], {"a": 0.1},
+        {}, {}, {}, {}, exploration=exploration,
+    )
+
+    revealed = json.loads((tmp_path / "e1" / "reveal.json").read_text())
+    assert len(revealed["exploration"]) == 2
+    # Deterministically ordered, or two validators publish different bytes.
+    assert [e["model"] for e in revealed["exploration"]] == ["a", "b"]
+
+
+def test_reveal_without_exploration_still_verifies():
+    """Backward compatible: the argument is optional and an absent list is
+    an empty one, not a crash."""
+    import inspect
+
+    from fugal_subnet.commit_reveal import reveal_epoch
+
+    sig = inspect.signature(reveal_epoch)
+    assert sig.parameters["exploration"].default is None

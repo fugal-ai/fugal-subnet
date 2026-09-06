@@ -595,6 +595,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         model_spend.get(r.routed_model, 0.0) + r.cost_usd
                     )
 
+            # Exploration observations for the reveal. Sorted deterministically
+            # in reveal_epoch so every validator publishes the identical list.
+            exploration_for_reveal = [
+                {
+                    "question_id": r.question_id,
+                    "model": r.routed_model,
+                    "correct": bool(r.correct),
+                    "prompt_tokens": int(r.prompt_tokens),
+                    "completion_tokens": int(r.completion_tokens),
+                }
+                for proof in verified_proofs.values()
+                for r in proof.exploration_results
+            ]
+
             routing_for_reveal = {
                 uid: decisions.tolist()
                 for uid, decisions in routing_decisions.items()
@@ -604,6 +618,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 matrix, pool_models, model_spend,
                 head_hashes, routing_for_reveal,
                 epoch_score_dicts, epoch_weight_map,
+                exploration=exploration_for_reveal,
             )
 
             # --- SET WEIGHTS ---

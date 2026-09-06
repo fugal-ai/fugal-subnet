@@ -70,6 +70,7 @@ def reveal_epoch(
     routing_decisions: dict[int, list[int]],
     scores: dict[int, dict],
     weights: dict[int, float],
+    exploration: list[dict] | None = None,
 ) -> bool:
     """Verify the commitment and publish the full epoch artifact.
 
@@ -111,6 +112,25 @@ def reveal_epoch(
         "model_costs": model_costs,
         "head_hashes": {str(k): v for k, v in head_hashes.items()},
         "routing_decisions": {str(k): list(map(int, v)) for k, v in routing_decisions.items()},
+        # The exploration observations, published SEPARATELY from `matrix`.
+        #
+        # They belong in the artifact and could not go in `matrix`: exploration
+        # questions are disjoint from the scored slice by design, and
+        # `questions` is what the commit hash covers, so extending either would
+        # break commit-reveal verification. A separate list keeps that intact.
+        #
+        # They matter more than their volume suggests. `matrix` only ever
+        # contains models a miner CHOSE, so on a field of similar heads it
+        # collapses to a couple of columns — measured on this subnet, 2 of 17
+        # models observed, which is untrainable. Exploration answers are drawn
+        # from a nonce-chosen model the miner does not pick, so they are the
+        # only samples that cover the rest of the pool, and the only unbiased
+        # ones. Publishing the matrix without them is publishing the half a
+        # router cannot learn from.
+        "exploration": sorted(
+            exploration or [],
+            key=lambda e: (e.get("question_id", ""), e.get("model", "")),
+        ),
         "scores": {str(k): v for k, v in scores.items()},
         "weights": {str(k): v for k, v in weights.items()},
         # What these numbers were computed with. Two validators publishing

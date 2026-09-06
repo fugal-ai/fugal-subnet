@@ -785,12 +785,20 @@ because both are decisions rather than typos:
     timeout at all**. Measured: a stub sleeping 60s blocked `verify_dcap` for
     the full 60s.
   - `verify_dcap` **discards the verdict**. `get_collateral_and_verify` returns
-    a `VerifiedReport` with `.status` ("OK" / "OUT_OF_DATE" / "REVOKED" / ...)
-    and `.advisory_ids`; the function logs it and returns True for anything that
-    does not raise. **A quote from revoked or out-of-date TCB passes today.**
-    `dcap-qvl` ships `QuotePolicy.strict(now)` and `verify_with_policy` for
-    exactly this. Tightening it is a policy call that would start rejecting
-    miners who pass now, so it is recorded here rather than changed silently.
+    a `VerifiedReport` with `.status` and `.advisory_ids`; the function logs it
+    and returns True for anything that does not raise. So **at minimum,
+    out-of-date, configuration-needed and software-hardening-needed platforms
+    pass** — those are observable return values that are thrown away.
+    **Whether `Revoked` also passes is UNCONFIRMED.** The compiled library
+    contains the literal "TCB status is invalid: Revoked", which would mean
+    `verify` raises and `verify_dcap` returns False via its except branch — but
+    that string cannot be disambiguated from a string table, because Rust
+    concatenates adjacent literals and `Revoked` is also an enum name. Pulling
+    the other way: `.status` is documented as returning `REVOKED`, and
+    `QuotePolicy.allow_status` would be pointless if plain `verify` already
+    rejected everything but UpToDate. **Settling it needs a real quote**, not
+    more reading. Recorded at the strength the evidence supports rather than the
+    strength that makes the better warning.
 
 **How the wrong endpoint got recorded, because the shape recurs.** Nobody
 measured Intel. The observation was "no local PCCS is configured and
@@ -800,6 +808,71 @@ An inference was written down as a measurement, and an endpoint appeared in
 this document that had never been seen in a packet or a line of source. The
 correction came from reading `dcap_qvl/__init__.py`, not from observing traffic.
 Fourth instance today of a real observation describing a neighbouring thing.
+
+### I1/I6 — the DCAP verdict is already a function of network luck
+
+The deepest version of the PCCS findings, and the one that decides what the fix
+has to be. `verify_dcap` ends:
+
+    except Exception:
+        return False
+
+A transient network failure is therefore not "unverifiable", it is **invalid**.
+Two validators verifying the *same proof* over *different network luck* reach
+*different verdicts*. That is a consensus fork with no bug and no attacker
+behind it, and it exists **today**, with no caching and no status enforcement
+anywhere. At 256 miners fetching per proof, transient failures are not an edge
+case; they are expected.
+
+**So "does caching introduce a consensus hazard?" is the wrong question.** The
+verdict is already nondeterministic across validators. Caching, status
+enforcement and the time source are not three independent choices — they are
+three faces of one requirement:
+
+> **The verification verdict must be a function of the proof, not of the
+> validator's network or clock.**
+
+Anything short of that leaves a fork surface. Note that discarding `.status`
+currently *hides* this: every non-exception collapses to True, so the only
+divergence left is the raise/no-raise boundary. The discard is load-bearing for
+determinism by accident, which is why enforcing status without fixing the fetch
+would make things worse, not better.
+
+**The fix that satisfies it, and it is the shape this codebase already chose
+once.** `dcap-qvl` exposes `verify(quote, collateral, now_secs)` separately from
+`get_collateral`, and `QuoteCollateralV3` has `to_json` / `from_json`. So
+collateral can travel **with the proof**:
+
+  - the miner fetches collateral once and ships it in the bundle;
+  - the validator calls `verify` directly, with **no network in the epoch loop
+    at all**;
+  - a miner cannot forge it, because collateral is Intel-signed TCB info, QE
+    identity and CRLs, checked against the Intel root CA compiled into the
+    library. Untrusted carrier, pinned anchor.
+
+That is exactly the decision already taken for Google's AK intermediate
+certificates, which rotate at per-CA-instance URLs and therefore travel with the
+proof rather than being fetched or pinned. Same problem, same answer, and the
+precedent is evidence the pattern fits rather than a coincidence.
+
+It removes the fork, the hang, the availability dependency, the privacy leak and
+the throughput cost in one change, because all five are consequences of fetching
+inside the epoch.
+
+**Two things it does NOT remove, and both must be decided with it:**
+
+  - **Stale collateral.** A miner may ship old but validly-signed collateral
+    that predates a revocation of their platform. This needs a freshness bound
+    checked against `tcb_info`'s issue/next-update fields — and that bound must
+    be a **pinned constant every validator shares**, not a local TTL each
+    operator tunes, or it reintroduces the divergence it was meant to remove.
+  - **`now_secs`.** `verify` takes a timestamp, and wall clock differs between
+    validators. It should come from the epoch's block, not `time.time()` — the
+    same reasoning that made certificate validity an explicit `at=` parameter in
+    the TPM verifier rather than a hidden call to the clock.
+
+Not built. Recorded because the throughput work will otherwise fix the symptom
+that was measured rather than the property that is wrong.
 
 ### I6 — a PCCS hang halts the subnet, and does it invisibly
 

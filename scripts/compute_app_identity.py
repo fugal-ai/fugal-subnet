@@ -24,11 +24,10 @@ interchangeable:
                      is what makes it evidence rather than advisory, and it is the
                      whole reason for adopting a locked image.
 
-UNVERIFIED: the compose-hash normalisation here follows dstack's documented rules
-(sorted keys, compact separators, non-finite floats as null, UTF-8 emitted
-directly) but has never been compared against a hash dstack actually extended.
-Check it against a live deployment before trusting an approved entry built from
-it — see docs/CODE_BENCHMARK_PLAN.md for the same warning about assuming.
+The compose hash is sha256 of the file's RAW BYTES. It was normalised JSON here
+until a real dstack-generated app-compose.json falsified that; see
+`compose_hash` for what the two hashes were and why the documented rules turned
+out to govern a different object entirely.
 """
 from __future__ import annotations
 

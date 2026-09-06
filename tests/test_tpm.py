@@ -13,7 +13,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 
-from fugal_subnet.scale import decode_dstack_attestation, decode_tpm_quote
+from fugal_subnet.scale import decode_dstack_attestation
 from fugal_subnet.tee.tpm import (
     TpmError,
     certificate_subject,
@@ -29,9 +29,7 @@ def _quote(name):
     p = FIXTURES / f"attestation_{name}.bin"
     if not p.exists():
         pytest.skip(f"fixture {p.name} not present")
-    blob = p.read_bytes()
-    d = decode_dstack_attestation(blob)
-    return decode_tpm_quote(blob, blob.index(d["tpm_quote"]) - 2)
+    return decode_dstack_attestation(p.read_bytes())["tpm"]
 
 
 @pytest.mark.parametrize("name", ["A", "B"])
@@ -193,3 +191,53 @@ def test_the_composed_check_fails_if_either_half_fails():
            + r.to_bytes(32, "big") + (32).to_bytes(2, "big") + s.to_bytes(32, "big"))
     assert verify_quote_signature(q["message"], sig, forged)         # sig ok on its own
     assert not verify_tpm_quote({**q, "signature": sig, "ak_cert": forged})
+
+
+# --- Unwrapping, where the two attestation shapes meet ----------------------
+
+def test_a_bare_tdx_quote_passes_through_unchanged():
+    """The existing shape must keep working; this is not a migration."""
+    from fugal_subnet.tee.runtime import TEERuntime
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    bare = TEERuntime(mock=True).generate_attestation(b"\x01" * 32)
+    quote, events = unwrap_attestation(bare)
+    assert quote == bare
+    assert events is None
+
+
+@pytest.mark.parametrize("name", ["A", "B"])
+def test_a_dstack_envelope_yields_its_inner_quote_and_log(name):
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    p = FIXTURES / f"attestation_{name}.bin"
+    if not p.exists():
+        pytest.skip(f"fixture {p.name} not present")
+    quote, events = unwrap_attestation(p.read_bytes())
+    assert int.from_bytes(quote[:2], "little") in (4, 5)
+    assert events and all("digest" in e for e in events)
+
+
+def test_an_envelope_whose_tpm_half_fails_is_rejected_whole():
+    """A validator checking only the TDX half would accept what another rejects.
+    The TDX quote here is genuine; the proof must still be refused."""
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    p = FIXTURES / "attestation_A.bin"
+    if not p.exists():
+        pytest.skip("fixture not present")
+    blob = bytearray(p.read_bytes())
+
+    # Flip a bit inside the TPMS_ATTEST message, leaving the TDX quote intact.
+    d = decode_dstack_attestation(bytes(blob))
+    at = blob.index(d["tpm"]["message"])
+    blob[at + 40] ^= 0x01
+    with pytest.raises(ValueError, match="TPM quote verification failed"):
+        unwrap_attestation(bytes(blob))
+
+
+def test_bytes_that_are_neither_shape_are_refused():
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    with pytest.raises(ValueError, match="neither a TDX quote nor a dstack blob"):
+        unwrap_attestation(b"\x00\x01" + b"\xff" * 64)

@@ -162,36 +162,6 @@ def decode_tdx_event(buf: bytes, offset: int = 0) -> tuple[dict, int]:
     }, pos - offset
 
 
-def decode_dstack_attestation(blob: bytes) -> dict:
-    """Split a dstack attestation blob into quote, event log and TPM quote.
-
-    Returns the pieces only. It does NOT decide whether any of them should be
-    believed: the event log is authenticated by replaying it against the quote's
-    own register, which is the caller's job and the only thing that makes a
-    single field of it trustworthy.
-    """
-    if len(blob) < 2:
-        raise ScaleError("attestation blob is too short to carry a header")
-    pos = 2                                    # variant tag, version
-    quote, used = decode_bytes(blob, pos); pos += used
-    events, used = decode_vec(blob, pos, decode_tdx_event); pos += used
-    tpm_quote, used = decode_bytes(blob, pos); pos += used
-    if tpm_quote[:4] != DSTACK_TPM_MAGIC:
-        raise ScaleError(
-            f"expected the TPM quote to start with the TCG magic "
-            f"{DSTACK_TPM_MAGIC!r}, found {tpm_quote[:4]!r} — the layout has "
-            "moved and everything decoded before this point is suspect"
-        )
-    return {
-        "variant": blob[0],
-        "version": blob[1],
-        "quote": quote,
-        "events": events,
-        "tpm_quote": tpm_quote,
-        "remainder": blob[pos:],
-    }
-
-
 def decode_pcr_value(buf: bytes, offset: int = 0) -> tuple[dict, int]:
     """One PcrValue: { index: u32, algorithm: String, value: Vec<u8> }."""
     pos = offset
@@ -234,4 +204,48 @@ def decode_tpm_quote(buf: bytes, offset: int = 0) -> dict:
         "pcr_values": pcr_values,
         "ak_cert": ak_cert,
         "consumed": pos - offset,
+    }
+
+
+def decode_dstack_attestation(blob: bytes) -> dict:
+    """Split a dstack attestation blob into quote, event log and TPM quote.
+
+    Returns the pieces only. It does NOT decide whether any of them should be
+    believed: the event log is authenticated by replaying it against the quote's
+    own register, which is the caller's job and the only thing that makes a
+    single field of it trustworthy.
+    """
+    if len(blob) < 2:
+        raise ScaleError("attestation blob is too short to carry a header")
+    pos = 2                                    # variant tag, version
+    quote, used = decode_bytes(blob, pos); pos += used
+    events, used = decode_vec(blob, pos, decode_tdx_event); pos += used
+
+    # The TpmQuote struct starts here and its first field is the TPMS_ATTEST
+    # message, so the TCG magic lands where a length-prefixed byte string
+    # begins. Peeking at it before decoding turns "the layout moved" into an
+    # error at the point it moved, rather than plausible garbage further on.
+    tpm_offset = pos
+    peek, _ = decode_bytes(blob, pos)
+    if peek[:4] != DSTACK_TPM_MAGIC:
+        raise ScaleError(
+            f"expected the TPM quote to start with the TCG magic "
+            f"{DSTACK_TPM_MAGIC!r}, found {peek[:4]!r} — the layout has "
+            "moved and everything decoded before this point is suspect"
+        )
+    tpm = decode_tpm_quote(blob, tpm_offset)
+    pos += tpm["consumed"]
+
+    return {
+        "variant": blob[0],
+        "version": blob[1],
+        "quote": quote,
+        "events": events,
+        # The decoded TpmQuote. Callers used to re-find this by searching the
+        # blob for the message bytes and stepping back over a length prefix
+        # whose width they had to assume; the decoder knows the offset, so it
+        # does the work once and correctly.
+        "tpm": tpm,
+        "tpm_quote": tpm["message"],
+        "remainder": blob[pos:],
     }

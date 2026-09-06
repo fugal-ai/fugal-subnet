@@ -122,6 +122,55 @@ def parse_approved(entries) -> dict[str, set[str]]:
     return out
 
 
+# A bare TDX quote's first field is a u16 little-endian version. Anything else
+# at offset 0 is an envelope, not a quote.
+_TDX_QUOTE_VERSIONS = (4, 5)
+
+
+def unwrap_attestation(blob: bytes) -> tuple[bytes, list | None]:
+    """Return (tdx_quote, event_log) for either a bare quote or a dstack blob.
+
+    A miner running under dstack sends the whole attestation — TDX quote, event
+    log, and on GCP a TPM quote — not a bare quote. Both shapes have to verify,
+    and which one arrived must be decided from the bytes rather than from
+    configuration, because two validators configured differently would disagree
+    about the same proof.
+
+    **The TPM half is verified here, not optionally later.** If the envelope
+    carries one and it does not verify, the proof is rejected: a validator that
+    checked only the TDX half would accept proofs another validator rejects,
+    which is a fork with no bug behind it. That is also why an absent
+    `cryptography` raises rather than returning invalid — a missing library is
+    the operator's misconfiguration, and downgrading it to "this proof is bad"
+    would let a --live validator reject the whole field while looking healthy.
+    Identical reasoning to the ImportError handling around `verify_dcap`.
+    """
+    if len(blob) >= 2 and int.from_bytes(blob[:2], "little") in _TDX_QUOTE_VERSIONS:
+        return blob, None
+
+    from fugal_subnet.scale import ScaleError, decode_dstack_attestation
+
+    try:
+        att = decode_dstack_attestation(blob)
+    except ScaleError as e:
+        raise ValueError(f"attestation is neither a TDX quote nor a dstack blob: {e}") from e
+
+    from fugal_subnet.tee.tpm import TpmError, verify_tpm_quote
+
+    try:
+        ok = verify_tpm_quote(att["tpm"])
+    except TpmError as e:
+        raise ValueError(f"TPM quote rejected: {e}") from e
+    if not ok:
+        raise ValueError(
+            "TPM quote verification failed — the attestation key certificate "
+            "does not chain to Google's pinned EK/AK root, or the quote was not "
+            "signed by it"
+        )
+
+    return att["quote"], att["events"]
+
+
 def verify_proof(
     proof: BenchmarkProof,
     approved_measurements: set[str],
@@ -179,9 +228,19 @@ def verify_proof(
     #    operator's misconfiguration, not a miner's doing, and silently
     #    downgrading it to "this proof is invalid" would let a --live validator
     #    reject the entire field while looking like it was working.
+    # 0. Unwrap. Under dstack the miner sends an envelope, not a bare quote, and
+    #    the TPM half inside it is verified as part of unwrapping — see
+    #    unwrap_attestation for why that is not optional.
+    try:
+        attestation_quote, embedded_events = unwrap_attestation(proof.attestation_quote)
+    except ValueError as e:
+        return VerifyResult(False, str(e))
+    if event_log is None:
+        event_log = embedded_events
+
     if not mock:
         try:
-            dcap_ok = verify_dcap(proof.attestation_quote)
+            dcap_ok = verify_dcap(attestation_quote)
         except ImportError:
             raise
         except Exception as e:  # noqa: BLE001 - miner-controlled bytes
@@ -195,8 +254,8 @@ def verify_proof(
     #    Enforced in every mode: the mock quote generator embeds report_data
     #    correctly, so tamper detection works on a local testnet too.
     try:
-        quote = parse_quote(proof.attestation_quote)
-        report_data = extract_report_data(proof.attestation_quote)
+        quote = parse_quote(attestation_quote)
+        report_data = extract_report_data(attestation_quote)
     except ValueError as e:
         return VerifyResult(False, f"Invalid attestation quote: {e}")
 

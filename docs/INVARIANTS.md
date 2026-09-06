@@ -367,10 +367,23 @@ miner's project name, instance id and zone are public in their proof. Not a
 vulnerability, but miners are told in `MINER_GUIDE.md` rather than discovering
 it.
 
-**Not yet wired into `verify_proof`.** The seam depends on the locked dstack
-image, which does not exist yet. Until then this is exercised only by its tests,
-which is a known and deliberately recorded gap — an unexercised path is the
-failure mode this document exists to prevent.
+**Wired into `verify_proof`, and the shape is decided by the bytes.** A miner
+under dstack sends the whole attestation envelope, not a bare quote.
+`unwrap_attestation` reads a u16 little-endian version at offset 0: 4 or 5 is a
+bare TDX quote and passes through unchanged, anything else is decoded as a
+dstack blob. Which shape arrived is therefore never a configuration question —
+two validators configured differently would otherwise disagree about identical
+bytes.
+
+**If an envelope carries a TPM quote, it is verified there and then.** Not
+optionally, not later: a validator checking only the TDX half accepts proofs
+another validator rejects. A genuine TDX quote inside an envelope whose TPM half
+fails is rejected whole, and there is a test that does exactly that — flips one
+bit inside TPMS_ATTEST, leaves the TDX quote untouched, and requires rejection.
+A missing `cryptography` raises rather than returning invalid, for the same
+reason a missing `dcap-qvl` does: it is the operator's misconfiguration, and
+downgrading it to "this proof is bad" lets a --live validator reject the entire
+field while appearing healthy.
 
 **Five unidentified trailing bytes.** Real `TPMT_SIGNATURE` fields carry five
 bytes past the structure (`0000010000`). They are not identified and are not

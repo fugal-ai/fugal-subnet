@@ -984,6 +984,52 @@ miner's own.)
 Not built. Recorded because the throughput work will otherwise fix the symptom
 that was measured rather than the property that is wrong.
 
+### I1/I6 — a bare timeout trades a visible halt for a silent fork
+
+The obvious fix for the hang is a timeout on the collateral fetch. **It is not
+safe on its own**, and the trace is four lines long:
+
+    TimeoutError inside get_collateral_and_verify
+      -> verify_dcap's `except Exception: return False`
+      -> VerifyResult(False, "DCAP attestation verification failed")
+      -> validator: n_invalid += 1; continue
+
+So a timeout converts a network problem into **a false accusation**: the miner
+is logged and scored as having failed verification, indistinguishable from a
+forged quote. And because it fires per proof, a slow-but-alive PCCS produces a
+**partial field** — some proofs verified, some timed out — which is the
+divergence case already identified as worse than a total outage. Two validators
+with different network luck publish different weights and neither logs anything
+unusual.
+
+**"Unverifiable" must therefore be a distinct outcome from "invalid" before any
+timeout lands.** That is the prerequisite, not the follow-up.
+
+**But it does not, by itself, close the fork — and this is the part that is easy
+to miss.** Whether a fetch succeeds is a per-validator, per-proof network event.
+Two validators will hold different sets of verifiable proofs no matter how
+honestly each labels them. Distinguishing the outcomes stops the slander; it
+does not make the weights agree.
+
+What decides that is the **granularity of the fail-closed**:
+
+| Granularity | Consequence |
+|---|---|
+| **Per miner** — skip the unverifiable ones | Validator A scores 256, B scores 255. Divergent weight vectors. Smaller and more honest than a false accusation, but still a fork. |
+| **Per epoch** — publish nothing unless everything verified | No divergent weights; the validator simply abstains, which Yuma tolerates. Consensus-safe — but with 256 per-proof fetches the probability of at least one failure approaches 1, so a validator would almost never publish. A halt by another name. |
+
+Neither is acceptable, and that is the point: **no local handling of a
+per-validator network failure can be consensus-safe, because the divergence is
+in the input, not in the handling.** Error handling cannot repair a
+nondeterministic input.
+
+So items like the timeout, the `unverifiable` outcome, widening I6 and making
+`pccs_url` explicit are **honesty and hygiene improvements, and all of them are
+worth doing** — but none restores determinism. The only fix for the fork is to
+remove the per-validator network dependency from the verdict entirely, which is
+what collateral-in-proof does. Anything short of that is choosing which bad
+outcome to prefer.
+
 ### I6 — a PCCS hang halts the subnet, and does it invisibly
 
 Two facts recorded separately above are far worse together, so they are stated

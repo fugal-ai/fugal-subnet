@@ -11,6 +11,7 @@ legitimate pools, and the first casualty is the documented
 FUGAL_BENCHMARK_POOL override.
 """
 import json
+import pathlib
 
 from scripts.build_pool_manifest import content_hash
 
@@ -54,7 +55,8 @@ def test_manifest_matches_the_shipped_pool_configuration():
     """The shipped manifest must describe a pool someone can actually build."""
     import pathlib
 
-    path = pathlib.Path(__file__).resolve().parent.parent / "data" / "pool_manifest.json"
+    from fugal_subnet.benchmarks.loader import _manifest_path
+    path = pathlib.Path(_manifest_path())
     manifest = json.loads(path.read_text(encoding="utf-8"))
     assert manifest["n_questions"] > 0
     assert len(manifest["pool_hash"]) == 64
@@ -64,3 +66,134 @@ def test_manifest_matches_the_shipped_pool_configuration():
     assert "gpqa" in manifest["skip_benchmarks"]
     assert "livecode" in manifest["skip_benchmarks"]
     assert sum(manifest["per_benchmark"].values()) == manifest["n_questions"]
+
+
+# --- Where the pool could still diverge silently ---------------------------
+
+def test_content_hash_is_importable_from_the_package_not_only_a_checkout():
+    """`load_all` calls this at startup. It used to be imported from scripts/,
+    which is not a package and is not shipped in the wheel — so the loader
+    raised ModuleNotFoundError for anyone whose working directory was not the
+    repo root, and an installed validator carried no verification at all."""
+    import fugal_subnet.benchmarks.loader as loader_mod
+
+    assert callable(loader_mod.content_hash)
+
+    import scripts.build_pool_manifest as script_mod
+    assert script_mod.content_hash is loader_mod.content_hash
+
+
+def test_an_operator_who_configures_nothing_gets_the_pinned_skip_list(monkeypatch):
+    """The pool is consensus state, so the default must be the pinned pool and
+    not whatever this machine happens to be able to load."""
+    from fugal_subnet.benchmarks.loader import _default_skip
+
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+    from fugal_subnet.benchmarks.loader import _manifest_path
+    pinned = set(json.load(open(_manifest_path()))["skip_benchmarks"])
+    assert _default_skip() == pinned
+    assert pinned, "the manifest pins no skips; this test would prove nothing"
+
+
+def test_an_explicit_setting_still_wins_including_the_empty_one(monkeypatch):
+    """Unset and empty are different answers: empty means 'skip nothing', which
+    an operator must be able to say."""
+    from fugal_subnet.benchmarks.loader import _default_skip
+
+    monkeypatch.setenv("FUGAL_SKIP_BENCHMARKS", "mmlu")
+    assert _default_skip() == {"mmlu"}
+
+    monkeypatch.setenv("FUGAL_SKIP_BENCHMARKS", "")
+    assert _default_skip() == set()
+
+
+def test_the_default_configuration_does_not_bypass_verification(monkeypatch):
+    """The bug this closes: a skip-list mismatch made _verify_against_manifest
+    return early, so the check that would have caught a divergent pool disabled
+    itself and logged a warning. A divergence that silences its own alarm is
+    worse than no check."""
+    import pytest
+
+    from fugal_subnet.benchmarks.loader import _default_skip, _verify_against_manifest
+
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+    wrong_pool = [{"question_id": "q1", "prompt": "x", "gold": "y",
+                   "grader_id": "exec_io"}]
+    with pytest.raises(RuntimeError, match="does not match"):
+        _verify_against_manifest(wrong_pool, _default_skip(), strict=True)
+
+
+def test_the_manifest_ships_in_the_wheel(tmp_path):
+    """The bug this closes twice over.
+
+    `content_hash` was imported from scripts/ (not a package, not in the wheel),
+    which crashed the loader outside the repo root — loud. The fix for that left
+    the manifest itself in data/, which is ALSO not in the wheel, and absence
+    was the silent branch: an installed validator defaulted to skipping nothing
+    and verified nothing, logging neither.
+
+    Reading pyproject would not catch either. Building the wheel does — but only
+    from a CLEAN tree. Built in place, setuptools reuses build/ and
+    *.egg-info/SOURCES.txt, and this test passed while the manifest was deleted
+    from disk. A test that cannot fail is the thing this file exists to prevent,
+    so the source is copied somewhere pristine first.
+    """
+    import shutil
+    import subprocess
+    import sys
+    import zipfile
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = tmp_path / "src"
+    shutil.copytree(
+        root, src,
+        ignore=shutil.ignore_patterns(
+            ".git", ".venv", "build", "*.egg-info", "__pycache__", ".pytest_cache",
+            "data",          # deliberately absent: nothing consensus needs may live here
+        ),
+    )
+
+    out = tmp_path / "wheel"
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
+         "-w", str(out), str(src)],
+        capture_output=True, text=True, timeout=300,
+    )
+    if r.returncode != 0:
+        import pytest
+        pytest.skip(f"wheel build unavailable: {r.stderr[-300:]}")
+
+    wheels = list(out.glob("fugal_subnet-*.whl"))
+    assert wheels, "no wheel produced"
+    names = zipfile.ZipFile(wheels[0]).namelist()
+    shipped = [n for n in names if not n.endswith(".py") and "dist-info" not in n]
+
+    assert "fugal_subnet/benchmarks/pool_manifest.json" in names, (
+        "the pinned pool manifest is not in the wheel. An installed validator "
+        f"would verify nothing and say nothing. Shipped non-Python files: {shipped}"
+    )
+    assert any(n.endswith(".der") for n in names), (
+        f"the TPM trust anchor is not in the wheel. Shipped: {shipped}"
+    )
+
+
+def test_an_absent_manifest_is_never_silent(monkeypatch, tmp_path, caplog):
+    """A fresh checkout legitimately has no manifest and a broken install looks
+    identical. They need different reactions from a human, so absence is loud
+    either way and fatal under strict — strict is the validator path, and a
+    validator with no pool verification is the thing this exists to prevent."""
+    import logging
+
+    import pytest
+
+    from fugal_subnet.benchmarks import loader
+
+    monkeypatch.setattr(loader, "_manifest_path", lambda: str(tmp_path / "absent.json"))
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+
+    with caplog.at_level(logging.WARNING):
+        assert loader._default_skip() == set()
+    assert "No pool manifest" in caplog.text
+
+    with pytest.raises(RuntimeError, match="No pool manifest"):
+        loader._verify_against_manifest([{"question_id": "q"}], set(), strict=True)

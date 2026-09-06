@@ -21,7 +21,7 @@ IMMUTABLE_V1_GRADER_SHA256 = (
 # subnet. Pinned for the same reason graders.py is. Changing prices is a
 # deliberate act — update this hash in the same commit and say why.
 PINNED_PRICE_TABLE_SHA256 = (
-    "26b54ef396d5a92f3a03e6c1bb5a87011eb40ec007803addce0c65ac5bcb7e4a"
+    "7bc8e332a43833bb4eaccef21e784f57ffde9e49e343275f822f35d9a6d19b27"
 )
 
 

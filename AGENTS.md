@@ -112,6 +112,11 @@ updating that file and adding a check that enforces the property — the reason
 it exists is that a real consensus bug survived five code reviews because the
 property was never written down.
 
+`docs/OPEN_WORK.md` is the companion: what is unfinished, what was already
+decided and should not be re-litigated, and what to do next. Read it before
+picking up the PCCS/collateral work — the decisions in it cost several sessions
+to reach.
+
 ## Testing
 
 ```bash

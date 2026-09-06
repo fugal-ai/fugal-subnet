@@ -1501,7 +1501,9 @@ spend.
 
 ## Before mainnet
 
-See [MAINNET_LAUNCH.md](MAINNET_LAUNCH.md) for the operational sequence. Item 1
+See [OPEN_WORK.md](OPEN_WORK.md) for what is unfinished in the PCCS/collateral
+work and what to do next, and [MAINNET_LAUNCH.md](MAINNET_LAUNCH.md) for the
+operational sequence. Item 1
 below was done on netuid 552 and turned up a defect no local run could: the
 subnet had never been activated. `start_call` was never made, so it had no
 first-emission block — staking was rejected, no validator earned a permit, and

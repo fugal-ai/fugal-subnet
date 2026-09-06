@@ -433,6 +433,29 @@ hotkey produces proofs bound to *that* hotkey, which their own uid cannot use.
 reject, it needs no hardware, and a relayed proof should not cost a DCAP
 verification to refuse.
 
+### I8 — an approved image must be publicly pullable
+
+An approved-list entry is `<base_measurement>:<app_identity>`, and the app half
+is a compose hash. **If the image that hash names cannot be pulled by anyone,
+the approved list is an assertion rather than evidence.**
+
+That is the reason, and it outranks the practical one. The practical one is that
+dstack has no private registry authentication at all — its only registry feature
+sets `registry-mirrors` in `daemon.json`, which is a mirror list, not
+credentials, so there is nowhere for a pull secret to live.
+
+The point of computing the app identity off-hardware (`compute_app_identity.py`)
+is that **what the subnet accepts is reviewable in a pull request**. A private
+image breaks that at the last step: the compose file is reviewable, the hash is
+reproducible, and the thing the compose actually runs is opaque. Reviewing the
+first two while the third is unavailable is the shape of check this document
+exists to reject — one that reports success while examining nothing.
+
+Nothing in a Fugal miner's image is secret. The API key arrives at runtime and
+is deliberately excluded from the compose because `/v1/Info` publishes it; the
+head is pushed after boot. So publishing costs nothing that is not already
+public by design.
+
 ### I8 — the app-identity chain, closed against hardware
 
 Every link verified on a real deploy rather than argued, in
@@ -753,10 +776,382 @@ Checks: `tests/test_tee.py::test_runtime_identity_is_register_width_and_determin
 changes that: rotating an approved list of measurements that do not cover the
 workload rotates a value proving only which OS booted.
 
-Operational consequence for validators: DCAP collateral is fetched from Intel's
-PCS directly, with no local caching service. A `--live` validator therefore
-needs outbound HTTPS to `api.trustedservices.intel.com`, and an Intel PCS
-outage degrades verification for every validator at once.
+Operational consequence for validators: **collateral is fetched from Phala's
+PCCS, not from Intel.** This was recorded here as Intel for months and was
+wrong. `verify_dcap` calls `get_collateral_and_verify(quote)` with no
+`pccs_url`, and `dcap-qvl` 0.6.3 resolves that as:
+
+    url = (pccs_url or "").strip() or PHALA_PCCS_URL   # https://pccs.phala.network
+
+So a `--live` validator needs outbound HTTPS to `pccs.phala.network`, and a
+validator firewalled to `api.trustedservices.intel.com` on the strength of the
+old sentence would fail every verification while its configuration looked
+correct.
+
+**What Phala is and is not.** It is an availability dependency and a privacy
+leak: every miner's quote is sent to a third party, and a PCCS outage degrades
+verification for every validator at once. It is **not** a correctness trust
+root. Collateral is Intel-signed TCB info, QE identity and CRLs, and `verify`
+checks those signatures against an Intel root CA compiled into the library
+(`IntelSGXRootCA.der`; `verify_with_root_ca` exists to supply a different one).
+A malicious mirror cannot forge collateral — it can only withhold it. That
+distinction is why this is an operational finding rather than a repeat of the
+Google Attestation Verifier decision, which was rejected because a live service
+returned a *verdict*. A mirror returns *evidence* we verify ourselves.
+
+**Two related defects in the same function**, found with it and not yet fixed
+because both are decisions rather than typos:
+
+  - The `timeout=30` guards only the `ThreadPoolExecutor` branch, which runs
+    when an event loop is already running. On the validator's synchronous path
+    `loop.is_running()` is False, so `run_until_complete` is used with **no
+    timeout at all**. Measured: a stub sleeping 60s blocked `verify_dcap` for
+    the full 60s.
+  - `verify_dcap` **discards the verdict**. `get_collateral_and_verify` returns
+    a `VerifiedReport` with `.status` and `.advisory_ids`; the function logs it
+    and returns True for anything that does not raise. So **at minimum,
+    out-of-date, configuration-needed and software-hardening-needed platforms
+    pass** — those are observable return values that are thrown away.
+    **Whether `Revoked` also passes is UNCONFIRMED.** The compiled library
+    contains the literal "TCB status is invalid: Revoked", which would mean
+    `verify` raises and `verify_dcap` returns False via its except branch — but
+    that string cannot be disambiguated from a string table, because Rust
+    concatenates adjacent literals and `Revoked` is also an enum name. Pulling
+    the other way: `.status` is documented as returning `REVOKED`, and
+    `QuotePolicy.allow_status` would be pointless if plain `verify` already
+    rejected everything but UpToDate. **Settling it needs a real quote**, not
+    more reading. Recorded at the strength the evidence supports rather than the
+    strength that makes the better warning.
+
+**How the wrong endpoint got recorded, because the shape recurs.** Nobody
+measured Intel. The observation was "no local PCCS is configured and
+verification succeeds", and the conclusion drawn was "therefore it goes to
+Intel directly". The real explanation was a library default nobody looked for.
+An inference was written down as a measurement, and an endpoint appeared in
+this document that had never been seen in a packet or a line of source. The
+correction came from reading `dcap_qvl/__init__.py`, not from observing traffic.
+Fourth instance today of a real observation describing a neighbouring thing.
+
+### I1/I6 — the DCAP verdict is already a function of network luck
+
+The deepest version of the PCCS findings, and the one that decides what the fix
+has to be. `verify_dcap` ends:
+
+    except Exception:
+        return False
+
+A transient network failure is therefore not "unverifiable", it is **invalid**.
+Two validators verifying the *same proof* over *different network luck* reach
+*different verdicts*. That is a consensus fork with no bug and no attacker
+behind it, and it exists **today**, with no caching and no status enforcement
+anywhere. At 256 miners fetching per proof, transient failures are not an edge
+case; they are expected.
+
+**So "does caching introduce a consensus hazard?" is the wrong question.** The
+verdict is already nondeterministic across validators. Caching, status
+enforcement and the time source are not three independent choices — they are
+three faces of one requirement:
+
+> **The verification verdict must be a function of the proof, not of the
+> validator's network or clock.**
+
+Anything short of that leaves a fork surface. Note that discarding `.status`
+currently *hides* this: every non-exception collapses to True, so the only
+divergence left is the raise/no-raise boundary. The discard is load-bearing for
+determinism by accident, which is why enforcing status without fixing the fetch
+would make things worse, not better.
+
+**The fix that satisfies it, and it is the shape this codebase already chose
+once.** `dcap-qvl` exposes `verify(quote, collateral, now_secs)` separately from
+`get_collateral`, and `QuoteCollateralV3` has `to_json` / `from_json`. So
+collateral can travel **with the proof**:
+
+  - the miner fetches collateral once and ships it in the bundle;
+  - the validator calls `verify` directly, with **no network in the epoch loop
+    at all**;
+  - a miner cannot forge it, because collateral is Intel-signed TCB info, QE
+    identity and CRLs, checked against the Intel root CA compiled into the
+    library. Untrusted carrier, pinned anchor.
+
+That is exactly the decision already taken for Google's AK intermediate
+certificates, which rotate at per-CA-instance URLs and therefore travel with the
+proof rather than being fetched or pinned. Same problem, same answer, and the
+precedent is evidence the pattern fits rather than a coincidence.
+
+It removes the fork, the hang, the availability dependency, the privacy leak and
+the throughput cost in one change, because all five are consequences of fetching
+inside the epoch.
+
+**The argument for it is NOT "Intel signs it, so the carrier does not matter."**
+That is true and insufficient. Collateral includes `root_ca_crl` and `pck_crl`
+— **the revocation lists**. So collateral-in-proof hands delivery of the
+revocation mechanism to the platform holder, and revocation is the one control
+in the entire chain specifically designed to operate *against* them.
+
+The attack, and its exact limit:
+
+  - A miner whose PCK certificate has been revoked ships a **stale but validly
+    Intel-signed CRL** from before the revocation. Every signature checks out,
+    every chain reaches the pinned root, the quote verifies.
+  - **They CAN also supply the certificate chain. Demonstrated, not inferred.**
+    An earlier draft of this entry claimed they could not, on the evidence that
+    `QuoteCollateralV3` exposes nine Python properties and none is a PCK chain.
+    That described the **PyO3 wrapper**, not the Rust struct that `to_json` /
+    `from_json` serialise:
+
+        $ strings -a _dcap_qvl.abi3.so | grep -o "struct QuoteCollateralV3 with [0-9]* elements"
+        struct QuoteCollateralV3 with 10 elements
+
+    The tenth is `pck_certificate_chain`, and the field-name run in the binary
+    places it immediately after `qe_identity_signature`. Confirmed by
+    experiment rather than by reading:
+
+        from_json(json | {"pck_certificate_chain": "ATTACKER"})  -> accepted
+        ...round-tripped through to_json                          -> "ATTACKER"
+        from_json(json | {"totally_made_up_field": "x"})          -> dropped
+
+    Unknown keys are discarded, so a key that **survives** the round trip is a
+    real struct field. A miner shipping collateral as JSON therefore supplies
+    the PCK certificate chain **and** the CRL — the full chain, not an old
+    revocation list alone.
+
+    Supporting evidence pointing the same way: `get_collateral`'s own docstring
+    says the returned collateral "has the PCK certificate chain attached, so it
+    works for quotes with any supported certification data type (including types
+    2 and 3 where the PCK cert isn't embedded in the quote)", and the binary
+    contains both "Failed to extract PCK certificates from collateral" and
+    "...from quote" — both paths are live.
+
+  - **Still open:** whether `verify` *prefers* the collateral's chain over the
+    quote's for certification type 5, which is what a dstack TDX miner produces.
+    That decides how bad this is, and it cannot be answered from the stub — it
+    needs the Rust source or a live quote.
+
+  - **The sanitiser already exists, and it is the wrapper.** The nine-argument
+    Python constructor builds a collateral whose `pck_certificate_chain` is
+    `None` (verified). So a validator must **never hand miner JSON to
+    `from_json`**; it should parse the JSON itself, take the nine known fields,
+    and rebuild through the constructor — discarding anything else, including a
+    supplied chain. The field the wrapper hides is exactly the field that must
+    be dropped, which makes the wrapper a usable choke point rather than the
+    liability it first appeared to be. Any implementation that skips this step
+    is the full exploit.
+
+    Demonstrated end to end — hostile JSON in, chain gone, the nine honest
+    fields byte-identical:
+
+        via from_json  -> pck_certificate_chain present
+        via sanitiser  -> pck_certificate_chain ABSENT, nine fields preserved
+
+    **The encoding is pinned, not guessed.** The constructor is type-strict
+    where `from_json` is not: four fields are `bytes` (`root_ca_crl`, `pck_crl`,
+    `tcb_info_signature`, `qe_identity_signature`) and five are `str`. Passing
+    strings throughout raises `TypeError: Can't extract 'str' to 'Vec'`. In the
+    JSON the four are **lowercase hex** — `bytes([0,1,254,255])` serialises as
+    `"0001feff"` — so they are rebuilt with `bytes.fromhex`, not base64 and not
+    a byte array. Splatting nine JSON values into the constructor does not work,
+    which is where a "cheap and unconditional" sanitiser stops being either.
+
+    **A real dstack quote carries its own PCK chain, so stripping the
+    collateral's is safe in practice.** Measured on `attestation_A.bin`:
+    `cert_chain_pem_bytes` is **3677 bytes** and `ca` is `platform`, i.e. the
+    certification data embeds the chain in the quote itself. So forcing the
+    quote's chain cannot break a legitimate dstack miner — which is what makes
+    the sanitiser viable rather than merely correct. Whether `verify` *prefers*
+    a collateral-supplied chain when both are present is still open, but the
+    sanitiser is safe either way for the quotes this subnet actually receives.
+
+    **It is the security boundary, so it needs an attack case, not a unit
+    test.** `run_miner_attacks` must feed hostile collateral through the real
+    path and assert the chain is gone. A test that only checks the honest
+    round trip would pass against an implementation that forwards the miner's
+    JSON untouched.
+
+**Therefore the freshness bound is not a staleness nuisance with defence in
+depth behind it. With collateral-in-proof it is the ENTIRE security of
+revocation, single-layered** — and it only holds at all if the supplied
+certificate chain is stripped on receipt, per the sanitiser note above. Written at that strength deliberately: stated as
+"bound the collateral age", someone later relaxes it for miner convenience;
+stated as "this is the only thing standing between the subnet and revoked
+hardware", nobody does.
+
+**Freshness is implementable** — `tcb_info` is exposed as a JSON string, so
+`issueDate` / `nextUpdate` / `tcbEvaluationDataNumber` parse in pure Python with
+no binding change. That question is settled, not open.
+
+**The real argument for the trade** is structural, not performance. Today a PCCS
+problem is a **globally correlated validator-side failure**: every validator
+hits one host at the same deterministic block, so one outage degrades everyone
+simultaneously. Afterwards it is an **uncorrelated per-miner failure**: a miner
+who cannot fetch their own collateral fails alone. That is the same philosophy
+as I5 — miners bear their own costs — and it, not the saved milliseconds, is
+why the trade is good. What is being traded is a **liveness and privacy
+dependency for a revocation-freshness dependency**.
+
+**Collateral would be miner-supplied input, and I2 applies.** It reaches a Rust
+JSON parser via `from_json` carrying certificate chains and CRLs: size caps
+before parse, and cases in `run_miner_attacks`. Note explicitly that collateral
+is **not covered by `content_hash` / `report_data`** — it is unattested data
+riding inside an attested bundle. Everything else in that bundle is attested, so
+the assumption that this is too will be made unless it is written down. (Binding
+it into `content_hash` would stop an outside process swapping it after the TD
+produced the proof, but would do nothing about staleness, because the TD is the
+miner's own.)
+
+**Two things it does NOT remove, and both must be decided with it:**
+
+  - **Stale collateral.** A miner may ship old but validly-signed collateral
+    that predates a revocation of their platform. This needs a freshness bound
+    checked against `tcb_info`'s issue/next-update fields — and that bound must
+    be a **pinned constant every validator shares**, not a local TTL each
+    operator tunes, or it reintroduces the divergence it was meant to remove.
+  - **`now_secs`, and this is load-bearing rather than tidy-up.** The freshness
+    bound is `next_update > now`. With local clocks, collateral near expiry is
+    valid for validator A and expired for validator B — so the fork *moves*
+    rather than closes. Epoch-block time is what makes the bound consensus-safe
+    at all, which means the two land together or the change is net-negative.
+    Same reasoning that made certificate validity an explicit `at=` parameter in
+    the TPM verifier rather than a hidden call to the clock.
+
+Not built. Recorded because the throughput work will otherwise fix the symptom
+that was measured rather than the property that is wrong.
+
+### I4 — "unverifiable" is a privilege, and the miner picks the fetch target
+
+If a proof can be classified *unverifiable* rather than *invalid*, that outcome
+must be unreachable by miner action. Otherwise a miner triggers it deliberately
+and becomes **unscoreable at will** — neither rewarded nor punished, immune to
+the attack suite, and invisible in the invalid count. That is an I4 problem
+(non-interference) wearing an I6 costume.
+
+**Two facts make this harder than picking the right exception, and both were
+checked in the library rather than assumed:**
+
+  - **The fetch target is derived from the miner's own bytes.**
+    `get_collateral(pccs_url, raw_quote)` parses the quote and extracts the
+    FMSPC to build the request. A miner supplying a well-formed quote with an
+    unknown FMSPC causes a fetch that fails for a reason that is entirely their
+    doing — and at fetch time nothing has verified that FMSPC yet.
+  - **dcap-qvl collapses every failure into one exception type.** Its own
+    docstring: *"ValueError: If the quote is invalid, the HTTP client can't be
+    built, or the PCCS / PCS fetch fails (all Rust-side errors are surfaced as
+    ``ValueError`` for consistency with the rest of this module)."* So
+    "Failed to find Fmspc" (the miner's bytes) and "Failed to get collateral"
+    (the network) are **indistinguishable at the Python boundary**.
+
+**The exception type carries zero information — demonstrated, not inferred.**
+With every fetch pointed at a closed local port so nothing left the host,
+garbage bytes, a truncated header and a mock quote all produced the identical
+`ValueError`. Branching on the type is impossible; branching on the message is
+the "never branch on prose" failure the flag exists to prevent.
+
+**But splitting the calls filters more than first stated.** All three of those
+failed at **parse**, before any network call — the unreachable URL never
+mattered. `parse_quote` is separately exposed, so a parse-first split cleanly
+classifies every malformed-bytes case as *invalid*, and those are the cases a
+miner reaches by sending rubbish. Confirmed against a **real dstack TDX quote**
+as well as against garbage: it parses, `fmspc` is `00806F050000`, `ca` is
+`platform`.
+
+**The residual is one case, and its size is unmeasured:** a quote that *parses*
+but carries an FMSPC the upstream does not know, producing a fetch-time 404
+that is the miner's doing. That stands as **reasoned, not run** — demonstrating
+it needs a real upstream, and crafted quotes are not worth sending to a third
+party to find out. The binary does carry "Failed to find Fmspc" as a literal
+distinct from "Failed to parse quote", so the case is *classifiable in
+principle* if the library ever surfaced a code; it is not inherently
+indistinguishable, it is merely inaccessible without branching on prose.
+
+So the accurate claim is **not** that item 1 is unimplementable. It is that
+item 1 is implementable with a residual hole of unknown size that cannot be
+closed through this API.
+
+**The conclusion is unchanged: this is another consequence that only
+collateral-in-proof resolves.** With collateral supplied by the miner
+there is no fetch, therefore no fetch-failure class, and `unverifiable` narrows
+to genuinely local conditions — a missing dependency, which no miner can cause.
+The I4 hole closes by construction rather than by classification.
+
+Whatever lands, it needs a `run_miner_attacks` case: hostile proof in, assert
+the outcome is **invalid** and never **unverifiable**.
+
+### I1/I6 — a bare timeout trades a visible halt for a silent fork
+
+The obvious fix for the hang is a timeout on the collateral fetch. **It is not
+safe on its own**, and the trace is four lines long:
+
+    TimeoutError inside get_collateral_and_verify
+      -> verify_dcap's `except Exception: return False`
+      -> VerifyResult(False, "DCAP attestation verification failed")
+      -> validator: n_invalid += 1; continue
+
+So a timeout converts a network problem into **a false accusation**: the miner
+is logged and scored as having failed verification, indistinguishable from a
+forged quote. And because it fires per proof, a slow-but-alive PCCS produces a
+**partial field** — some proofs verified, some timed out — which is the
+divergence case already identified as worse than a total outage. Two validators
+with different network luck publish different weights and neither logs anything
+unusual.
+
+**"Unverifiable" must therefore be a distinct outcome from "invalid" before any
+timeout lands.** That is the prerequisite, not the follow-up.
+
+**But it does not, by itself, close the fork — and this is the part that is easy
+to miss.** Whether a fetch succeeds is a per-validator, per-proof network event.
+Two validators will hold different sets of verifiable proofs no matter how
+honestly each labels them. Distinguishing the outcomes stops the slander; it
+does not make the weights agree.
+
+What decides that is the **granularity of the fail-closed**:
+
+| Granularity | Consequence |
+|---|---|
+| **Per miner** — skip the unverifiable ones | Validator A scores 256, B scores 255. Divergent weight vectors. Smaller and more honest than a false accusation, but still a fork. |
+| **Per epoch** — publish nothing unless everything verified | No divergent weights; the validator simply abstains, which Yuma tolerates. Consensus-safe — but with 256 per-proof fetches the probability of at least one failure approaches 1, so a validator would almost never publish. A halt by another name. |
+
+Neither is acceptable, and that is the point: **no local handling of a
+per-validator network failure can be consensus-safe, because the divergence is
+in the input, not in the handling.** Error handling cannot repair a
+nondeterministic input.
+
+So items like the timeout, the `unverifiable` outcome, widening I6 and making
+`pccs_url` explicit are **honesty and hygiene improvements, and all of them are
+worth doing** — but none restores determinism. The only fix for the fork is to
+remove the per-validator network dependency from the verdict entirely, which is
+what collateral-in-proof does. Anything short of that is choosing which bad
+outcome to prefer.
+
+### I6 — a PCCS hang halts the subnet, and does it invisibly
+
+Two facts recorded separately above are far worse together, so they are stated
+here as one:
+
+  - every validator fetches collateral for every proof from **one host**, with
+    no caching, and they do it **simultaneously** because the collection point
+    is a deterministic block (I6/I9);
+  - the `timeout=30` does not apply on the validator's synchronous path, so a
+    slow PCCS blocks for as long as the HTTP client allows, per proof, serially.
+
+**The outage is the safe case; the hang is the dangerous one.** That is the
+counterintuitive part and it is why this needs writing down:
+
+| Phala state | What happens |
+|---|---|
+| **Down** — fast connection error | `verify_dcap` catches, returns False, every proof invalid, the epoch is skipped and logged with the `no_valid_proofs` anomaly. Visible, recoverable, no weights set. |
+| **Hanging** — accepts and stalls | The validator blocks with no timeout. The epoch never completes. No weights, **no log line, no anomaly** — the code that would record the failure is downstream of the block and never runs. |
+
+So the failure that looks less severe is the one that stops the subnet, and it
+stops it silently, on every validator at once.
+
+**I6 as written does not cover this.** It says *"No **miner** behavior can stop
+a validator completing an epoch and setting weights"*, and its guard is the TEE
+proof timeout — which bounds the miner query, not the collateral fetch. The
+hostile miner who hangs an epoch was anticipated and defended; the same hang
+arriving through a third-party dependency was not, because the invariant names
+miners rather than naming the property. **A liveness invariant scoped to one
+source of delay is not a liveness invariant.** Whatever fix lands here should
+widen I6 to "no external party" and give the fetch a bound that holds on both
+code paths.
 
 ### I8 — what "attested" actually means
 

@@ -33,3 +33,4 @@ results/
 Thumbs.db
 data/rehearsal/pool_*.json
 data/embeddings/
+.claude/settings.local.json

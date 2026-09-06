@@ -126,13 +126,13 @@ python tests/test_integration.py
 # Attack suite (grader verification)
 python -m fugal_subnet.attacks.run_attacks
 
-# Full local testnet (Docker, mock mode — no API spend)
-python scripts/launch_testnet.py --mock --epochs 3
-
-# Full local testnet (real API — costs money, needs OPENROUTER_API_KEY)
-OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py \
-  --live --epoch-budget 30 --epochs 2
+# Full dress rehearsal: the shipped neurons against a real local chain (Docker)
+python scripts/dress_rehearsal.py --scenario all
 ```
+
+There is no paid validator path: the validator never calls a model and has no
+budget flag. Real spend only happens inside a `--live` miner, with a key pushed
+over the attested provisioning channel (`scripts/provision_td.py`).
 
 ## Common Gotchas
 
@@ -141,9 +141,11 @@ OPENROUTER_API_KEY=sk-or-... python scripts/launch_testnet.py \
 - **Benchmark downloads**: `datasets` library required; benchmarks download on
   first run. GPQA is a gated HF dataset requiring `huggingface-cli login` +
   accepted terms, or add `gpqa` to `FUGAL_SKIP_BENCHMARKS`
-- **Local testnet**: `docker compose up --build` or `scripts/launch_testnet.py`.
-  The docker-compose sets `FUGAL_REQUIRE_COMMITMENT=0` because in-container
-  miners run without chain commitments
+- **Local chain**: `scripts/dress_rehearsal.py` (the shipped neurons as real
+  processes) or `docker compose up --build` (one in-container epoch). Both set
+  `FUGAL_POOL_UNPINNED=1` for their fixture pools; the compose also sets
+  `FUGAL_REQUIRE_COMMITMENT=0` because in-container miners run without chain
+  commitments
 - **Weight setting on local chain**: the chain's 100-block rate limit means
   consecutive `--once` runs may get "weights already set" — normal at local
   testnet cadence, not an issue at hourly mainnet epochs

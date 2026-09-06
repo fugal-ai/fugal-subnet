@@ -5,8 +5,9 @@ import os
 
 _log = logging.getLogger(__name__)
 
-NETWORK = os.getenv("FUGAL_NETWORK", "test")
-NETUID = int(os.getenv("FUGAL_NETUID", "1"))
+# Network and netuid are CLI concerns: neurons/validator.py and neurons/miner.py
+# read FUGAL_NETWORK and FUGAL_NETUID as click defaults. Nothing in the package
+# needs them, so they are not constants here.
 
 # --- Epoch ---
 EPOCH_INTERVAL = int(os.getenv("FUGAL_EPOCH_INTERVAL", "3600"))
@@ -163,9 +164,6 @@ SOFT_TARGET_TAU = float(os.getenv("FUGAL_TAU", "1.0"))
 # --- Dedup ---
 DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("FUGAL_DEDUP_THRESHOLD", "0.99"))
 
-# --- Liveness ---
-LIVENESS_MAX_MISSED = int(os.getenv("FUGAL_MAX_MISSED_EPOCHS", "3"))
-
 # --- Evidence accumulation ---
 EVIDENCE_HALF_LIFE = int(os.getenv("FUGAL_EVIDENCE_HALF_LIFE", "200"))
 LIVENESS_MAX_MISSED_EVIDENCE = int(os.getenv("FUGAL_MAX_MISSED_EVIDENCE", "10"))
@@ -215,7 +213,6 @@ FRAME_DEFAULT_COMPLETION_TOKENS = float(
 TEE_APPROVED_MEASUREMENTS = [
     m.strip() for m in os.getenv("FUGAL_TEE_MEASUREMENTS", "").split(",") if m.strip()
 ]
-TEE_PROOF_TIMEOUT = int(os.getenv("FUGAL_TEE_PROOF_TIMEOUT", "600"))
 # No bundle store: proofs travel inline in the synapse response. See
 # fugal_subnet/protocol.py for why an external artifact store earned nothing
 # at this payload size.
@@ -398,7 +395,6 @@ ROUTING_DECISION_QUANTUM = 1e-4
 API_TIMEOUT = int(os.getenv("FUGAL_API_TIMEOUT", "180"))
 API_MAX_RETRIES = int(os.getenv("FUGAL_API_RETRIES", "3"))
 API_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
-API_CONCURRENCY = int(os.getenv("FUGAL_API_CONCURRENCY", "4"))
 
 # --- Backbone ---
 BACKBONE_MODEL = os.getenv("FUGAL_BACKBONE", "Qwen/Qwen3-0.6B")
@@ -435,12 +431,7 @@ REQUIRE_COMMITMENT = os.getenv("FUGAL_REQUIRE_COMMITMENT", "1") not in ("0", "fa
 # 0 admits any registered hotkey (safe default for testnets); raise on finney.
 MIN_VALIDATOR_STAKE = float(os.getenv("FUGAL_MIN_VALIDATOR_STAKE", "0"))
 
-# --- Matrix caching ---
-CACHE_STALENESS_TTL = int(os.getenv("FUGAL_CACHE_TTL", str(14 * 86400)))  # 2 weeks
-
-# --- Grader ---
-EXEC_TIMEOUT = int(os.getenv("FUGAL_EXEC_TIMEOUT", "10"))
-EXEC_MAX_BYTES = int(os.getenv("FUGAL_EXEC_MAX_BYTES", str(512 * 1024)))  # 512 KB
-
-# --- Model cost cap ---
-MAX_MODEL_COST_PER_QUERY = float(os.getenv("FUGAL_MAX_MODEL_COST", "0.10"))
+# Grader execution limits live in graders.py itself (EXEC_TIMEOUT_SECS and the
+# output cap): that file is hash-pinned consensus code and cannot read an
+# env-overridable value without making every validator's grades depend on its
+# environment.

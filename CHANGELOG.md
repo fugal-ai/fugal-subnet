@@ -21,6 +21,32 @@ All notable changes to this project will be documented here. Releases follow [Se
   unremarked. The override is now checked like the loader path, and a
   deliberately non-pinned pool must say so with `FUGAL_POOL_UNPINNED=1`.
 
+### Removed — the pre-TEE pipeline's residue
+
+Found by reference scan and executed removal (gate green after each), not by
+reading: `fugal_subnet/matrix.py` (validators no longer build a matrix by
+calling models), `fugal_subnet/tee/confine.py` (nothing imported it),
+`scripts/launch_testnet.py` and `scripts/test_real_api.py` (both drove the
+validator-calls-models design and advertised an `--epoch-budget` the validator
+does not have; `scripts/dress_rehearsal.py` is the local-chain path), the empty
+`fugal_subnet/v2` and `fugal_subnet/sandbox` packages, the integration test of
+the removed pipeline, and nine `config.py` constants nothing read
+(`NETWORK`, `NETUID`, `LIVENESS_MAX_MISSED`, `TEE_PROOF_TIMEOUT`,
+`API_CONCURRENCY`, `CACHE_STALENESS_TTL`, `EXEC_TIMEOUT`, `EXEC_MAX_BYTES`,
+`MAX_MODEL_COST_PER_QUERY`). `docs/VALIDATOR_GUIDE.md` no longer documents a
+timeout that did nothing.
+
+### Docs — corrected against the code and against measurement
+
+README described validators building ground-truth matrices and a paid
+`--epoch-budget` mode; TDX_VALIDATION gave the measurement formula with RTMR0;
+VALIDATOR_GUIDE said DCAP needs Intel's PCS and described the approved list
+without its `base:compose_hash` form; SECURITY listed a `0.1.x` support line
+and code execution on the validator host; CONTRIBUTING required "an explicit
+positive budget" for paid runs. Each is now what the code does. Every new
+number in the guides (cache-hit verify time, base measurement) is measured and
+says where.
+
 ### Added
 
 - `deploy/systemd/`, `deploy/env/`, `deploy/dstack/` — the production shapes of

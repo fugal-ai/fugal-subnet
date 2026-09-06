@@ -1,9 +1,11 @@
-"""Gate D integration test: validator ↔ miner full pipeline with mock bittensor.
+"""Integration checks against the mock bittensor SDK, no chain and no spend.
 
-Tests the complete flow:
-1. Generate a synthetic head .npz
-2. Miner loads and serves it
-3. Validator queries miner, receives head, evaluates, scores, computes weights
+Covers the pieces the neurons share: head artifact loading and validation, the
+inline proof bundle surviving the synapse's field caps, the dendrite round trip,
+commit-reveal integrity, weight capping, the epoch log, the offline consensus
+audit, head security bounds, the slicer, and the price-table policy. The live
+end-to-end path (TEE proof → verification → scoring → weights) is
+tests/test_tee_e2e.py and scripts/dress_rehearsal.py.
 """
 from __future__ import annotations
 
@@ -18,11 +20,9 @@ import numpy as np
 # Patch bittensor before any fugal imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import tests.bt_mock  # noqa: E402, F401
-from fugal_subnet.benchmarks.loader import load_all
 from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
 from fugal_subnet.config import HEAD_HIDDEN_DIM, SLICE_SIZE
 from fugal_subnet.consensus import ValidatorReport, check_self_consistency, compute_consensus
-from fugal_subnet.dedup import find_duplicates
 from fugal_subnet.epoch_logger import (
     EpochLog,
     EpochTimer,
@@ -36,10 +36,8 @@ from fugal_subnet.head_eval import (
     load_head_from_b64,
     load_head_from_npz,
 )
-from fugal_subnet.matrix import build_matrix_mock
 from fugal_subnet.protocol import FugalProofSynapse
-from fugal_subnet.rewards import cap_weight_change, compute_weights
-from fugal_subnet.scoring import ScoringState, update_scores
+from fugal_subnet.rewards import cap_weight_change
 from fugal_subnet.soft_targets import compute_soft_targets
 
 MODEL_POOL = [
@@ -142,96 +140,6 @@ def make_synthetic_pool(n: int = 200, seed: int = 7) -> list[dict]:
         "question_id": f"syn_{i:04d}",
         "metadata": {},
     } for i in range(n)]
-
-
-def test_full_validator_pipeline():
-    """Full validator epoch: slice → matrix → eval → score → weights."""
-    print("\n--- Full Validator Pipeline ---")
-
-    # 1. Load benchmarks and slice (fall back to synthetic when offline)
-    try:
-        pool = load_all(strict=False)
-    except Exception:
-        pool = []
-    if not pool:
-        pool = make_synthetic_pool()
-    print(f"  Benchmark pool: {len(pool)} questions")
-
-    nonce = derive_nonce("e000001_abc12345", "0xdeadbeef")
-    questions = select_slice(nonce, pool, min(SLICE_SIZE, 50))
-    print(f"  Slice: {questions[0]['benchmark']}... ({len(questions)} questions)")
-
-    # 2. Build mock matrix
-    def mock_fn(model, question):
-        seed = hash((model, question["question_id"])) % 2**31
-        rng = np.random.RandomState(seed)
-        correct = int(rng.random() > 0.4)
-        return ("42" if correct else "wrong"), correct
-
-    matrix_result = build_matrix_mock(questions, MODEL_POOL, mock_fn)
-    print(f"  Matrix: {matrix_result.matrix.shape}")
-
-    # 3. Soft targets
-    soft = compute_soft_targets(matrix_result.matrix)
-    assert soft.shape == (len(questions), len(MODEL_POOL))
-    assert np.allclose(soft.sum(axis=1), 1.0)
-    print(f"  Soft targets: {soft.shape}, all rows sum to 1.0")
-
-    # 4. Create two synthetic heads (different seeds = different quality)
-    head_data_1, hash_1 = make_synthetic_head(MODEL_POOL, seed=42)
-    head_data_2, hash_2 = make_synthetic_head(MODEL_POOL, seed=99)
-
-    head1 = load_head_from_b64(base64.b64encode(head_data_1).decode())
-    head2 = load_head_from_b64(base64.b64encode(head_data_2).decode())
-
-    # 5. Mock hidden states
-    np.random.seed(int.from_bytes(nonce[:4], "big"))
-    hidden = np.random.randn(len(questions), HEAD_HIDDEN_DIM).astype(np.float32)
-    hidden /= np.linalg.norm(hidden, axis=1, keepdims=True)
-
-    model_costs = {m: 0.005 * (i + 1) for i, m in enumerate(MODEL_POOL)}
-
-    # 6. Evaluate heads
-    score1 = evaluate_head(head1, hidden, matrix_result.matrix,
-                           MODEL_POOL, soft, model_costs)
-    score2 = evaluate_head(head2, hidden, matrix_result.matrix,
-                           MODEL_POOL, soft, model_costs)
-    print(f"  Head 1: acc={score1.accuracy:.3f} cost_eff={score1.cost_efficiency:.3f} kl={score1.kl_score:.3f}")
-    print(f"  Head 2: acc={score2.accuracy:.3f} cost_eff={score2.cost_efficiency:.3f} kl={score2.kl_score:.3f}")
-
-    # 7. Scoring
-    state = ScoringState()
-    epoch_scores = {1: score1, 2: score2}
-    head_hashes = {1: hash_1, 2: hash_2}
-    state = update_scores(state, epoch_scores, head_hashes, acc_best=0.8)
-
-    for uid, rec in state.records.items():
-        print(f"  UID {uid}: composite={rec.composite_score:.4f} epochs_seen={rec.epochs_seen}")
-
-    # 8. Dedup
-    head_outputs = {1: score1.routing_decisions, 2: score2.routing_decisions}
-    commit_blocks = {1: 100, 2: 200}
-    dupes = find_duplicates(head_outputs, commit_blocks)
-    print(f"  Dedup disqualified: {dupes}")
-
-    # 9. Rewards
-    uids, weights = compute_weights(state.records,
-                                    dedup_disqualified=dupes)
-    print(f"  Weights: UIDs={uids}, weights={[f'{w:.4f}' for w in weights]}")
-    assert abs(sum(weights) - 1.0) < 1e-6, f"Weights don't sum to 1: {sum(weights)}"
-    print(f"  Weight sum: {sum(weights):.6f} ✓")
-
-    # 10. Mock set_weights
-    import bittensor as bt
-    subtensor = bt.Subtensor(network="test")
-    wallet = bt.Wallet(name="test_validator")
-    success, msg = subtensor.set_weights(
-        wallet=wallet, netuid=1, uids=uids, weights=weights,
-    )
-    assert success
-    print(f"  set_weights: {msg}")
-
-    print("\n  [PASS] Full validator pipeline")
 
 
 def test_dendrite_query_flow():
@@ -611,7 +519,6 @@ def main():
     test_miner_loads_head()
     test_synapse_roundtrip()
     test_dendrite_query_flow()
-    test_full_validator_pipeline()
     test_commit_reveal()
     test_weight_capping()
     test_epoch_logger()

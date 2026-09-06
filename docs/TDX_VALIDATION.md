@@ -144,14 +144,22 @@ validator running `--live` without it cannot verify any attestation.
 
 ## Getting the measurement of your image
 
-`FUGAL_TEE_MEASUREMENTS` holds `measurement_id()` values — `sha256(MRTD ||
-RTMR0 || RTMR1 || RTMR2)`. It is **not** a source hash, and deliberately not
-anything the workload writes about itself: the whole point is that an attacker
-running modified code inside a genuine TD produces a valid quote, and only the
-measurement registers distinguish them.
+`FUGAL_TEE_MEASUREMENTS` holds entries of the form `<base>:<app_identity>`.
+The base is `measurement_id()` — `sha256(MRTD || RTMR1 || RTMR2)`, see
+`fugal_subnet/tee/attestation.py`. It is **not** a source hash, and deliberately
+not anything the workload writes about itself: the whole point is that an
+attacker running modified code inside a genuine TD produces a valid quote, and
+only the measurement registers distinguish them.
 
-RTMR3 is excluded because it is application-extendable; including it would make
-the identity move with runtime data and no image could stay on an approved list.
+RTMR0 is excluded because it records the host-chosen virtual hardware
+configuration (vCPU count, memory), which proves nothing about the code and
+would fork the approved list by instance size. RTMR3 is excluded because it is
+application-extendable and includes per-deploy values; what is approved from it
+is the `compose-hash` event replayed out of the log, which is the `app_identity`
+half of the entry. Measured on GCP `c3` with the dstack 0.6.0-rc0 image, across
+three deploys and two instance sizes, the base is
+
+    12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
 
 Run this on the TD to print the measurement of the image you are about to
 approve. Quote generation needs write access to configfs, so run it as root:

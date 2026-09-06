@@ -874,6 +874,35 @@ guessed at. Ignoring them is safe because `r` and `s` are read from fixed
 offsets at the front, so nothing appended can change what is verified. Recorded
 so that nobody later mistakes silence for knowledge.
 
+### I8 — the wallet crosses the attested channel
+
+Found on 2026-09-06 while preparing the first `--live` run against merged
+`main`: **a dstack TD had no permitted way to receive its hotkey.** The miner
+signs `serve_axon` and the head commitment itself, so the keyfile must be inside
+the TD, and every route into a TD had been ruled out in turn — the compose is
+public, `.user-config` is plaintext to the cloud provider, and the attested
+channel's allow-list carried only the head, the public hotkey address and the
+API key. The earlier "TDs" that did register on 552 got their hotkeys by
+`gcloud compute scp` onto a stock VM, which dstack forbids. So the design said
+"wallet, head, API key may cross" while the code allowed two of the three.
+
+Resolved the way the design already implied: `hotkey_keyfile_b64` and
+`coldkeypub_b64` join `ALLOWED_FIELDS`. The keyfile is the same trust class as
+the API key — a secret, and only the miner's own; a miner who pushes it to a TD
+they have not verified has handed over their own identity and nobody else's.
+`coldkeypub` is public and is there only because the SDK's `serve_axon` reads
+the coldkey **address** off the wallet, so a hotkey alone does not serve
+(measured: `bt.Wallet` with hotkey only signs fine and raises on
+`coldkeypub`). The TD writes both under a tmpfs root (`/dev/shm`, 0700/0600)
+and opens that as its wallet path; nothing reaches the data volume, so a key
+never outlives the attestation that released it.
+
+Checks: `tests/test_provision_schema.py` (the allow-list literal),
+`tests/test_provision_transport.py::test_a_pushed_wallet_lands_in_tmpfs_with_private_modes`.
+Operator side: `scripts/provision_td.py`, which refuses an encrypted hotkey (a
+TD cannot answer a password prompt, and a miner hung on one is indistinguishable
+from a healthy unprovisioned miner) and never prints a secret.
+
 ### I8 — there is no hourly TDX bare metal, so there is no quick fallback
 
 Recorded because the obvious escape hatch from the Google trust root does not
@@ -1635,6 +1664,15 @@ placed `data/benchmarks/livecode.json`. Either divergence produces proofs that
 fail on `questions_hash`, an error that names the symptom and never the cause.
 Until the pool is published as a hash-pinned artifact and every neuron is
 pointed at it with `FUGAL_BENCHMARK_POOL`, the loader is a consensus hazard.
+
+**The override path was the unguarded one (fixed 2026-09-06).** `load_all`
+returned a `FUGAL_BENCHMARK_POOL` file before either the manifest check or the
+size floor ran, so the documented production path was exactly the one on which
+both guards were absent. Measured: a 150-question pool served 40+ live epochs on
+netuid 552 and nothing objected. The override now runs the same two checks; a
+pool that is deliberately not the pinned one — a local testnet, a rehearsal
+fixture — must declare it with `FUGAL_POOL_UNPINNED=1`, which logs a warning
+naming itself. `tests/test_pool_override_verified.py` holds it.
 
 **The approved measurement is reproducible but not durable (open, blocks
 `--live`).** `measurement_id` is sha256 over MRTD and RTMR0-2. Measured on real

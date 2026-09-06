@@ -122,6 +122,11 @@ def main() -> int:
 
         if args.pool:
             os.environ["FUGAL_BENCHMARK_POOL"] = os.path.abspath(args.pool)
+            # This tool computes the identity OF whatever pool it is handed;
+            # refusing an unpinned one would defeat its purpose. The identity
+            # it prints is only approvable if the pool is the pinned one, which
+            # is a review question, not a loader question.
+            os.environ.setdefault("FUGAL_POOL_UNPINNED", "1")
         pool = load_all()
         src, ph, gh = source_hash(), pool_hash(pool), grader_hash()
         identity = runtime_identity(src, ph, gh, args.upstream)

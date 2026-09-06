@@ -102,7 +102,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     from fugal_subnet.tee.runtime import TEERuntime
 
     if await_provisioning:
-        head_data = _await_provisioning()
+        # The wallet arrives over the same channel: the TD signs serve_axon and
+        # the head commitment itself, so the keyfile has to be inside it, and
+        # a pushed wallet is the only path that never touches storage the cloud
+        # can read. The returned path is a tmpfs directory laid out the way
+        # bt.Wallet expects, so everything below is unchanged.
+        head_data, wallet_path = _await_provisioning(
+            coldkey=coldkey, hotkey=hotkey, wallet_path=wallet_path,
+        )
     elif head_path:
         head_data = _load_head_file(head_path)
     else:
@@ -474,8 +481,9 @@ def _run_epoch(
         proxy.stop()
 
 
-def _await_provisioning():
-    """Block until the operator pushes per-miner data, then return the head.
+def _await_provisioning(coldkey: str = "default", hotkey: str = "default",
+                        wallet_path: "str | None" = None):
+    """Block until the operator pushes per-miner data; return (head, wallet_path).
 
     THE AXON DOES NOT SERVE UNTIL THIS RETURNS, and that is the point. An
     unprovisioned miner is not partially ready: it would answer a validator with
@@ -488,6 +496,18 @@ def _await_provisioning():
     The API key is put into the environment rather than passed down because
     MeteringProxy already reads it from there, and threading a secret through
     six call frames creates six places it can be logged.
+
+    THE WALLET. If the push carries `hotkey_keyfile_b64` (and `coldkeypub_b64`,
+    which the SDK's serve_axon reads for the coldkey address), both are written
+    under a tmpfs wallet root laid out as bt.Wallet expects —
+    `<root>/<coldkey>/hotkeys/<hotkey>` and `<root>/<coldkey>/coldkeypub.txt`,
+    mode 0600 — and that root is returned as the wallet path. tmpfs, not the
+    data volume: a key that outlived the attestation which justified releasing
+    it would still be there for a later boot with a different measurement. The
+    default root is /dev/shm; FUGAL_PROVISIONED_WALLET_DIR overrides it. When
+    the push carries no keyfile the caller's own wallet_path is returned
+    unchanged, so a TD that already holds a wallet by some other means keeps
+    working.
     """
     import base64
     import os
@@ -520,8 +540,42 @@ def _await_provisioning():
     if key:
         os.environ["OPENROUTER_API_KEY"] = key
         logger.info("API key received over the attested channel")
+
+    keyfile_b64 = store.get("hotkey_keyfile_b64")
+    if keyfile_b64:
+        root = os.getenv("FUGAL_PROVISIONED_WALLET_DIR", "/dev/shm/fugal-wallet")
+        wallet_dir = os.path.join(root, coldkey)
+        hotkeys_dir = os.path.join(wallet_dir, "hotkeys")
+        os.makedirs(hotkeys_dir, mode=0o700, exist_ok=True)
+        os.chmod(root, 0o700)
+        os.chmod(wallet_dir, 0o700)
+        _write_private(os.path.join(hotkeys_dir, hotkey), base64.b64decode(keyfile_b64))
+        coldkeypub_b64 = store.get("coldkeypub_b64")
+        if coldkeypub_b64:
+            _write_private(os.path.join(wallet_dir, "coldkeypub.txt"),
+                           base64.b64decode(coldkeypub_b64))
+        else:
+            logger.warning(
+                "hotkey keyfile received without coldkeypub — the SDK reads the "
+                "coldkey address to serve an axon, so serving will fail unless "
+                "the wallet dir already holds coldkeypub.txt",
+            )
+        wallet_path = root
+        # Names only. The keyfile is a secret; the path says where, not what.
+        logger.info("Wallet received over the attested channel: %s/%s at %s",
+                    coldkey, hotkey, root)
     logger.info("Provisioned after %ds; the axon may now serve", waited)
-    return base64.b64decode(head_b64)
+    return base64.b64decode(head_b64), wallet_path
+
+
+def _write_private(path: str, data: bytes) -> None:
+    """Write a keyfile so it is never world-readable, even for an instant."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    os.chmod(path, 0o600)
 
 
 def _assert_port_free(port: int) -> None:

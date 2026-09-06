@@ -124,6 +124,24 @@ def load_all(strict: bool = True) -> list[dict]:
             "(%d questions, pool_hash=%s)",
             override, len(pool), pool_hash(pool)[:16],
         )
+        # The override used to return here, before either guard below ran. So
+        # the documented production path — a materialised pool file on every
+        # neuron — was also the one path on which the manifest check and the
+        # size floor were both silently absent. Measured: a 150-question pool
+        # ran through 40+ live epochs on netuid 552 with no complaint from
+        # anything. A file is not a reason to trust its contents; the same two
+        # checks apply, and a deliberately non-pinned pool (a local testnet, a
+        # rehearsal) has to SAY SO with FUGAL_POOL_UNPINNED=1, which is loud.
+        if _unpinned_pool_declared():
+            logger.warning(
+                "FUGAL_POOL_UNPINNED is set: this pool is declared NOT to be the "
+                "pinned consensus pool, so the manifest and size-floor checks "
+                "are skipped. Correct for a local testnet or rehearsal fixture; "
+                "never set it on a neuron that talks to anyone else's.",
+            )
+            return pool
+        _verify_against_manifest(pool, _default_skip(), strict)
+        _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict)
         return pool
 
     skip = _default_skip()
@@ -168,6 +186,12 @@ def load_all(strict: bool = True) -> list[dict]:
     _verify_against_manifest(pool, skip, strict)
     _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict)
     return pool
+
+
+def _unpinned_pool_declared() -> bool:
+    """Whether the operator has declared the override pool as deliberately
+    NOT the pinned consensus pool. Unset and "0" both mean no."""
+    return os.getenv("FUGAL_POOL_UNPINNED", "0") not in ("0", "", "false", "False")
 
 
 def _verify_pool_is_large_enough_to_be_unmemorisable(

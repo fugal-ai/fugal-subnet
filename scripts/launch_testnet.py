@@ -968,6 +968,9 @@ def main():
         # to take this file while the validator called load_all() over real
         # HuggingFace datasets — guaranteed to disagree.
         os.environ["FUGAL_BENCHMARK_POOL"] = os.path.abspath(pool_path)
+        # A local fixture is not the pinned pool; declare it, or the loader's
+        # manifest and size-floor checks refuse it.
+        os.environ["FUGAL_POOL_UNPINNED"] = "1"
         # Slice size is consensus-critical and env-overridable, so it has to be
         # set for BOTH neurons. It used to be set only for the validator, so the
         # miner sliced with the default 300 over a 120-question pool — the whole

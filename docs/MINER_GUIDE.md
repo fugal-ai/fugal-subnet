@@ -246,16 +246,32 @@ download and 7.5 is uploading ~825 MB to GCS — on a residential connection tha
 upload dominates. **Redeploys are about 4 minutes** once the GCP image exists,
 so the cost is paid once.
 
-### `FUGAL_BENCHMARK_POOL` is not optional, and the failure mode is silent
+### The first boot embeds the whole pool, and that takes half a day
 
-**Set it in your compose.** Leave it out and the miner falls through to
-`load_all()`, starts embedding the full ~21,000-question pool, and takes
-**about 13 hours** single-threaded before it answers anything.
+Do **not** set `FUGAL_BENCHMARK_POOL` in a production compose. The pool is
+consensus state: the miner loads the same manifest-pinned pool the validators
+do, through `load_all()`, and refuses to start if it does not match. A pool
+file is only accepted if it verifies against the same manifest, so putting one
+in the compose buys nothing on a real subnet — it merely made the compose hash
+depend on a 12 MB file. (Earlier versions of this guide said the opposite,
+because at the time the override skipped the manifest check and a tiny pool
+was the only way to get a miner up quickly. That bypass is closed.)
 
-There is no error. The process is running, the logs look busy, the axon may even
-be serving — and the miner produces nothing for half a day. This was hit during
-a real rehearsal by someone who had been warned about it hours earlier, which is
-why it is here in bold rather than in a footnote.
+What the earlier warning was really about is **time**: embedding the ~21,500
+questions takes **about 13 hours** single-threaded before the miner answers
+anything, with no error — the process is running, the logs look busy, and the
+miner produces nothing for half a day. Two things make that bearable:
+
+- Cache the embeddings on the encrypted data volume
+  (`FUGAL_EMBEDDING_CACHE` on a named volume, as in
+  `deploy/dstack/docker-compose.yaml`) so the pass is paid once, not on every
+  restart or redeploy.
+- Provision and start the miner **before** you expect it to earn. It commits
+  its head hash only after the axon serves, and a head committed after an
+  epoch's boundary block is unscoreable for that epoch by design.
+
+For a local rehearsal that is not talking to anyone else's neurons, a small
+pool is still fine — declare it with `FUGAL_POOL_UNPINNED=1`.
 
 ### A slow embedding job is usually VRAM, not a small card
 
@@ -441,6 +457,28 @@ The mechanism and the exact list of what may cross the channel are in
 `fugal_subnet/tee/provision.py`. It has been exercised end to end on real
 hardware: the pusher verified a live TD's nonce, measurement, event-log replay,
 compose hash and instance id, then pushed a 77 KB head, and the miner proceeded.
+
+**Your hotkey crosses the same channel.** The TD signs `serve_axon` and the head
+commitment itself, so it needs your hotkey keyfile, and the compose file and the
+shared disk are both readable by the cloud provider. The push therefore carries
+the head, the API key, the hotkey keyfile and `coldkeypub.txt` (the SDK reads
+the coldkey *address* to serve; without it the axon never registers). The TD
+holds the keyfile in tmpfs only. The hotkey must be unencrypted — a TD cannot
+answer a password prompt — which is the normal state for a hotkey; the coldkey
+is what stays encrypted and never leaves your machine. The operator-side tool is
+`scripts/provision_td.py`; `--inspect` shows what the TD attests to before you
+send anything, and nothing it prints contains a secret.
+
+```bash
+python scripts/provision_td.py --inspect --address http://<td-ip>:8092
+python scripts/provision_td.py --address http://<td-ip>:8092 \
+    --approved <base>:<compose_hash> --instance-id <from --inspect> \
+    --head my_head.npz --wallet fugal_miner --hotkey default \
+    --api-key-file ~/.fugal/openrouter.key      # a 0600 file, never argv
+```
+
+The full recipe, including the compose file and the `dstack-cloud` steps, is
+`deploy/dstack/README.md`.
 
 The reference file in `tests/fixtures/app-compose_A.json` is a **connectivity
 test app** (nginx and a socat bridge), not a miner. Do not deploy it and do not

@@ -1,0 +1,61 @@
+# The Fugal miner as a dstack application. This file becomes the
+# `docker_compose_file` string inside app-compose.json, and sha256 of THAT
+# file's raw bytes is the app identity validators approve — so every byte here
+# is part of what the subnet accepts. Change one and the entry must be
+# re-approved.
+#
+# Nothing per-miner is in here, deliberately: the head, the hotkey, coldkeypub
+# and the API key all arrive after boot over the attested channel
+# (scripts/provision_td.py). That is what lets every honest miner share one
+# compose hash.
+#
+# Pin the image BY DIGEST. A tag that moves leaves this hash stable while the
+# code under it changes, which is the exact defect the measured image exists to
+# prevent. Replace the digest below with the one Cloud Build printed.
+services:
+  miner:
+    image: us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:REPLACE_WITH_BUILD_DIGEST
+    restart: unless-stopped
+    ports:
+      - "8091:8091"   # axon: validators reach the miner here (open to the world)
+      - "8092:8092"   # provisioning receiver: firewall to the operator's IP only
+    volumes:
+      # The guest agent socket: how the miner asks for TDX+TPM attestations.
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      # Embedding cache and epoch artifacts. A named volume lives on dstack's
+      # encrypted data disk and survives a redeploy under key_provider=tpm, so
+      # the ~13 h backbone pass over the pool is paid once, not per restart.
+      # Mounted at /app/results (image-owned by uid 10001), NOT /app/data: a
+      # volume over /app/data would shadow the pinned data/models.json across
+      # image upgrades, which is a consensus hazard wearing a convenience hat.
+      - fugal-results:/app/results
+    environment:
+      - FUGAL_NETWORK=test
+      - FUGAL_NETUID=552
+      # MUST equal tempo x 12 s on every neuron (validators included).
+      - FUGAL_EPOCH_INTERVAL=4320
+      - FUGAL_EMBEDDING_CACHE=/app/results/embeddings
+      - LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+      # NOT set, on purpose: FUGAL_BENCHMARK_POOL (the pool comes from the
+      # pinned loader and is verified against the manifest), and
+      # FUGAL_OPENROUTER_BASE (the upstream is inside the measurement; a
+      # settable upstream is the exploit scripts/stub_upstream.py demonstrates).
+    entrypoint:
+      - /app/.venv/bin/python
+      - /app/neurons/miner.py
+      - --live
+      - --await-provisioning
+      - --network
+      - test
+      - --netuid
+      - "552"
+      - --coldkey
+      - fugal
+      - --hotkey
+      - default
+      - --port
+      - "8091"
+
+volumes:
+  fugal-results:

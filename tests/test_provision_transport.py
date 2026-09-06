@@ -214,7 +214,9 @@ def test_miner_blocks_until_provisioned_then_returns_the_head(monkeypatch):
     result = {}
 
     def run():
-        result["head"] = miner._await_provisioning()
+        result["head"], result["wallet_path"] = miner._await_provisioning(
+            coldkey="c", hotkey="h", wallet_path="/original/wallets",
+        )
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
@@ -233,3 +235,60 @@ def test_miner_blocks_until_provisioned_then_returns_the_head(monkeypatch):
     t.join(timeout=10)
     assert result.get("head") == head
     assert os.environ["OPENROUTER_API_KEY"] == "sk-or-v1-pushed"
+    # No keyfile pushed: the caller's own wallet path is untouched.
+    assert result.get("wallet_path") == "/original/wallets"
+
+
+def test_a_pushed_wallet_lands_in_tmpfs_with_private_modes(monkeypatch, tmp_path):
+    """The TD signs serve_axon and the head commitment itself, so the keyfile
+    must arrive — and it must arrive somewhere private and volatile.
+
+    Drives `_await_provisioning` with a pushed hotkey keyfile and coldkeypub and
+    checks the wallet root it returns is laid out the way bt.Wallet reads it,
+    that every file is 0600, and that the returned path (not the caller's) is
+    what the miner will open.
+    """
+    import base64
+    import importlib
+    import os
+    import stat
+    import time
+    import urllib.request
+
+    miner = importlib.import_module("neurons.miner")
+    monkeypatch.setenv("FUGAL_PROVISIONED_WALLET_DIR", str(tmp_path / "shm"))
+    # A different receiver port from the test above, which may still be closing.
+    monkeypatch.setattr("fugal_subnet.tee.provision.PROVISION_PORT", 18092)
+
+    keyfile = b'{"accountId":"0x00","ss58Address":"5Fk","secretPhrase":"not real"}'
+    coldpub = b'{"ss58Address":"5Cold"}'
+    result = {}
+
+    def run():
+        result["head"], result["wallet_path"] = miner._await_provisioning(
+            coldkey="fugal", hotkey="td1", wallet_path=None,
+        )
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    time.sleep(0.6)
+    body = json.dumps({
+        "head_b64": base64.b64encode(b"head").decode(),
+        "hotkey_keyfile_b64": base64.b64encode(keyfile).decode(),
+        "coldkeypub_b64": base64.b64encode(coldpub).decode(),
+    }).encode()
+    urllib.request.urlopen(urllib.request.Request(
+        "http://127.0.0.1:18092/provision", data=body,
+        headers={"Content-Type": "application/json"}, method="POST"), timeout=5)
+    t.join(timeout=10)
+
+    root = result.get("wallet_path")
+    assert root == str(tmp_path / "shm")
+    hot = os.path.join(root, "fugal", "hotkeys", "td1")
+    pub = os.path.join(root, "fugal", "coldkeypub.txt")
+    assert open(hot, "rb").read() == keyfile
+    assert open(pub, "rb").read() == coldpub
+    for p in (hot, pub):
+        assert stat.S_IMODE(os.stat(p).st_mode) == 0o600, f"{p} is not 0600"
+    for d in (root, os.path.join(root, "fugal")):
+        assert stat.S_IMODE(os.stat(d).st_mode) == 0o700, f"{d} is not 0700"

@@ -216,6 +216,9 @@ def miner_env(extra=None):
     env["FUGAL_BENCHMARK_POOL"] = os.path.abspath(
         os.path.join(RESULTS, "pool.json")
     )
+    # A 120-question fixture is not the pinned pool and must say so, or the
+    # loader refuses it (manifest mismatch, below the size floor) — correctly.
+    env["FUGAL_POOL_UNPINNED"] = "1"
     env.pop("OPENROUTER_API_KEY", None)
     env.update(extra or {})
     return env

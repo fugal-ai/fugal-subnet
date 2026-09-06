@@ -96,8 +96,10 @@ def inspect(address: str, timeout: int) -> int:
         blob = bytes.fromhex(json.loads(r.read())["attestation"])
     quote_bytes, event_log = unwrap_attestation(blob)
     quote = parse_quote(quote_bytes)
+    # The guest right-pads report_data with zeros (measured; see INVARIANTS I8).
+    expected_rd = bytes.fromhex(nonce).ljust(64, b"\0").hex()
     print(f"attestation        {len(blob)} bytes, quote {len(quote_bytes)} bytes")
-    print(f"nonce honoured     {quote.report_data == bytes.fromhex(nonce).ljust(64, b'\\0').hex()}")
+    print(f"nonce honoured     {quote.report_data == expected_rd}")
     print(f"base_measurement   {measurement_id(quote)}")
     print(f"mrtd/rtmr0-3       {quote.mrtd[:16]}… {quote.rtmr0[:16]}… "
           f"{quote.rtmr1[:16]}… {quote.rtmr2[:16]}… {quote.rtmr3[:16]}…")

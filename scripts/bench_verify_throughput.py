@@ -251,6 +251,57 @@ def main():
         print(f"  {n:>4} miners  {n * local:>8.2f}s   "
               f"({100 * n * local / budget:.2f}% of budget)")
 
+    print()
+    abstention_table()
+
+
+def abstention_table():
+    """How often a consensus-safe validator would publish nothing at all.
+
+    Once "unverifiable" is distinguished from "invalid", the validator has to
+    choose a granularity for failing closed, and both choices are bad:
+
+      per miner  skip the ones that could not be checked. Two validators hold
+                 different sets, so they publish different weights. The fork is
+                 politer, not smaller.
+      per epoch  publish nothing unless every proof verified. No divergent
+                 weights -- Yuma tolerates abstention -- but with one network
+                 fetch per proof, the chance that ALL of them succeed falls off
+                 a cliff as the field grows.
+
+    This is the per-epoch column, and it is why error handling cannot fix this:
+    the divergence is in the input, not in how the input is handled.
+
+    MODELLED, not measured -- independent failures at a fixed per-fetch rate.
+    Real failures cluster (one outage takes many fetches at once), so treat
+    these as the optimistic end.
+    """
+    print("--- P(validator abstains for the whole epoch), per-epoch fail-closed ---")
+    print("    modelled: 1-(1-p)^n, independent failures, one fetch per proof")
+    hdr = "  p(fetch fails) |" + "".join(f"{n:>10}" for n in FIELD_SIZES)
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+    for pf in (0.0001, 0.001, 0.01, 0.05):
+        row = f"  {pf:>14.4f} |"
+        for n in FIELD_SIZES:
+            row += f"{100 * (1 - (1 - pf) ** n):>9.1f}%"
+        print(row)
+    print()
+    print("  Same rate, but collateral fetched ONCE per distinct platform (FMSPC)")
+    print("  instead of once per proof -- caching, or shipping it with the proof:")
+    hdr2 = "  p(fetch fails) |" + "".join(f"{f:>10}" for f in (1, 3, 5))
+    print(hdr2 + "   <- distinct FMSPCs")
+    print("  " + "-" * (len(hdr2) - 2))
+    for pf in (0.0001, 0.001, 0.01, 0.05):
+        row = f"  {pf:>14.4f} |"
+        for f in (1, 3, 5):
+            row += f"{100 * (1 - (1 - pf) ** f):>9.1f}%"
+        print(row)
+    print()
+    print("  The field size stops appearing in the second table. That is the whole")
+    print("  argument: removing the per-proof fetch decouples consensus safety from")
+    print("  how many miners are on the subnet. It is not a latency optimisation.")
+
 
 if __name__ == "__main__":
     main()

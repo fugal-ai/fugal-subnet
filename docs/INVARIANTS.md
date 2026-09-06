@@ -903,6 +903,52 @@ Operator side: `scripts/provision_td.py`, which refuses an encrypted hotkey (a
 TD cannot answer a password prompt, and a miner hung on one is indistinguishable
 from a healthy unprovisioned miner) and never prints a secret.
 
+### I8 — the attested channel was authenticated, not confidential
+
+Found the same day, hours after the first real pushes, by reading `push()` and
+`serve()` side by side while designing an operator log path. The pusher
+verified an Intel-signed quote over its nonce and then POSTed the payload — the
+head, the **hotkey keyfile**, the **OpenRouter key** — to `http://<td>:8092` in
+**plaintext**. A quote authenticates; it does not encrypt anything. Everyone on
+the path between the operator and the cloud edge could read both secrets, and
+the firewall on the port narrows who may *connect*, not who may *observe*. The
+word "attested" had been doing the work "encrypted" was needed for.
+
+**Fix, measured by test.** The quote now covers a key to encrypt to. The
+receiver generates an ephemeral X25519 key when it starts and puts
+`sha256(pubkey)` in the second 32 bytes of `report_data`, next to the
+operator's 32-byte nonce, so the Intel signature says "this TD, on this
+measured image, holds this key". The pusher checks exactly that
+(`report_data_for`), then seals the payload — X25519 with a fresh operator key,
+HKDF-SHA256 salted with the nonce, ChaCha20-Poly1305 with the nonce as
+associated data — and sends only the envelope. The TD refuses plaintext,
+refuses an envelope whose nonce it never attested, consumes each nonce once
+(replay), and reports one error class for every decryption failure so a
+rejection leaks nothing. A TD that returns no key is refused by the pusher as
+an old receiver that would accept plaintext.
+
+The canary is `test_refuses_a_key_the_hardware_did_not_sign_for`: the quote is
+genuine and over our nonce and the TD's real key, but the TD *offers* a
+different public key — the shape of a man-in-the-middle substituting their key
+after a genuine attestation. If that test ever passes, the seal encrypts to
+whoever asks.
+
+**The same secret closes the black-box finding.** The push's session key is
+kept on both sides (in memory in the TD, in a 0600 file on the operator's
+machine — `provision_td.py --session-file`), and `GET /provision/logs` returns
+the miner's recent log lines sealed under it to a caller presenting a bearer
+token derived from it. So an approved miner's own operator can read its logs
+with `public_logs=false`, and nobody who can merely reach the port learns
+anything (`test_logs_are_operator_only_and_encrypted`).
+
+What this does not change: every check *before* the push — nonce, base
+measurement, event-log replay, compose hash, instance id — is as it was, and
+`ALLOWED_FIELDS` is unchanged (the payload is validated after decryption). It
+does change the miner image, so the entry approved for netuid 552 on
+2026-09-06 (`cf31a1a4…`) is the last one whose receiver speaks plaintext; the
+next image built from `main` requires a new approved entry, as any image
+change does.
+
 ### I8 — there is no hourly TDX bare metal, so there is no quick fallback
 
 Recorded because the obvious escape hatch from the Google trust root does not

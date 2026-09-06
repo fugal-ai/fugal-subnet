@@ -77,6 +77,25 @@ and observation (C). All infrastructure actions were authorised per step.
 Expected spend per 300-question epoch per miner, from the pinned table:
 ≈ $0.014 routing + ≈ $0.027 exploration.
 
+## Finding: the attested channel is authenticated, not confidential
+
+Found while designing the operator-only log path, by reading `push()` and
+`serve()` side by side. The pusher verifies an Intel-signed quote over its
+nonce, then POSTs the payload — head, **hotkey keyfile, OpenRouter key** — to
+`http://<td>:8092/provision` in **plaintext**. The quote authenticates the TD;
+nothing encrypts the secrets to it. Anyone on the path between the operator
+and the cloud edge reads both. The firewall narrows who can *connect*, not who
+can *observe*. Tonight's pushes (19:33, 19:35) crossed this way; both secrets
+are testnet-only and the key is to be revoked at the end of the run.
+
+Fix, in this branch: the TD generates an ephemeral X25519 key at start and
+binds `sha256(pubkey)` into the second 32 bytes of `report_data` alongside the
+operator's nonce, so the quote proves the TD holds the key; the pusher derives
+a ChaCha20-Poly1305 key from X25519(operator ephemeral, TD pubkey) via
+HKDF-SHA256 salted with the nonce and sends only ciphertext; plaintext pushes
+are refused. The same shared secret authorises an operator-only, encrypted log
+pull, closing the black-box finding above without `public_logs`.
+
 ## Run log
 
 All times UTC.

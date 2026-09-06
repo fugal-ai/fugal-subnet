@@ -145,17 +145,185 @@ def validate_payload(payload: dict) -> dict[str, str]:
 
 # --- transport -------------------------------------------------------------
 #
-# Deliberately small and deliberately boring. The security lives in what the
-# miner CHECKS before it pushes, not in the wire format: the TD proves what it
-# is with an Intel-signed quote over a nonce the miner chose, and everything
-# else is an ordinary HTTP round trip. A clever protocol here would add surface
-# without adding a property.
+# Small, and deliberately no cleverer than it must be. The security lives in
+# what the miner CHECKS before it pushes: the TD proves what it is with an
+# Intel-signed quote over a nonce the miner chose. But a quote AUTHENTICATES; it
+# does not make the wire confidential, and an earlier version of this module
+# POSTed the API key and the hotkey keyfile over plain HTTP once the quote
+# checked out — verified who it was talking to, then shouted the secrets down
+# the street. Found 2026-09-06 while designing the log path.
+#
+# So the quote now also binds a key to encrypt TO. The TD generates an
+# ephemeral X25519 key when the receiver starts and puts sha256(pubkey) in the
+# second half of report_data, next to the miner's nonce. The Intel signature
+# therefore covers "this TD, running this measured image, holds this key", and
+# the miner encrypts the payload to it: X25519 with a fresh operator key, HKDF
+# salted with the nonce, ChaCha20-Poly1305 with the nonce as associated data.
+# The TD refuses plaintext, refuses a nonce it never attested, and consumes
+# each nonce once. Nothing about the checks before the push changed.
+#
+# The same shared secret authorises an operator-only, encrypted log pull, so a
+# miner's own logs stop being a black box without setting public_logs.
 
 PROVISION_PORT = 8092
 
 _ATTEST_PATH = "/provision/attest"
 _PUSH_PATH = "/provision"
 _STATUS_PATH = "/provision/status"
+_LOGS_PATH = "/provision/logs"
+
+_HKDF_INFO_KEY = b"fugal-provision-v1/key"
+_HKDF_INFO_LOG_TOKEN = b"fugal-provision-v1/log-token"
+_AEAD_NONCE_BYTES = 12
+# How many attested-but-unused nonces the TD remembers. Bounded so a flood of
+# /attest requests cannot grow memory; the operator needs exactly one.
+_MAX_PENDING_NONCES = 64
+# The in-memory log ring the operator may pull. Lines, not bytes, so a burst of
+# long tracebacks cannot silently evict the line that explains them.
+LOG_RING_LINES = 5000
+
+
+def _require_crypto():
+    """The `cryptography` package ships in the `tee` extra (the miner image and
+    the operator both install it). Fail with the install command, not a stack
+    trace, when it is absent."""
+    try:
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import x25519
+        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    except ImportError as e:  # pragma: no cover - environment, not logic
+        raise ProvisionError(
+            "the provisioning channel needs the `cryptography` package: "
+            "install with `uv sync --extra tee`"
+        ) from e
+    return hashes, x25519, ChaCha20Poly1305, HKDF
+
+
+def report_data_for(nonce_hex: str, td_pubkey: bytes) -> bytes:
+    """The 64 bytes the TD attests over: the operator's nonce, then the hash of
+    the TD's ephemeral public key. Both halves fixed width, so neither can be
+    confused for the other."""
+    import hashlib
+
+    nonce = bytes.fromhex(nonce_hex)
+    if len(nonce) != NONCE_BYTES:
+        raise ProvisionError(f"nonce must be {NONCE_BYTES} bytes")
+    if len(td_pubkey) != 32:
+        raise ProvisionError("X25519 public key must be 32 bytes")
+    return nonce + hashlib.sha256(td_pubkey).digest()
+
+
+def _derive(shared: bytes, salt: bytes, info: bytes, length: int = 32) -> bytes:
+    hashes, _x, _c, HKDF = _require_crypto()
+    return HKDF(algorithm=hashes.SHA256(), length=length, salt=salt, info=info).derive(shared)
+
+
+def seal(payload: dict, td_pubkey: bytes, nonce_hex: str) -> tuple[dict, bytes]:
+    """Encrypt `payload` to the TD's attested key. Returns (envelope, session_key).
+
+    The envelope carries the operator's ephemeral public key, the AEAD nonce,
+    the ciphertext and the provisioning nonce it belongs to — nothing secret.
+    `session_key` is what the operator keeps to pull logs later; it never
+    crosses the wire.
+    """
+    import json
+    import os as _os
+
+    _h, x25519, ChaCha20Poly1305, _k = _require_crypto()
+    validate_payload(payload)
+    nonce = bytes.fromhex(nonce_hex)
+    eph = x25519.X25519PrivateKey.generate()
+    shared = eph.exchange(x25519.X25519PublicKey.from_public_bytes(td_pubkey))
+    key = _derive(shared, nonce, _HKDF_INFO_KEY)
+    iv = _os.urandom(_AEAD_NONCE_BYTES)
+    ct = ChaCha20Poly1305(key).encrypt(iv, json.dumps(payload).encode(), nonce)
+    epk = eph.public_key().public_bytes_raw()
+    return {"nonce": nonce_hex, "epk": epk.hex(), "iv": iv.hex(), "ct": ct.hex()}, key
+
+
+def unseal(td_private, envelope: dict) -> tuple[dict, bytes]:
+    """TD side of `seal`. Returns (payload, session_key). Raises ProvisionError
+    on anything malformed or unauthentic; the message never carries a value."""
+    import json
+
+    _h, x25519, ChaCha20Poly1305, _k = _require_crypto()
+    if not isinstance(envelope, dict) or set(envelope) != {"nonce", "epk", "iv", "ct"}:
+        raise ProvisionError(
+            "push must be a sealed envelope {nonce, epk, iv, ct}; plaintext is refused"
+        )
+    try:
+        nonce = bytes.fromhex(envelope["nonce"])
+        epk = bytes.fromhex(envelope["epk"])
+        iv = bytes.fromhex(envelope["iv"])
+        ct = bytes.fromhex(envelope["ct"])
+    except (ValueError, TypeError) as e:
+        raise ProvisionError(f"envelope field is not hex: {type(e).__name__}") from e
+    if len(nonce) != NONCE_BYTES or len(epk) != 32 or len(iv) != _AEAD_NONCE_BYTES:
+        raise ProvisionError("envelope field has the wrong length")
+    shared = td_private.exchange(x25519.X25519PublicKey.from_public_bytes(epk))
+    key = _derive(shared, nonce, _HKDF_INFO_KEY)
+    try:
+        plaintext = ChaCha20Poly1305(key).decrypt(iv, ct, nonce)
+    except Exception as e:  # noqa: BLE001 - one error class, no detail leaks
+        raise ProvisionError("envelope does not decrypt: wrong key, or tampered") from e
+    try:
+        payload = json.loads(plaintext)
+    except ValueError as e:
+        raise ProvisionError("decrypted payload is not JSON") from e
+    return validate_payload(payload), key
+
+
+def log_token(session_key: bytes) -> str:
+    """Bearer token for the log pull, derived from the session key so the
+    token itself never has to be exchanged."""
+    return _derive(session_key, b"", _HKDF_INFO_LOG_TOKEN).hex()
+
+
+def seal_bytes(session_key: bytes, data: bytes, aad: bytes) -> dict:
+    import os as _os
+
+    _h, _x, ChaCha20Poly1305, _k = _require_crypto()
+    iv = _os.urandom(_AEAD_NONCE_BYTES)
+    return {"iv": iv.hex(), "ct": ChaCha20Poly1305(session_key).encrypt(iv, data, aad).hex()}
+
+
+def unseal_bytes(session_key: bytes, body: dict, aad: bytes) -> bytes:
+    _h, _x, ChaCha20Poly1305, _k = _require_crypto()
+    try:
+        return ChaCha20Poly1305(session_key).decrypt(
+            bytes.fromhex(body["iv"]), bytes.fromhex(body["ct"]), aad,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise ProvisionError("log response does not decrypt") from e
+
+
+class RingLogHandler(logging.Handler):
+    """Keeps the last LOG_RING_LINES formatted records in memory, numbered, so
+    an operator can pull them incrementally. Never touches disk."""
+
+    def __init__(self, capacity: int = LOG_RING_LINES) -> None:
+        super().__init__()
+        from collections import deque
+
+        self._lines: deque = deque(maxlen=capacity)
+        self._seq = 0
+        self._lock = __import__("threading").Lock()
+        self.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+        except Exception:  # noqa: BLE001 - a bad record must not kill the miner
+            return
+        with self._lock:
+            self._seq += 1
+            self._lines.append((self._seq, line))
+
+    def since(self, seq: int) -> tuple[int, list[str]]:
+        with self._lock:
+            lines = [ln for s, ln in self._lines if s > seq]
+            return self._seq, lines
 
 
 class ProvisionStore:
@@ -170,13 +338,17 @@ class ProvisionStore:
 
     def __init__(self) -> None:
         self._values: dict[str, str] = {}
+        # The session key the successful push was sealed with. Held so the
+        # operator who provisioned this TD — and only them — can pull its logs.
+        self.session_key: bytes = b""
 
     @property
     def ready(self) -> bool:
         return bool(self._values)
 
-    def accept(self, payload: dict) -> None:
+    def accept(self, payload: dict, session_key: bytes = b"") -> None:
         self._values = validate_payload(payload)
+        self.session_key = session_key
         # Field NAMES only. The values are the secrets this whole design exists
         # to protect, and a log line is the easiest place to lose one.
         logger.info("provisioned with fields: %s", sorted(self._values))
@@ -190,25 +362,41 @@ class ProvisionStore:
 def serve(store: ProvisionStore, port: int = PROVISION_PORT, host: str = "0.0.0.0"):
     """Run the TD-side receiver. Returns the HTTPServer; caller owns shutdown.
 
-    Two endpoints and a status. `/provision/attest` takes the miner's nonce and
-    returns a fresh attestation over it — that is how the TD proves what it is
-    without ever holding a credential. `/provision` takes the payload once the
-    miner is satisfied.
+    Three endpoints and a status. `/provision/attest` takes the miner's nonce
+    and returns a fresh attestation over `nonce || sha256(td_pubkey)` plus the
+    public key — that is how the TD proves what it is, and what it holds,
+    without ever holding a credential. `/provision` takes the SEALED payload once
+    the miner is satisfied; plaintext is refused, and the envelope's nonce must
+    be one this receiver attested and has not consumed. `/provision/logs` hands
+    the operator who provisioned it — proven by a token derived from the
+    session key — the miner's recent log lines, encrypted.
 
     Binds 0.0.0.0 because the miner reaches it from outside the guest. That is
     safe only because of what the endpoint does NOT do: it hands out an
-    attestation, which is public information — a TDX quote is Intel-signed
-    evidence, not a secret — and it accepts a payload it validates against a
-    closed allow-list. An attacker who reaches this port can learn what image is
-    running, which is already discoverable, and can push a payload, which gets
-    them a miner running with their API key and their head under the miner's own
-    hotkey. That is a denial-of-service on one miner, not a consensus break, and
-    the operator should firewall the port to their own address regardless.
+    attestation and a public key, which are public information, and it accepts
+    a payload only when it decrypts under a key bound into that attestation and
+    validates against a closed allow-list. An attacker who reaches this port can
+    learn what image is running, which is already discoverable, and can push a
+    payload of their own, which gets them a miner running with THEIR API key and
+    THEIR head under the miner's own hotkey — a denial-of-service on one miner,
+    not a consensus break — so the operator firewalls the port to their own
+    address regardless. What they can no longer do is read the operator's push.
     """
     import json
+    import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
 
     from fugal_subnet.tee import dstack_client
+
+    _h, x25519, _c, _k = _require_crypto()
+    td_private = x25519.X25519PrivateKey.generate()
+    td_public = td_private.public_key().public_bytes_raw()
+    pending: dict[str, None] = {}          # attested nonces awaiting a push
+    pending_lock = threading.Lock()
+
+    ring = RingLogHandler()
+    logging.getLogger().addHandler(ring)
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: dict) -> None:
@@ -220,9 +408,25 @@ def serve(store: ProvisionStore, port: int = PROVISION_PORT, host: str = "0.0.0.
             self.wfile.write(raw)
 
         def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler's name
-            if self.path != _STATUS_PATH:
-                return self._send(404, {"error": "not found"})
-            self._send(200, {"provisioned": store.ready})
+            url = urlparse(self.path)
+            if url.path == _STATUS_PATH:
+                return self._send(200, {"provisioned": store.ready})
+            if url.path == _LOGS_PATH:
+                # Operator-only. The bearer token is derived from the session
+                # key of the push that provisioned this TD, so it exists only
+                # for the party that held the other half of the exchange, and
+                # the lines go back encrypted under that same key.
+                auth = self.headers.get("Authorization", "")
+                if not store.session_key or auth != f"Bearer {log_token(store.session_key)}":
+                    return self._send(403, {"error": "not the provisioning operator"})
+                try:
+                    since = int(parse_qs(url.query).get("since", ["0"])[0])
+                except ValueError:
+                    return self._send(400, {"error": "since must be an integer"})
+                seq, lines = ring.since(since)
+                body = json.dumps({"next": seq, "lines": lines}).encode()
+                return self._send(200, seal_bytes(store.session_key, body, b"logs"))
+            self._send(404, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
             length = int(self.headers.get("Content-Length", 0))
@@ -234,24 +438,31 @@ def serve(store: ProvisionStore, port: int = PROVISION_PORT, host: str = "0.0.0.
             if self.path == _ATTEST_PATH:
                 nonce = body.get("nonce", "")
                 try:
-                    report_data = bytes.fromhex(nonce)
-                except ValueError:
-                    return self._send(400, {"error": "nonce must be hex"})
-                if len(report_data) != NONCE_BYTES:
-                    return self._send(
-                        400,
-                        {"error": f"nonce must be {NONCE_BYTES} bytes, got {len(report_data)}"},
-                    )
+                    report_data = report_data_for(nonce, td_public)
+                except (ProvisionError, ValueError) as e:
+                    return self._send(400, {"error": str(e)})
                 try:
                     blob = dstack_client.attest(report_data)
                 except Exception as e:  # noqa: BLE001 - reported, not swallowed
                     logger.exception("attestation failed during provisioning")
                     return self._send(503, {"error": f"attestation unavailable: {e}"})
-                return self._send(200, {"attestation": blob.hex()})
+                with pending_lock:
+                    pending[nonce] = None
+                    while len(pending) > _MAX_PENDING_NONCES:
+                        pending.pop(next(iter(pending)))
+                return self._send(200, {"attestation": blob.hex(), "pubkey": td_public.hex()})
 
             if self.path == _PUSH_PATH:
+                nonce = body.get("nonce", "") if isinstance(body, dict) else ""
+                with pending_lock:
+                    attested = pending.pop(nonce, "absent") is None
+                if not attested:
+                    # Either never attested here, or already spent: a replayed
+                    # envelope, or a push aimed at a TD that did not sign for it.
+                    return self._send(400, {"error": "nonce was not attested by this TD, or was already used"})
                 try:
-                    store.accept(body)
+                    payload, key = unseal(td_private, body)
+                    store.accept(payload, key)
                 except ProvisionError as e:
                     # The message names rejected FIELDS, never their values.
                     return self._send(400, {"error": str(e)})
@@ -278,8 +489,11 @@ def push(
     expected_app_identity: str = "",
     expected_instance_id: str = "",
     timeout: int = 30,
-) -> None:
-    """Verify a TD is what we expect, then send it per-miner data.
+) -> bytes:
+    """Verify a TD is what we expect, then send it per-miner data, sealed.
+
+    Returns the session key. Keep it (0600) if you want to pull the TD's logs
+    later with `pull_logs`; it never crosses the wire and cannot be recovered.
 
     THE MINER SIDE. Runs outside the enclave, on the machine that created the
     TD and therefore knows its address. Everything before the final POST exists
@@ -324,15 +538,28 @@ def push(
 
     answer = _post(_ATTEST_PATH, {"nonce": nonce})
     blob = bytes.fromhex(answer["attestation"])
+    try:
+        td_pubkey = bytes.fromhex(answer.get("pubkey", ""))
+    except ValueError:
+        td_pubkey = b""
+    if len(td_pubkey) != 32:
+        raise ProvisionError(
+            "TD returned no X25519 public key with its attestation — an old "
+            "receiver that would accept plaintext. Refusing to push to it."
+        )
     quote_bytes, event_log = unwrap_attestation(blob)
     quote = parse_quote(quote_bytes)
 
-    # 1. our nonce, padded the way the agent pads it
-    expected_rd = bytes.fromhex(nonce).ljust(64, b"\0").hex()
+    # 1. our nonce AND the hash of the key we are about to encrypt to, both
+    #    under the Intel signature. Without the second half a genuine TD's
+    #    quote would prove who we are talking to and nothing about who can read
+    #    what we send.
+    expected_rd = report_data_for(nonce, td_pubkey).hex()
     if quote.report_data != expected_rd:
         raise ProvisionError(
-            "attestation is not over our nonce — this quote was produced for "
-            "someone else, or replayed from an earlier session"
+            "attestation is not over our nonce and the TD's key — this quote was "
+            "produced for someone else, replayed from an earlier session, or the "
+            "key offered is not the one the hardware signed for"
         )
 
     # 2. the image
@@ -374,5 +601,30 @@ def push(
                     f"handed our key."
                 )
 
-    _post(_PUSH_PATH, payload)
-    logger.info("provisioned TD at %s with fields: %s", address, sorted(payload))
+    envelope, session_key = seal(payload, td_pubkey, nonce)
+    _post(_PUSH_PATH, envelope)
+    logger.info("provisioned TD at %s with fields: %s (sealed)", address, sorted(payload))
+    return session_key
+
+
+def pull_logs(address: str, session_key: bytes, since: int = 0,
+              timeout: int = 30) -> tuple[int, list[str]]:
+    """Fetch the TD's log lines after `since`, as the operator who provisioned it.
+
+    Returns (next_seq, lines). Both the request (bearer token derived from the
+    session key) and the response (sealed under it) stay between the two
+    parties that did the key exchange; nobody who can merely reach the port
+    learns anything.
+    """
+    import json
+    import urllib.request
+
+    req = urllib.request.Request(
+        f"{address.rstrip('/')}{_LOGS_PATH}?since={int(since)}",
+        headers={"Authorization": f"Bearer {log_token(session_key)}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = json.loads(r.read())
+    data = json.loads(unseal_bytes(session_key, body, b"logs"))
+    return int(data["next"]), list(data["lines"])

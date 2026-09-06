@@ -4,6 +4,20 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — the attested channel was authenticated, not confidential
+
+The pusher verified an Intel-signed quote over its nonce and then POSTed the
+head, the hotkey keyfile and the OpenRouter key over plain HTTP. Found the
+same day as the first real pushes, by reading `push()` and `serve()` together.
+The TD now binds an ephemeral X25519 public key into the attested
+`report_data` beside the nonce; the pusher encrypts to it (HKDF, ChaCha20-
+Poly1305, nonce as associated data); the TD refuses plaintext, refuses nonces
+it never attested, and consumes each once. The same session key gives the
+provisioning operator — and nobody else — an encrypted pull of the miner's
+recent log lines (`provision_td.py --logs`), so `public_logs=false` no longer
+makes a miner a black box to its own operator. INVARIANTS § "I8 — the
+attested channel was authenticated, not confidential".
+
 ### Fixed — found preparing the first `--live` run on netuid 552
 
 - **A dstack TD had no permitted way to receive its hotkey.** The miner signs

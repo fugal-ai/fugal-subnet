@@ -50,7 +50,12 @@ METAGRAPH_REFRESH_S = 300
               help="Bittensor wallet root")
 @click.option("--port", default=lambda: int(os.getenv("FUGAL_MINER_PORT", "8091")),
               type=int, help="Axon port")
-@click.option("--head-path", required=True, type=click.Path(exists=True),
+@click.option("--await-provisioning", is_flag=True, default=False,
+              help="Wait for the operator to push the head and API key over an "
+                   "attested channel before serving. Under dstack this is how "
+                   "per-miner data arrives, because it cannot be in the measured "
+                   "compose. See fugal_subnet/tee/provision.py.")
+@click.option("--head-path", required=False, type=click.Path(exists=True),
               help="Path to .npz head artifact")
 @click.option("--benchmark-pool", default=None, type=click.Path(exists=True),
               help="Benchmark pool JSON (default: the same load_all() the "
@@ -62,6 +67,7 @@ METAGRAPH_REFRESH_S = 300
               default=lambda: os.getenv("LOG_LEVEL", "INFO"),
               help="Logging level")
 def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
+         await_provisioning,
          benchmark_pool, mock, log_level):
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
@@ -95,7 +101,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.tee.runtime import TEERuntime
 
-    head_data = _load_head_file(head_path)
+    if await_provisioning:
+        head_data = _await_provisioning()
+    elif head_path:
+        head_data = _load_head_file(head_path)
+    else:
+        raise click.ClickException(
+            "--head-path is required unless --await-provisioning is set"
+        )
     weights_hash = hashlib.sha256(head_data).hexdigest()
 
     # The pool is consensus state: the slice is drawn from it, so the miner and
@@ -453,6 +466,56 @@ def _run_epoch(
         )
     finally:
         proxy.stop()
+
+
+def _await_provisioning():
+    """Block until the operator pushes per-miner data, then return the head.
+
+    THE AXON DOES NOT SERVE UNTIL THIS RETURNS, and that is the point. An
+    unprovisioned miner is not partially ready: it would answer a validator with
+    no proof, spend that validator's query budget to learn nothing, and read as
+    a dead miner rather than a starting one. Blocking here fails loudly in the
+    operator's own log — "waiting to be provisioned" is a sentence someone can
+    act on, and silent emptiness is the failure shape this project keeps
+    finding.
+
+    The API key is put into the environment rather than passed down because
+    MeteringProxy already reads it from there, and threading a secret through
+    six call frames creates six places it can be logged.
+    """
+    import base64
+    import os
+    import time
+
+    from fugal_subnet.tee.provision import PROVISION_PORT, ProvisionStore, serve
+
+    store = ProvisionStore()
+    server = serve(store, port=PROVISION_PORT)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    logger.info(
+        "Waiting to be provisioned on port %d. The operator must verify this "
+        "TD's attestation and push the head and API key; nothing is served "
+        "until they do.", PROVISION_PORT,
+    )
+    waited = 0
+    while not store.ready:
+        time.sleep(1)
+        waited += 1
+        if waited % 30 == 0:
+            logger.info("still waiting to be provisioned (%ds)", waited)
+
+    head_b64 = store.get("head_b64")
+    if not head_b64:
+        raise click.ClickException(
+            "provisioned without a head — the miner has nothing to benchmark"
+        )
+    key = store.get("openrouter_api_key")
+    if key:
+        os.environ["OPENROUTER_API_KEY"] = key
+        logger.info("API key received over the attested channel")
+    logger.info("Provisioned after %ds; the axon may now serve", waited)
+    return base64.b64decode(head_b64)
 
 
 def _assert_port_free(port: int) -> None:

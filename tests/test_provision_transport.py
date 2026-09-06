@@ -192,3 +192,44 @@ def test_store_rejects_a_bad_payload_and_stays_unprovisioned():
         s.accept({"pool": "x"})
     assert not s.ready
     assert validate_payload(dict(PAYLOAD)) == PAYLOAD
+
+
+def test_miner_blocks_until_provisioned_then_returns_the_head(monkeypatch):
+    """The whole point of the wait: no head, no serving.
+
+    Runs the miner's own `_await_provisioning` in a thread, confirms it is still
+    blocked with nothing pushed, then pushes and confirms it returns the exact
+    head bytes and puts the key where MeteringProxy reads it.
+    """
+    import base64
+    import importlib
+    import os
+    import time
+    import urllib.request
+
+    miner = importlib.import_module("neurons.miner")
+    head = b"\x93NUMPY-not-really-but-bytes"
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    result = {}
+
+    def run():
+        result["head"] = miner._await_provisioning()
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    time.sleep(0.6)
+    assert "head" not in result, "returned before anything was pushed"
+
+    body = json.dumps({
+        "head_b64": base64.b64encode(head).decode(),
+        "openrouter_api_key": "sk-or-v1-pushed",
+    }).encode()
+    from fugal_subnet.tee.provision import PROVISION_PORT
+    urllib.request.urlopen(urllib.request.Request(
+        f"http://127.0.0.1:{PROVISION_PORT}/provision", data=body,
+        headers={"Content-Type": "application/json"}, method="POST"), timeout=5)
+
+    t.join(timeout=10)
+    assert result.get("head") == head
+    assert os.environ["OPENROUTER_API_KEY"] == "sk-or-v1-pushed"

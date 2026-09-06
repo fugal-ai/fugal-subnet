@@ -57,8 +57,13 @@ def _qr(qid, model="cheap", correct=True, cost=0.001, explore=False):
     )
 
 
+HONEST_HOTKEY = "5HonestMinerHotkeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+ATTACKER_HOTKEY = "5AttackerHotkeyBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+
+
 def _proof(results, mrtd=HONEST_MRTD, weights_hash=HEAD_HASH,
-           nonce="n" * 64, qhash=None, total=None, rtmr3=b"\x00" * 48):
+           nonce="n" * 64, qhash=None, total=None, rtmr3=b"\x00" * 48,
+           hotkey=HONEST_HOTKEY):
     per_model: dict[str, float] = {}
     for r in results:
         per_model[r.routed_model] = per_model.get(r.routed_model, 0.0) + r.cost_usd
@@ -68,7 +73,7 @@ def _proof(results, mrtd=HONEST_MRTD, weights_hash=HEAD_HASH,
         weights_hash=weights_hash, source_hash="a" * 64, results=results,
         total_cost_usd=total if total is not None else sum(r.cost_usd for r in results),
         per_model_costs=per_model if total is None else {"cheap": total},
-        attestation_quote=b"", timestamp=1.0,
+        attestation_quote=b"", timestamp=1.0, hotkey=hotkey,
     )
     p.attestation_quote = _quote(bytes.fromhex(p.content_hash()), mrtd, rtmr3)
     return p
@@ -82,6 +87,7 @@ def _verify(proof, **over):
         gold_answers={k: POOL_GOLD[k] for k in SLICE},
         expected_question_ids=set(SLICE),
         expected_weights_hash=HEAD_HASH,
+        expected_hotkey=HONEST_HOTKEY,
         head_bytes=HEAD,
         mock=False,
     )
@@ -91,6 +97,36 @@ def _verify(proof, **over):
 
 
 # --- the attacks -------------------------------------------------------------
+
+def a_relayed_proof():
+    """Serve an honest miner's proof as your own.
+
+    The proof is genuine: real hardware, real epoch, real slice, and its
+    weights_hash matches a commitment the attacker is free to make by copying
+    it off chain. The head is public — it is served inline by the honest miner
+    to every validator that asks. Nothing here is forged.
+
+    Before the hotkey was bound into content_hash this PASSED verification, and
+    what stopped it was dedup plus commit-block seniority: a cosine threshold
+    and a block ordering. This is the case that made that a cryptographic
+    property instead.
+    """
+    honest = _proof([_qr(q) for q in SLICE], hotkey=HONEST_HOTKEY)
+    return _verify(honest, expected_hotkey=ATTACKER_HOTKEY)
+
+
+def a_rewritten_hotkey():
+    """Relay, then rewrite the field to your own hotkey.
+
+    The obvious follow-up to the above, and it must fail differently: the quote
+    was signed over the original content_hash, so changing the hotkey breaks
+    report_data. If this ever reports EXPLOITED, the hotkey has fallen out of
+    content_hash and the binding is decorative.
+    """
+    honest = _proof([_qr(q) for q in SLICE], hotkey=HONEST_HOTKEY)
+    honest.hotkey = ATTACKER_HOTKEY
+    return _verify(honest, expected_hotkey=ATTACKER_HOTKEY)
+
 
 def a_modified_image():
     """Run a tampered harness inside a genuine TDX VM."""
@@ -278,6 +314,8 @@ ATTACKS = [
     ("serve a bundle other than the one advertised", "I8", a_bundle_swap),
     ("bundle a head the proof does not attest", "I8", a_head_not_in_bundle),
     ("edit the proof after attestation", "I8", a_post_attestation_tamper),
+    ("relay an honest miner's proof as your own", "I8", a_relayed_proof),
+    ("relay a proof with the hotkey rewritten", "I8", a_rewritten_hotkey),
     ("replay a previous epoch's proof", "I3", a_replayed_proof),
     ("skip the exploration quota", "I3", a_skipped_exploration),
     ("redirect exploration to a chosen model", "I3", a_redirected_exploration),

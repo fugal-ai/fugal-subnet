@@ -48,6 +48,16 @@ class BenchmarkProof:
     per_model_costs: dict[str, float]
     attestation_quote: bytes
     timestamp: float
+    # WHOSE proof this is. Defaults to "" so that a proof carrying no hotkey is
+    # representable — it has to be, or the validator could not reject one — but
+    # an empty value is never valid under verification. See verify_proof.
+    #
+    # Before this existed, a proof was bound to an epoch, a slice, a head and a
+    # runtime, and to NO MINER. Any party could take an honest miner's proof off
+    # its public axon response, commit the same weights_hash, and present it as
+    # their own; verification passed, and what stopped it was dedup plus
+    # commit-block seniority — statistical, not cryptographic.
+    hotkey: str = ""
 
     @property
     def scored_results(self) -> list[QuestionResult]:
@@ -89,6 +99,11 @@ class BenchmarkProof:
         hardware attestation covers the proof's content.
         """
         payload = {
+            # First, because it is the thing that was missing. content_hash is
+            # bound into the TDX report_data, so including the hotkey here makes
+            # the HARDWARE attest whose proof this is. Relay then fails on a
+            # signature rather than on a similarity threshold.
+            "hotkey": self.hotkey,
             "epoch_id": self.epoch_id,
             "nonce": self.nonce,
             "questions_hash": self.questions_hash,
@@ -116,6 +131,7 @@ class BenchmarkProof:
 
     def to_dict(self) -> dict:
         return {
+            "hotkey": self.hotkey,
             "epoch_id": self.epoch_id,
             "nonce": self.nonce,
             "questions_hash": self.questions_hash,
@@ -144,6 +160,10 @@ class BenchmarkProof:
     def from_dict(cls, d: dict) -> BenchmarkProof:
         results = [QuestionResult(**r) for r in d["results"]]
         return cls(
+            # Absent rather than empty for a proof written before this field
+            # existed. Either way it fails verification; the distinction only
+            # matters for reading old artifacts without an exception.
+            hotkey=d.get("hotkey", ""),
             epoch_id=d["epoch_id"],
             nonce=d["nonce"],
             questions_hash=d["questions_hash"],

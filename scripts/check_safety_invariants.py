@@ -254,15 +254,28 @@ def check_collateral_endpoint_explicit(errors: list[str]) -> None:
     """
     src = (ROOT / "fugal_subnet" / "tee" / "attestation.py").read_text(encoding="utf-8")
 
-    for call in re.findall(r"get_collateral_and_verify\(([^)]*)\)", src):
-        args = [a.strip() for a in call.split(",") if a.strip()]
-        if len(args) < 2:
-            errors.append(
-                "fugal_subnet/tee/attestation.py calls get_collateral_and_verify "
-                f"with {len(args)} argument(s) ({call.strip()!r}) — the PCCS url "
-                "must be passed explicitly, or dcap-qvl silently substitutes its "
-                "own default and the collateral source becomes invisible again"
-            )
+    # Both entry points, because the code moved from one to the other once
+    # already. A check naming only the function that happens to be called today
+    # stops protecting anything the moment someone switches back, and it does so
+    # silently -- it keeps passing, having found nothing to inspect.
+    seen = 0
+    for fn, min_args in (("get_collateral_and_verify", 2), ("get_collateral", 2)):
+        for call in re.findall(rf"(?<![\w.]){fn}\(([^)]*)\)", src):
+            seen += 1
+            args = [a.strip() for a in call.split(",") if a.strip()]
+            if len(args) < min_args:
+                errors.append(
+                    f"fugal_subnet/tee/attestation.py calls {fn} with "
+                    f"{len(args)} argument(s) ({call.strip()!r}) — the PCCS url "
+                    "must be passed explicitly, or dcap-qvl silently substitutes "
+                    "its own default and the collateral source becomes invisible"
+                )
+    if seen == 0:
+        errors.append(
+            "fugal_subnet/tee/attestation.py makes no recognised collateral call — "
+            "this check inspects call sites by name, so a rename turns it into a "
+            "no-op that still reports success; teach it the new name"
+        )
 
     cfg = (ROOT / "fugal_subnet" / "config.py").read_text(encoding="utf-8")
     if "TEE_PCCS_URL" not in cfg:

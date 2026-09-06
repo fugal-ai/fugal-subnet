@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import struct
+import time
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -387,11 +388,33 @@ def _log_pccs_endpoint(url: str) -> None:
         logger.info("DCAP collateral endpoint: %s", url)
 
 
+class CollateralUnavailable(Exception):
+    """DCAP collateral could not be fetched, so the quote was never judged.
+
+    This is NOT "the proof is bad". It is "this validator could not check it",
+    and the two must not be spelled the same way. Collapsing them is what makes
+    a transient network failure indistinguishable from a forged quote, and it
+    is why a bare timeout on the fetch would convert a hang into a false
+    accusation against every honest miner in the field at once.
+
+    Same category as the ImportError raised when `dcap_qvl` is missing: the
+    operator's infrastructure, not the miner's bytes. Handled the same way.
+    """
+
+
 def verify_dcap(quote_bytes: bytes, pccs_url: str | None = None) -> bool:
     """Verify TDX quote via Intel DCAP collateral.
 
-    Requires the dcap_qvl package. Returns True if the quote signature
-    and collateral chain are valid. In mock mode, this is skipped.
+    Returns True if the quote is genuine and Intel-signed. Returns False when
+    the MINER's bytes are at fault -- an unparseable quote, a signature that
+    does not check out. Raises when THIS VALIDATOR is at fault, which is the
+    distinction the return type alone cannot carry.
+
+    The fetch and the verification are separate calls rather than
+    `get_collateral_and_verify`, so that a fetch failure is attributable. The
+    quote is parsed BEFORE anything is fetched, because a quote that will not
+    parse is the miner's problem and must never be reported as a collateral
+    outage.
 
     `pccs_url` defaults to `config.TEE_PCCS_URL` and is ALWAYS passed to the
     library explicitly. Omitting it makes `dcap-qvl` fall back to its own
@@ -400,11 +423,24 @@ def verify_dcap(quote_bytes: bytes, pccs_url: str | None = None) -> bool:
     so this project names it; see the config entry for why that is a choice
     about availability and privacy rather than about trust.
 
+    KNOWN RESIDUAL (I4). `get_collateral` derives its request from the FMSPC
+    inside the quote, so a well-formed quote naming an FMSPC the upstream does
+    not know produces a fetch failure that is the MINER's doing and is reported
+    here as unavailable. dcap-qvl surfaces every failure as ValueError, so the
+    two are separable only by message text, and branching on prose is the thing
+    this exception exists to avoid. Parsing first removes the malformed-quote
+    cases but not this one. It closes only when the fetch goes away entirely --
+    see the collateral-in-proof design in docs/INVARIANTS.md.
+
     Raises:
         ImportError: If dcap_qvl is not installed (configuration error).
+        ValueError: If no PCCS endpoint is configured (configuration error).
+        CollateralUnavailable: If collateral could not be fetched.
     """
     try:
-        from dcap_qvl import get_collateral_and_verify
+        from dcap_qvl import get_collateral
+        from dcap_qvl import parse_quote as _parse
+        from dcap_qvl import verify as _verify
     except ImportError:
         raise ImportError(
             "dcap_qvl not installed — DCAP verification requires it. "
@@ -425,56 +461,82 @@ def verify_dcap(quote_bytes: bytes, pccs_url: str | None = None) -> bool:
         )
     _log_pccs_endpoint(url)
 
-    import asyncio
-
+    # 1. Parse before fetching. Miner-controlled bytes, judged locally, with no
+    #    network involved -- so a malformed quote can never be misreported as
+    #    an infrastructure failure, and never costs a round trip either.
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                result = pool.submit(
-                    asyncio.run, get_collateral_and_verify(quote_bytes, url)
-                ).result(timeout=30)
-        else:
-            result = loop.run_until_complete(
-                get_collateral_and_verify(quote_bytes, url)
-            )
-        # Record the verdict rather than only the fact one was reached.
-        #
-        # `verify` returns a report, and `report.status` is the TCB state of
-        # the platform that produced the quote: "OK", but also "OUT_OF_DATE",
-        # "CONFIGURATION_NEEDED", "SW_HARDENING_NEEDED". This function accepts
-        # all of them -- it returns True for anything that does not raise --
-        # so today "the quote is genuine" is all a passing DCAP check means,
-        # NOT "the platform is patched".
-        #
-        # Whether to enforce a status is a policy decision with real cost:
-        # on GCP and Azure the firmware is the cloud provider's to patch, so
-        # rejecting OUT_OF_DATE removes honest miners for their host's
-        # maintenance schedule, and does it to every miner on a platform
-        # generation at once when Intel publishes. That decision needs the
-        # actual distribution of statuses across a real field, which nobody
-        # has, because this function has been discarding it.
-        #
-        # So: log it, change nothing. A status is a consensus input the moment
-        # it is enforced -- two validators with different thresholds disagree
-        # about identical bytes -- and it is not enforced here.
-        status = getattr(result, "status", None)
-        advisories = list(getattr(result, "advisory_ids", None) or [])
-        if status is not None and str(status).upper() not in ("OK", "UPTODATE"):
-            logger.warning(
-                "DCAP verification passed but the platform TCB status is %s%s. "
-                "The quote is genuine; the hardware is not necessarily patched. "
-                "Not enforced -- see docs/INVARIANTS.md.",
-                status,
-                f" (advisories: {', '.join(advisories)})" if advisories else "",
-            )
-        else:
-            logger.info("DCAP verification passed: status=%s", status)
-        return True
+        _parse(quote_bytes)
+    except Exception as e:  # noqa: BLE001 - miner-controlled bytes
+        logger.warning("DCAP: quote does not parse (%s: %s)", type(e).__name__, e)
+        return False
+
+    # 2. Fetch collateral. Everything here is the operator's infrastructure,
+    #    so a failure raises rather than condemning the miner.
+    try:
+        collateral = _run_coro(lambda: get_collateral(url, quote_bytes))
+    except Exception as e:  # noqa: BLE001 - network, DNS, TLS, upstream 5xx
+        raise CollateralUnavailable(
+            f"could not fetch DCAP collateral from {url}: {type(e).__name__}: {e}"
+        ) from e
+
+    # 3. Judge the quote against the collateral. Local and deterministic given
+    #    both inputs, so a failure here is the miner's again.
+    try:
+        result = _verify(quote_bytes, collateral, int(time.time()))
     except Exception:
         logger.exception("DCAP verification failed")
         return False
+
+    # Record the verdict rather than only the fact one was reached.
+    #
+    # `verify` returns a report, and `report.status` is the TCB state of the
+    # platform that produced the quote: "OK", but also "OUT_OF_DATE",
+    # "CONFIGURATION_NEEDED", "SW_HARDENING_NEEDED". This function accepts all
+    # of them, so today "the quote is genuine" is all a passing DCAP check
+    # means, NOT "the platform is patched". Measured on real hardware: a live
+    # dstack CVM reports UpToDate with no advisories, and an UpToDate box and a
+    # REVOKED box are currently indistinguishable to this validator.
+    #
+    # Whether to enforce a status is a policy decision with real cost: on GCP
+    # and Azure the firmware is the cloud provider's to patch, so rejecting
+    # OUT_OF_DATE removes honest miners for their host's maintenance schedule,
+    # and does it to every miner on a platform generation at once when Intel
+    # publishes. So: log it, change nothing. A status is a consensus input the
+    # moment it is enforced -- two validators with different thresholds
+    # disagree about identical bytes -- and it is not enforced here.
+    status = getattr(result, "status", None)
+    advisories = list(getattr(result, "advisory_ids", None) or [])
+    if status is not None and str(status).upper() not in ("OK", "UPTODATE"):
+        logger.warning(
+            "DCAP verification passed but the platform TCB status is %s%s. "
+            "The quote is genuine; the hardware is not necessarily patched. "
+            "Not enforced -- see docs/INVARIANTS.md.",
+            status,
+            f" (advisories: {', '.join(advisories)})" if advisories else "",
+        )
+    else:
+        logger.info("DCAP verification passed: status=%s", status)
+    return True
+
+
+def _run_coro(make_coro):
+    """Run one coroutine from sync code, whatever loop state we are in.
+
+    `make_coro` is a factory rather than a coroutine because dcap-qvl's bindings
+    require the coroutine to be CREATED inside the running loop -- constructing
+    it first raises "no running event loop".
+    """
+    import asyncio
+
+    async def _outer():
+        return await make_coro()
+
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, _outer()).result(timeout=30)
+    return loop.run_until_complete(_outer())
 
 
 def extract_report_data(quote_bytes: bytes) -> bytes:

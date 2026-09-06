@@ -181,6 +181,7 @@ def verify_proof(
     expected_question_ids: set[str] | None = None,
     expected_exploration: dict[str, str] | None = None,
     expected_weights_hash: str = "",
+    expected_hotkey: str = "",
     expected_proof_hash: str = "",
     head_bytes: bytes | None = None,
     event_log: list | None = None,
@@ -228,6 +229,34 @@ def verify_proof(
     #    operator's misconfiguration, not a miner's doing, and silently
     #    downgrading it to "this proof is invalid" would let a --live validator
     #    reject the entire field while looking like it was working.
+    # 0a. WHOSE proof this is. First, because it is the cheapest check that can
+    #     reject, it needs no hardware, and a relayed proof should not cost a
+    #     DCAP verification to refuse.
+    #
+    #     Enforced in EVERY mode, like the report_data binding below and for the
+    #     same reason: this is a property of the proof's content, not of the
+    #     silicon, so a local testnet must catch relay too. Mock mode is the
+    #     absence of hardware checks, not a weaker set of rules.
+    #
+    #     A missing expected_hotkey is a caller error rather than a licence to
+    #     skip: verifying without it silently restores the property this exists
+    #     to remove. Outside mock that is fatal. Inside mock — used by attack
+    #     fixtures and determinism runs that have no metagraph — the check is
+    #     simply not requested.
+    if not expected_hotkey and not mock:
+        raise ValueError(
+            "verify_proof called without expected_hotkey outside mock mode. A "
+            "proof that is not bound to a miner can be relayed by anyone who "
+            "can read it off that miner's axon."
+        )
+    if expected_hotkey and proof.hotkey != expected_hotkey:
+        return VerifyResult(
+            False,
+            f"Proof is bound to hotkey {proof.hotkey or '(none)'}, but this uid's "
+            f"hotkey is {expected_hotkey}. A proof names the miner it was "
+            "produced for; this one names somebody else.",
+        )
+
     # 0. Unwrap. Under dstack the miner sends an envelope, not a bare quote, and
     #    the TPM half inside it is verified as part of unwrapping — see
     #    unwrap_attestation for why that is not optional.

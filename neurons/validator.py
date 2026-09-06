@@ -435,6 +435,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         expected_question_ids=expected_question_ids,
                         expected_exploration=explore_map,
                         expected_weights_hash=weights_hash,
+                        # The hotkey of the uid we actually queried. A proof
+                        # naming a different one was produced for somebody else.
+                        expected_hotkey=metagraph.hotkeys[uid],
                         expected_proof_hash=getattr(resp, "proof_hash", ""),
                         head_bytes=head_bytes,
                         mock=mock,

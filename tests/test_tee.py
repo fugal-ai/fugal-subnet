@@ -35,6 +35,7 @@ def _make_proof(
     source_hash="approved_measurement_1",
     total_cost_usd=None,
     per_model_costs=None,
+    hotkey="5TestMinerHotkeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 ) -> BenchmarkProof:
     """Build an internally consistent, correctly attested proof.
 
@@ -49,6 +50,7 @@ def _make_proof(
         per_model[r.routed_model] = per_model.get(r.routed_model, 0.0) + r.cost_usd
     total = sum(r.cost_usd for r in results)
     proof = BenchmarkProof(
+        hotkey=hotkey,
         epoch_id=epoch_id,
         nonce=nonce,
         questions_hash=compute_questions_hash([r.question_id for r in results]),
@@ -225,6 +227,10 @@ def test_verify_proof_nonmock_rejects_a_synthetic_quote():
             expected_questions_hash=proof.questions_hash,
             expected_nonce=proof.nonce,
             gold_answers=gold,
+            # Required outside mock: a proof not bound to a miner can be
+            # relayed. These tests are about hardware checks, so they supply
+            # the hotkey their factory used and let the real subject fail.
+            expected_hotkey=proof.hotkey,
             mock=False,
         )
     except ImportError:
@@ -368,6 +374,10 @@ def test_attack_fabricated_attestation(quote):
             expected_questions_hash=proof.questions_hash,
             expected_nonce=proof.nonce,
             gold_answers=gold,
+            # Required outside mock: a proof not bound to a miner can be
+            # relayed. These tests are about hardware checks, so they supply
+            # the hotkey their factory used and let the real subject fail.
+            expected_hotkey=proof.hotkey,
             mock=False,
         )
     except ImportError:

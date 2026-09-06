@@ -42,6 +42,7 @@ def run_benchmark(
     source_hash: str = "",
     explore_models: list[str] | None = None,
     explore_size: int = 0,
+    hotkey: str = "",
 ) -> BenchmarkProof:
     """Execute the routing benchmark inside the TEE.
 
@@ -56,6 +57,10 @@ def run_benchmark(
         source_hash: SHA256 of the runtime image.
         explore_models: Globally agreed model list exploration draws from.
         explore_size: Number of extra nonce-forced questions to answer.
+        hotkey: SS58 address this proof is produced FOR. It goes into
+            content_hash and therefore into the attestation's report_data, so
+            the hardware attests whose proof this is and nobody else can
+            present it. Public, so passing it in costs no confidentiality.
 
     Returns:
         BenchmarkProof with routing results and attestation.
@@ -151,6 +156,7 @@ def run_benchmark(
             ))
 
     proof = BenchmarkProof(
+        hotkey=hotkey,
         epoch_id=epoch_id,
         nonce=nonce,
         questions_hash=questions_hash,

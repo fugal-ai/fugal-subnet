@@ -385,6 +385,54 @@ reason a missing `dcap-qvl` does: it is the operator's misconfiguration, and
 downgrading it to "this proof is bad" lets a --live validator reject the entire
 field while appearing healthy.
 
+### I8 — a proof names the miner it was produced for
+
+`content_hash` covers the epoch, the slice, the head and the runtime — and,
+now, the **hotkey**. It is bound into the TDX `report_data`, so the hardware
+attests whose proof this is.
+
+**What it was before.** A proof was bound to no miner at all. The attack, which
+is now `a_relayed_proof` in the TEE suite:
+
+    A commits weights_hash_A, runs an honest TD, serves head + proof.
+    B reads A's head off A's own axon response — it is served inline, publicly.
+    B commits weights_hash_A as its own; nothing prevents committing another
+      miner's hash.
+    B relays A's proof verbatim.
+    verify_proof PASSED.
+
+What stopped it was `dedup.find_duplicates` plus commit-block seniority: B's
+routing vector is identical and its commit block is later, so B is disqualified.
+That defence is real and still stands as defence in depth — but it is a cosine
+threshold and a block ordering, which is a **statistical** answer to a question
+with a **cryptographic** one.
+
+**Two moves, two different failures.** Relaying A's proof under B's hotkey fails
+the identity check. Rewriting the field to B's hotkey fails `report_data`,
+because the quote was signed over the original `content_hash`. Both are in the
+attack suite, and the second is the canary: if it ever reports EXPLOITED, the
+hotkey has fallen out of `content_hash` and the binding is decorative.
+
+**Enforced in every mode**, like the `report_data` binding and for the same
+reason: this is a property of the proof's content, not of the silicon, so a
+local testnet catches relay too. Mock mode is the absence of hardware checks,
+not a weaker set of rules.
+
+**A missing `expected_hotkey` raises rather than skipping.** Verifying without
+it silently restores the property this removes, which is the failure shape this
+document exists to catch. Callers that genuinely have no metagraph — attack
+fixtures, determinism runs — pass `mock=True`, which is the honest way to say
+"not checking hardware".
+
+**The hotkey is public, so binding it costs no confidentiality.** It is on
+chain. It reaches the TD over the provisioning channel as `hotkey_ss58`, which
+is MAY-CROSS by the channel's own rule. A miner who pushes somebody else's
+hotkey produces proofs bound to *that* hotkey, which their own uid cannot use.
+
+**Checked first**, before unwrapping or DCAP: it is the cheapest check that can
+reject, it needs no hardware, and a relayed proof should not cost a DCAP
+verification to refuse.
+
 ### I8 — the app-identity chain, closed against hardware
 
 Every link verified on a real deploy rather than argued, in

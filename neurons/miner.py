@@ -356,6 +356,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     proxy_port=TEE_PROXY_PORT,
                     explore_models=pool_models,
                     explore_size=explore_size,
+                    hotkey=my_hotkey,
                 )
                 consecutive_failures = 0
             except Exception:
@@ -394,6 +395,7 @@ def _run_epoch(
     proxy_port,
     explore_models,
     explore_size,
+    hotkey,
 ):
     """Run a single benchmark epoch."""
     from fugal_subnet.benchmarks.slicer import derive_nonce, epoch_id_for_block
@@ -432,6 +434,10 @@ def _run_epoch(
             source_hash=_get_source_hash(),
             explore_models=explore_models,
             explore_size=explore_size,
+            # Binds the proof to THIS miner. Without it a proof is bound to an
+            # epoch, a slice, a head and a runtime, but to nobody — and can be
+            # read off this axon and presented by anyone.
+            hotkey=hotkey,
         )
 
         content_hash_bytes = bytes.fromhex(proof.content_hash())

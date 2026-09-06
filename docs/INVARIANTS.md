@@ -859,6 +859,54 @@ It removes the fork, the hang, the availability dependency, the privacy leak and
 the throughput cost in one change, because all five are consequences of fetching
 inside the epoch.
 
+**The argument for it is NOT "Intel signs it, so the carrier does not matter."**
+That is true and insufficient. Collateral includes `root_ca_crl` and `pck_crl`
+— **the revocation lists**. So collateral-in-proof hands delivery of the
+revocation mechanism to the platform holder, and revocation is the one control
+in the entire chain specifically designed to operate *against* them.
+
+The attack, and its exact limit:
+
+  - A miner whose PCK certificate has been revoked ships a **stale but validly
+    Intel-signed CRL** from before the revocation. Every signature checks out,
+    every chain reaches the pinned root, the quote verifies.
+  - **They cannot swap the certificate itself.** `cert_chain_pem_bytes` is a
+    field of `Quote`, not of `QuoteCollateralV3` — whose nine fields carry no
+    PCK certificate chain. The certificate rides inside the attested quote. So
+    the exploit is "present an old revocation list", not "present a different
+    identity", which is narrower than it first appears and is what makes the
+    design viable at all.
+
+**Therefore the freshness bound is not a staleness nuisance with defence in
+depth behind it. With collateral-in-proof it is the ENTIRE security of
+revocation, single-layered.** Written at that strength deliberately: stated as
+"bound the collateral age", someone later relaxes it for miner convenience;
+stated as "this is the only thing standing between the subnet and revoked
+hardware", nobody does.
+
+**Freshness is implementable** — `tcb_info` is exposed as a JSON string, so
+`issueDate` / `nextUpdate` / `tcbEvaluationDataNumber` parse in pure Python with
+no binding change. That question is settled, not open.
+
+**The real argument for the trade** is structural, not performance. Today a PCCS
+problem is a **globally correlated validator-side failure**: every validator
+hits one host at the same deterministic block, so one outage degrades everyone
+simultaneously. Afterwards it is an **uncorrelated per-miner failure**: a miner
+who cannot fetch their own collateral fails alone. That is the same philosophy
+as I5 — miners bear their own costs — and it, not the saved milliseconds, is
+why the trade is good. What is being traded is a **liveness and privacy
+dependency for a revocation-freshness dependency**.
+
+**Collateral would be miner-supplied input, and I2 applies.** It reaches a Rust
+JSON parser via `from_json` carrying certificate chains and CRLs: size caps
+before parse, and cases in `run_miner_attacks`. Note explicitly that collateral
+is **not covered by `content_hash` / `report_data`** — it is unattested data
+riding inside an attested bundle. Everything else in that bundle is attested, so
+the assumption that this is too will be made unless it is written down. (Binding
+it into `content_hash` would stop an outside process swapping it after the TD
+produced the proof, but would do nothing about staleness, because the TD is the
+miner's own.)
+
 **Two things it does NOT remove, and both must be decided with it:**
 
   - **Stale collateral.** A miner may ship old but validly-signed collateral
@@ -866,9 +914,12 @@ inside the epoch.
     checked against `tcb_info`'s issue/next-update fields — and that bound must
     be a **pinned constant every validator shares**, not a local TTL each
     operator tunes, or it reintroduces the divergence it was meant to remove.
-  - **`now_secs`.** `verify` takes a timestamp, and wall clock differs between
-    validators. It should come from the epoch's block, not `time.time()` — the
-    same reasoning that made certificate validity an explicit `at=` parameter in
+  - **`now_secs`, and this is load-bearing rather than tidy-up.** The freshness
+    bound is `next_update > now`. With local clocks, collateral near expiry is
+    valid for validator A and expired for validator B — so the fork *moves*
+    rather than closes. Epoch-block time is what makes the bound consensus-safe
+    at all, which means the two land together or the change is net-negative.
+    Same reasoning that made certificate validity an explicit `at=` parameter in
     the TPM verifier rather than a hidden call to the clock.
 
 Not built. Recorded because the throughput work will otherwise fix the symptom

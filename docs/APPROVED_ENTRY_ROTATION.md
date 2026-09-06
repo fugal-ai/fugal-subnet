@@ -52,6 +52,7 @@ to a commit and a digest should not approve it.
 | Entry (base:compose) | Image digest | Commit | Approved | Retired |
 |---|---|---|---|---|
 | `12a1f2f5…9141:cf31a1a4…69d2` | `3430da97…541f` | `e284963` | 2026-09-06 | — |
+| `12a1f2f5…9141:12d945d2…3910` | `59039d01…692a` | `45729c2` | 2026-09-06 | — |
 
 ## The transition window
 

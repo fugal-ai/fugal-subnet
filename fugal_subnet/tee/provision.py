@@ -124,3 +124,238 @@ def validate_payload(payload: dict) -> dict[str, str]:
                 f"field {name!r} must be a string, got {type(value).__name__}"
             )
     return dict(payload)
+
+
+# --- transport -------------------------------------------------------------
+#
+# Deliberately small and deliberately boring. The security lives in what the
+# miner CHECKS before it pushes, not in the wire format: the TD proves what it
+# is with an Intel-signed quote over a nonce the miner chose, and everything
+# else is an ordinary HTTP round trip. A clever protocol here would add surface
+# without adding a property.
+
+PROVISION_PORT = 8092
+
+_ATTEST_PATH = "/provision/attest"
+_PUSH_PATH = "/provision"
+_STATUS_PATH = "/provision/status"
+
+
+class ProvisionStore:
+    """What the miner pushed, held in memory for the life of the process.
+
+    NEVER WRITTEN TO DISK. The dstack data volume is encrypted and would be
+    safe, but persisting a key means it outlives the attestation that justified
+    releasing it: a later boot with a different measurement would find it
+    already there. Re-provisioning on every start costs one round trip and keeps
+    "the miner saw a valid quote" and "the key is present" the same event.
+    """
+
+    def __init__(self) -> None:
+        self._values: dict[str, str] = {}
+
+    @property
+    def ready(self) -> bool:
+        return bool(self._values)
+
+    def accept(self, payload: dict) -> None:
+        self._values = validate_payload(payload)
+        # Field NAMES only. The values are the secrets this whole design exists
+        # to protect, and a log line is the easiest place to lose one.
+        logger.info("provisioned with fields: %s", sorted(self._values))
+
+    def get(self, field: str) -> str:
+        if field not in ALLOWED_FIELDS:
+            raise ProvisionError(f"{field!r} is not a provisioning field")
+        return self._values.get(field, "")
+
+
+def serve(store: ProvisionStore, port: int = PROVISION_PORT, host: str = "0.0.0.0"):
+    """Run the TD-side receiver. Returns the HTTPServer; caller owns shutdown.
+
+    Two endpoints and a status. `/provision/attest` takes the miner's nonce and
+    returns a fresh attestation over it — that is how the TD proves what it is
+    without ever holding a credential. `/provision` takes the payload once the
+    miner is satisfied.
+
+    Binds 0.0.0.0 because the miner reaches it from outside the guest. That is
+    safe only because of what the endpoint does NOT do: it hands out an
+    attestation, which is public information — a TDX quote is Intel-signed
+    evidence, not a secret — and it accepts a payload it validates against a
+    closed allow-list. An attacker who reaches this port can learn what image is
+    running, which is already discoverable, and can push a payload, which gets
+    them a miner running with their API key and their head under the miner's own
+    hotkey. That is a denial-of-service on one miner, not a consensus break, and
+    the operator should firewall the port to their own address regardless.
+    """
+    import json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from fugal_subnet.tee import dstack_client
+
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, code: int, body: dict) -> None:
+            raw = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler's name
+            if self.path != _STATUS_PATH:
+                return self._send(404, {"error": "not found"})
+            self._send(200, {"provisioned": store.ready})
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError as e:
+                return self._send(400, {"error": f"bad json: {e}"})
+
+            if self.path == _ATTEST_PATH:
+                nonce = body.get("nonce", "")
+                try:
+                    report_data = bytes.fromhex(nonce)
+                except ValueError:
+                    return self._send(400, {"error": "nonce must be hex"})
+                if len(report_data) != NONCE_BYTES:
+                    return self._send(
+                        400,
+                        {"error": f"nonce must be {NONCE_BYTES} bytes, got {len(report_data)}"},
+                    )
+                try:
+                    blob = dstack_client.attest(report_data)
+                except Exception as e:  # noqa: BLE001 - reported, not swallowed
+                    logger.exception("attestation failed during provisioning")
+                    return self._send(503, {"error": f"attestation unavailable: {e}"})
+                return self._send(200, {"attestation": blob.hex()})
+
+            if self.path == _PUSH_PATH:
+                try:
+                    store.accept(body)
+                except ProvisionError as e:
+                    # The message names rejected FIELDS, never their values.
+                    return self._send(400, {"error": str(e)})
+                return self._send(200, {"provisioned": True})
+
+            self._send(404, {"error": "not found"})
+
+        def log_message(self, fmt, *args):
+            # Default logs the request line to stderr, which would print a
+            # rejected field name on every bad push and interleave with the
+            # miner's own output. Route it through our logger instead.
+            logger.debug("provision http: " + fmt, *args)
+
+    server = HTTPServer((host, port), Handler)
+    logger.info("provisioning receiver listening on %s:%d", host, port)
+    return server
+
+
+def push(
+    address: str,
+    payload: dict,
+    *,
+    approved_measurements,
+    expected_app_identity: str = "",
+    expected_instance_id: str = "",
+    timeout: int = 30,
+) -> None:
+    """Verify a TD is what we expect, then send it per-miner data.
+
+    THE MINER SIDE. Runs outside the enclave, on the machine that created the
+    TD and therefore knows its address. Everything before the final POST exists
+    so that a secret is never sent to something we have not identified.
+
+    The order of checks is the security property, not a style choice:
+
+      1. The quote is a genuine, Intel-signed quote over OUR nonce. The nonce is
+         why a captured attestation cannot be replayed later — an old quote
+         carries an old nonce.
+      2. The base measurement is on the approved list. This is the image.
+      3. The event log REPLAYS to the RTMR3 in that quote. Until this passes,
+         nothing in the log means anything; it arrived from the thing we are
+         trying to authenticate.
+      4. Only now read the log's payloads: the compose hash is the approved app,
+         and the instance-id is the instance WE created.
+
+    Step 4 is what defeats a cloud provider booting the approved image to
+    harvest a key. They would produce a valid quote with a correct measurement
+    and a correct compose hash — and a different instance-id, because they did
+    not create this instance. `expected_instance_id` is the check that turns
+    that from an accepted risk into a refusal, so callers should supply it.
+    """
+    import json
+    import urllib.request
+
+    from fugal_subnet.tee.attestation import measurement_id, parse_quote, replay_event_log
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    validate_payload(payload)          # fail before contacting anything
+    nonce = new_nonce()
+
+    def _post(path: str, body: dict) -> dict:
+        req = urllib.request.Request(
+            f"{address.rstrip('/')}{path}",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+
+    answer = _post(_ATTEST_PATH, {"nonce": nonce})
+    blob = bytes.fromhex(answer["attestation"])
+    quote_bytes, event_log = unwrap_attestation(blob)
+    quote = parse_quote(quote_bytes)
+
+    # 1. our nonce, padded the way the agent pads it
+    expected_rd = bytes.fromhex(nonce).ljust(64, b"\0").hex()
+    if quote.report_data != expected_rd:
+        raise ProvisionError(
+            "attestation is not over our nonce — this quote was produced for "
+            "someone else, or replayed from an earlier session"
+        )
+
+    # 2. the image
+    measured = measurement_id(quote)
+    if measured not in set(approved_measurements):
+        raise ProvisionError(
+            f"TD reports measurement {measured[:16]}..., which is not approved. "
+            f"Refusing to send anything to an image we do not recognise."
+        )
+
+    # 3. the log must reproduce the signed register before it is read
+    if expected_app_identity or expected_instance_id:
+        if not event_log:
+            raise ProvisionError(
+                "no event log in the attestation, so the app identity cannot be "
+                "checked. A bare quote proves the image booted, not what ran."
+            )
+        replayed, events = replay_event_log(event_log)
+        if replayed != quote.rtmr3:
+            raise ProvisionError(
+                "event log does not replay to the attested RTMR3 — the log is "
+                "not the one this hardware signed, so none of it is believable"
+            )
+        # 4. and only now are its payloads worth reading
+        if expected_app_identity:
+            got = events.get("compose-hash", b"").hex()
+            if got != expected_app_identity:
+                raise ProvisionError(
+                    f"TD is running app {got[:16] or '(none)'}..., expected "
+                    f"{expected_app_identity[:16]}..."
+                )
+        if expected_instance_id:
+            got = events.get("instance-id", b"").hex()
+            if got != expected_instance_id:
+                raise ProvisionError(
+                    f"TD is instance {got[:16] or '(none)'}..., expected "
+                    f"{expected_instance_id[:16]}.... This is the check that "
+                    f"stops a correctly-imaged TD we did not create from being "
+                    f"handed our key."
+                )
+
+    _post(_PUSH_PATH, payload)
+    logger.info("provisioned TD at %s with fields: %s", address, sorted(payload))

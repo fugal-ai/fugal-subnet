@@ -914,6 +914,27 @@ The attack, and its exact limit:
     liability it first appeared to be. Any implementation that skips this step
     is the full exploit.
 
+    Demonstrated end to end — hostile JSON in, chain gone, the nine honest
+    fields byte-identical:
+
+        via from_json  -> pck_certificate_chain present
+        via sanitiser  -> pck_certificate_chain ABSENT, nine fields preserved
+
+    **The encoding is pinned, not guessed.** The constructor is type-strict
+    where `from_json` is not: four fields are `bytes` (`root_ca_crl`, `pck_crl`,
+    `tcb_info_signature`, `qe_identity_signature`) and five are `str`. Passing
+    strings throughout raises `TypeError: Can't extract 'str' to 'Vec'`. In the
+    JSON the four are **lowercase hex** — `bytes([0,1,254,255])` serialises as
+    `"0001feff"` — so they are rebuilt with `bytes.fromhex`, not base64 and not
+    a byte array. Splatting nine JSON values into the constructor does not work,
+    which is where a "cheap and unconditional" sanitiser stops being either.
+
+    **It is the security boundary, so it needs an attack case, not a unit
+    test.** `run_miner_attacks` must feed hostile collateral through the real
+    path and assert the chain is gone. A test that only checks the honest
+    round trip would pass against an implementation that forwards the miner's
+    JSON untouched.
+
 **Therefore the freshness bound is not a staleness nuisance with defence in
 depth behind it. With collateral-in-proof it is the ENTIRE security of
 revocation, single-layered** — and it only holds at all if the supplied

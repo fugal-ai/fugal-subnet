@@ -378,6 +378,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             head_hashes: dict[int, str] = {}
             commit_blocks: dict[int, float] = {}
             n_invalid = 0
+            # Kept apart from n_invalid on purpose. A proof this validator
+            # could not check is not a proof it rejected, and the difference is
+            # the difference between an outage and an accusation.
+            n_unverifiable = 0
 
             for uid, resp in enumerate(responses):
                 if resp is None or not hasattr(resp, "proof_hash") or not resp.proof_hash:
@@ -453,8 +457,29 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     continue
 
                 if not result.valid:
-                    n_invalid += 1
-                    logger.warning("UID %d proof failed verification: %s", uid, result.reason)
+                    # Skip either way — the miner is not scored this epoch, and
+                    # falls through to apply_miss like any absent miner. What
+                    # changes is what gets RECORDED, and that is not cosmetic:
+                    # an operator reading "247 invalid" hunts an attack, while
+                    # "247 unverifiable" points at their own egress.
+                    #
+                    # Skipping is also the only I6-compatible choice. Abandoning
+                    # the epoch instead would let one miner with an unknown
+                    # FMSPC stop every validator publishing at once, because the
+                    # collection point is a deterministic block — a subnet kill
+                    # switch for the price of one registration.
+                    if getattr(result, "unverifiable", False):
+                        n_unverifiable += 1
+                        logger.warning(
+                            "UID %d proof could not be checked: %s — NOT counted "
+                            "as invalid; this validator never judged it",
+                            uid, result.reason,
+                        )
+                    else:
+                        n_invalid += 1
+                        logger.warning(
+                            "UID %d proof failed verification: %s", uid, result.reason,
+                        )
                     continue
 
                 if result.warnings:
@@ -474,8 +499,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     timestamp=time.time(), n_questions=len(questions),
                     n_miners_queried=n_neurons, n_heads_valid=0,
                     n_heads_invalid=n_invalid,
+                    n_heads_unverifiable=n_unverifiable,
                     commit_hash=commitment.commit_hash,
-                    anomalies=["no_valid_proofs"],
+                    anomalies=(
+                        ["no_valid_proofs", "collateral_unavailable"]
+                        if n_unverifiable else ["no_valid_proofs"]
+                    ),
                     duration_s=timer.total_s,
                 )
                 write_epoch_log(epoch_log)
@@ -702,11 +731,21 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # console at the time.
                 anomalies.append(f"implausible_exploration: uid {uid}: {why}")
 
+            # Surfaced as an anomaly, not just a number, because this is the
+            # signal that the field looks bad for reasons that are ours rather
+            # than the miners'. Correlated across validators when the endpoint
+            # is at fault, which is exactly what makes it diagnosable (I7).
+            if n_unverifiable:
+                anomalies.append(
+                    f"collateral_unavailable: {n_unverifiable} proof(s) unchecked"
+                )
+
             epoch_log = EpochLog(
                 epoch_id=epoch_id, block_hash=block_hash,
                 timestamp=time.time(), n_questions=len(questions),
                 n_miners_queried=n_neurons,
                 n_heads_valid=len(verified_proofs), n_heads_invalid=n_invalid,
+                n_heads_unverifiable=n_unverifiable,
                 commit_hash=commitment.commit_hash,
                 reveal_verified=reveal_ok,
                 scores=epoch_score_dicts, weights=epoch_weight_map,

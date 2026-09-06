@@ -60,10 +60,22 @@ def main() -> int:
     print("\n--- the two checks no other environment can make ---")
     failures = []
 
-    ok = verify_dcap(quote_bytes)
-    print(f"  [{'PASS' if ok else 'FAIL'}] a genuine quote passes DCAP verification")
-    if not ok:
-        failures.append("DCAP verification failed on a quote from this machine")
+    # A collateral fetch that never completed is not a verdict on this machine's
+    # quote, and this script exists to diagnose the machine. Reporting it as a
+    # FAIL would send an operator hunting a hardware problem that is really an
+    # egress or endpoint problem.
+    from fugal_subnet.tee.attestation import CollateralUnavailable
+    try:
+        ok = verify_dcap(quote_bytes)
+    except CollateralUnavailable as e:
+        print(f"  [SKIP] DCAP verification could not run: {e}")
+        print("         The quote was never judged. Check outbound HTTPS to the")
+        print("         PCCS endpoint above; this is not a verdict on this machine.")
+        ok = None
+    if ok is not None:
+        print(f"  [{'PASS' if ok else 'FAIL'}] a genuine quote passes DCAP verification")
+        if not ok:
+            failures.append("DCAP verification failed on a quote from this machine")
 
     # An unapproved image must be rejected even though its quote is genuine.
     # This is the attack DCAP alone does not stop: real hardware, modified code.

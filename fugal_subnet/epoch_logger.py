@@ -27,6 +27,12 @@ class EpochLog:
     n_miners_queried: int
     n_heads_valid: int
     n_heads_invalid: int
+    # Proofs this validator COULD NOT CHECK, kept apart from the ones it
+    # judged and rejected. Folding the two together is what made a collateral
+    # outage indistinguishable from mass fraud in the log: every honest miner
+    # counted as invalid, and nothing recording that the validator never
+    # actually looked. Defaults 0 so existing logs keep their meaning.
+    n_heads_unverifiable: int = 0
     commit_hash: str = ""
     reveal_verified: bool = False
     scores: dict = field(default_factory=dict)

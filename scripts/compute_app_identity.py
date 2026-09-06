@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import sys
 
@@ -62,51 +61,44 @@ def source_hash() -> str:
     return h.hexdigest()
 
 
-def normalise_app_compose(obj) -> str:
-    """dstack's normalised app-compose form: sorted keys, compact, finite floats.
-
-    Their documented rules are sorted keys, compact output, NaN and Infinity
-    rendered as null, and UTF-8 written directly rather than escaped. json.dumps
-    covers three of those; the fourth needs a pass, because Python emits `NaN`
-    and `Infinity` — which are not JSON — where the spec wants `null`.
-    """
-    def finite(x, path="$"):
-        if isinstance(x, float):
-            if x != x or x in (float("inf"), float("-inf")):
-                return None                      # dstack's rule: non-finite -> null
-            # A FINITE float is where json.dumps and JCS genuinely diverge, and a
-            # silently wrong compose hash is far worse than an error. RFC 8785
-            # specifies ES6 Number::toString, which Python does not reproduce:
-            # JCS writes 1.0 as "1" and 1e30 as "1e+30" where Python writes "1.0"
-            # and "1e+30" inconsistently across values. Rather than guess, refuse
-            # and say why. A compose file has no ordinary need for a float, and
-            # if one ever does, this needs a real JCS encoder rather than a
-            # cleverer json.dumps call.
-            raise ValueError(
-                f"app-compose contains a float at {path} ({x!r}). "
-                "json.dumps does not reproduce RFC 8785 number formatting, so the "
-                "compose hash would differ from dstack's. Use a string or an "
-                "integer, or add a real JCS encoder."
-            )
-        if isinstance(x, dict):
-            return {k: finite(v, f"{path}.{k}") for k, v in x.items()}
-        if isinstance(x, list):
-            return [finite(v, f"{path}[{i}]") for i, v in enumerate(x)]
-        return x
-
-    # ensure_ascii=False emits UTF-8 directly, which is what JCS requires and
-    # where json.dumps happens to agree. Sorted keys and compact separators
-    # cover the rest of the shape dstack uses.
-    return json.dumps(
-        finite(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-    )
-
-
 def compose_hash(path: str) -> tuple[str, str]:
-    with open(path, encoding="utf-8") as f:
-        obj = json.load(f)
-    canonical = normalise_app_compose(obj)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest(), canonical
+    """SHA-256 of app-compose.json's RAW FILE BYTES. Not a re-serialisation.
+
+    This function previously normalised the JSON first — sorted keys, compact
+    separators, non-finite floats as null — following dstack's
+    `normalized-app-compose.md`. That was wrong, and wrong in a way that would
+    have rejected every honest miner: an approved entry built from it names a
+    compose hash dstack never extends.
+
+    dstack measures the bytes on disk. Their own source says so, next to the
+    copy that writes the file:
+
+        the measured compose-hash is sha256 of the bytes on the shared disk, so
+        re-serializing would change the hash and break an externally-built
+        compose
+        # raw byte copy - do NOT json.load/dump (would change hashed bytes)
+
+    Measured against a real 564-byte app-compose.json that dstack generated:
+
+        sha256(raw bytes)            b695e134f294905730f1704b025cef4d...  <- what is measured
+        sha256(sorted + compact)     7ade910a9854391c04c8198f5e594a1c...  <- the old rules
+
+    THE DOCUMENT WAS REAL AND DESCRIBED SOMETHING ELSE. Those normalisation
+    rules govern the canonical JSON of runtime EVENTS — the
+    {"name","payload","type"} object in `attestation.dstack_event_digest`, where
+    they are correct and verified against dstack's test vector. They do not
+    govern the compose file. Two JSON conventions in one system, and the first
+    reading mapped one onto the other.
+
+    That is the second time today a documented rule for a neighbouring thing has
+    produced confident, dead code — the first cost a `extend_rtmr3` that could
+    never work. The lesson is cheap to state and apparently expensive to learn:
+    a specification tells you what someone intended, an artefact tells you what
+    they built, and only the second one is what you are verifying against.
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+    return hashlib.sha256(raw).hexdigest(), raw.decode("utf-8", "replace")
 
 
 def main() -> int:
@@ -120,9 +112,9 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.compose:
-        digest, canonical = compose_hash(args.compose)
-        print(f"normalised   {canonical[:120]}{'...' if len(canonical) > 120 else ''}")
-        print(f"compose_hash {digest}")
+        digest, raw = compose_hash(args.compose)
+        print(f"file         {args.compose} ({len(raw)} chars)")
+        print(f"compose_hash {digest}   (sha256 of the RAW bytes, not a re-serialisation)")
         identity = digest
     else:
         from fugal_subnet.benchmarks.loader import load_all, pool_hash

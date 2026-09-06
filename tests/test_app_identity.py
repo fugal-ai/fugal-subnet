@@ -32,43 +32,47 @@ def test_source_hash_matches_the_miner_byte_for_byte():
     assert _script().source_hash() == miner._get_source_hash()
 
 
-def test_normalisation_is_deterministic_and_key_order_independent():
-    norm = _script().normalise_app_compose
-    a = {"b": 1, "a": {"z": [1, 2], "y": "x"}}
-    b = {"a": {"y": "x", "z": [1, 2]}, "b": 1}
-    assert norm(a) == norm(b)
-    assert " " not in norm(a)                       # compact separators
+def test_compose_hash_is_the_raw_bytes_not_a_reserialisation():
+    """dstack measures the bytes on disk, and re-serialising changes them.
 
+    This is the bug this test exists for: hashing a normalised re-serialisation
+    produced a compose hash dstack never extends, so an approved entry built
+    from it would have named an identity no honest miner can ever produce —
+    rejecting the entire field for a reason nobody would look for.
 
-def test_finite_floats_are_refused_not_silently_mishashed():
-    """RFC 8785 specifies ES6 number formatting, which Python does not reproduce.
-
-    A wrong compose hash is silent and total: the approved entry names something
-    dstack never extended, so every honest miner is rejected for a reason nobody
-    would look for. Refusing is the correct failure.
+    dstack's own generator writes the file with indent=2 in insertion order, and
+    their source says plainly: "raw byte copy - do NOT json.load/dump (would
+    change hashed bytes)".
     """
-    import pytest
+    import hashlib
+    import json
+    import pathlib as _p
+    import tempfile
 
-    norm = _script().normalise_app_compose
-    with pytest.raises(ValueError, match="float"):
-        norm({"scale": 1.5})
-    with pytest.raises(ValueError, match=r"\$\.a\.b"):
-        norm({"a": {"b": 2.0}})              # the path is named, so it is fixable
+    script = _script()
+    obj = {"runner": "docker-compose", "docker_compose_file": "services:\n  app:\n"}
+    pretty = json.dumps(obj, indent=2)                 # what dstack writes
+    compact = json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    assert pretty != compact, "the two forms must actually differ for this to bite"
+
+    with tempfile.TemporaryDirectory() as td:
+        f = _p.Path(td) / "app-compose.json"
+        f.write_text(pretty, encoding="utf-8")
+        digest, _ = script.compose_hash(str(f))
+
+    assert digest == hashlib.sha256(pretty.encode()).hexdigest()
+    assert digest != hashlib.sha256(compact.encode()).hexdigest()
 
 
-def test_non_finite_floats_become_null_not_nan():
-    """json.dumps emits `NaN` and `Infinity`, which are not JSON. dstack's
-    normalisation calls for null, and a hash over invalid JSON would differ
-    from whatever their parser produced."""
-    norm = _script().normalise_app_compose
-    out = norm({"a": float("nan"), "b": float("inf"), "c": float("-inf")})
-    assert "NaN" not in out and "Infinity" not in out
-    assert json.loads(out) == {"a": None, "b": None, "c": None}
-
-
-def test_unicode_is_emitted_directly_not_escaped():
-    out = _script().normalise_app_compose({"k": "café"})
-    assert "café" in out and "\\u" not in out
+def test_whitespace_alone_changes_the_compose_hash(tmp_path):
+    """Byte-exactness is the property. Two files that parse to the same object
+    are different apps as far as the measurement is concerned, which is why the
+    file has to be shipped verbatim rather than regenerated."""
+    script = _script()
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text('{"x": 1}', encoding="utf-8")
+    b.write_text('{"x":1}', encoding="utf-8")
+    assert script.compose_hash(str(a))[0] != script.compose_hash(str(b))[0]
 
 
 def test_compose_hash_changes_with_the_content(tmp_path):

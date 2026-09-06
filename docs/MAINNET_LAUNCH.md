@@ -101,16 +101,33 @@ contain any measurement, so it rejected every proof and set every miner to zero
 weight, silently.
 
 Getting a usable value is the real remaining work.
-`measurement_id = sha256(MRTD‖RTMR0‖RTMR1‖RTMR2)`, and on a stock cloud image
-those registers move: RTMR0 changes with the machine shape, so a 4-vCPU and an
-8-vCPU instance measure differently, and RTMR1/RTMR2 change on every kernel
-package update. As a consensus parameter it would need republishing on each
-`apt upgrade` and would fork the subnet by instance size.
+`measurement_id = sha256(MRTD ‖ RTMR1 ‖ RTMR2)` — see
+`fugal_subnet/tee/attestation.py:measurement_id`.
 
-**A fixed, reproducibly-built guest image with a pinned kernel and initrd is a
-prerequisite for `--live` on mainnet.** Until it exists, `--mock` is the only
-honest mode, and `--mock` accepts unattested proofs — which means the security
-model is not yet enforced. See [TDX_VALIDATION.md](TDX_VALIDATION.md).
+**RTMR0 is deliberately excluded, so the machine shape does NOT affect the
+measurement.** It records the TDVF configuration the host builds — vCPU count,
+memory size, device config — which the cloud provider chooses and which proves
+nothing about the code. Measured byte-identical across three real deploys
+(`c3-standard-4` and `c3-standard-8`, two different applications):
+
+    12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+
+Miners may therefore pick any instance size. An earlier version of this section
+gave the formula as `sha256(MRTD‖RTMR0‖RTMR1‖RTMR2)` and concluded the subnet
+would fork by instance size. That was wrong once RTMR0 was dropped, and it is
+recorded here rather than silently deleted because it is the sort of claim
+someone acts on immediately before spending real TAO.
+
+What remains true: **RTMR1 and RTMR2 still move** — they cover the kernel,
+cmdline and initrd — so a stock cloud image would need the approved list
+republished on every kernel package update. **A fixed, reproducibly-built guest
+image with a pinned kernel and initrd is still a prerequisite for `--live` on
+mainnet.** dstack now supplies exactly that, and provisioning has been proven
+end to end against a live TD (see [OPEN_WORK.md](OPEN_WORK.md) for what the
+rehearsal did and did not demonstrate). Until a measurement from that image is
+published, `--mock` is the only honest mode, and `--mock` accepts unattested
+proofs — which means the security model is not yet enforced. See
+[TDX_VALIDATION.md](TDX_VALIDATION.md).
 
 ### 6. Miner startup cost
 

@@ -19,9 +19,31 @@ should happen next.**
 | Remote branches | `origin/main` only — everything else merged and deleted |
 | Full gate on `main` | green: ruff, safety invariants, axon smoke, all three attack suites, determinism both modes, integration, 282 passed / 1 skipped |
 
-One local worktree still sits on a deleted branch: `/home/jtdoherty/fugal-td`
-on `td-provisioning`. Merged in PR #7, so it is safe to remove
-(`git worktree remove`) once nobody is working in it.
+### What the rehearsal did and did not demonstrate
+
+Stated precisely, because "the rehearsal ran" is easy to read as more than it
+was.
+
+**Proven, on real hardware.** Provisioning end to end: the pusher verified a
+live TD's nonce, measurement, event-log replay, compose hash and instance-id,
+then pushed a 77 KB head, and the miner got past the wait. DCAP verification
+against a live quote. `.status` = `UpToDate` with empty advisories. The round
+trip timings. `measurement_id` byte-identical across instance shapes.
+
+**Not demonstrated: epochs completing.** The miner fell through to `load_all()`
+because the compose shipped without `FUGAL_BENCHMARK_POOL` — a 13.2-hour
+embedding job with no error — and the run was torn down. So **no epoch has been
+observed running end to end on real hardware.** Tomorrow should not assume one
+has.
+
+Two things that cost an hour each and are easy to hit again, both now in
+MINER_GUIDE:
+
+- `FUGAL_BENCHMARK_POOL` **must** be in the compose, or the miner silently
+  starts a 13-hour job while looking healthy.
+- Cloud Build on a fresh GCP project fails twice before it works, until the
+  default compute service account is granted `storage.objectAdmin`,
+  `artifactregistry.writer` and `logging.logWriter`.
 
 ---
 
@@ -138,12 +160,8 @@ through the constructor, which produces collateral with no chain attached.
   `pck_crl`, `tcb_info_signature`, `qe_identity_signature`) — use
   `bytes.fromhex`. The other five are `str`. Passing hex strings straight
   through raises `TypeError: Can't extract 'str' to 'Vec'`.
-- This cannot break an honest miner: a real dstack quote carries its own chain,
-  and it is a **complete** one. Measured on `attestation_A.bin` — 3677 bytes,
-  three certificates, `Intel SGX PCK Certificate` -> `Intel SGX PCK Platform
-  CA` -> `Intel SGX Root CA`. The quote alone therefore chains to Intel's root
-  with nothing borrowed from collateral, which is *why* discarding the supplied
-  chain is safe rather than merely observed to be.
+- This cannot break an honest miner: a real dstack quote carries its own chain
+  (**measured** on `attestation_A.bin` — 3677 bytes, 3 certificates).
 - The sanitiser *is* the security boundary, so it needs a `run_miner_attacks`
   case that feeds hostile collateral through it and asserts the chain is gone —
   not a unit test that only checks the honest round trip.
@@ -217,6 +235,12 @@ distribution of statuses across a live field.
 - **Phala is not a trust root.** Collateral is Intel-signed and checked against
   a compiled-in root CA, so a mirror can withhold or serve stale, never forge.
   The endpoint is an availability, privacy and latency choice.
+- **`measurement_id` does not include RTMR0**, so the machine shape does not
+  affect it and miners may choose any instance size — measured byte-identical
+  across `c3-standard-4` and `c3-standard-8`. MAINNET_LAUNCH.md carried the old
+  four-register formula and concluded the subnet would fork by instance size;
+  corrected here, and worth not reintroducing, because that document is read
+  immediately before spending real TAO.
 - **The crafted-FMSPC path is still miner-reachable.** `get_collateral` derives
   its request from the FMSPC in the quote, and `dcap-qvl` surfaces every failure
   as `ValueError`, so miner-caused and network-caused are separable only by

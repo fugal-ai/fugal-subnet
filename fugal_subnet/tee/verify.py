@@ -35,6 +35,7 @@ import logging
 from dataclasses import dataclass
 
 from fugal_subnet.tee.attestation import (
+    CollateralUnavailable,
     expected_rtmr3,
     extract_report_data,
     measurement_id,
@@ -57,6 +58,17 @@ class VerifyResult:
     valid: bool
     reason: str = ""
     warnings: list[str] | None = None
+    # "This validator could not check the proof", as distinct from "the proof
+    # is bad". Defaults False so every existing construction keeps the meaning
+    # it has today and only a deliberate one opts in — a third truthy state
+    # someone can forget to branch on would be worse than no distinction.
+    #
+    # NEVER set this for anything a miner's bytes could have caused. A miner who
+    # can reach this branch becomes UNSCOREABLE AT WILL: neither rewarded nor
+    # punished, absent from the invalid count, and invisible to the attack
+    # suite. That is an I4 problem wearing an I6 costume, and it is why the only
+    # things that set it are the operator's own infrastructure.
+    unverifiable: bool = False
 
 
 def parse_approved(entries) -> dict[str, set[str]]:
@@ -272,6 +284,20 @@ def verify_proof(
             dcap_ok = verify_dcap(attestation_quote)
         except ImportError:
             raise
+        except CollateralUnavailable as e:
+            # The operator's infrastructure, not the miner's proof. Sits here
+            # beside the ImportError re-raise because it is the same category:
+            # in both, nothing was learned about this miner, and reporting
+            # "invalid" would be an accusation the evidence does not support.
+            #
+            # It does NOT return valid=True. Nothing was verified, so nothing is
+            # accepted — this only changes what the failure is called, and what
+            # the caller is permitted to conclude from it.
+            return VerifyResult(
+                False,
+                f"DCAP collateral unavailable, so this proof was never judged: {e}",
+                unverifiable=True,
+            )
         except Exception as e:  # noqa: BLE001 - miner-controlled bytes
             return VerifyResult(
                 False, f"DCAP attestation verification failed: {type(e).__name__}: {e}",

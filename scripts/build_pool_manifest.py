@@ -29,7 +29,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-MANIFEST_PATH = os.path.join("data", "pool_manifest.json")
+# Ships INSIDE the package: the loader reads it at startup, and data/ is not
+# in the wheel. See fugal_subnet.benchmarks.loader._manifest_path.
+MANIFEST_PATH = os.path.join("fugal_subnet", "benchmarks", "pool_manifest.json")
 
 
 # content_hash lives in the package, not here: load_all() calls it at

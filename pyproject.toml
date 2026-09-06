@@ -90,6 +90,10 @@ include = ["fugal_subnet*", "neurons*"]
 # that silently omits them fails only at the moment a real proof arrives.
 [tool.setuptools.package-data]
 "fugal_subnet.tee" = ["roots/*.der"]
+# The pinned pool manifest is read by load_all() at startup. Left out of
+# the wheel it does not fail — it goes quiet, and the validator loads an
+# unverified pool while logging nothing.
+"fugal_subnet.benchmarks" = ["pool_manifest.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

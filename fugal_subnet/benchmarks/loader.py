@@ -203,10 +203,26 @@ def content_hash(pool: list[dict]) -> str:
     return h.hexdigest()
 
 
-_MANIFEST_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "pool_manifest.json",
-)
+def _manifest_path() -> str:
+    """Locate the pinned manifest as PACKAGE DATA, not by counting directories.
+
+    It used to be three dirnames up from this file plus data/pool_manifest.json,
+    which resolves inside a checkout and to site-packages/data/... in an
+    installed one. `data/` is not in the wheel, so on an installed validator the
+    manifest was simply absent — and absence was the silent branch, so the
+    default skip list fell back to empty and the content check returned without
+    logging. The consensus verification was inert in exactly the deployment that
+    most needs it, and said nothing.
+
+    importlib.resources answers the question the file system cannot: where is
+    this file relative to the PACKAGE, however the package was installed.
+    """
+    from importlib.resources import files
+
+    return str(files("fugal_subnet.benchmarks") / _MANIFEST_NAME)
+
+
+_MANIFEST_NAME = "pool_manifest.json"
 
 
 def _default_skip() -> set:
@@ -229,13 +245,25 @@ def _default_skip() -> set:
     if env is not None:
         return set(env.split(",")) - {""}
 
+    path = _manifest_path()
     try:
-        with open(_MANIFEST_PATH, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             pinned = set(json.load(f).get("skip_benchmarks", []))
-    except Exception:  # noqa: BLE001 - absent or broken manifest is legitimate
+    except FileNotFoundError:
+        # Not fatal here — _verify_against_manifest is where the strict refusal
+        # lives — but never silent. This returning empty is what made an
+        # installed validator load a different pool from everyone else.
+        logger.warning(
+            "No pool manifest at %s; defaulting to skipping nothing. Set "
+            "FUGAL_SKIP_BENCHMARKS explicitly if that is not what you want.",
+            path,
+        )
+        return set()
+    except Exception as e:  # noqa: BLE001 - a broken manifest must not be fatal here
+        logger.warning("Could not read pool manifest %s: %s", path, e)
         return set()
     if pinned:
-        logger.info("Skipping %s, per data/pool_manifest.json",
+        logger.info("Skipping %s, per the pinned pool manifest",
                     ",".join(sorted(pinned)))
     return pinned
 
@@ -255,13 +283,28 @@ def _verify_against_manifest(pool: list[dict], skip: set, strict: bool) -> None:
     Absent manifest is not an error — a fresh checkout or a bespoke pool is a
     legitimate state. A manifest that DISAGREES is, under strict.
     """
-    if not os.path.exists(_MANIFEST_PATH):
+    manifest_path = _manifest_path()
+    if not os.path.exists(manifest_path):
+        # Loud. A fresh checkout legitimately has no manifest, but so does a
+        # broken install, and the two need different reactions from a human.
+        # Silence made them indistinguishable.
+        msg = (
+            f"No pool manifest at {manifest_path}. The pool is consensus state "
+            "and nothing is verifying it: this process cannot tell whether its "
+            "pool matches everybody else's."
+        )
+        if strict:
+            raise RuntimeError(
+                msg + " Refusing to run strict without it — build one with "
+                "scripts/build_pool_manifest.py, or install a build that ships it."
+            )
+        logger.warning("%s", msg)
         return
     try:
-        with open(_MANIFEST_PATH, encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             pinned = json.load(f)
     except Exception as e:  # noqa: BLE001 - a broken manifest must not be fatal
-        logger.warning("Could not read pool manifest %s: %s", _MANIFEST_PATH, e)
+        logger.warning("Could not read pool manifest %s: %s", manifest_path, e)
         return
 
     if sorted(pinned.get("skip_benchmarks", [])) != sorted(skip):
@@ -289,7 +332,7 @@ def _verify_against_manifest(pool: list[dict], skip: set, strict: bool) -> None:
     )
     if strict:
         raise RuntimeError(
-            "Benchmark pool does not match data/pool_manifest.json. The pool is "
+            "Benchmark pool does not match the pinned manifest. The pool is "
             "consensus state: a pool that differs from every other operator's "
             "selects a different slice or grades different answers, and every "
             f"proof will fail on a hash that names none of this. {detail}. "

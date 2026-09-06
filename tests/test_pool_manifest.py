@@ -11,6 +11,7 @@ legitimate pools, and the first casualty is the documented
 FUGAL_BENCHMARK_POOL override.
 """
 import json
+import pathlib
 
 from scripts.build_pool_manifest import content_hash
 
@@ -54,7 +55,8 @@ def test_manifest_matches_the_shipped_pool_configuration():
     """The shipped manifest must describe a pool someone can actually build."""
     import pathlib
 
-    path = pathlib.Path(__file__).resolve().parent.parent / "data" / "pool_manifest.json"
+    from fugal_subnet.benchmarks.loader import _manifest_path
+    path = pathlib.Path(_manifest_path())
     manifest = json.loads(path.read_text(encoding="utf-8"))
     assert manifest["n_questions"] > 0
     assert len(manifest["pool_hash"]) == 64
@@ -87,7 +89,8 @@ def test_an_operator_who_configures_nothing_gets_the_pinned_skip_list(monkeypatc
     from fugal_subnet.benchmarks.loader import _default_skip
 
     monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
-    pinned = set(json.load(open("data/pool_manifest.json"))["skip_benchmarks"])
+    from fugal_subnet.benchmarks.loader import _manifest_path
+    pinned = set(json.load(open(_manifest_path()))["skip_benchmarks"])
     assert _default_skip() == pinned
     assert pinned, "the manifest pins no skips; this test would prove nothing"
 
@@ -118,3 +121,62 @@ def test_the_default_configuration_does_not_bypass_verification(monkeypatch):
                    "grader_id": "exec_io"}]
     with pytest.raises(RuntimeError, match="does not match"):
         _verify_against_manifest(wrong_pool, _default_skip(), strict=True)
+
+
+def test_the_manifest_ships_in_the_wheel():
+    """The bug this closes twice over.
+
+    `content_hash` was imported from scripts/ (not a package, not in the wheel),
+    which crashed the loader outside the repo root — loud. The fix for that left
+    the manifest itself in data/, which is ALSO not in the wheel, and absence was
+    the silent branch: an installed validator defaulted to skipping nothing and
+    verified nothing, logging neither. Reading pyproject would not have caught
+    it; building the wheel does.
+    """
+    import subprocess
+    import sys
+    import tempfile
+    import zipfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--no-deps",
+             "--no-build-isolation", "-w", tmp, "."],
+            capture_output=True, text=True, timeout=300,
+        )
+        if r.returncode != 0:
+            import pytest
+            pytest.skip(f"wheel build unavailable: {r.stderr[-200:]}")
+
+        wheels = list(pathlib.Path(tmp).glob("fugal_subnet-*.whl"))
+        assert wheels, "no wheel produced"
+        names = zipfile.ZipFile(wheels[0]).namelist()
+
+    assert "fugal_subnet/benchmarks/pool_manifest.json" in names, (
+        "the pinned pool manifest is not in the wheel. An installed validator "
+        f"would verify nothing and say nothing. Shipped non-Python files: "
+        f"{[n for n in names if not n.endswith('.py') and 'dist-info' not in n]}"
+    )
+    assert any(n.endswith(".der") for n in names), "the TPM trust anchor is not in the wheel"
+
+
+def test_an_absent_manifest_is_never_silent(monkeypatch, tmp_path, caplog):
+    """A fresh checkout legitimately has no manifest and a broken install looks
+    identical. They need different reactions from a human, so absence is loud
+    either way and fatal under strict — strict is the validator path, and a
+    validator with no pool verification is the thing this exists to prevent."""
+    import logging
+
+    import pytest
+
+    from fugal_subnet.benchmarks import loader
+
+    monkeypatch.setattr(loader, "_manifest_path", lambda: str(tmp_path / "absent.json"))
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+
+    with caplog.at_level(logging.WARNING):
+        assert loader._default_skip() == set()
+    assert "No pool manifest" in caplog.text
+
+    with pytest.raises(RuntimeError, match="No pool manifest"):
+        loader._verify_against_manifest([{"question_id": "q"}], set(), strict=True)

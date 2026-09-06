@@ -870,16 +870,54 @@ The attack, and its exact limit:
   - A miner whose PCK certificate has been revoked ships a **stale but validly
     Intel-signed CRL** from before the revocation. Every signature checks out,
     every chain reaches the pinned root, the quote verifies.
-  - **They cannot swap the certificate itself.** `cert_chain_pem_bytes` is a
-    field of `Quote`, not of `QuoteCollateralV3` — whose nine fields carry no
-    PCK certificate chain. The certificate rides inside the attested quote. So
-    the exploit is "present an old revocation list", not "present a different
-    identity", which is narrower than it first appears and is what makes the
-    design viable at all.
+  - **They CAN also supply the certificate chain. Demonstrated, not inferred.**
+    An earlier draft of this entry claimed they could not, on the evidence that
+    `QuoteCollateralV3` exposes nine Python properties and none is a PCK chain.
+    That described the **PyO3 wrapper**, not the Rust struct that `to_json` /
+    `from_json` serialise:
+
+        $ strings -a _dcap_qvl.abi3.so | grep -o "struct QuoteCollateralV3 with [0-9]* elements"
+        struct QuoteCollateralV3 with 10 elements
+
+    The tenth is `pck_certificate_chain`, and the field-name run in the binary
+    places it immediately after `qe_identity_signature`. Confirmed by
+    experiment rather than by reading:
+
+        from_json(json | {"pck_certificate_chain": "ATTACKER"})  -> accepted
+        ...round-tripped through to_json                          -> "ATTACKER"
+        from_json(json | {"totally_made_up_field": "x"})          -> dropped
+
+    Unknown keys are discarded, so a key that **survives** the round trip is a
+    real struct field. A miner shipping collateral as JSON therefore supplies
+    the PCK certificate chain **and** the CRL — the full chain, not an old
+    revocation list alone.
+
+    Supporting evidence pointing the same way: `get_collateral`'s own docstring
+    says the returned collateral "has the PCK certificate chain attached, so it
+    works for quotes with any supported certification data type (including types
+    2 and 3 where the PCK cert isn't embedded in the quote)", and the binary
+    contains both "Failed to extract PCK certificates from collateral" and
+    "...from quote" — both paths are live.
+
+  - **Still open:** whether `verify` *prefers* the collateral's chain over the
+    quote's for certification type 5, which is what a dstack TDX miner produces.
+    That decides how bad this is, and it cannot be answered from the stub — it
+    needs the Rust source or a live quote.
+
+  - **The sanitiser already exists, and it is the wrapper.** The nine-argument
+    Python constructor builds a collateral whose `pck_certificate_chain` is
+    `None` (verified). So a validator must **never hand miner JSON to
+    `from_json`**; it should parse the JSON itself, take the nine known fields,
+    and rebuild through the constructor — discarding anything else, including a
+    supplied chain. The field the wrapper hides is exactly the field that must
+    be dropped, which makes the wrapper a usable choke point rather than the
+    liability it first appeared to be. Any implementation that skips this step
+    is the full exploit.
 
 **Therefore the freshness bound is not a staleness nuisance with defence in
 depth behind it. With collateral-in-proof it is the ENTIRE security of
-revocation, single-layered.** Written at that strength deliberately: stated as
+revocation, single-layered** — and it only holds at all if the supplied
+certificate chain is stripped on receipt, per the sanitiser note above. Written at that strength deliberately: stated as
 "bound the collateral age", someone later relaxes it for miner convenience;
 stated as "this is the only thing standing between the subnet and revoked
 hardware", nobody does.

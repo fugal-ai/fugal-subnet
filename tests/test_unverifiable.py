@@ -37,7 +37,17 @@ def _proof():
 
 
 def _verify(monkeypatch, dcap):
-    """Run verify_proof outside mock with verify_dcap stubbed."""
+    """Run verify_proof outside mock with verify_dcap stubbed.
+
+    Stubs take `**_kw` so they keep matching verify_dcap's real signature as it
+    grows (it gained `budget` for the epoch-level collateral ceiling). Worth
+    knowing WHY that matters: verify_proof wraps the call in `except Exception:
+    -> invalid`, so a stub that does not accept a new argument raises TypeError
+    and is reported as "DCAP attestation verification failed" -- our own
+    signature error, recorded as the miner's fault, with a green-looking test
+    name. The failure is silent in exactly the direction the unverifiable work
+    exists to prevent.
+    """
     monkeypatch.setattr(verify_mod, "verify_dcap", dcap)
     p = _proof()
     return verify_proof(
@@ -54,7 +64,7 @@ def test_the_default_is_that_a_failure_is_the_miners_fault():
 
 
 def test_unreachable_collateral_is_unverifiable_not_invalid(monkeypatch):
-    def boom(_q):
+    def boom(_q, **_kw):
         raise CollateralUnavailable("could not fetch DCAP collateral from https://x")
     r = _verify(monkeypatch, boom)
     assert r.unverifiable is True
@@ -64,7 +74,7 @@ def test_unreachable_collateral_is_unverifiable_not_invalid(monkeypatch):
 def test_unverifiable_still_does_not_accept_the_proof(monkeypatch):
     """The whole risk of this change. Nothing was checked, so nothing is
     accepted — it only changes what the failure is CALLED."""
-    def boom(_q):
+    def boom(_q, **_kw):
         raise CollateralUnavailable("network down")
     r = _verify(monkeypatch, boom)
     assert r.valid is False
@@ -74,7 +84,7 @@ def test_a_genuinely_bad_quote_is_invalid_and_never_unverifiable(monkeypatch):
     """THE I4 CASE. If a miner can reach the unverifiable branch they become
     unscoreable at will: no reward, no punishment, absent from the invalid
     count. Anything the miner's bytes could have caused must land here."""
-    r = _verify(monkeypatch, lambda _q: False)
+    r = _verify(monkeypatch, lambda _q, **_kw: False)
     assert r.valid is False
     assert r.unverifiable is False
 
@@ -82,7 +92,7 @@ def test_a_genuinely_bad_quote_is_invalid_and_never_unverifiable(monkeypatch):
 def test_an_exception_from_miner_bytes_is_invalid_and_never_unverifiable(monkeypatch):
     """A raise that is NOT CollateralUnavailable came from parsing what the
     miner sent. It must not be laundered into an infrastructure excuse."""
-    def boom(_q):
+    def boom(_q, **_kw):
         raise ValueError("Failed to parse quote")
     r = _verify(monkeypatch, boom)
     assert r.valid is False
@@ -93,7 +103,7 @@ def test_a_missing_verifier_still_raises_rather_than_being_unverifiable(monkeypa
     """ImportError is the same category but must stay fatal: a --live validator
     with no verifier installed should stop, not quietly mark the whole field
     unverifiable and carry on looking healthy."""
-    def boom(_q):
+    def boom(_q, **_kw):
         raise ImportError("dcap_qvl not installed")
     with pytest.raises(ImportError):
         _verify(monkeypatch, boom)
@@ -104,7 +114,7 @@ def test_failures_after_the_dcap_step_are_never_unverifiable(monkeypatch):
     miner supplied, so no later failure may claim infrastructure."""
     p = _proof()
     p.results[0].question_id = "tampered-after-attestation"
-    monkeypatch.setattr(verify_mod, "verify_dcap", lambda _q: True)
+    monkeypatch.setattr(verify_mod, "verify_dcap", lambda _q, **_kw: True)
     r = verify_proof(
         p, approved_measurements=set(), expected_questions_hash=p.questions_hash,
         expected_nonce=p.nonce, gold_answers={}, expected_hotkey=HOTKEY, mock=False,

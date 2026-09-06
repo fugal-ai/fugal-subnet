@@ -346,7 +346,12 @@ def _control():
 
 def main() -> int:
     # The attacker owns real TDX hardware: their quote is genuinely Intel-signed.
-    verify_mod.verify_dcap = lambda q: True
+    verify_mod.verify_dcap = lambda q, **_kw: True  # **_kw: keeps matching
+    # verify_dcap's real signature as it grows (it gained `budget` for the
+    # epoch collateral ceiling). Without it the stub raises TypeError, which
+    # verify_proof catches and reports as a failed proof -- so the CONTROL
+    # breaks while all 22 attacks still show BLOCKED, which is precisely the
+    # shape of a suite that has stopped testing anything.
 
     results = []
     for name, inv, fn in ATTACKS:

@@ -28,7 +28,9 @@ exact token counts and costs. Validators verify proofs — they never call model
   (required for hardware attestation in `--live` mode; `--mock` works anywhere)
 - Linux (Ubuntu 22.04+ recommended)
 - Python 3.10-3.12
-- GPU recommended for training heads (CPU works but slower)
+- GPU recommended for training heads (CPU works but slower). If a GPU job runs
+  far slower than the card should manage, read *A slow embedding job is usually
+  VRAM, not a small card* below before sizing up — the failure is silent
 - ~4GB disk for dependencies + backbone model
 - TAO for subnet registration
 - OpenRouter API key (for model inference inside TEE)
@@ -105,7 +107,14 @@ The `.npz` file must contain:
 | `b` | `(L,)` | Bias vector, float32 |
 | `models` | `(L,)` | Model ID strings (e.g. `openai/gpt-5.4-mini`) |
 
-Max file size: 1MB. Hidden dimension must be 1024 (Qwen3-0.6B).
+Max file size: **1 MB** (`HEAD_MAX_BYTES`). Hidden dimension must be 1024
+(Qwen3-0.6B).
+
+There is a **second limit that is easy to trip and was previously undocumented**:
+the arrays must not exceed **8 MB decompressed** (`HEAD_MAX_DECOMPRESSED_BYTES`).
+`.npz` is compressed, so a file comfortably under 1 MB on disk can still be
+rejected on load. Both limits are bounds on untrusted input, so neither is
+negotiable per miner.
 
 ## Step 4: Run the Miner
 
@@ -182,7 +191,8 @@ sudo systemctl enable --now fugal-miner
 | `--hotkey` | `default` | Hotkey name |
 | `--wallet-path` | SDK default | Bittensor wallet root directory |
 | `--port` | `8091` | Axon port |
-| `--head-path` | (required) | Path to `.npz` head file |
+| `--head-path` | (optional) | Path to `.npz` head file. Required *unless* `--await-provisioning` is set, in which case the head arrives over the attested channel |
+| `--await-provisioning` | off | Serve nothing until the operator pushes the head and API key over an attested channel. **This is how a `--live` miner under dstack gets its key** — see below |
 | `--benchmark-pool` | (optional) | Local pool JSON. Defaults to the same `load_all()` the validator uses, which is what you want on mainnet — override only for offline or local runs. The flag routes through the same loader, so it cannot disagree with a validator reading the same file. |
 | `--mock/--live` | `--mock` | Mock (default) or live TDX attestation |
 | `--log-level` | `INFO` | Logging level |
@@ -246,6 +256,39 @@ There is no error. The process is running, the logs look busy, the axon may even
 be serving — and the miner produces nothing for half a day. This was hit during
 a real rehearsal by someone who had been warned about it hours earlier, which is
 why it is here in bold rather than in a footnote.
+
+### A slow embedding job is usually VRAM, not a small card
+
+Same shape as the `FUGAL_BENCHMARK_POOL` trap above — healthy-looking, silent,
+and hours wrong — so it is here rather than left to be rediscovered. Both were
+hit on this project's own hardware.
+
+**Symptom:** embedding the pool crawls, well under 1 prompt/s, with no error and
+no OOM. The job looks busy and the card looks fine.
+
+**Cause:** VRAM headroom, not VRAM size. Measured on a 6,144 MiB consumer card:
+at batch 32 the job sat at 5,864 MiB — about 95% — and past roughly that point
+the driver spills to host memory and throughput collapses. At batch 8 the same
+work used 3,428 MiB and ran ~29 prompts/s. **30x faster on the same card for the
+same job**, purely from leaving headroom.
+
+**The second half, which runs the other way from intuition:**
+`backbone.get_backbone` defaults to **float16** on CUDA. That is right for the
+datacentre cards a serious miner would rent. On a consumer card *without tensor
+cores* it is backwards — measured fp32 at 2.66 TFLOPS against fp16's 0.60, so
+**fp32 was 4.4x faster** — and the batch size that fits differs by about 4x
+between the two dtypes, so sizing a box from the default gets both speed and
+memory wrong.
+
+**What to do before concluding your machine is too small:** check VRAM headroom
+and drop the batch size until you are well under ~90% occupancy, then try
+float32. Only then buy a bigger card.
+
+Dtype is a miner-side performance choice and touches nothing in consensus —
+scoring reads routing decisions out of your proof, never your embeddings — so
+you may pick whichever is faster on your hardware. See
+`fugal_subnet/backbone.py` for the full measurements and why the default stays
+as it is.
 
 ### You may choose any instance size
 
@@ -367,8 +410,37 @@ written there is readable by anyone who can reach the agent, and it would also
 end up in the provenance of an approved-list entry. It cannot be withdrawn once
 published.
 
-How a miner does get its key is an open design decision, tracked in
-`docs/INVARIANTS.md`. Do not improvise one.
+#### How you actually get your key in: `--await-provisioning`
+
+**This is solved, and it ships.** An earlier version of this guide called it an
+open question, which left a miner unable to run `--live` at all. It is not open.
+
+Run the miner with `--await-provisioning` and it serves nothing until its
+operator pushes the head and the API key over an attested channel:
+
+```bash
+python neurons/miner.py --netuid <NETUID> --network finney \
+  --coldkey fugal_miner --hotkey default \
+  --port 8091 --live --await-provisioning
+```
+
+Note `--head-path` is **omitted** here — under provisioning the head arrives
+over the channel, which is why the flag is optional rather than required.
+
+The direction is the part worth understanding, because it is backwards from the
+obvious design: **the miner pushes to the TD, the TD does not fetch.** A TD can
+produce a fresh Intel-signed quote over any nonce, so it can prove what it is
+without holding a credential first. Your own process created the TD and knows
+its address; it asks the TD to prove itself, checks the quote's measurement and
+compose hash against the approved entry, and only then sends. Nothing per-miner
+is written anywhere the cloud provider can read, and the shared disk drops out
+of the critical path — which matters because `.user-config` rides a plain FAT32
+image in cloud storage and is fine for a head but fatal for a key.
+
+The mechanism and the exact list of what may cross the channel are in
+`fugal_subnet/tee/provision.py`. It has been exercised end to end on real
+hardware: the pusher verified a live TD's nonce, measurement, event-log replay,
+compose hash and instance id, then pushed a 77 KB head, and the miner proceeded.
 
 The reference file in `tests/fixtures/app-compose_A.json` is a **connectivity
 test app** (nginx and a socat bridge), not a miner. Do not deploy it and do not
@@ -393,7 +465,7 @@ You are scored on **quality per dollar, against the best single model**:
 ```
 quality = wilson_lcb(your accuracy) / accuracy of the best single model
 thrift  = what the best model would have cost / what you actually spent
-score   = quality^0.8 * thrift^0.2
+score   = quality^0.9 * thrift^0.1
 ```
 
 **A score of 1.0 means you matched the best single model's quality per dollar.
@@ -407,8 +479,17 @@ Two consequences worth internalising:
   badly (thrift collapses). There is no weighting you can exploit — the score is
   a product, not a sum.
 - **Quality is weighted heavier than cost**, deliberately. Giving up 40% of
-  quality does not pay for itself even at a 6x saving. The exponent is derived
-  from that requirement, not picked.
+  quality does not pay for itself *at any saving the scoring function will
+  award you* — at `w=0.9` a 40% quality loss scores 0.79 against a full quality
+  match even at the maximum thrift the cap allows. The exponent is derived from
+  that requirement, not picked.
+
+  The binding number is **`SCORE_THRIFT_CAP = 10`**, not the 6x saving the
+  product targets. That distinction is the whole reason the exponent is 0.9 and
+  not 0.8: derived against 6x it comes out 0.778, and at the cap `w=0.8`
+  actually *rewards* the 40% quality loss (1.0532 against 1.000). If you are
+  modelling where the trade-off turns, model it at the cap.
+  `docs/design-decisions.md` carries the full derivation.
 
 The reference is the best model's *measured* accuracy, pooled from exploration
 samples across all miners and many epochs. It is a fact about the model pool,
@@ -433,14 +514,52 @@ rejected. Budget for the ~5%.
 verification fails), that epoch counts as 0 correct out of n_expected. You
 cannot selectively skip bad epochs.
 
+### When a good proof is not scored, and why it is not you
+
+Two behaviours can make a correct proof go unscored in an epoch. Neither
+changes anything you should *do*, but a miner who does not know about them will
+read the result as being cheated, so they are stated here.
+
+**Your proof can come back `unverifiable`.** To verify your TDX quote a
+validator fetches DCAP collateral from a PCCS over the network. That fetch is
+bounded per call and the whole verification phase has a per-epoch ceiling, so if
+the validator's PCCS is slow or down, your proof is recorded as *not checked* —
+explicitly **not** as invalid. Validators log these separately (`unverifiable`
+vs `invalid`) precisely so an outage is not mistaken for fraud. The practical
+consequence is the honest one: an unchecked proof is not scored, so it falls
+through to `apply_miss` exactly like an absent miner. **You cannot cause this
+and you cannot prevent it** — the PCCS is the validator's infrastructure, not
+yours, and a quote your proof supplies cannot steer which host is dialled. It
+is correlated across the field, so it does not move your ranking relative to
+anyone else.
+
+**Verification order is nonce-derived, not UID order.** When a validator's
+collateral budget runs out, whoever is verified last goes unverified. In UID
+order that would be the same miners every epoch — a permanent penalty on high
+UIDs that no miner caused and none could escape. The order is instead derived
+from the epoch nonce, so it is identical on every validator and no miner can
+influence it, and the cost rotates. Do not read a skipped epoch as a signal
+about your head.
+
 ## Anti-Gaming
 
 - **TEE attestation** — results are hardware-attested. You cannot fabricate or
   tamper with proofs after attestation.
 - **Measurement pinning** — validators check the TDX quote's own measurement
-  registers (MRTD, RTMR0-2) against the approved image list, not any field your
-  code writes about itself. Running a modified harness on genuine TDX hardware
-  produces a valid quote and an unapproved measurement.
+  registers against the approved image list, not any field your code writes
+  about itself. The base measurement is `sha256(MRTD ‖ RTMR1 ‖ RTMR2)`.
+  **RTMR0 is deliberately excluded** — it records host-chosen virtual hardware
+  config, so including it would fork the approved list by instance size (this
+  is why you may pick any machine shape, above).
+- **Compose-hash pinning is what binds your code**, and the distinction
+  matters. The base measurement proves which *image* booted; it does not by
+  itself prove which Fugal code ran, because on a stock VM the repo is cloned
+  onto a filesystem nothing measures. Measured directly: editing
+  `fugal_subnet/tee/harness.py` left the base measurement byte-identical. What
+  binds your code is the `compose-hash` event replayed out of RTMR3, which
+  covers the image your compose names — which is why `--live` requires dstack
+  and why you must pin images by digest rather than by tag. See
+  [INVARIANTS.md](INVARIANTS.md) § I8.
 - **Network confinement** — inside the TEE, the benchmark process can only
   communicate with the local MeteringProxy. No data exfiltration.
 - **On-chain commitment** — your head hash is committed before benchmarks run.
@@ -459,8 +578,25 @@ You pay for model inference each epoch. Cost depends on:
 - Which models your head routes to (cheaper models = lower cost)
 - Token counts per question
 
-Typical epoch cost: varies by model selection. The MeteringProxy inside the
-TEE records exact costs, which are included in the attested proof.
+**Typical epoch cost, computed from the pinned price table** over real
+300-question slices (22,095 input tokens on average, 256-token completions):
+
+| If your head routed everything to | $/epoch | $/day at 24 epochs |
+|---|---|---|
+| `deepseek/deepseek-v4-flash` (cheapest) | 0.014 | 0.34 |
+| `openai/gpt-5.4-mini` (mid) | 0.362 | 8.69 |
+| an even mix of all 17 | 0.549 | 13.17 |
+| `openai/gpt-5.5` (dearest) | 2.415 | 57.95 |
+
+A real head lands somewhere inside that range. Add ~$0.027/epoch for the
+exploration quota, which no routing strategy avoids, and your confidential VM
+(~$150/month for a GCP `c3-standard-4`). Completion length is the biggest
+uncertainty in the table and has not been measured against a live provider.
+
+`docs/MINER_ECONOMICS.md` models whether this is net-positive and under what
+conditions; `scripts/model_miner_economics.py` lets you put your own numbers in.
+The MeteringProxy inside the TEE records your exact costs, which are included in
+the attested proof.
 
 ## Troubleshooting
 

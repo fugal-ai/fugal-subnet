@@ -2,7 +2,7 @@
 
     quality = wilson_lcb(accuracy) / acc_best
     thrift  = ref_cost / miner_cost
-    score   = quality**w * thrift**(1-w) * burn_in        (w = 0.8, derived)
+    score   = quality**w * thrift**(1-w) * burn_in        (w = 0.9, derived)
 
 A score of 1.0 means "matched the best single model's quality per dollar";
 above 1.0 means "beat it". That is the product claim stated directly, which is
@@ -20,9 +20,20 @@ both degenerate strategies score badly.
 
 The exponent w is derived, not picked. "Match frontier quality at a fraction of
 the cost" makes quality a near-constraint, so giving up 40% of quality must not
-outscore matching the best model at its own price — which forces w > 0.778.
-An unweighted sqrt fails that test (it scores such a router 1.095 against a
-quality match's 1.000); w = 0.8 scores it 0.951. See SCORE_QUALITY_EXPONENT.
+outscore matching the best model at its own price.
+
+The bound depends on the cost ratio the scoring function PERMITS, not on the
+one the product targets, and getting that wrong is what produced the earlier
+value of 0.8. Solved at a 6x ratio it gives w > 0.778; solved at
+SCORE_THRIFT_CAP (10x), which is what a miner can actually reach, it gives
+w > 0.8184 — so w = 0.8 fails, scoring such a router 1.0532 against a quality
+match's 1.000. Miners are ranked against each other, and a pairwise cost gap
+spans cap² = 100x, which needs w > 0.9002.
+
+Hence w = 0.9: it holds the absolute claim with room (0.7949 at the cap) and
+sits on the pairwise bound. Two live runs produced the failure independently
+before it was found — a 63% router beating a 93% one, and a 46% beating a 62%.
+See SCORE_QUALITY_EXPONENT for the full derivation.
 
 **Why the reference is the best single model.** It needs only per-model
 marginals, so it is well-estimated within a few epochs and stable at any miner

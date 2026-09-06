@@ -247,6 +247,125 @@ TEE_MODEL_PRICES_PATH = os.getenv("FUGAL_MODEL_PRICES", "")
 # this at a local caching PCCS, which re-serves the same Intel-signed bytes.
 TEE_PCCS_URL = os.getenv("FUGAL_PCCS_URL", "https://pccs.phala.network").strip()
 
+# How long one collateral fetch may take before the validator gives up on it.
+#
+# This is a HANG GUARD, not a latency target. The measured round trip is 788 ms
+# cold and ~690 ms warm (GCP us-central1 -> Phala), so the default below is
+# roughly 12x the worst measured case. It exists for the failure that has no
+# natural bound: a PCCS that accepts the connection and then never answers.
+#
+# Without it a stalled upstream blocks the epoch outright -- no weights, and no
+# log line either, because the code that records the failure is downstream of
+# the block and never runs. Every validator hits it at the same moment, since
+# the collection point is a deterministic block.
+#
+# A timeout here raises CollateralUnavailable, NOT "invalid". That distinction
+# is the prerequisite for this timeout existing at all: before the unverifiable
+# path was built, a bare timeout converted a network outage into a false
+# accusation of forgery against every honest miner at once.
+#
+# RESIDUAL, stated because it is easy to assume otherwise: this bounds ONE
+# fetch, and the verify loop is serial over every UID. 256 stalled proofs still
+# cost 256 x this value, which overruns the 1800 s post-collection budget. The
+# per-proof bound stops the unbounded hang; it does not by itself satisfy I6 at
+# field scale. Bounding the aggregate is tracked in docs/OPEN_WORK.md.
+# --- Benchmark pool size is a SECURITY parameter ---
+#
+# Nothing about the number 21,717 says "security", which is exactly why this
+# constant exists. What stops a miner memorising the pool instead of learning
+# to route is that a linear head does not have the parameters to do it — and
+# that is a property of pool SIZE, not of the head.
+#
+# Measured, random-label fit on isotropic Gaussian embeddings (the most
+# favourable geometry, so an upper bound on any real pool):
+#
+#     2,000 questions -> 100%   memorisation is total, the subnet measures
+#                               nothing at all
+#     4,000           ->  79%
+#     8,000           ->  35%
+#    21,717           ->  16.9% the real pool today
+#
+# So the pool must not be allowed to shrink quietly. It already nearly did:
+# excluding one benchmark the way the code-benchmark work excluded others would
+# take it to ~7,675 and roughly double what a head can memorise, and no test
+# would have noticed — the load would succeed, the hash would change as
+# expected, and every downstream check would pass.
+#
+# Slicing and nonce-derived exploration do NOT defend this. They hide WHICH
+# questions are asked; they cannot hide the pool, because they draw from it.
+# Head capacity against pool size is the only real defence.
+BENCHMARK_POOL_MIN_SIZE = int(os.getenv("FUGAL_POOL_MIN_SIZE", "12000"))
+
+TEE_COLLATERAL_TIMEOUT = float(os.getenv("FUGAL_COLLATERAL_TIMEOUT", "10"))
+
+# The aggregate ceiling: total seconds one epoch may spend fetching collateral,
+# across all proofs. This is the half that actually satisfies I6.
+#
+# The per-call bound above stops ONE fetch hanging. It does not stop the epoch
+# hanging, because the verify loop is serial over every UID -- 256 proofs at
+# 10 s each is 2560 s against an 1800 s post-collection window, so the epoch
+# returns having already missed the window it exists to hit.
+#
+# Sized from measurement, not taste. A healthy field costs 256 x ~690 ms
+# measured RTT = ~178 s, so the default leaves roughly 3.4x headroom over the
+# normal case while capping the pathological one at a third of the
+# post-collection budget -- leaving scoring, weight-setting and the reveal the
+# ~1200 s they share.
+#
+# Raising this does not buy more verified proofs when the upstream is healthy;
+# it only buys patience with an upstream that is not. Lowering it converts
+# proofs to `unverifiable` sooner, which is a real cost: those miners fall
+# through to apply_miss.
+TEE_COLLATERAL_EPOCH_BUDGET = float(
+    os.getenv("FUGAL_COLLATERAL_EPOCH_BUDGET", "600")
+)
+
+# How many fetches may be abandoned before this validator stops dialling the
+# PCCS for the rest of the epoch.
+#
+# A bounded fetch cannot be cancelled -- cancelling unwinds a Rust future
+# inside pyo3 and crashes the interpreter -- so it is ABANDONED instead, and an
+# abandoned fetch keeps its socket until the connection dies on its own.
+# Measured at 1.02 leaked file descriptors per abandoned fetch. A container
+# inheriting the common 1024 default would exhaust it in a few epochs against a
+# persistently stalled PCCS, and lose its axon and subtensor sockets with it --
+# an I6 failure arriving by a different road than the hang.
+#
+# So a run of consecutive timeouts is treated as evidence about the ENDPOINT
+# rather than about the proof. Consecutive, not cumulative: an upstream that
+# answers between failures — even with an error — is slow, not down, and the
+# counter resets.
+#
+# WHY 10 AND NOT 3, because 3 is the intuitive answer and it is wrong. A
+# breaker converts a graded failure into an all-or-nothing cliff, and where the
+# cliff sits decides how far two honest validators on the SAME PCCS diverge.
+# Simulated over 400 validator-epochs per cell at the real defaults (256
+# proofs, T=10, B=600, RTT 0.788 s), counting proofs verified, p10..p90 spread:
+#
+#     p(stall)   no breaker    K=3      K=10
+#     0.02            6          6        6
+#     0.05            9         10       11
+#     0.10           11        136       11
+#     0.20           58        184       58
+#
+# At K=3 and a 10% stall rate one validator trips at proof ~5 and verifies 100
+# while its neighbour never trips and verifies 236 — the breaker is free when
+# the endpoint is healthy and maximally divergent exactly when it is degraded,
+# which is the only case it exists for. K=10 is indistinguishable from having
+# no breaker at all on divergence, while still capping a genuinely dead PCCS at
+# 10 abandoned fetches and 100 s of the 600 s ceiling.
+#
+# The fd cost of the higher threshold is smaller than it first appeared:
+# abandoned descriptors ARE reclaimed once the connection dies, by peer close
+# or by Linux's own retransmit timeout (~15 min, well inside a 3600 s epoch).
+# The leak is transient rather than cumulative across epochs. Measured at
+# 1.02 fds per abandoned fetch at a short bound and 5.3 at a longer one, so
+# "10 fds" is really 10-53. Still small, and worth paying to stop the breaker
+# manufacturing a fork.
+TEE_COLLATERAL_MAX_TIMEOUTS = int(
+    os.getenv("FUGAL_COLLATERAL_MAX_TIMEOUTS", "10")
+)
+
 # --- Routing ---
 # The routing rule is argmax(softmax(W@h + b)) — no cost term, no exchange rate.
 #

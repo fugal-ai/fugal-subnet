@@ -56,10 +56,69 @@ either a consequence of it or a step toward removing it.
 
 ---
 
-## 1. The timeout — unblocked, small, highest value per risk
+## 1. The timeout — DONE, both halves
 
-**Do this first.** It is the most dangerous open item and it became cheap to
-fix only after PR #9.
+**Status: the per-proof bound has landed** (`config.TEE_COLLATERAL_TIMEOUT`,
+`_run_coro(..., timeout=)`, `tests/test_collateral_timeout.py`, I6 widened and
+enforced by `check_external_calls_bounded`). What follows is kept because the
+diagnosis is still the reason the code looks the way it does — and because one
+half of it turned out to be **wrong**, in a way worth not repeating.
+
+**Correction, found by execution.** This document said the `timeout=30`
+"guards the ThreadPoolExecutor branch". It does not guard anything. `with
+ThreadPoolExecutor()` calls `shutdown(wait=True)` on exit, so the
+`TimeoutError` cannot escape until the hung call finishes: measured, a 2 s
+bound over a 6 s stall returned at **6.01 s**. Both branches were unbounded,
+not one. The fix is `asyncio.wait_for` *inside* the coroutine, which cancels
+rather than abandons. See INVARIANTS.md § "I6 — the invariant was wrong".
+
+**The second half, also landed: the aggregate.** A per-proof bound does not
+satisfy I6 at field scale, and this is the part that is easy to declare done
+too early. The verify loop is **serial over every UID**, so a slow-but-alive
+PCCS costs N x the per-call bound — 256 x 10 s = 2560 s against an 1800 s
+post-collection window. The epoch returns having already missed the window it
+exists to hit, which is an I6 failure that looks like a successful run.
+**Bounding one call was never sufficient; bounding the sum is.**
+
+`CollateralBudget` (`config.TEE_COLLATERAL_EPOCH_BUDGET`, default 600 s) is one
+ceiling for the whole phase, created in `verify_proofs` and charged on every
+exit. Once spent, remaining proofs are reported unverifiable **without a
+network call**. 600 s is ~3.4x the measured healthy cost (256 x 690 ms = 178 s)
+and a third of the post-collection budget, leaving ~1200 s for scoring, weights
+and the reveal.
+
+Three design points, recorded because each has a plausible-looking wrong answer:
+
+- **Order is nonce-derived, not UID order.** This matters only when the budget
+  binds, and then it matters a lot: whoever is last in line goes unverified,
+  and in UID order that is the same miners every epoch — a permanent
+  disadvantage no miner caused and none could escape. `derive_nonce(epoch_id,
+  block_hash)` is identical on every validator (no new I1 divergence) and not
+  miner-influenceable (I4), and it rotates who is exposed.
+- **Time budget, not a count cap.** A count cap would cut at the same index on
+  every validator and so be better for I1 — but it would also cap a *healthy*
+  epoch below the field size, which is the normal case. Time only binds when
+  something is already wrong. This is a real trade and the rejected option is
+  not obviously worse; it is written down so it is not silently re-decided.
+- **The shared-ceiling I4 question.** A shared resource invites "what can one
+  miner make everyone else pay?" Parse-before-fetch blocks the cheap version —
+  a malformed quote is judged locally and costs no budget, and there is a test
+  asserting exactly that. The crafted-FMSPC residual still reaches the fetch,
+  but costs one fetch per miner per epoch, so draining 600 s needs the upstream
+  to be slow as well. Bounded, not closed. If it ever needs closing, the fix is
+  a per-miner sub-budget of `total/N`.
+
+It does **not** restore determinism, and nothing local can. It converts "misses
+the weight window" into "sets weights with a bounded unverifiable set" — which
+is strictly better and is still the input divergence that only
+collateral-in-proof removes.
+
+---
+
+## 1b. The original diagnosis, for context
+
+**It was the most dangerous open item and it became cheap to
+fix only after PR #9.**
 
 The problem: `verify_dcap` has no timeout on the validator's real code path.
 The `timeout=30` guards the `ThreadPoolExecutor` branch, which only runs when
@@ -175,6 +234,23 @@ per-proof fetch itself.**
 
 ---
 
+## 2b. One cheap measurement worth taking during the rehearsal
+
+**How long does the configured PCCS take to refuse an FMSPC it does not know?**
+
+It decides how many hostile registrations it would take to drain a validator's
+collateral ceiling: a fast 404 (~0.7 s) needs >850 UIDs and is impossible at a
+field of 256; a stall to the full per-call bound needs ~60. The per-proof fair
+share means safety no longer depends on the answer, but tuning does — it is the
+difference between a 2.34 s floor being generous and being tight.
+
+Recipe, and it costs nothing beyond one request: take a real quote, rewrite the
+FMSPC bytes, call `get_collateral` against the configured PCCS, time it. Worth
+folding into the rehearsal rather than running as an unsolicited request to a
+third party's endpoint.
+
+---
+
 ## 3. Still open, and only real hardware settles them
 
 Two questions survived several sessions of reading and will not yield to more
@@ -268,11 +344,47 @@ as swept.
 
 ---
 
+## The three questions that were not in this file, now answered
+
+They were tracked only in a session memory. All three are settled, and one of
+them changed what the project is deciding.
+
+**1. Miner economics — POSITIVE, on a smaller margin than first reported.**
+`docs/MINER_ECONOMICS.md`. Base case +$53.99/day against $18.76/day of cost;
+the marginal (lowest-scoring) entrant breaks even at **124 miners**, against
+the 1–63 earning miners observed on live subnets. Structural finding:
+`alpha_out_emission` is 1.000 α/block and *identical across all 124 active
+subnets*, so miner revenue does not scale with subnet rank — only alpha price
+does. The honest summary is **"holds unless several assumptions fail
+together"**: a compound case of wide score spread, longer completions and GPU
+cost gives N\* = 17, where a 32-miner field loses $31/day.
+
+**2. Does a trained head beat a random one — YES, and it does not matter.**
+`docs/HEAD_EFFICACY.md`. The premise holds: 1.058 against a random head's
+0.868 and chance's 0.815, genuinely routing across 13 models. But **"always
+gpt-4o-mini" scores 1.183** and beats it by 12%. See INVARIANTS § "I3 — OPEN:
+not routing at all outscores routing". This is the most important open question
+in the project and it is a product decision, not a tuning one.
+
+**3. Pool memorisation — NOT possible at the current pool size.** A linear head
+fits random labels at 100% on 2,000 questions and **16.9%** on 21,717;
+architectural, not under-training (four optimiser settings agree to three
+decimals). Two consequences now guarded: pool size is a security parameter
+(`BENCHMARK_POOL_MIN_SIZE`, enforced in `load_all`), and `HEAD_MAX_MODELS` was
+wider than intended because duplicate model names were accepted — 64 rows could
+all name one model. Now rejected, on the naming gap alone: the synthetic
+random-label advantage (0.269 -> 0.441) did NOT reproduce on real pool
+embeddings, where the largest gain was +0.036.
+
+---
+
 ## Suggested order
 
-1. **The timeout**, plus widening I6 and its check. Small, unblocked, and the
-   most dangerous thing still open.
-2. **Run the rehearsal against merged `main`.** The accounting from PR #9 makes
+1. ~~**The timeout**, plus widening I6 and its check.~~ **DONE** — both the
+   per-proof bound and the epoch aggregate, I6 widened, and
+   `check_external_calls_bounded` added so the next unbounded call added to the
+   epoch loop fails CI instead of the subnet.
+2. **Run the rehearsal against merged `main`.** ← *the next action* The accounting from PR #9 makes
    an outage legible — `n_heads_unverifiable` in the epoch log is the real
    failure rate, and it is the missing input to how urgently item 3 is needed.
    It also answers the `Revoked` question for free.

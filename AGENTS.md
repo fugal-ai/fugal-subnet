@@ -69,7 +69,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 8. `exploration.py` → nonce-derived exploration assignment (recovers the counterfactual the TEE removes)
 9. `reference_frame.py` → per-model accuracy pooled over time; supplies `acc_best` and the reference cost
 10. `evidence.py` → EWMA-decayed evidence accumulation with Wilson LCB, effective-n capped by pool size
-11. `scoring.py` → `quality^0.8 * thrift^0.2`, ramped in over a burn-in period
+11. `scoring.py` → `quality^0.9 * thrift^0.1`, ramped in over a burn-in period
 12. `rewards.py` → weight computation (single pool, weight capping ±0.3/epoch)
 13. `dedup.py` → behavioural dedup (cosine similarity on routing decisions, GLOBAL model index space)
 14. `commit_reveal.py` → commit-reveal integrity + publish epoch artifacts

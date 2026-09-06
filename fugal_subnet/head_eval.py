@@ -112,6 +112,37 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
             raise ValueError(
                 f"Head model ID is {len(name)} chars (max {HEAD_MAX_MODEL_ID_LEN})"
             )
+    # Distinct names, because HEAD_MAX_MODELS is a CAPACITY bound and duplicates
+    # spend it on something else. The cap exists to stop a head large enough to
+    # memorise the question pool rather than learn to route; a row is a
+    # parameter vector, and 64 rows all naming one model is 64 rows of capacity
+    # wearing the costume of a one-model head.
+    #
+    # The justification is the NAMING GAP, not a measured exploit, and that
+    # distinction was itself a correction. On synthetic isotropic embeddings,
+    # 32 rows over 8 names lifted random-label fit from 0.269 to 0.441, which
+    # looked like real capacity bought cheaply. Re-measured on actual pool
+    # embeddings it does not reproduce: three of five differences are zero or
+    # negative and the largest gain is +0.036, against the +0.172 the synthetic
+    # case suggested. Clustered real embeddings span fewer effective dimensions
+    # than Gaussian ones, so the synthetic figure was an upper bound behaving
+    # like a finding.
+    #
+    # So this is not closing a demonstrated memorisation route. It is closing
+    # the gap between what HEAD_MAX_MODELS is NAMED and what it bounds, which
+    # stands on its own.
+    #
+    # It is also meaningless on its own terms — two rows naming the same model
+    # are two ways to say the same route, and softmax over them is a
+    # reparameterisation with no routing content. Nothing honest produces it.
+    if len(set(models)) != L:
+        dupes = sorted({m for m in models if models.count(m) > 1})
+        raise ValueError(
+            f"Head names {len(set(models))} distinct models across {L} rows — "
+            f"duplicates: {dupes[:3]}. Rows must name distinct models: the row "
+            "cap bounds head capacity, and duplicate names spend that capacity "
+            "without declaring it."
+        )
 
     if not np.all(np.isfinite(W)):
         raise ValueError("Head W contains non-finite values")

@@ -166,7 +166,38 @@ def load_all(strict: bool = True) -> list[dict]:
     logger.info("Benchmark pool: %d questions, pool_hash=%s",
                 len(pool), pool_hash(pool)[:16])
     _verify_against_manifest(pool, skip, strict)
+    _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict)
     return pool
+
+
+def _verify_pool_is_large_enough_to_be_unmemorisable(
+    pool: list[dict], strict: bool,
+) -> None:
+    """The pool's SIZE is what makes a head route rather than memorise.
+
+    Checked here rather than in a test because the failure arrives through
+    configuration, not through code: `FUGAL_SKIP_BENCHMARKS` can shrink the
+    pool on a single validator with no diff to review. Measured, a linear head
+    fits random labels on 2,000 questions perfectly and on 21,717 only 16.9%,
+    so dropping one large benchmark moves the subnet a long way toward
+    measuring nothing — and every other check would still pass, because the
+    pool loaded fine and its hash changed exactly as a legitimate change would.
+    """
+    from fugal_subnet.config import BENCHMARK_POOL_MIN_SIZE
+
+    if len(pool) >= BENCHMARK_POOL_MIN_SIZE:
+        return
+    msg = (
+        f"Benchmark pool has {len(pool)} questions, below the "
+        f"{BENCHMARK_POOL_MIN_SIZE} floor. Pool size is a security parameter: "
+        "a linear head memorises a small pool instead of learning to route "
+        "(measured: 100% random-label fit at 2,000 questions, 16.9% at "
+        "21,717). Scores from a pool this small do not measure routing. If the "
+        "shrink is deliberate, raise FUGAL_POOL_MIN_SIZE and say why."
+    )
+    if strict:
+        raise RuntimeError(msg)
+    logger.warning("%s", msg)
 
 
 def content_hash(pool: list[dict]) -> str:

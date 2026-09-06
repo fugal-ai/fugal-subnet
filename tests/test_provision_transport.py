@@ -53,7 +53,6 @@ class _Fake:
             reg = reg.hex()
         self._log, self._reg, self._meas, self._rd = log, reg, measurement, report_data
 
-        server = self
         parent = self
 
         class H(BaseHTTPRequestHandler):

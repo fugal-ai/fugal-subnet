@@ -433,6 +433,67 @@ hotkey produces proofs bound to *that* hotkey, which their own uid cannot use.
 reject, it needs no hardware, and a relayed proof should not cost a DCAP
 verification to refuse.
 
+### I8 — measured on real hardware: what a live dstack CVM actually reports
+
+Three questions that two sessions failed to settle by reading, answered by one
+run on a `c3-standard-8` dstack CVM in GCP us-central1. **Measured**, not
+modelled and not read.
+
+**`.status` is `UpToDate`, `advisory_ids` empty**, across three consecutive
+`verify()` calls. So a real dstack TDX platform on GCP c3 is up to date, and
+none of `OUT_OF_DATE`, `SW_HARDENING_NEEDED` or `CONFIGURATION_NEEDED` arose.
+
+**Whether `verify` raises on `Revoked` is STILL UNANSWERED.** No revoked
+platform was observed, so the question did not arise — and an absent observation
+is not a null result. Recorded as open rather than quietly closed, because the
+temptation after a clean run is to treat "we did not see it" as "it does not
+happen".
+
+**`verify` did not raise at all on this path** — three calls, zero exceptions,
+every one returning a report. Combined with `verify_dcap` discarding `.status`,
+the operational consequence is exact and it is the finding rather than the
+timing:
+
+> **An `UpToDate` box and a `REVOKED` box are currently indistinguishable to
+> this validator.**
+
+**Timing, GCP us-central1 to Phala** (a validator on a home connection or
+another continent will see something else, so the number is labelled with its
+network):
+
+    788.39 ms   cold, first call after boot
+    687.85 ms
+    698.75 ms
+    quote generation 252.12 ms, blob 39,467 bytes — measured separately so the
+    network cost is isolated
+
+Against the 2.68 ms local verify cost measured elsewhere, **the Phala round trip
+is ~99.6% of the cost of verifying a proof.** Serially, 100 miners is roughly
+70 seconds of verification per epoch. So collateral-in-proof is a **throughput**
+argument as well as a trust-surface one — which neither the fork analysis nor
+the local CPU measurement showed on its own.
+
+### I8 — the base measurement is independent of instance shape AND application
+
+`measurement_id` is `sha256(MRTD ‖ RTMR1 ‖ RTMR2)`. Byte-identical across three
+real deploys:
+
+    12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+
+    fixture A   c3-standard-4, nginx/socat test app
+    fixture B   c3-standard-4, nginx/socat test app
+    rehearsal   c3-standard-8, the real Fugal miner image
+
+Two different instance shapes and two different applications, one value. This
+was reasoned when RTMR0 was dropped and explicitly flagged as unverified; it is
+now measured, and it confirms the `base_measurement:app_identity` split doing
+exactly what it was designed for — the base identifies **what booted**, the app
+half identifies **what ran**, and neither leaks into the other.
+
+Consequence for miners: **instance size is a free choice.** It is stated in
+MINER_GUIDE as a permission, because a miner who assumes they must match a
+reference shape will over-provision for no reason.
+
 ### I8 — an approved image must be publicly pullable
 
 An approved-list entry is `<base_measurement>:<app_identity>`, and the app half

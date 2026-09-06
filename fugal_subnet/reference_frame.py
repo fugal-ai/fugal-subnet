@@ -111,6 +111,74 @@ def decay_factor(half_life: int) -> float:
     return 2.0 ** (-1.0 / max(1, half_life))
 
 
+def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
+    """Rebuild a reference frame by replaying published epoch reveals.
+
+    WHY THIS HAS TO EXIST. The frame is accumulated over time and lives in one
+    local state file. A validator that loses it, and a validator that has just
+    joined, both start from the bootstrap prior while everyone else carries
+    history — and `acc_best` is the denominator of every quality term, so their
+    scores differ from the field's. Measured: a fresh frame gives acc_best 0.500
+    where an established one gives 0.832. Without this, the subnet cannot
+    onboard a second validator or survive a lost disk without diverging.
+
+    Replay is in EPOCH ORDER and one call per epoch, because the decay is
+    applied per call. Sorting by epoch id rather than by filesystem order is
+    what makes two operators rebuilding from the same reveals reach the same
+    frame; directory listing order is not deterministic and would silently
+    produce different weights.
+
+    THE TRUST ASSUMPTION, stated plainly. A reveal is a JSON file. Replaying
+    your OWN reveals after losing state is self-trusting and safe. Replaying
+    someone else's is a snapshot: the exploration outcomes inside came from
+    attested proofs that this validator never saw and cannot re-verify, so the
+    operator is choosing to trust whoever published them. That is a real
+    assumption and it is why this is a bootstrap mechanism, not a verification
+    one. It is the same trade every chain makes when it offers a state snapshot,
+    and the honest mitigation is to rebuild from a source you would already
+    trust to run a validator.
+    """
+    import glob
+    import json
+    import os
+
+    if isinstance(source, (str, os.PathLike)):
+        paths = sorted(glob.glob(os.path.join(str(source), "*", "reveal.json")))
+    else:
+        paths = sorted(source)
+
+    epochs: list[tuple[str, list]] = []
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as f:
+                reveal = json.load(f)
+        except Exception as e:  # noqa: BLE001 - one bad file must not lose the rest
+            logger.warning("Skipping unreadable reveal %s: %s", path, e)
+            continue
+        epoch_id = str(reveal.get("epoch_id", ""))
+        if not epoch_id:
+            logger.warning("Skipping reveal with no epoch_id: %s", path)
+            continue
+        samples = [
+            (str(e.get("model", "")), bool(e.get("correct")),
+             int(e.get("prompt_tokens", 0)), int(e.get("completion_tokens", 0)))
+            for e in reveal.get("exploration", [])
+            if e.get("model")
+        ]
+        epochs.append((epoch_id, samples))
+
+    frame = None
+    replayed = 0
+    for epoch_id, samples in sorted(epochs, key=lambda x: x[0]):
+        frame = accumulate_exploration(frame, samples, half_life=half_life)
+        replayed += 1
+    logger.info(
+        "Rebuilt reference frame from %d reveals (%d models measured)",
+        replayed, len(frame.trials) if frame else 0,
+    )
+    return frame if frame is not None else load_bootstrap()
+
+
 def implausible_exploration(
     frame: "ReferenceFrame | None",
     per_miner: dict[int, list[tuple[str, bool]]],

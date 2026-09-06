@@ -196,6 +196,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         best_model,
         implausible_exploration,
         load_bootstrap,
+        rebuild_from_reveals,
         reference_cost,
     )
     from fugal_subnet.rewards import cap_weight_change, compute_weights
@@ -256,10 +257,25 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # the miner field — a miner's score must not move because other miners came
     # online or went dark (I4). Seeded from the shipped bootstrap prior so it is
     # well-defined at epoch 1 with zero samples.
-    frame = (
-        ReferenceFrame.from_dict(state["frame"])
-        if state["frame"] else load_bootstrap()
-    )
+    if state["frame"]:
+        frame = ReferenceFrame.from_dict(state["frame"])
+    elif os.getenv("FUGAL_FRAME_BOOTSTRAP"):
+        # No local state. Rebuild from published reveals rather than starting
+        # from the neutral prior, because a fresh frame is not a smaller version
+        # of an established one — it is a DIFFERENT one. acc_best is the
+        # denominator of every quality term, so a validator that starts cold
+        # scores the whole field differently from its peers: 0.500 against 0.832
+        # on measured data. Without this a lost disk, or simply a second
+        # validator joining, diverges the subnet.
+        frame = rebuild_from_reveals(os.environ["FUGAL_FRAME_BOOTSTRAP"])
+    else:
+        frame = load_bootstrap()
+        logger.warning(
+            "Starting from the bootstrap prior with no accumulated frame. If "
+            "other validators have history, this one will score the field "
+            "differently until it catches up. Set FUGAL_FRAME_BOOTSTRAP to a "
+            "directory of published reveals to rebuild instead."
+        )
 
     blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 

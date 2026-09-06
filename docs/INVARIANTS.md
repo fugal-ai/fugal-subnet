@@ -554,9 +554,29 @@ from the TPM-sealed seed. The operator holds no key and cannot pre-populate it.
 It is persistence *for* the TD — useful for the embedding cache across restarts,
 useless for delivery.
 
-**Unmeasured, and worth measuring before anyone designs on it:** `.user-config`
-sits in a shared disk with an 8 MB minimum, so a head of real size may not fit.
-The ceiling has not been established.
+**The ceiling is 50 MB, enforced in the guest.** Written as a number because
+"plenty of room" ages badly and "50 MB" does not. `dstack-util`'s `HostShared::copy`
+size-checks every host-shared file as it copies it in and bails rather than
+truncating:
+
+| File | Limit |
+|---|---|
+| `app-compose.json` | 50 MB |
+| `.user-config` | **50 MB** |
+| `.encrypted-env` | 256 KB |
+| `.sys-config.json` | 32 KB |
+| `.instance_info` | 10 KB |
+
+The 8 MB figure that appeared here first was a floor, not a ceiling, and reading
+it as a ceiling was backwards: the shared disk is sized
+`max(8 MB, contents + 4 MB)` and grows to fit what is put on it. Against a real
+head — `data/rehearsal/head_m1.npz` is 77,234 bytes — that is roughly **679x
+headroom**, so a head would have to grow three orders of magnitude before the
+channel is threatened. Settled, not pending.
+
+Note `.encrypted-env` caps at 256 KB. That is the real constraint on the KMS
+path if it is ever revisited, and it is far tighter than the one that was
+worried about here.
 
 **Five unidentified trailing bytes.** Real `TPMT_SIGNATURE` fields carry five
 bytes past the structure (`0000010000`). They are not identified and are not

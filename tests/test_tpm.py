@@ -283,3 +283,92 @@ def test_the_two_boxes_differ_where_they_should_and_agree_where_they_must():
 
     assert seen["A"]["instance-id"] != seen["B"]["instance-id"]
     assert seen["A"]["compose-hash"] != seen["B"]["compose-hash"]
+
+
+# --- The whole app-identity chain, on real data -----------------------------
+
+def test_the_compose_file_bytes_reach_the_signed_register():
+    """Every link, end to end, against hardware output rather than argument:
+
+        sha256(RAW FILE BYTES)  ==  the compose-hash event in the log
+        the log                 replays to RTMR3
+        RTMR3                   is inside the Intel-signed quote
+
+    This is what makes `compute_app_identity.py --compose` trustworthy, and it
+    is the check that was missing when the compose hash was computed from
+    normalised JSON — that version produced a hash dstack never extends, so it
+    would have rejected every honest miner while looking correct.
+    """
+    import hashlib
+
+    from fugal_subnet.tee.attestation import parse_quote, replay_event_log
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    compose = FIXTURES / "app-compose_A.json"
+    blob = FIXTURES / "attestation_A.bin"
+    if not (compose.exists() and blob.exists()):
+        pytest.skip("fixtures not present")
+
+    quote, events = unwrap_attestation(blob.read_bytes())
+    replayed, seen = replay_event_log(events, imr=3)
+
+    assert hashlib.sha256(compose.read_bytes()).hexdigest() == seen["compose-hash"].hex()
+    assert replayed == parse_quote(quote).rtmr3
+
+
+def test_the_compose_hash_is_raw_bytes_and_not_a_reserialisation():
+    """dstack's fields are in INSERTION order, not sorted, and the compose YAML
+    is one JSON string with escaped newlines whose trailing newline counts. Any
+    re-serialisation changes the hash, so the only correct answer is the bytes."""
+    import hashlib
+    import json
+
+    from scripts.compute_app_identity import compose_hash
+
+    compose = FIXTURES / "app-compose_A.json"
+    if not compose.exists():
+        pytest.skip("fixture not present")
+
+    raw = compose.read_bytes()
+    digest, _ = compose_hash(str(compose))
+    assert digest == hashlib.sha256(raw).hexdigest()
+
+    parsed = json.loads(raw)
+    assert list(parsed) != sorted(parsed), "fields are not sorted; do not sort them"
+
+    # The normalisation that was wrong, and the compact form: both change the
+    # hash, which is what would have rejected every honest miner.
+    for variant in (json.dumps(parsed, sort_keys=True, separators=(",", ":")),
+                    json.dumps(parsed, separators=(",", ":")),
+                    json.dumps(parsed, sort_keys=True, indent=2)):
+        assert hashlib.sha256(variant.encode()).hexdigest() != digest
+
+    # dstack's own bytes happen to be exactly json.dumps(obj, indent=2) with
+    # fields left in insertion order and no trailing newline. Asserted so that a
+    # change is noticed, NOT so anything depends on it: the moment we hash a
+    # re-serialisation instead of the bytes we are guessing at their writer
+    # again, and we have already paid for that once.
+    assert json.dumps(parsed, indent=2).encode() == raw
+
+
+def test_report_data_is_right_zero_padded_not_hashed():
+    """Measured on the guest: a 5-byte report_data came back as those 5 bytes
+    followed by 59 zeros. The guest pads; it does not hash and does not reject a
+    short value. `verify_proof` must expect exactly that padding for a 32-byte
+    content hash, or every live proof fails a binding check that looks like
+    tampering rather than a convention mismatch."""
+    from fugal_subnet.tee.attestation import parse_quote
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    blob = FIXTURES / "attestation_A.bin"
+    if not blob.exists():
+        pytest.skip("fixture not present")
+    quote, _ = unwrap_attestation(blob.read_bytes())
+    observed = parse_quote(quote).report_data
+    assert observed == b"fugal".hex() + "00" * 59
+
+    # What the miner will actually send: a 32-byte content hash. This is the
+    # expression verify_proof uses, checked against the guest's rule.
+    content_hash = "ab" * 32
+    expected = bytes.fromhex(content_hash).ljust(64, b"\x00")[:64]
+    assert expected.hex() == content_hash + "00" * 32

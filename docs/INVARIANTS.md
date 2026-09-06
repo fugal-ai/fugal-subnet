@@ -385,6 +385,39 @@ reason a missing `dcap-qvl` does: it is the operator's misconfiguration, and
 downgrading it to "this proof is bad" lets a --live validator reject the entire
 field while appearing healthy.
 
+### I8 — the app-identity chain, closed against hardware
+
+Every link verified on a real deploy rather than argued, in
+`tests/test_tpm.py::test_the_compose_file_bytes_reach_the_signed_register`:
+
+    sha256(app-compose.json RAW BYTES)  ==  the compose-hash event in the log
+    the event log                       replays to RTMR3
+    RTMR3                               is inside the Intel-signed quote
+
+`ced4501de5b82ea9...`, from `tests/fixtures/app-compose_A.json` through to
+`attestation_A.bin`. The compose file's provenance matters: it is the
+`app_compose` string the **guest** returned from `/v1/Info` — the bytes the
+guest itself hashed, not a local reconstruction — so the two fixtures are
+evidence about each other rather than two copies of one assumption.
+
+This is what makes an approved entry computable off-hardware, and it is the
+check that was missing when the compose hash was computed from normalised JSON.
+That version produced a hash dstack never extends: it would have rejected every
+honest miner while looking correct.
+
+**Do not re-serialise.** Fields are in insertion order, not sorted. dstack's
+bytes happen to equal `json.dumps(obj, indent=2)` exactly, and that is asserted
+so a change is noticed — but nothing depends on it. Hashing a re-serialisation
+instead of the bytes is guessing at their writer again, and that has already
+been paid for once.
+
+**`report_data` is right-zero-padded by the guest, not hashed.** Measured: a
+5-byte value came back as those bytes followed by 59 zeros, and the guest
+neither hashes nor rejects a short value. A 32-byte content hash therefore
+appears in the quote as `content_hash || 32 zero bytes`, which is exactly what
+`verify_proof` compares against. A different convention here would fail every
+live proof on a binding check that looks like tampering rather than a mismatch.
+
 **Five unidentified trailing bytes.** Real `TPMT_SIGNATURE` fields carry five
 bytes past the structure (`0000010000`). They are not identified and are not
 guessed at. Ignoring them is safe because `r` and `s` are read from fixed

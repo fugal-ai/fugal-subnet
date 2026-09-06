@@ -274,6 +274,25 @@ If you run in a region whose Google intermediate CA is not yet vendored in
 travels with the proof and is checked against the pinned root — but open an
 issue so it can be added, because it is one fewer moving part.
 
+### Four fields in `app-compose.json` that will hurt you
+
+The compose file is hashed as raw bytes and that hash is what a validator
+approves, so every field below is part of your identity — changing one changes
+your compose hash and you will need the new one approved. Get them right the
+first time.
+
+| Field | Set it to | Why |
+|---|---|---|
+| `public_logs` | **`false`** | Your miner holds an OpenRouter API key. Public logs are public; one stray traceback with a request header in it and your key is on the internet. There is no way to un-publish it. |
+| `public_sysinfo` | `false` | Leaks process and system detail about a machine whose whole purpose is being a sealed box. No upside for a miner. |
+| `gateway_enabled` | `false` unless you need it | The dstack gateway publishes your service. A miner is reached by validators over its axon, not through a gateway. |
+| `allowed_envs` | list `OPENROUTER_API_KEY` | This is an allow-list of environment variables the app will ACCEPT, not a list of things it publishes. Leave it empty and your key never reaches the container — the miner starts, answers nothing, and looks like a routing failure. |
+
+The reference file in `tests/fixtures/app-compose_A.json` is a **connectivity
+test app** (nginx and a socat bridge), not a miner. Do not deploy it and do not
+copy its values: it sets `public_logs`, `public_sysinfo` and `gateway_enabled`
+to `true`, which is fine for a box holding no secrets and wrong for yours.
+
 ## Updating Your Head
 
 Retrain on newer data and restart the miner with the new `.npz` file. The

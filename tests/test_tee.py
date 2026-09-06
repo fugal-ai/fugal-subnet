@@ -835,3 +835,31 @@ def test_changing_the_compose_hash_changes_the_register():
     a = [_ev("compose-hash", "aaaa"), _ev("instance-id", "beef")]
     b = [_ev("compose-hash", "bbbb"), _ev("instance-id", "beef")]
     assert replay_event_log(a)[0] != replay_event_log(b)[0]
+
+
+def test_event_log_must_reproduce_the_quote_before_it_is_read():
+    """The log comes from a miner. Replaying it is the only reason to believe it.
+
+    A log naming an approved compose-hash but not reproducing the register the
+    CPU signed must be rejected outright — reading the field first and checking
+    the replay afterwards would trust attacker-supplied data.
+    """
+    from fugal_subnet.tee.attestation import replay_event_log
+
+    honest = [_ev("compose-hash", "abcd"), _ev("instance-id", "beef")]
+    real_rtmr3, _ = replay_event_log(honest)
+
+    # A forged log that claims the same approved app but a different chain.
+    forged = [_ev("compose-hash", "abcd"), _ev("instance-id", "0bad")]
+    forged_rtmr3, events = replay_event_log(forged)
+    assert events["compose-hash"].hex() == "abcd"      # the claim looks right
+    assert forged_rtmr3 != real_rtmr3                  # the chain does not
+
+
+def test_a_fresh_td_starts_from_zero():
+    """Measured on hardware: a GCP confidential VM stop/start yields a new TD
+    with RTMR3 cleared, so a miner cannot accumulate extends across restarts to
+    walk the register to a chosen value."""
+    from fugal_subnet.tee.attestation import replay_rtmr
+
+    assert replay_rtmr([]) == "00" * 48

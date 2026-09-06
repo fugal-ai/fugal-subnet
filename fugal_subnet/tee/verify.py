@@ -39,6 +39,7 @@ from fugal_subnet.tee.attestation import (
     extract_report_data,
     measurement_id,
     parse_quote,
+    replay_event_log,
     verify_dcap,
 )
 from fugal_subnet.tee.proof import (
@@ -104,6 +105,7 @@ def verify_proof(
     expected_weights_hash: str = "",
     expected_proof_hash: str = "",
     head_bytes: bytes | None = None,
+    event_log: list | None = None,
     mock: bool = False,
 ) -> VerifyResult:
     """Verify a miner's TEE-attested benchmark proof.
@@ -199,14 +201,45 @@ def verify_proof(
         #     register is discarded before any field of it is believed.
         required_apps = approved[measured]
         if required_apps:
-            candidates = {expected_rtmr3(app) for app in required_apps}
-            if quote.rtmr3 not in candidates:
-                return VerifyResult(
-                    False,
-                    f"Runtime identity mismatch: RTMR3 {quote.rtmr3[:16]}... "
-                    f"replays from none of the {len(required_apps)} approved "
-                    f"runtime identities for this image",
-                )
+            if event_log:
+                # A measured image extends RTMR3 several times during boot, so
+                # the register is a chain and the log is the only description of
+                # it. Replay first, compare to the quote, and only then read a
+                # field: a log that does not reproduce what the CPU signed is
+                # discarded whole rather than partially believed.
+                try:
+                    replayed, events = replay_event_log(event_log, imr=3)
+                except ValueError as e:
+                    return VerifyResult(False, f"Malformed TDX event log: {e}")
+                if replayed != quote.rtmr3:
+                    return VerifyResult(
+                        False,
+                        f"Event log does not reproduce RTMR3: replayed "
+                        f"{replayed[:16]}... but the quote says "
+                        f"{quote.rtmr3[:16]}...",
+                    )
+                app_seen = events.get("compose-hash", b"").hex()
+                if app_seen not in required_apps:
+                    return VerifyResult(
+                        False,
+                        f"Unapproved application: compose-hash {app_seen[:16]}... "
+                        f"not among {len(required_apps)} approved for this image",
+                    )
+            else:
+                # No log: the single-extend case a Fugal miner produces today,
+                # where the whole chain is one runtime_identity from a zeroed
+                # register. A fresh TD really does start from zero — a GCP
+                # confidential VM stop/start yields a new TD with RTMR3 cleared,
+                # measured twice — so a miner cannot accumulate extends across
+                # restarts to reach a chosen value.
+                candidates = {expected_rtmr3(app) for app in required_apps}
+                if quote.rtmr3 not in candidates:
+                    return VerifyResult(
+                        False,
+                        f"Runtime identity mismatch: RTMR3 {quote.rtmr3[:16]}... "
+                        f"replays from none of the {len(required_apps)} approved "
+                        f"runtime identities for this image",
+                    )
 
     # 4. Nonce — ties the proof to this epoch's unpredictable block hash.
     if proof.nonce != expected_nonce:

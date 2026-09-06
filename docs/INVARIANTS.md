@@ -257,6 +257,28 @@ not. On a live `c3-standard-4` TD (6.17.0-1022-gcp):
   quote** — sysfs value and quote value identical.
 - `measurement_id` is unchanged by the extend, as designed.
 
+### I8 — verified on hardware: the upstream binding, and a fresh TD
+
+The upstream is genuinely bound, measured rather than argued. Two boots of one
+c3-standard-4, everything held constant except `FUGAL_OPENROUTER_BASE`:
+
+| upstream | RTMR3 after one extend |
+|---|---|
+| `https://openrouter.ai/api/v1` | `9c16a3b5987a572b…` |
+| `http://127.0.0.1:8799` | `61f579c30c23d544…` |
+
+In both cases `expected_rtmr3(identity)` reproduced the value inside the
+Intel-signed quote exactly. A miner who repoints the upstream at a server of
+their own can no longer present the same runtime identity as an honest one.
+Advisory until the image is locked, like everything in this register — but the
+mechanism is measured, not asserted.
+
+**A fresh TD starts from zero.** A GCP confidential VM stop/start produces a new
+Trust Domain with RTMR3 cleared — confirmed on both boots above. So a miner
+cannot accumulate extends across restarts to walk the register toward a chosen
+value: the chain restarts from 48 zero bytes every boot. That closes the obvious
+question about an advisory, userspace extend.
+
 ### I8 — the approved entry is a PAIR, not a hash
 
 An approved-list entry is `<base_measurement>` or `<base_measurement>:<app_identity>`.

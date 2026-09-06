@@ -1,0 +1,62 @@
+name: Nightly
+
+# The dress rehearsal runs the SHIPPED binaries against a real subtensor node:
+# real wallets, real registration, real axon and dendrite over the wire, real
+# set_weights. It is the only check that exercises chain integration, and it has
+# found defects that in-process tests are structurally blind to — an epoch id
+# formatted two different ways, weights reported set against a chain that stored
+# nothing, a miner deadlocked on its own stdout.
+#
+# It is nightly rather than per-PR because it needs a chain container and takes
+# minutes, and it exists at all because the lesson this repository keeps
+# relearning is that an unexercised path is a broken path that does not know it.
+# Leaving the thing that proved that unexercised would be a poor joke.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dress-rehearsal:
+    name: Dress rehearsal against a real chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      FUGAL_SKIP_BENCHMARKS: mmlu,math,gsm8k,humaneval,livecode,gpqa,ifeval,aime
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: All scenarios against a real subtensor node
+        # Includes E, which runs the SHIPPED binaries with the real backbone —
+        # the scenario that found the axon, commitment and weight-setting
+        # defects. Dropping it to save a model download would remove the part
+        # that exercises the code an operator actually runs.
+        run: uv run python scripts/dress_rehearsal.py --scenario all
+
+      - name: Publish the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dress-rehearsal-report
+          path: results/
+          if-no-files-found: ignore

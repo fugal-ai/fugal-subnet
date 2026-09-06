@@ -286,7 +286,7 @@ first time.
 | `public_logs` | **`false`** | Your miner holds an OpenRouter API key. Public logs are public; one stray traceback with a request header in it and your key is on the internet. There is no way to un-publish it. |
 | `public_sysinfo` | `false` | Leaks process and system detail about a machine whose whole purpose is being a sealed box. No upside for a miner. |
 | `gateway_enabled` | `false` | The dstack gateway publishes your service. A miner is reached by validators over its axon, not through a gateway. dstack-cloud auto-disables it whenever `key_provider` is not `kms`, but set it explicitly rather than relying on that. |
-| `key_provider` | `tpm` | `kms` boot-loops against Phala's public KMS; `local` needs a VMM that a GCP confidential VM does not have; `none` works but seals nothing. `tpm` seals app keys to the vTPM under a PCR policy, so they survive a redeploy. |
+| `key_provider` | `tpm` | Confirmed on a GCP `c3-standard-4`: boots clean, no KMS contact, no restart loop. `kms` boot-loops against Phala's public KMS; `local` needs a VMM a confidential VM does not have; `none` works but seals nothing. `tpm` seals app keys into the vTPM under a PCR policy, so they survive a redeploy and are bound to your measured boot state. |
 
 **Every field above is part of your compose hash.** Change one and your hash
 changes, and the new one needs approving before your proofs verify again.

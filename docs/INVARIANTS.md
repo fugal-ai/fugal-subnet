@@ -501,6 +501,63 @@ input that is bound is safe; unbound input is not. Concretely, what may cross:
 That line — secrets and bound artifacts yes, consensus inputs never — is the
 thing to decide and then enforce, and it is narrower than "how do we do KMS".
 
+#### Resolved on hardware: the channel exists, and it is not confidential
+
+Measured on a GCP `c3-standard-4` dstack CVM, not read from documentation.
+
+**`key_provider` is `tpm`.** It boots clean — no KMS contact, no restart loop —
+and `tpm-attest` maps both `Platform::Dstack` and `Platform::Gcp` to the dstack
+PCR policy, sealing a 32-byte seed into the vTPM so app keys survive a redeploy
+and are bound to the measured boot state. `kms` boot-loops against the public
+KMS, `local` needs a `dstack-vmm` a confidential VM does not have. It is the
+only workable value and also the best one.
+
+**`key-provider` is its own RTMR3 event**, carrying `{"name":...,"id":...}`.
+So a validator can require a provider by reading the *authenticated log*,
+independently of the compose hash — meaning a provider change does not mint a
+new app identity to approve. Verified against both fixtures, which carry
+`"none"`. No rule is enforced yet; the field is asserted so that deciding to
+require it later is a small change rather than a discovery.
+
+**The compose bytes survive upload unchanged**, diffed local-vs-guest on a real
+boot: 807 bytes, identical, `sha256(local) == guest compose_hash`. Nothing
+re-serialises on the way in, so `compute_app_identity.py --compose` is
+trustworthy in a pull request. Worth moving to dstack's `app_compose_file` mode
+regardless, so the property holds by construction rather than by observation.
+
+**`.user-config` is the per-instance channel.** Operator-supplied JSON shipped
+on the shared disk, read only when `requirements.launch_token_hash` is set, and
+**not part of the compose hash** — exactly the unmeasured per-miner shape the
+head requires. The shared-disk file list is fixed (`app-compose.json`,
+`.sys-config.json`, `.instance_info`, plus `.encrypted-env` and `.user-config`),
+so nothing arbitrary rides along.
+
+**But the shared disk is plain FAT32 and is not encrypted.** It is built
+locally, uploaded to GCS and registered as a GCP disk, so anything in
+`.user-config` is readable by Google and by anyone with read access to the
+miner's project. Against the may-cross list above:
+
+| Payload | Verdict |
+|---|---|
+| **head artifact** | **Fits.** Not secret, changes every epoch, and already bound by the on-chain `weights_hash` committed before the nonce. This is the payload that made a channel unavoidable, and this is the channel for it. |
+| **wallet hotkey** | **No.** Plaintext to Google, and it signs the miner's on-chain identity. |
+| **API key** | **No.** Plaintext to Google, and it is the miner's money. |
+
+So the channel is free and solves the hard payload, and **the open question is
+now narrowed to secret delivery only** — a self-hosted KMS, or a post-boot fetch
+the miner authenticates. Those converge: a self-hosted KMS *is* an attested
+key-release endpoint.
+
+`/dstack/persistent` is **not** an ingress path, despite appearances: the guest
+LUKS-formats it with a key derived from the app keys, which under `tpm` come
+from the TPM-sealed seed. The operator holds no key and cannot pre-populate it.
+It is persistence *for* the TD — useful for the embedding cache across restarts,
+useless for delivery.
+
+**Unmeasured, and worth measuring before anyone designs on it:** `.user-config`
+sits in a shared disk with an 8 MB minimum, so a head of real size may not fit.
+The ceiling has not been established.
+
 **Five unidentified trailing bytes.** Real `TPMT_SIGNATURE` fields carry five
 bytes past the structure (`0000010000`). They are not identified and are not
 guessed at. Ignoring them is safe because `r` and `s` are read from fixed

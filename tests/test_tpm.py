@@ -372,3 +372,33 @@ def test_report_data_is_right_zero_padded_not_hashed():
     content_hash = "ab" * 32
     expected = bytes.fromhex(content_hash).ljust(64, b"\x00")[:64]
     assert expected.hex() == content_hash + "00" * 32
+
+
+@pytest.mark.parametrize("name", ["A", "B"])
+def test_the_key_provider_is_readable_from_the_replayed_log(name):
+    """Recorded because it makes a rule possible that the compose hash cannot.
+
+    `key-provider` is its own RTMR3 event, so a validator can require a
+    particular provider by reading the authenticated log — independently of the
+    compose hash, and without every provider change producing a new app
+    identity to approve. Both fixtures were deployed with "none"; on GCP the
+    only workable value is "tpm", since "kms" boot-loops against the public KMS
+    and "local" needs a VMM a confidential VM does not have.
+
+    No rule is enforced here. This asserts the field is available and stable, so
+    that a decision to require it later is a small change rather than a
+    discovery.
+    """
+    import json
+
+    from fugal_subnet.tee.attestation import replay_event_log
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    p = FIXTURES / f"attestation_{name}.bin"
+    if not p.exists():
+        pytest.skip(f"fixture {p.name} not present")
+    _, events = unwrap_attestation(p.read_bytes())
+    _, seen = replay_event_log(events, imr=3)
+
+    assert json.loads(seen["key-provider"])["name"] == "none"
+    assert seen["storage-fs"] == b"ext4"

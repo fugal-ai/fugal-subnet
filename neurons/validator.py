@@ -189,6 +189,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.exploration import expected_exploration as expected_exploration_map
     from fugal_subnet.head_eval import HeadScore
+    from fugal_subnet.pricing import policy_cost_total, question_input_tokens
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.reference_frame import (
         ReferenceFrame,
@@ -526,13 +527,31 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             epoch_scores: dict[int, HeadScore] = {}
             for uid, proof in verified_proofs.items():
                 scored = proof.scored_results
+                # Both sides of thrift from shared data, not from the miner.
+                #
+                # The denominator was already built this way — pinned rates plus
+                # the frame's measured verbosity — while the numerator was the
+                # miner's own account of what it spent, and even the
+                # denominator's prompt tokens came from the miner's report. One
+                # half unfakeable, the other a self-report, and a miner could
+                # lower its cost by shrinking numbers rather than by routing
+                # better. Prompt tokens now come from the POOL, and the miner's
+                # cost is computed from which models it chose.
+                pool_prompt_tokens = sum(
+                    question_input_tokens(slice_gold[r.question_id]["prompt"])
+                    for r in scored if r.question_id in slice_gold
+                )
                 ref_cost = reference_cost(
                     frame, prices, ref_model,
-                    prompt_tokens=sum(r.prompt_tokens for r in scored),
+                    prompt_tokens=pool_prompt_tokens,
                     n_questions=len(scored),
                     default_completion_tokens=FRAME_DEFAULT_COMPLETION_TOKENS,
                 )
-                score = _proof_to_head_score(proof, ref_cost)
+                head_cost = policy_cost_total(
+                    [(r.question_id, r.routed_model) for r in scored],
+                    slice_gold, prices, frame, FRAME_DEFAULT_COMPLETION_TOKENS,
+                )
+                score = _proof_to_head_score(proof, ref_cost, head_cost)
                 epoch_scores[uid] = score
                 logger.info(
                     "  UID %d: acc=%.3f cost=$%.4f ref=$%.4f (%d/%d correct)",
@@ -899,7 +918,7 @@ def confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights, tol=1e-3)
     return True, f"{len(got)} weights match within {tol}"
 
 
-def _proof_to_head_score(proof, ref_cost):
+def _proof_to_head_score(proof, ref_cost, head_cost):
     """Convert a verified BenchmarkProof into a HeadScore for scoring.
 
     `ref_cost` is what the reference model would have cost on this same
@@ -922,7 +941,11 @@ def _proof_to_head_score(proof, ref_cost):
         coverage=1.0,
         n_correct=proof.n_correct,
         n_scored=proof.n_total,
-        total_head_cost=proof.scored_cost_usd,
+        # The POLICY's cost, computed by this validator from the pool, the
+        # pinned rates and the frame. proof.scored_cost_usd is what the miner
+        # says it spent; it is still checked for internal consistency because a
+        # miner lying about it is worth knowing, but it decides no score.
+        total_head_cost=head_cost,
         total_oracle_cost=ref_cost,
         total_kl=0.0,
     )

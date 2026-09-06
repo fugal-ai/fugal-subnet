@@ -568,6 +568,49 @@ same mechanism that lets a miner substitute it in production. Building the
 exploit as a convenience and never naming it as one is how a hole this size
 stays invisible.
 
+### I3 — the scored cost is the policy's, not the miner's
+
+`thrift = reference_cost / miner_cost`. The denominator was already computed
+from shared data — pinned rates plus the reference frame's measured per-model
+verbosity — and the numerator was whatever the miner reported it had spent. Even
+the denominator's prompt tokens came from the miner's attested counts. One side
+of the ratio was unfakeable and the other was a self-report, so a miner could
+raise its score by shrinking numbers rather than by routing better. On unmeasured
+code with a miner-settable upstream, those numbers are entirely theirs.
+
+Both sides are now computed by the validator:
+
+    cost(question, model) = tokens_in(question) x rate_in(model)
+                          + typical_completion(model) x rate_out(model)
+
+Every input is already consensus state: the question pool, the pinned price
+table, and the frame's pooled, decayed per-model observations.
+
+**What is being priced is a policy, not a benchmark run.** The product's
+beneficiary is a future user of the head, who cares what the policy costs
+*them* — not what one miner happened to spend on one run in one hour. So the
+scored cost depends only on which model was chosen for each question, which is
+the thing being measured, and on nothing a miner can vary.
+
+An estimate, not an invoice, and not trying to be one: the pinned table already
+diverges from real billing by design so that two miners benchmarking hours apart
+face the same denominator. Input tokens use a fixed characters-per-token
+convention rather than a real tokenisation, because every model tokenises
+differently, a validator should not gain a tokeniser dependency to price a
+proof, and the figure is a relative signal where consistency beats precision.
+
+The miner's reported costs stay in the proof and are still checked for internal
+consistency — a miner lying about them is worth knowing — but they decide no
+score. That check is now defence in depth rather than load-bearing.
+
+**Price table accuracy still matters, for a different reason.** It no longer
+guards against cheating; it defines what "cheap" means, so an error steers which
+models the subnet learns to prefer. An under-priced model looks cheaper than it
+is and gets over-routed. That is why rates are corrected on their own merits —
+see the glm-5.2 correction — and why the five models whose real billing cannot
+be modelled by any per-token pair are a product question rather than a scoring
+one.
+
 **Price table staleness.** `data/models.json` is hash-pinned, so scoring is
 deterministic, but it does not track provider price changes on its own. The
 metering proxy records the provider's reported cost alongside the table price

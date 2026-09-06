@@ -154,6 +154,31 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             "TDX image (see docs/TDX_VALIDATION.md)."
         )
 
+    # Say which entries are active, at startup, in the log. During a rotation
+    # two validators are meant to carry the same two entries, and until this
+    # line the only evidence of what a validator had loaded was its env file —
+    # a divergence between validators was diagnosable only by logging in to
+    # each host. Parsed here too, before any chain connection, so a malformed
+    # entry (a bare trailing colon would silently accept any application)
+    # fails at startup rather than at the first proof.
+    if TEE_APPROVED_MEASUREMENTS:
+        from fugal_subnet.tee.verify import parse_approved
+        try:
+            parsed_entries = parse_approved(TEE_APPROVED_MEASUREMENTS)
+        except ValueError as e:
+            raise click.ClickException(f"FUGAL_TEE_MEASUREMENTS: {e}") from e
+        described = [
+            f"{base[:12]}…:{app[:12]}…" if app else f"{base[:12]}… (bare base: any app)"
+            for base, apps in sorted(parsed_entries.items())
+            for app in (sorted(apps) or [""])
+        ]
+        logger.info("Approved entries: %d — %s", len(described), "; ".join(described))
+        if live and any(not apps for apps in parsed_entries.values()):
+            logger.warning(
+                "A bare base entry is active: any application on that image is "
+                "approved. Production entries should be <base>:<compose_hash>."
+            )
+
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
     assert_environment(strict=live)
     logger.info("Consensus environment digest: %s", consensus_digest())

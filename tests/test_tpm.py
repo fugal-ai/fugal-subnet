@@ -241,3 +241,45 @@ def test_bytes_that_are_neither_shape_are_refused():
 
     with pytest.raises(ValueError, match="neither a TDX quote nor a dstack blob"):
         unwrap_attestation(b"\x00\x01" + b"\xff" * 64)
+
+
+@pytest.mark.parametrize("name", ["A", "B"])
+def test_the_envelopes_event_log_reproduces_its_own_rtmr3(name):
+    """The end-to-end property the approved list depends on: the log is untrusted
+    until it replays to the register the CPU signed, and only then may a single
+    field of it (the compose hash) be compared against anything."""
+    from fugal_subnet.tee.attestation import parse_quote, replay_event_log
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    p = FIXTURES / f"attestation_{name}.bin"
+    if not p.exists():
+        pytest.skip(f"fixture {p.name} not present")
+    quote, events = unwrap_attestation(p.read_bytes())
+    replayed, seen = replay_event_log(events, imr=3)
+    assert replayed == parse_quote(quote).rtmr3
+    assert len(seen["compose-hash"]) == 32
+    assert seen["instance-id"]
+
+
+def test_the_two_boxes_differ_where_they_should_and_agree_where_they_must():
+    """Recorded as a fact about the fixtures, because it is easy to misread.
+
+    Different instance-id and different RTMR3 are EXPECTED — instance-id is
+    extended on every deploy, which is why an approved entry can never hold an
+    RTMR3 value. The compose hashes also differ, which means these are two
+    different applications rather than one application deployed twice; anyone
+    building an approved entry from these fixtures needs to know which.
+    """
+    from fugal_subnet.tee.attestation import replay_event_log
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    seen = {}
+    for name in ("A", "B"):
+        p = FIXTURES / f"attestation_{name}.bin"
+        if not p.exists():
+            pytest.skip(f"fixture {p.name} not present")
+        _, events = unwrap_attestation(p.read_bytes())
+        seen[name] = replay_event_log(events, imr=3)[1]
+
+    assert seen["A"]["instance-id"] != seen["B"]["instance-id"]
+    assert seen["A"]["compose-hash"] != seen["B"]["compose-hash"]

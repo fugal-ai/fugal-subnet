@@ -222,6 +222,31 @@ TEE_PROOF_TIMEOUT = int(os.getenv("FUGAL_TEE_PROOF_TIMEOUT", "600"))
 TEE_PROXY_PORT = int(os.getenv("FUGAL_TEE_PROXY_PORT", "8199"))
 TEE_MODEL_PRICES_PATH = os.getenv("FUGAL_MODEL_PRICES", "")
 
+# Where DCAP collateral is fetched from. Pinned HERE, deliberately, rather than
+# left to whatever `dcap-qvl` defaults to.
+#
+# `get_collateral_and_verify(quote)` with no url resolves to
+# `PHALA_PCCS_URL = "https://pccs.phala.network"` inside the library. That is
+# how every --live validator came to depend on Phala without anyone choosing
+# it, and how INVARIANTS came to claim the collateral came from Intel: the
+# dependency was invisible because nothing in this repo named it.
+#
+# The value below is the same endpoint, so behaviour is unchanged. What changes
+# is who decides: a `dcap-qvl` bump can no longer move every validator's
+# collateral source, because the url is now an argument this project supplies
+# rather than a default it inherits. `check_safety_invariants` enforces that
+# `verify_dcap` never calls the library without it.
+#
+# This is NOT a trust root. Collateral is TCB info, QE identity and CRLs, all
+# Intel-signed and checked against a root CA compiled into `dcap-qvl` — a
+# mirror can withhold or serve stale, never forge. So the endpoint is an
+# availability, privacy and latency choice, and the measured cost of that
+# choice is ~690 ms per proof from GCP us-central1 (docs/INVARIANTS.md).
+#
+# Operators wanting neither the third party nor the round trip should point
+# this at a local caching PCCS, which re-serves the same Intel-signed bytes.
+TEE_PCCS_URL = os.getenv("FUGAL_PCCS_URL", "https://pccs.phala.network").strip()
+
 # --- Routing ---
 # The routing rule is argmax(softmax(W@h + b)) — no cost term, no exchange rate.
 #

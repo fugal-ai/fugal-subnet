@@ -239,6 +239,40 @@ def check_tpm_trust_anchor(errors: list[str]) -> None:
         )
 
 
+def check_collateral_endpoint_explicit(errors: list[str]) -> None:
+    """Every DCAP collateral fetch must name its endpoint.
+
+    `get_collateral_and_verify(quote)` with no url resolves, inside dcap-qvl,
+    to Phala's PCCS. That is how every --live validator acquired a third-party
+    availability and privacy dependency nobody chose, and how INVARIANTS came
+    to record the collateral as coming from Intel: nothing in this repo named
+    the endpoint, so nothing contradicted the assumption.
+
+    Restoring the one-argument call would restore that silence, and it would
+    look like a simplification in review. So it is checked rather than trusted:
+    the endpoint is this project's decision and must appear in this project.
+    """
+    src = (ROOT / "fugal_subnet" / "tee" / "attestation.py").read_text(encoding="utf-8")
+
+    for call in re.findall(r"get_collateral_and_verify\(([^)]*)\)", src):
+        args = [a.strip() for a in call.split(",") if a.strip()]
+        if len(args) < 2:
+            errors.append(
+                "fugal_subnet/tee/attestation.py calls get_collateral_and_verify "
+                f"with {len(args)} argument(s) ({call.strip()!r}) — the PCCS url "
+                "must be passed explicitly, or dcap-qvl silently substitutes its "
+                "own default and the collateral source becomes invisible again"
+            )
+
+    cfg = (ROOT / "fugal_subnet" / "config.py").read_text(encoding="utf-8")
+    if "TEE_PCCS_URL" not in cfg:
+        errors.append(
+            "config.TEE_PCCS_URL is missing — the collateral endpoint is a "
+            "consensus-path dependency and must be pinned by this project "
+            "rather than inherited from dcap-qvl's default"
+        )
+
+
 def check_price_table_pinned(errors: list[str]) -> None:
     """The consensus price table must match its pin, and be well-formed."""
     path = ROOT / "data" / "models.json"
@@ -401,6 +435,7 @@ def main() -> None:
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
     check_price_table_pinned(errors)
+    check_collateral_endpoint_explicit(errors)
     check_tpm_trust_anchor(errors)
     check_tpm_dependency_pin(errors)
     check_epoch_id_single_source(errors)

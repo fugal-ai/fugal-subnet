@@ -373,11 +373,32 @@ def extend_rtmr3(identity_hex: str) -> bool:
     return True
 
 
-def verify_dcap(quote_bytes: bytes) -> bool:
+_pccs_logged: set[str] = set()
+
+
+def _log_pccs_endpoint(url: str) -> None:
+    """Say where collateral comes from, once per endpoint per process.
+
+    A per-proof log line would be 256 lines an epoch; silence is how the
+    dependency stayed invisible in the first place. Once is the compromise.
+    """
+    if url not in _pccs_logged:
+        _pccs_logged.add(url)
+        logger.info("DCAP collateral endpoint: %s", url)
+
+
+def verify_dcap(quote_bytes: bytes, pccs_url: str | None = None) -> bool:
     """Verify TDX quote via Intel DCAP collateral.
 
     Requires the dcap_qvl package. Returns True if the quote signature
     and collateral chain are valid. In mock mode, this is skipped.
+
+    `pccs_url` defaults to `config.TEE_PCCS_URL` and is ALWAYS passed to the
+    library explicitly. Omitting it makes `dcap-qvl` fall back to its own
+    default, which is how every --live validator came to fetch collateral from
+    Phala without anyone choosing it. The endpoint is this project's decision,
+    so this project names it; see the config entry for why that is a choice
+    about availability and privacy rather than about trust.
 
     Raises:
         ImportError: If dcap_qvl is not installed (configuration error).
@@ -390,6 +411,20 @@ def verify_dcap(quote_bytes: bytes) -> bool:
             "Install with: pip install dcap-qvl"
         )
 
+    from fugal_subnet.config import TEE_PCCS_URL
+
+    url = (pccs_url or TEE_PCCS_URL or "").strip()
+    if not url:
+        # An empty url is not a harmless omission: the library would silently
+        # substitute its own default, which is the exact invisibility this
+        # exists to remove. Refuse rather than fetch from somewhere nobody named.
+        raise ValueError(
+            "No PCCS URL configured. Set FUGAL_PCCS_URL (or config.TEE_PCCS_URL) "
+            "to the endpoint this validator should fetch DCAP collateral from. "
+            "Leaving it empty would let dcap-qvl choose one silently."
+        )
+    _log_pccs_endpoint(url)
+
     import asyncio
 
     try:
@@ -398,11 +433,11 @@ def verify_dcap(quote_bytes: bytes) -> bool:
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 result = pool.submit(
-                    asyncio.run, get_collateral_and_verify(quote_bytes)
+                    asyncio.run, get_collateral_and_verify(quote_bytes, url)
                 ).result(timeout=30)
         else:
             result = loop.run_until_complete(
-                get_collateral_and_verify(quote_bytes)
+                get_collateral_and_verify(quote_bytes, url)
             )
         # Record the verdict rather than only the fact one was reached.
         #

@@ -462,6 +462,15 @@ def _assert_port_free(port: int) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
+            # 0.0.0.0 is REQUIRED here and narrowing it to 127.0.0.1 would
+            # silently break this check. The axon binds 0.0.0.0 — it must, or no
+            # validator can reach it — so the only question worth asking is
+            # whether THAT bind will succeed. A process holding a single
+            # external interface (192.168.1.5:8091, say) does not conflict with
+            # a loopback bind, so a loopback probe would report the port free
+            # and the axon would then fail to bind the port it actually needs.
+            # This socket never listens or accepts; it binds and closes, so it
+            # exposes nothing. CodeQL flags the literal, not the behaviour.
             probe.bind(("0.0.0.0", port))
         except OSError as e:
             raise click.ClickException(

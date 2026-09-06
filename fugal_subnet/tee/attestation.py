@@ -404,7 +404,38 @@ def verify_dcap(quote_bytes: bytes) -> bool:
             result = loop.run_until_complete(
                 get_collateral_and_verify(quote_bytes)
             )
-        logger.info("DCAP verification passed: %s", result)
+        # Record the verdict rather than only the fact one was reached.
+        #
+        # `verify` returns a report, and `report.status` is the TCB state of
+        # the platform that produced the quote: "OK", but also "OUT_OF_DATE",
+        # "CONFIGURATION_NEEDED", "SW_HARDENING_NEEDED". This function accepts
+        # all of them -- it returns True for anything that does not raise --
+        # so today "the quote is genuine" is all a passing DCAP check means,
+        # NOT "the platform is patched".
+        #
+        # Whether to enforce a status is a policy decision with real cost:
+        # on GCP and Azure the firmware is the cloud provider's to patch, so
+        # rejecting OUT_OF_DATE removes honest miners for their host's
+        # maintenance schedule, and does it to every miner on a platform
+        # generation at once when Intel publishes. That decision needs the
+        # actual distribution of statuses across a real field, which nobody
+        # has, because this function has been discarding it.
+        #
+        # So: log it, change nothing. A status is a consensus input the moment
+        # it is enforced -- two validators with different thresholds disagree
+        # about identical bytes -- and it is not enforced here.
+        status = getattr(result, "status", None)
+        advisories = list(getattr(result, "advisory_ids", None) or [])
+        if status is not None and str(status).upper() not in ("OK", "UPTODATE"):
+            logger.warning(
+                "DCAP verification passed but the platform TCB status is %s%s. "
+                "The quote is genuine; the hardware is not necessarily patched. "
+                "Not enforced -- see docs/INVARIANTS.md.",
+                status,
+                f" (advisories: {', '.join(advisories)})" if advisories else "",
+            )
+        else:
+            logger.info("DCAP verification passed: status=%s", status)
         return True
     except Exception:
         logger.exception("DCAP verification failed")

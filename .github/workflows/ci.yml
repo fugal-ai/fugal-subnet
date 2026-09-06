@@ -108,6 +108,50 @@ jobs:
       - name: Build wheel and source distribution
         run: uv build
 
+  tee-verifier:
+    name: Attack suites with the DCAP verifier installed
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The main `test` job installs --extra dev, so dcap-qvl is ABSENT there and
+    # verify_dcap raises ImportError instead of running. That is a different code
+    # path, and two tests once "passed" in CI purely because the library was
+    # missing — one of them an attack test that therefore never attempted its
+    # attack. Running the suites in both environments is what makes a green tick
+    # mean the code was exercised rather than skipped.
+    env:
+      PYTHONUTF8: "1"
+      FUGAL_SKIP_BENCHMARKS: mmlu,math,gsm8k,humaneval,livecode,gpqa,ifeval,aime
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install with the TEE verifier
+        run: uv sync --locked --extra dev --extra tee
+
+      - name: Confirm the verifier is actually present
+        # Without this the job silently degrades into a duplicate of `test`.
+        run: uv run python -c "import dcap_qvl; print('dcap-qvl present')"
+
+      - name: Unit and regression tests
+        run: uv run pytest -q
+
+      - name: Adversarial TEE suite against the real DCAP path
+        run: uv run python -m fugal_subnet.attacks.run_tee_attacks
+
+      - name: Adversarial miner suite
+        run: uv run python -m fugal_subnet.attacks.run_miner_attacks
+
   container:
     name: Docker build smoke test
     runs-on: ubuntu-latest

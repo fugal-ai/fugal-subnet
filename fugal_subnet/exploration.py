@@ -87,7 +87,37 @@ def expected_exploration(
     Both sides compute this independently from public inputs, so the validator
     never has to trust the miner's account of what it was asked to do.
     """
+    chosen = select_explore_set(nonce, pool, scored_ids, size)
+    if not models:
+        raise ValueError("expected_exploration requires a non-empty model list")
+
+    # STRATIFIED OVER MODELS, not independently sampled per question.
+    #
+    # Drawing each target independently used to waste a third of the budget on
+    # collisions: measured over 200 epochs, 15 slots against 17 models reached
+    # only 10.2 DISTINCT models, so 4.8 slots per epoch re-measured a model
+    # already sampled that epoch. Exploration is the only unbiased sampling this
+    # subnet has and the only thing that covers models nobody routes to, so a
+    # third of it landing on duplicates is a third of the data flywheel idling.
+    #
+    # Assigning slots round-robin over a nonce-permuted model list makes every
+    # slot a distinct model while `size <= len(models)`, and keeps coverage even
+    # beyond that. The permutation is keyed on the nonce, so which models get
+    # sampled still rotates unpredictably between epochs and a miner still
+    # cannot steer or foresee its own targets — the property that matters is
+    # unforgeability, and ranking by HMAC preserves it exactly as select_slice
+    # does for questions.
+    ranked = sorted(
+        models,
+        key=lambda m: hmac.new(
+            nonce, f"model-order:{m}".encode("utf-8"), hashlib.sha256,
+        ).digest(),
+    )
+    # Question order must be deterministic too, or two validators assign the
+    # same models to different questions and every proof fails on the
+    # exploration check.
+    ordered = sorted(chosen, key=lambda q: q["question_id"])
     return {
-        q["question_id"]: explore_target(nonce, q["question_id"], models)
-        for q in select_explore_set(nonce, pool, scored_ids, size)
+        q["question_id"]: ranked[i % len(ranked)]
+        for i, q in enumerate(ordered)
     }

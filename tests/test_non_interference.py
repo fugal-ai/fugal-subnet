@@ -277,3 +277,102 @@ def test_exploration_targets_are_not_miner_chosen():
 
     # Targets spread across the pool rather than collapsing onto one model.
     assert len(set(a.values())) > 1
+
+
+def test_implausible_exploration_flags_a_gold_returning_miner():
+    """The upstream-substitution attack must at least become visible.
+
+    A miner that serves itself the gold answers reports ~100% on models the
+    reference frame has measured far lower — on every model, every epoch. This
+    does not prevent the attack and is not allowed to affect a score; it makes
+    it attributable.
+    """
+    from fugal_subnet.reference_frame import ReferenceFrame, implausible_exploration
+
+    frame = ReferenceFrame()
+    for model, acc in (("cheap", 0.5), ("mid", 0.6)):
+        frame.trials[model] = 200.0
+        frame.successes[model] = 200.0 * acc
+
+    honest = [("cheap", i % 2 == 0) for i in range(10)]        # ~50%, as expected
+    cheating = [("cheap", True) for _ in range(10)]            # 100%, impossible
+
+    flagged = implausible_exploration(frame, {1: honest, 2: cheating})
+    assert 2 in flagged, "a miner returning gold for everything was not flagged"
+    assert 1 not in flagged, "an honest miner was flagged"
+    assert "exploration accuracy" in flagged[2]
+
+
+def test_implausible_exploration_needs_evidence_before_it_accuses():
+    """A short lucky run must not be an accusation, and an unmeasured model
+    gives no basis to judge one."""
+    from fugal_subnet.reference_frame import ReferenceFrame, implausible_exploration
+
+    frame = ReferenceFrame()
+    frame.trials["cheap"] = 200.0
+    frame.successes["cheap"] = 100.0
+
+    lucky_but_short = [("cheap", True) for _ in range(3)]
+    assert not implausible_exploration(frame, {1: lucky_but_short})
+
+    unmeasured = [("never-seen", True) for _ in range(20)]
+    assert not implausible_exploration(frame, {1: unmeasured})
+
+    assert not implausible_exploration(None, {1: [("cheap", True)] * 20})
+
+
+def test_exploration_is_stratified_over_models():
+    """Every exploration slot must buy a distinct model while one is available.
+
+    Independent per-question sampling wasted a third of the budget on
+    collisions: 15 slots against 17 models reached 10.2 distinct models. This is
+    the only unbiased sampling the subnet has, so a third of it idling is a
+    third of the data flywheel idling.
+    """
+    import hashlib
+
+    from fugal_subnet.exploration import expected_exploration
+
+    pool = [{"question_id": f"q{i}", "benchmark": "b"} for i in range(400)]
+    models = [f"m{i}" for i in range(17)]
+    for epoch in range(20):
+        nonce = hashlib.sha256(f"e{epoch}".encode()).digest()
+        assigned = expected_exploration(nonce, pool, set(), models, 15)
+        assert len(set(assigned.values())) == 15, "a slot was spent on a duplicate"
+
+
+def test_exploration_targets_still_rotate_and_cannot_be_foreseen():
+    """Stratifying must not make the assignment predictable. A miner that knew
+    next epoch's targets could pre-compute them, which is the property the nonce
+    exists to prevent."""
+    import hashlib
+
+    from fugal_subnet.exploration import expected_exploration
+
+    pool = [{"question_id": f"q{i}", "benchmark": "b"} for i in range(400)]
+    models = [f"m{i}" for i in range(17)]
+    a = expected_exploration(hashlib.sha256(b"e1").digest(), pool, set(), models, 8)
+    b = expected_exploration(hashlib.sha256(b"e2").digest(), pool, set(), models, 8)
+    assert a != b, "the assignment did not change with the nonce"
+
+    # Deterministic for a given nonce, or two validators disagree.
+    again = expected_exploration(hashlib.sha256(b"e1").digest(), pool, set(), models, 8)
+    assert a == again
+
+
+def test_exploration_coverage_stays_even_over_many_epochs():
+    """Round-robin over a permuted list must not systematically favour a model."""
+    import hashlib
+    from collections import Counter
+
+    from fugal_subnet.exploration import expected_exploration
+
+    pool = [{"question_id": f"q{i}", "benchmark": "b"} for i in range(400)]
+    models = [f"m{i}" for i in range(17)]
+    seen = Counter()
+    for epoch in range(200):
+        nonce = hashlib.sha256(f"e{epoch}".encode()).digest()
+        seen.update(expected_exploration(nonce, pool, set(), models, 15).values())
+    counts = sorted(seen.values())
+    assert len(seen) == len(models), "a model was never sampled"
+    assert counts[-1] - counts[0] < counts[0] * 0.5, f"coverage is lopsided: {counts}"

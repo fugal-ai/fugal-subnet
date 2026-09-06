@@ -104,11 +104,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # the same loader the validator calls; --benchmark-pool is an explicit
     # local override, and FUGAL_BENCHMARK_POOL overrides for both sides at once.
     from fugal_subnet.benchmarks.loader import load_all, pool_hash
+    # ONE code path, always. --benchmark-pool used to json.load the file here,
+    # which meant the flag bypassed everything load_all() does — and when the
+    # loader learned to drop questions the harness cannot grade, the validator
+    # served 125 questions while the miner served 150 and every proof failed on
+    # a questions_hash that named neither side. Routing the flag through the
+    # same env var the validator honours makes a second path impossible rather
+    # than merely discouraged. tests/test_pool_single_source.py enforces it.
     if benchmark_pool:
-        with open(benchmark_pool) as f:
-            pool = json.load(f)
-    else:
-        pool = load_all()
+        os.environ["FUGAL_BENCHMARK_POOL"] = os.path.abspath(benchmark_pool)
+    pool = load_all()
     if not pool:
         raise click.ClickException("Benchmark pool is empty — nothing to benchmark")
     logger.info("Benchmark pool: %d questions, pool_hash=%s",
@@ -152,6 +157,35 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     committed = False
 
     tee_runtime = TEERuntime(mock=mock)
+
+    # Bind what this runtime IS into RTMR3, once, before any proof exists.
+    # Advisory today: on an unmeasured filesystem an attacker extends the value
+    # we expect. It is written anyway so that locking the image turns this into
+    # evidence rather than requiring a new mechanism. Says so out loud either
+    # way — a binding nobody can see is worse than none. See INVARIANTS.md I8.
+    if not mock:
+        from fugal_subnet.benchmarks.loader import pool_hash as _pool_hash
+        from fugal_subnet.graders import grader_hash
+        from fugal_subnet.tee.attestation import extend_rtmr3, runtime_identity
+        from fugal_subnet.tee.runtime import _OPENROUTER_BASE
+        identity = runtime_identity(
+            source_hash=_get_source_hash(),
+            pool_hash=_pool_hash(pool),
+            grader_hash=grader_hash(),
+            upstream=_OPENROUTER_BASE,
+        )
+        logger.info("Model upstream: %s", _OPENROUTER_BASE)
+        if extend_rtmr3(identity):
+            logger.info(
+                "Runtime identity %s extended into RTMR3 (ADVISORY: not "
+                "enforced until the image is locked)", identity[:16],
+            )
+        else:
+            logger.warning(
+                "Runtime identity %s could NOT be extended into RTMR3. Nothing "
+                "in this TD's measurement registers binds the code that will "
+                "produce its proofs.", identity[:16],
+            )
     current_proof = {
         "proof": None, "proof_json": "", "epoch_id": "", "lock": threading.Lock(),
     }
@@ -230,6 +264,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
             "and no validator will ever reach this miner. Set it to an address "
             "validators can actually connect to.", external_ip,
         )
+    # Fail before serving if something else already holds the port. bt.Axon
+    # runs its server in a thread and a bind failure there does not surface:
+    # the miner goes on to register the address on chain and log success while
+    # every validator query is answered by whatever process actually owns the
+    # port. Observed exactly that — a stray HTTP server returned 501 to every
+    # dendrite and the miner reported itself healthy throughout.
+    _assert_port_free(port)
     axon = bt.Axon(wallet=wallet, port=port,
                     external_ip=external_ip or None)
     axon.attach(forward_fn=forward, blacklist_fn=blacklist)
@@ -260,8 +301,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     axon.start()
     logger.info("Miner axon serving on port %d (mock=%s)", port, mock)
+    _warn_if_unreachable(metagraph.axons[my_uid].ip, port)
 
-    # Now that the axon is reachable, commit the head hash. Retried in the loop
+    # Now that the axon is serving, commit the head hash. Retried in the loop
     # below if the chain rate-limits this one.
     committed = ensure_commitment(subtensor, wallet, netuid, weights_hash)
     if not committed:
@@ -301,6 +343,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
                 last_epoch_index = epoch_index
                 _run_epoch(
+                    blocks_per_epoch=blocks_per_epoch,
                     head_data=head_data,
                     weights_hash=weights_hash,
                     pool=pool,
@@ -338,6 +381,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
 
 def _run_epoch(
+    blocks_per_epoch,
     head_data,
     weights_hash,
     pool,
@@ -360,7 +404,20 @@ def _run_epoch(
     nonce_bytes = derive_nonce(epoch_id, block_hash)
     nonce = nonce_bytes.hex()
 
-    logger.info("Starting epoch %s (nonce=%s...)", epoch_id, nonce[:16])
+    # State the deadline. Validators collect at a fixed block derived from the
+    # epoch, so "my miner earns nothing" is usually "my benchmark did not
+    # finish in time" — which is invisible unless the miner says what the time
+    # was. A miner that consistently overruns this should cut its slice cost,
+    # not wonder why its proofs are ignored.
+    from fugal_subnet.benchmarks.slicer import collect_block_for_epoch
+    from fugal_subnet.config import EPOCH_COLLECT_FRACTION
+    collect_block = collect_block_for_epoch(
+        epoch_index, blocks_per_epoch, EPOCH_COLLECT_FRACTION,
+    )
+    logger.info(
+        "Starting epoch %s (nonce=%s...); proof must be ready by block %d",
+        epoch_id, nonce[:16], collect_block,
+    )
 
     proxy = tee_runtime.setup(proxy_port=proxy_port)
     try:
@@ -398,28 +455,181 @@ def _run_epoch(
         proxy.stop()
 
 
+def _assert_port_free(port: int) -> None:
+    """Refuse to start if another process is listening on the axon port."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            # 0.0.0.0 is REQUIRED here and narrowing it to 127.0.0.1 would
+            # silently break this check. The axon binds 0.0.0.0 — it must, or no
+            # validator can reach it — so the only question worth asking is
+            # whether THAT bind will succeed. A process holding a single
+            # external interface (192.168.1.5:8091, say) does not conflict with
+            # a loopback bind, so a loopback probe would report the port free
+            # and the axon would then fail to bind the port it actually needs.
+            # This socket never listens or accepts; it binds and closes, so it
+            # exposes nothing. CodeQL flags the literal, not the behaviour.
+            probe.bind(("0.0.0.0", port))
+        except OSError as e:
+            raise click.ClickException(
+                f"Port {port} is already in use ({e}). Another process would "
+                f"answer every validator query while this miner reported "
+                f"itself healthy. Free the port, or pass a different --port."
+            ) from e
+
+
+def _warn_if_unreachable(published_ip: str, port: int) -> None:
+    """Try to connect to the address this miner just told the chain to use.
+
+    Serving an axon and being reachable are different things, and only the
+    first one is reported anywhere. A miner on a cloud VM whose provider
+    firewall does not allow the port publishes a perfectly valid address,
+    logs "Axon registered on chain", and is never once contacted — it earns
+    nothing for as long as it runs, with no error on either side. That is not
+    hypothetical: netuid 552's miner advertised a public address for months
+    behind a closed security-list rule.
+
+    This is a warning and never fatal. Many hosts do not route their own public
+    address back to themselves (no NAT hairpinning), so a failure here does not
+    prove the miner is unreachable — but a success does prove it is reachable,
+    and a failure is worth a line the operator can act on.
+    """
+    import socket
+    import time as _time
+
+    if not published_ip or published_ip in ("0.0.0.0", ""):
+        return
+    # axon.start() returns before its server thread is listening, so a single
+    # immediate probe reports "connection refused" on a perfectly healthy
+    # miner. Retry briefly: a false alarm here trains an operator to ignore
+    # the one warning that means their miner earns nothing.
+    deadline = _time.monotonic() + 20
+    e: OSError | None = None
+    while _time.monotonic() < deadline:
+        try:
+            with socket.create_connection((published_ip, port), timeout=5):
+                # Something accepted. That is all a TCP connect can tell us —
+                # it does not prove the responder is this axon, which is why
+                # the port is claimed before serving rather than inferred after.
+                logger.info("Axon accepts connections at %s:%d", published_ip, port)
+                return
+        except OSError as err:
+            e = err
+            _time.sleep(1)
+    if e is not None:
+        logger.warning(
+            "Could not connect to this miner's own published address %s:%d (%s). "
+            "If this host does not route its public IP back to itself this is "
+            "harmless, but if the port is genuinely closed no validator will "
+            "ever reach this miner and it will earn nothing while appearing "
+            "healthy. Verify from another machine: nc -vz %s %d",
+            published_ip, port, e, published_ip, port,
+        )
+
+
+def _embedding_cache_path(pool) -> str:
+    """Where this pool's embeddings live on disk.
+
+    Keyed by everything the result depends on. Two of these are consensus
+    inputs and one is not: the pool and the batch size are pinned and shared,
+    while the backbone build is local — and x86_64 and aarch64 genuinely
+    disagree in the last bits of float32, so an architecture-blind key would
+    hand a miner another machine's numbers. Keying on the machine makes the
+    cache a pure memo of what this host would have computed anyway.
+    """
+    import platform
+
+    from fugal_subnet.benchmarks.loader import pool_hash
+    from fugal_subnet.config import BACKBONE_BATCH_SIZE, BACKBONE_MODEL
+
+    key = hashlib.sha256("|".join([
+        pool_hash(pool),
+        BACKBONE_MODEL,
+        str(BACKBONE_BATCH_SIZE),
+        platform.machine(),
+    ]).encode("utf-8")).hexdigest()[:32]
+    root = os.getenv("FUGAL_EMBEDDING_CACHE", os.path.join("data", "embeddings"))
+    return os.path.join(root, f"hidden-{key}.npy")
+
+
 def _compute_hidden_states(pool):
-    """Compute backbone hidden states for the benchmark pool, once.
+    """Backbone hidden states for the benchmark pool, computed once and cached.
 
     Called at startup, never per epoch. Embeddings are a pure function of the
     pool, the frozen backbone and the pinned batch size — none of which change
     between epochs — so recomputing them every epoch burned minutes of CPU on a
     21K-question pool for an identical result.
 
+    They do not change between *restarts* either, which is why the result is
+    cached to disk. Measured on the real 21,717-question pool: 2h28m on an
+    x86_64 laptop and 7h20m on a 4-core aarch64 VM. Paying that on every
+    restart is not a startup cost, it is an availability failure — the miner is
+    unreachable for hours and earns nothing, and any crash-loop is permanent.
+
+    The cache is keyed by pool_hash so a pool change invalidates it, and it is
+    loaded with allow_pickle=False so a hostile file cannot execute anything.
+    A corrupt or unreadable file is recomputed.
+
+    WHAT IT DOES NOT DEFEND AGAINST, stated plainly. These embeddings are
+    computed here and passed into run_benchmark, which means they are an input
+    to the attested harness rather than a product of it. Anyone who can write
+    this file chooses the routing the head appears to produce — they could make
+    a head look like it routes well when it does not, which matters because the
+    head is the artifact other people are meant to reuse.
+
+    That is acceptable only because of where this is supposed to run. Under
+    --live the whole miner executes inside the TD, so the file lives in the
+    TD's own storage and is covered by the same protection as the code the
+    measurement attests. Running a --live miner with this cache on storage
+    outside the TD removes a binding the attestation is assumed to provide.
+    Point FUGAL_EMBEDDING_CACHE inside the enclave, or accept recomputing.
+
     The backbone is released afterwards: it is ~2.4GB resident and is not
     needed again once the embeddings exist.
     """
+    import numpy as np
+
     from fugal_subnet.backbone import compute_hidden_states, release_backbone
     from fugal_subnet.config import BACKBONE_BATCH_SIZE
+
+    cache_path = _embedding_cache_path(pool)
+    if os.path.exists(cache_path):
+        try:
+            cached = np.load(cache_path, allow_pickle=False)
+            if cached.shape[0] == len(pool):
+                logger.info("Embeddings loaded from cache: %s", cache_path)
+                return cached
+            logger.warning("Cached embeddings have %d rows for a %d-question "
+                           "pool — recomputing", cached.shape[0], len(pool))
+        except Exception as e:  # noqa: BLE001 - a bad cache must never be fatal
+            logger.warning("Could not read embedding cache %s (%s) — recomputing",
+                           cache_path, e)
 
     questions = [q["prompt"] for q in pool]
     # batch_size is pinned in config, not left to the call site: padding is
     # batch-composition dependent, so two hosts using different batch sizes are
     # a latent cross-validator divergence.
     try:
-        return compute_hidden_states(questions, batch_size=BACKBONE_BATCH_SIZE)
+        hidden = compute_hidden_states(questions, batch_size=BACKBONE_BATCH_SIZE)
     finally:
         release_backbone()
+
+    try:
+        os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+        # Write-then-rename: a miner killed mid-write must not leave a
+        # truncated cache that the next start reads as complete.
+        # np.save appends ".npy" unless the name already ends in it, so the
+        # temp name carries the suffix or the rename below looks for a file
+        # that was never written.
+        tmp = f"{cache_path}.{os.getpid()}.tmp.npy"
+        np.save(tmp, hidden, allow_pickle=False)
+        os.replace(tmp, cache_path)
+        logger.info("Embeddings cached to %s", cache_path)
+    except Exception as e:  # noqa: BLE001 - caching is an optimisation
+        logger.warning("Could not cache embeddings to %s: %s", cache_path, e)
+    return hidden
 
 
 def _get_source_hash():

@@ -1,0 +1,17 @@
+{
+  "manifest_version": 2,
+  "name": "fugal-dstack-test",
+  "runner": "docker-compose",
+  "docker_compose_file": "services:\n  nginx:\n    image: nginx:alpine\n    ports:\n      - \"80:80\"\n    restart: unless-stopped\n  attest:\n    image: alpine/socat:latest\n    volumes:\n      - /var/run/dstack.sock:/var/run/dstack.sock\n    ports:\n      - \"8091:8091\"\n    command: TCP-LISTEN:8091,fork,reuseaddr UNIX-CONNECT:/var/run/dstack.sock\n    restart: unless-stopped\n",
+  "gateway_enabled": true,
+  "public_logs": true,
+  "public_sysinfo": true,
+  "public_tcbinfo": true,
+  "key_provider_id": "",
+  "allowed_envs": [],
+  "no_instance_id": false,
+  "secure_time": false,
+  "key_provider": "none",
+  "storage_fs": "ext4",
+  "pre_launch_script": "#!/bin/sh\n# Prelaunch script - runs before starting containers\n"
+}

@@ -70,6 +70,35 @@ def pool_hash(pool: list[dict]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _drop_unscoreable(pool: list[dict]) -> list[dict]:
+    """Remove questions no checker can score under the current harness policy.
+
+    Derived from config.HARNESS_ALLOW_EXEC rather than hardcoded, so enabling
+    execution re-includes the benchmarks in exactly one place. A question the
+    harness cannot grade is not neutral: the miner still pays to answer it, and
+    since the slicer equalises benchmarks it was a full sixth of every graded
+    slice, punishing anyone who routed code to a capable model while no quality
+    was reachable. See docs/CODE_BENCHMARK_PLAN.md for putting them back.
+    """
+    from fugal_subnet.config import EXECUTION_CHECKERS, HARNESS_ALLOW_EXEC
+
+    if HARNESS_ALLOW_EXEC:
+        return pool
+    kept = [q for q in pool if q.get("grader_id") not in EXECUTION_CHECKERS]
+    dropped = len(pool) - len(kept)
+    if dropped:
+        from collections import Counter
+        by_bench = Counter(q.get("benchmark", "") for q in pool
+                           if q.get("grader_id") in EXECUTION_CHECKERS)
+        logger.warning(
+            "Excluded %d questions the harness cannot score (%s): their checkers "
+            "run candidate code and FUGAL_HARNESS_ALLOW_EXEC is off. They would "
+            "score zero for every miner while still costing them API spend.",
+            dropped, dict(by_bench),
+        )
+    return kept
+
+
 def load_all(strict: bool = True) -> list[dict]:
     """Load the full benchmark pool.
 
@@ -89,6 +118,7 @@ def load_all(strict: bool = True) -> list[dict]:
     if override:
         with open(override, encoding="utf-8") as f:
             pool = json.load(f)
+        pool = _drop_unscoreable(pool)
         logger.info(
             "Benchmark pool loaded from FUGAL_BENCHMARK_POOL=%s "
             "(%d questions, pool_hash=%s)",
@@ -114,8 +144,93 @@ def load_all(strict: bool = True) -> list[dict]:
             logger.warning("Skipping benchmark %s: %s", name, e)
             continue
         if not items:
+            # Zero questions is a divergence, not a warning. It is the same
+            # hazard as a load failure and gets the same treatment: a benchmark
+            # that yields nothing here yields its full contents for anyone who
+            # has a local copy of it, so two operators build different pools,
+            # derive different slices, and every proof between them fails on
+            # questions_hash — an error that names the symptom and never the
+            # cause. LiveCodeBench does exactly this on current `datasets`
+            # versions. Absence has to be declared to be reproducible.
+            if strict:
+                raise RuntimeError(
+                    f"Benchmark {name!r} loaded 0 questions. An empty benchmark "
+                    f"is a silent pool divergence: anyone holding a local copy "
+                    f"of it builds a different pool and no proof between you "
+                    f"will verify. Add {name!r} to FUGAL_SKIP_BENCHMARKS to "
+                    f"declare the absence, or fix the load."
+                )
             logger.warning("Benchmark %s loaded 0 questions", name)
         pool.extend(items)
+    pool = _drop_unscoreable(pool)
     logger.info("Benchmark pool: %d questions, pool_hash=%s",
                 len(pool), pool_hash(pool)[:16])
+    _verify_against_manifest(pool, skip, strict)
     return pool
+
+
+_MANIFEST_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "pool_manifest.json",
+)
+
+
+def _verify_against_manifest(pool: list[dict], skip: set, strict: bool) -> None:
+    """Check the loaded pool against the pinned manifest.
+
+    pool_hash covers question ids, which is the right identity for slice
+    selection but says nothing about what the questions SAY. Revisions are
+    pinned so content cannot drift on its own — but it can drift by hand: an
+    edited cache, a manually placed data/benchmarks/livecode.json, or a
+    benchmark whose loader carries no revision pin. Any of those otherwise
+    produces a pool that agrees on ids, selects the same slice, and grades
+    different things, failing at verification with a hash that names the
+    symptom rather than the cause.
+
+    Absent manifest is not an error — a fresh checkout or a bespoke pool is a
+    legitimate state. A manifest that DISAGREES is, under strict.
+    """
+    if not os.path.exists(_MANIFEST_PATH):
+        return
+    try:
+        with open(_MANIFEST_PATH, encoding="utf-8") as f:
+            pinned = json.load(f)
+    except Exception as e:  # noqa: BLE001 - a broken manifest must not be fatal
+        logger.warning("Could not read pool manifest %s: %s", _MANIFEST_PATH, e)
+        return
+
+    if sorted(pinned.get("skip_benchmarks", [])) != sorted(skip):
+        logger.warning(
+            "Pool manifest was built with FUGAL_SKIP_BENCHMARKS=%s but this "
+            "process has %s — skipping content verification. The pools are "
+            "different by construction and will not agree.",
+            ",".join(pinned.get("skip_benchmarks", [])) or "(none)",
+            ",".join(sorted(skip)) or "(none)",
+        )
+        return
+
+    from scripts.build_pool_manifest import content_hash  # local: script-side helper
+
+    actual_ids, actual_content = pool_hash(pool), content_hash(pool)
+    if actual_ids == pinned.get("pool_hash") and actual_content == pinned.get("content_hash"):
+        logger.info("Pool matches the pinned manifest (content_hash=%s)",
+                    actual_content[:16])
+        return
+
+    detail = (
+        f"pinned pool_hash={pinned.get('pool_hash','?')[:16]} "
+        f"content_hash={pinned.get('content_hash','?')[:16]} "
+        f"n={pinned.get('n_questions')}; "
+        f"loaded pool_hash={actual_ids[:16]} content_hash={actual_content[:16]} "
+        f"n={len(pool)}"
+    )
+    if strict:
+        raise RuntimeError(
+            "Benchmark pool does not match data/pool_manifest.json. The pool is "
+            "consensus state: a pool that differs from every other operator's "
+            "selects a different slice or grades different answers, and every "
+            f"proof will fail on a hash that names none of this. {detail}. "
+            "Rebuild with scripts/build_pool_manifest.py if the change is "
+            "intended, and say why in the commit."
+        )
+    logger.warning("Benchmark pool does not match the pinned manifest: %s", detail)

@@ -46,6 +46,16 @@ dev = [
     "ruff>=0.11.0",
     "pip-audit>=2.7.0",
     "hypothesis>=6.100.0",
+    # tests/test_tpm.py verifies real Google AK certificates, so the TPM
+    # verifier's dependency has to be present wherever tests run.
+    #
+    # Deliberately NOT written as `fugal-subnet[tee]`: that would also pull in
+    # dcap-qvl, and the `test` and `tee-verifier` CI jobs would become the same
+    # environment. They differ on purpose — `verify_dcap` takes a different path
+    # when the library is absent, and two tests once passed in CI only because
+    # it was missing. The duplicated version is held in step by
+    # check_safety_invariants.check_tpm_dependency_pin.
+    "cryptography==50.0.1",
 ]
 # Required for --live validation: DCAP quote verification against Intel
 # collateral. A validator running --live without this cannot verify any
@@ -56,6 +66,16 @@ tee = [
     # rule for --live validators, so a behaviour change in it is a consensus
     # change and should arrive through a deliberate bump.
     "dcap-qvl==0.6.3",
+    # Verifying dstack's GCP attestation means checking a TPM quote as well as
+    # the TDX one: an ECDSA P-256 signature over TPMS_ATTEST, and the
+    # attestation key certificate chained to Google's CA. Both are consensus
+    # rules for a --live validator on GCP, so the library is pinned exactly for
+    # the same reason dcap-qvl is — a behaviour change in it is a consensus
+    # change and should arrive deliberately.
+    #
+    # Hand-rolling ECDSA and X.509 to avoid a dependency would be strictly worse
+    # than depending on the library every other Python project depends on.
+    "cryptography==50.0.1",
 ]
 
 [project.scripts]
@@ -64,6 +84,12 @@ fugal-miner = "neurons.miner:main"
 
 [tool.setuptools.packages.find]
 include = ["fugal_subnet*", "neurons*"]
+
+# The vendored Google EK/AK CA certificates are not Python, but a TPM quote
+# cannot be verified without them, so they have to be in the wheel. An install
+# that silently omits them fails only at the moment a real proof arrives.
+[tool.setuptools.package-data]
+"fugal_subnet.tee" = ["roots/*.der"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

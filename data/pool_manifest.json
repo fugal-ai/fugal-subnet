@@ -1,0 +1,25 @@
+{
+  "content_hash": "16e083b8659d9baba9e49169008a6d46f1d7d54542c008296c8a3b58ff1d13f4",
+  "dataset_revisions": {
+    "EleutherAI/hendrycks_math": "21a5633873b6a120296cce3e2df9d5550074f4a3",
+    "Idavidrein/gpqa": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
+    "cais/mmlu": "c30699e8356da336a370243923dbaf21066bb9fe",
+    "google/IFEval": "966cd89545d6b6acfd7638bc708b98261ca58e84",
+    "openai/gsm8k": "740312add88f781978c0658806c59bc2815b9866",
+    "openai/openai_humaneval": "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544",
+    "qq8933/AIME_1983_2024": "3e2cc86390666c5c756622afc0eeb9e6194496bc"
+  },
+  "n_questions": 21553,
+  "per_benchmark": {
+    "aime": 933,
+    "gsm8k": 1319,
+    "ifeval": 259,
+    "math": 5000,
+    "mmlu": 14042
+  },
+  "pool_hash": "1779b4a5218bb2effed85729f345f2766b010e2c33a36e6d3afe7c1a05a4b4df",
+  "skip_benchmarks": [
+    "gpqa",
+    "livecode"
+  ]
+}

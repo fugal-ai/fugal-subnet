@@ -35,9 +35,11 @@ import logging
 from dataclasses import dataclass
 
 from fugal_subnet.tee.attestation import (
+    expected_rtmr3,
     extract_report_data,
     measurement_id,
     parse_quote,
+    replay_event_log,
     verify_dcap,
 )
 from fugal_subnet.tee.proof import (
@@ -57,6 +59,118 @@ class VerifyResult:
     warnings: list[str] | None = None
 
 
+def parse_approved(entries) -> dict[str, set[str]]:
+    """Turn the approved list into {base_measurement: {app_identity, ...}}.
+
+    An entry is either
+
+        <base>                 the image is approved, nothing is required of RTMR3
+        <base>:<app_identity>  and the runtime identity must also match
+
+    Two halves rather than one hash, because they have different lifecycles and
+    different approvers. The base rotates when the image or kernel changes,
+    which is the cloud provider's schedule; the app identity rotates when our
+    code, pool or grader changes, which is ours. Hashing them together would
+    force a single rotation for either event and make "what code is approved"
+    unreadable. Kept apart, the app identity is computable off-hardware from the
+    repo, so it is reviewable in a pull request instead of requiring someone to
+    hold a quote.
+
+    A bare base is the pre-existing behaviour and stays valid: on an unlocked
+    image an RTMR3 match proves nothing anyway, since an attacker running
+    modified code extends whatever value is expected. Requiring it becomes
+    meaningful when the extend is performed from a measured initrd.
+
+    THE APP IDENTITY IS NEVER AN RTMR3 VALUE, and storing one here would be a
+    subtle, expensive mistake. A measured image extends RTMR3 several times
+    during boot and one of those events is `instance-id`, which changes on every
+    deploy — so two honest miners running the identical approved application
+    produce different RTMR3 values, as does the same miner after a redeploy.
+    Measured on two real dstack deploys of the same compose.
+
+    What is approved is the compose hash carried in an event PAYLOAD. The replay
+    authenticates the log against the register the CPU signed; the payload is the
+    thing compared. An approved list holding RTMR3 values would pass its first
+    test and reject every honest miner from their second deploy onward, and the
+    symptom would look like an attack rather than a design error.
+    """
+    out: dict[str, set[str]] = {}
+    for raw in entries:
+        entry = str(raw).strip()
+        if not entry:
+            continue
+        base, sep, app = entry.partition(":")
+        base, app = base.strip(), app.strip()
+        # A colon with nothing after it is a typo, not an intention, and
+        # interpreting it as the weaker form silently disables the app binding
+        # while the operator believes they configured one. That is the exact
+        # failure this codebase keeps finding: a security check that reports
+        # success and does nothing. An unexpanded shell variable or a trailing
+        # copy-paste is all it takes, so it fails loudly instead.
+        if sep and not app:
+            raise ValueError(
+                f"Approved measurement {entry!r} ends in a colon with no runtime "
+                "identity. Write '<base>' for an image-only entry, or "
+                "'<base>:<app_identity>' to require one — never a bare colon, "
+                "which would silently accept any runtime."
+            )
+        if not base:
+            raise ValueError(f"Approved measurement {entry!r} has no base measurement")
+        out.setdefault(base, set())
+        if app:
+            out[base].add(app)
+    return out
+
+
+# A bare TDX quote's first field is a u16 little-endian version. Anything else
+# at offset 0 is an envelope, not a quote.
+_TDX_QUOTE_VERSIONS = (4, 5)
+
+
+def unwrap_attestation(blob: bytes) -> tuple[bytes, list | None]:
+    """Return (tdx_quote, event_log) for either a bare quote or a dstack blob.
+
+    A miner running under dstack sends the whole attestation — TDX quote, event
+    log, and on GCP a TPM quote — not a bare quote. Both shapes have to verify,
+    and which one arrived must be decided from the bytes rather than from
+    configuration, because two validators configured differently would disagree
+    about the same proof.
+
+    **The TPM half is verified here, not optionally later.** If the envelope
+    carries one and it does not verify, the proof is rejected: a validator that
+    checked only the TDX half would accept proofs another validator rejects,
+    which is a fork with no bug behind it. That is also why an absent
+    `cryptography` raises rather than returning invalid — a missing library is
+    the operator's misconfiguration, and downgrading it to "this proof is bad"
+    would let a --live validator reject the whole field while looking healthy.
+    Identical reasoning to the ImportError handling around `verify_dcap`.
+    """
+    if len(blob) >= 2 and int.from_bytes(blob[:2], "little") in _TDX_QUOTE_VERSIONS:
+        return blob, None
+
+    from fugal_subnet.scale import ScaleError, decode_dstack_attestation
+
+    try:
+        att = decode_dstack_attestation(blob)
+    except ScaleError as e:
+        raise ValueError(f"attestation is neither a TDX quote nor a dstack blob: {e}") from e
+
+    from fugal_subnet.tee.tpm import TpmError, verify_tpm_quote
+
+    try:
+        ok = verify_tpm_quote(att["tpm"])
+    except TpmError as e:
+        raise ValueError(f"TPM quote rejected: {e}") from e
+    if not ok:
+        raise ValueError(
+            "TPM quote verification failed — the attestation key certificate "
+            "does not chain to Google's pinned EK/AK root, or the quote was not "
+            "signed by it"
+        )
+
+    return att["quote"], att["events"]
+
+
 def verify_proof(
     proof: BenchmarkProof,
     approved_measurements: set[str],
@@ -69,6 +183,7 @@ def verify_proof(
     expected_weights_hash: str = "",
     expected_proof_hash: str = "",
     head_bytes: bytes | None = None,
+    event_log: list | None = None,
     mock: bool = False,
 ) -> VerifyResult:
     """Verify a miner's TEE-attested benchmark proof.
@@ -98,15 +213,49 @@ def verify_proof(
 
     # 1. DCAP attestation — proves the quote is genuine Intel-signed hardware.
     #    It does NOT prove the code was unmodified; check 3 does that.
-    if not mock and not verify_dcap(proof.attestation_quote):
-        return VerifyResult(False, "DCAP attestation verification failed")
+    #
+    #    VERIFICATION OF UNTRUSTED INPUT RETURNS A VERDICT, IT DOES NOT THROW.
+    #    verify_dcap raises on a quote it cannot parse or whose collateral it
+    #    cannot fetch, and those bytes come from a miner. Unguarded, the
+    #    exception left verify_proof, left the validator's per-miner loop, and
+    #    was caught by the epoch loop's catch-all — abandoning the WHOLE epoch.
+    #    Any registered hotkey could therefore halt every validator on the
+    #    subnet, every epoch, for the price of one registration, by returning
+    #    forty bytes of garbage. That is I6, broken by miner input, and it only
+    #    appears under --live, which is why it was never seen.
+    #
+    #    ImportError is deliberately NOT caught: a missing dcap-qvl is the
+    #    operator's misconfiguration, not a miner's doing, and silently
+    #    downgrading it to "this proof is invalid" would let a --live validator
+    #    reject the entire field while looking like it was working.
+    # 0. Unwrap. Under dstack the miner sends an envelope, not a bare quote, and
+    #    the TPM half inside it is verified as part of unwrapping — see
+    #    unwrap_attestation for why that is not optional.
+    try:
+        attestation_quote, embedded_events = unwrap_attestation(proof.attestation_quote)
+    except ValueError as e:
+        return VerifyResult(False, str(e))
+    if event_log is None:
+        event_log = embedded_events
+
+    if not mock:
+        try:
+            dcap_ok = verify_dcap(attestation_quote)
+        except ImportError:
+            raise
+        except Exception as e:  # noqa: BLE001 - miner-controlled bytes
+            return VerifyResult(
+                False, f"DCAP attestation verification failed: {type(e).__name__}: {e}",
+            )
+        if not dcap_ok:
+            return VerifyResult(False, "DCAP attestation verification failed")
 
     # 2. Quote parses, and report_data binds the proof body to the hardware.
     #    Enforced in every mode: the mock quote generator embeds report_data
     #    correctly, so tamper detection works on a local testnet too.
     try:
-        quote = parse_quote(proof.attestation_quote)
-        report_data = extract_report_data(proof.attestation_quote)
+        quote = parse_quote(attestation_quote)
+        report_data = extract_report_data(attestation_quote)
     except ValueError as e:
         return VerifyResult(False, f"Invalid attestation quote: {e}")
 
@@ -122,13 +271,83 @@ def verify_proof(
 
     # 3. Approved runtime image, from the hardware's own measurement registers.
     if not mock:
+        approved = parse_approved(approved_measurements)
         measured = measurement_id(quote)
-        if measured not in approved_measurements:
+        if measured not in approved:
             return VerifyResult(
                 False,
                 f"Unapproved runtime image: measurement {measured[:16]}... "
-                f"not among {len(approved_measurements)} approved measurements",
+                f"not among {len(approved)} approved measurements",
             )
+
+        # 3b. Runtime identity, when the approved entry names one.
+        #     RTMR3 is an EXTEND, not a set — the register holds
+        #     SHA384(SHA384(...zeros || first) || second)..., never the value
+        #     written. So this replays from zero and compares the result to what
+        #     the CPU signed, which is also what makes an untrusted extend log
+        #     safe to read later: a log that does not reproduce the quote's
+        #     register is discarded before any field of it is believed.
+        required_apps = approved[measured]
+        if required_apps:
+            if event_log:
+                # A measured image extends RTMR3 several times during boot, so
+                # the register is a chain and the log is the only description of
+                # it. Replay first, compare to the quote, and only then read a
+                # field: a log that does not reproduce what the CPU signed is
+                # discarded whole rather than partially believed.
+                try:
+                    replayed, events = replay_event_log(event_log, imr=3)
+                except ValueError as e:
+                    return VerifyResult(False, f"Malformed TDX event log: {e}")
+                if replayed != quote.rtmr3:
+                    return VerifyResult(
+                        False,
+                        f"Event log does not reproduce RTMR3: replayed "
+                        f"{replayed[:16]}... but the quote says "
+                        f"{quote.rtmr3[:16]}...",
+                    )
+                app_seen = events.get("compose-hash", b"").hex()
+                if app_seen not in required_apps:
+                    return VerifyResult(
+                        False,
+                        f"Unapproved application: compose-hash {app_seen[:16]}... "
+                        f"not among {len(required_apps)} approved for this image",
+                    )
+            elif any(len(a) == 64 for a in required_apps):
+                # A 64-hex identity is a dstack compose hash, and a dstack TD
+                # extends RTMR3 NINE times during boot — including `instance-id`,
+                # WHICH CHANGES ON EVERY DEPLOY. Two honest miners running the
+                # identical approved compose therefore produce DIFFERENT RTMR3
+                # values, and so does one miner after a redeploy. Measured on two
+                # real deploys: same compose, different RTMR3.
+                #
+                # So RTMR3 can never be compared to a fixed value for this shape,
+                # and without the log there is nothing to replay. Refusing is the
+                # only correct answer; falling through to the single-extend
+                # comparison below would reject an honest miner on their second
+                # deploy and look exactly like an attack.
+                return VerifyResult(
+                    False,
+                    "Approved entry names a compose hash but the proof carries no "
+                    "TDX event log. RTMR3 on a measured image is a chain that "
+                    "includes per-deploy values, so it can only be checked by "
+                    "replaying the log — never by comparison.",
+                )
+            else:
+                # No log: the single-extend case a Fugal miner produces today,
+                # where the whole chain is one runtime_identity from a zeroed
+                # register. A fresh TD really does start from zero — a GCP
+                # confidential VM stop/start yields a new TD with RTMR3 cleared,
+                # measured twice — so a miner cannot accumulate extends across
+                # restarts to reach a chosen value.
+                candidates = {expected_rtmr3(app) for app in required_apps}
+                if quote.rtmr3 not in candidates:
+                    return VerifyResult(
+                        False,
+                        f"Runtime identity mismatch: RTMR3 {quote.rtmr3[:16]}... "
+                        f"replays from none of the {len(required_apps)} approved "
+                        f"runtime identities for this image",
+                    )
 
     # 4. Nonce — ties the proof to this epoch's unpredictable block hash.
     if proof.nonce != expected_nonce:

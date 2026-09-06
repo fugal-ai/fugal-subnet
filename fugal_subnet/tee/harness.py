@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 import numpy as np
 
 from fugal_subnet.benchmarks.slicer import select_slice
+from fugal_subnet.config import HARNESS_ALLOW_EXEC
 from fugal_subnet.exploration import expected_exploration
 from fugal_subnet.graders import grade
 from fugal_subnet.grading_task import build_grader_task
@@ -100,8 +101,11 @@ def run_benchmark(
         # task["checker"]["id"] / task["domain"], neither of which the loader
         # schema has. Passing the raw dict raises KeyError inside grade(), which
         # catches it and returns 0 — every answer would grade wrong, silently.
-        # allow_exec=False: no code execution inside TEE (security boundary)
-        correct = bool(grade(build_grader_task(q), response_text, allow_exec=False))
+        # Execution policy is one constant, read by the harness AND by the
+        # loader that decides what is in the pool — see config.HARNESS_ALLOW_EXEC.
+        # They drifted apart once and a sixth of every slice scored zero.
+        correct = bool(grade(build_grader_task(q), response_text,
+                             allow_exec=HARNESS_ALLOW_EXEC))
 
         results.append(QuestionResult(
             question_id=q["question_id"],
@@ -132,7 +136,8 @@ def run_benchmark(
             calls_before = len(proxy.records)
             response_text = _call_model(proxy, model_id, q)
             new_calls = proxy.records[calls_before:]
-            correct = bool(grade(build_grader_task(q), response_text, allow_exec=False))
+            correct = bool(grade(build_grader_task(q), response_text,
+                                 allow_exec=HARNESS_ALLOW_EXEC))
 
             results.append(QuestionResult(
                 question_id=qid,

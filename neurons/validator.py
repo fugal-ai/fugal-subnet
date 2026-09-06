@@ -127,6 +127,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
 
     from fugal_subnet.config import (
+        EPOCH_COLLECT_FRACTION,
         EPOCH_INTERVAL,
         EXPLORE_FRACTION,
         FRAME_DEFAULT_COMPLETION_TOKENS,
@@ -139,6 +140,19 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         "Operation mode: %s",
         "LIVE (requires real TDX attestation)" if live else "mock (accepts unattested proofs)",
     )
+    # A live validator with no approved measurements rejects every proof it
+    # ever receives — `measurement_id(quote) in approved` can never hold against
+    # an empty set — and then sets every miner to zero weight. Fail-closed is
+    # the right default for the check itself, but silently deweighting the whole
+    # subnet is not an acceptable way to learn the variable is unset.
+    if live and not TEE_APPROVED_MEASUREMENTS:
+        raise click.ClickException(
+            "--live requires FUGAL_TEE_MEASUREMENTS. With no approved "
+            "measurement every proof fails the runtime-image check, so this "
+            "validator would score every miner zero and set weights to match. "
+            "Get the value from `scripts/tdx_measurement.py` on the approved "
+            "TDX image (see docs/TDX_VALIDATION.md)."
+        )
 
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
     assert_environment(strict=live)
@@ -158,6 +172,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         blocks_per_epoch as blocks_per_epoch_fn,
     )
     from fugal_subnet.benchmarks.slicer import (
+        collect_block_for_epoch,
         derive_nonce,
         epoch_id_for_block,
         epoch_index_for_block,
@@ -174,12 +189,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.exploration import expected_exploration as expected_exploration_map
     from fugal_subnet.head_eval import HeadScore
+    from fugal_subnet.pricing import policy_cost_total, question_input_tokens
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.reference_frame import (
         ReferenceFrame,
         accumulate_exploration,
         best_model,
+        implausible_exploration,
         load_bootstrap,
+        rebuild_from_reveals,
         reference_cost,
     )
     from fugal_subnet.rewards import cap_weight_change, compute_weights
@@ -240,10 +258,25 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # the miner field — a miner's score must not move because other miners came
     # online or went dark (I4). Seeded from the shipped bootstrap prior so it is
     # well-defined at epoch 1 with zero samples.
-    frame = (
-        ReferenceFrame.from_dict(state["frame"])
-        if state["frame"] else load_bootstrap()
-    )
+    if state["frame"]:
+        frame = ReferenceFrame.from_dict(state["frame"])
+    elif os.getenv("FUGAL_FRAME_BOOTSTRAP"):
+        # No local state. Rebuild from published reveals rather than starting
+        # from the neutral prior, because a fresh frame is not a smaller version
+        # of an established one — it is a DIFFERENT one. acc_best is the
+        # denominator of every quality term, so a validator that starts cold
+        # scores the whole field differently from its peers: 0.500 against 0.832
+        # on measured data. Without this a lost disk, or simply a second
+        # validator joining, diverges the subnet.
+        frame = rebuild_from_reveals(os.environ["FUGAL_FRAME_BOOTSTRAP"])
+    else:
+        frame = load_bootstrap()
+        logger.warning(
+            "Starting from the bootstrap prior with no accumulated frame. If "
+            "other validators have history, this one will score the field "
+            "differently until it catches up. Set FUGAL_FRAME_BOOTSTRAP to a "
+            "directory of published reveals to rebuild instead."
+        )
 
     blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 
@@ -293,12 +326,36 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             commitment = commit_epoch(epoch_id, questions, block_hash)
             logger.info("Committed: %s", commitment.commit_hash)
 
+            # --- WAIT FOR THE COLLECTION BLOCK ---
+            # A miner cannot start benchmarking until this epoch's boundary
+            # block exists, because that block's hash is what picks the
+            # questions. Querying at the boundary therefore asks before any
+            # proof can exist: with real models on a 300-question slice the
+            # miner needs minutes, the validator would collect nothing, and —
+            # worse than merely failing — it marks the epoch done and never
+            # returns to it. Every epoch, forever, logged as "no valid proofs"
+            # as though the miners were at fault.
+            timer.start_phase("await_collect")
+            collect_block = collect_block_for_epoch(
+                epoch_index, blocks_per_epoch, EPOCH_COLLECT_FRACTION,
+            )
+            wait_for_block(subtensor, collect_block)
+
+            # Read the metagraph AT the collection block, not at "now". Both
+            # the block and the offset are derived identically by every honest
+            # validator, so they query the same axons at the same chain state
+            # and any difference in what they collect is a real difference
+            # rather than a timing artefact.
+            metagraph = metagraph_at(subtensor, netuid, collect_block, metagraph)
+
             # --- QUERY MINERS FOR PROOFS ---
             timer.start_phase("query")
             nonce_hex = nonce.hex()
             synapse = FugalProofSynapse(epoch_id=epoch_id, nonce=nonce_hex)
             n_neurons = int(metagraph.n)
-            logger.info("Querying %d miners for proofs...", n_neurons)
+            logger.info("Querying %d miners for proofs at block %d (boundary %d + %d)...",
+                        n_neurons, collect_block, boundary_block,
+                        collect_block - boundary_block)
             responses = dendrite.query(
                 metagraph.axons,
                 synapse,
@@ -365,19 +422,32 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
                 # Every binding is passed explicitly. A check the validator does
                 # not supply an expectation for is a check that does not happen.
-                result = verify_proof(
-                    proof,
-                    approved_measurements=approved_measurements,
-                    expected_questions_hash=expected_questions_hash,
-                    expected_nonce=nonce_hex,
-                    gold_answers=slice_gold,
-                    expected_question_ids=expected_question_ids,
-                    expected_exploration=explore_map,
-                    expected_weights_hash=weights_hash,
-                    expected_proof_hash=getattr(resp, "proof_hash", ""),
-                    head_bytes=head_bytes,
-                    mock=mock,
-                )
+                # Defence in depth. verify_proof is contracted not to raise on
+                # miner input, but the cost of being wrong about that is the
+                # whole epoch, so a bug there must cost one miner instead.
+                try:
+                    result = verify_proof(
+                        proof,
+                        approved_measurements=approved_measurements,
+                        expected_questions_hash=expected_questions_hash,
+                        expected_nonce=nonce_hex,
+                        gold_answers=slice_gold,
+                        expected_question_ids=expected_question_ids,
+                        expected_exploration=explore_map,
+                        expected_weights_hash=weights_hash,
+                        expected_proof_hash=getattr(resp, "proof_hash", ""),
+                        head_bytes=head_bytes,
+                        mock=mock,
+                    )
+                except ImportError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - one miner, not the epoch
+                    n_invalid += 1
+                    logger.warning(
+                        "UID %d proof verification raised %s: %s — rejecting this "
+                        "miner, not the epoch", uid, type(e).__name__, e,
+                    )
+                    continue
 
                 if not result.valid:
                     n_invalid += 1
@@ -427,6 +497,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 for proof in verified_proofs.values()
                 for r in proof.exploration_results
             ]
+            # Detection only, BEFORE folding this epoch's samples in, so a
+            # miner is compared against history rather than against a frame it
+            # has just contributed to. Never touches a score: I4 says a miner's
+            # score cannot depend on other miners, and the frame is built from
+            # everyone. This makes the upstream-substitution attack visible and
+            # attributable; only measuring the upstream closes it.
+            suspicious = implausible_exploration(frame, {
+                uid: [(r.routed_model, r.correct) for r in proof.exploration_results]
+                for uid, proof in verified_proofs.items()
+            })
+            for uid, why in suspicious.items():
+                logger.warning(
+                    "UID %d exploration is implausible: %s. Not penalised — this "
+                    "is advisory. See docs/INVARIANTS.md, 'The model upstream is "
+                    "miner-controlled'.", uid, why,
+                )
+
             frame = accumulate_exploration(frame, samples)
             ref_model, acc_best = best_model(frame, prices)
             logger.info(
@@ -440,13 +527,31 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             epoch_scores: dict[int, HeadScore] = {}
             for uid, proof in verified_proofs.items():
                 scored = proof.scored_results
+                # Both sides of thrift from shared data, not from the miner.
+                #
+                # The denominator was already built this way — pinned rates plus
+                # the frame's measured verbosity — while the numerator was the
+                # miner's own account of what it spent, and even the
+                # denominator's prompt tokens came from the miner's report. One
+                # half unfakeable, the other a self-report, and a miner could
+                # lower its cost by shrinking numbers rather than by routing
+                # better. Prompt tokens now come from the POOL, and the miner's
+                # cost is computed from which models it chose.
+                pool_prompt_tokens = sum(
+                    question_input_tokens(slice_gold[r.question_id]["prompt"])
+                    for r in scored if r.question_id in slice_gold
+                )
                 ref_cost = reference_cost(
                     frame, prices, ref_model,
-                    prompt_tokens=sum(r.prompt_tokens for r in scored),
+                    prompt_tokens=pool_prompt_tokens,
                     n_questions=len(scored),
                     default_completion_tokens=FRAME_DEFAULT_COMPLETION_TOKENS,
                 )
-                score = _proof_to_head_score(proof, ref_cost)
+                head_cost = policy_cost_total(
+                    [(r.question_id, r.routed_model) for r in scored],
+                    slice_gold, prices, frame, FRAME_DEFAULT_COMPLETION_TOKENS,
+                )
+                score = _proof_to_head_score(proof, ref_cost, head_cost)
                 epoch_scores[uid] = score
                 logger.info(
                     "  UID %d: acc=%.3f cost=$%.4f ref=$%.4f (%d/%d correct)",
@@ -525,6 +630,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         model_spend.get(r.routed_model, 0.0) + r.cost_usd
                     )
 
+            # Exploration observations for the reveal. Sorted deterministically
+            # in reveal_epoch so every validator publishes the identical list.
+            exploration_for_reveal = [
+                {
+                    "question_id": r.question_id,
+                    "model": r.routed_model,
+                    "correct": bool(r.correct),
+                    "prompt_tokens": int(r.prompt_tokens),
+                    "completion_tokens": int(r.completion_tokens),
+                }
+                for proof in verified_proofs.values()
+                for r in proof.exploration_results
+            ]
+
             routing_for_reveal = {
                 uid: decisions.tolist()
                 for uid, decisions in routing_decisions.items()
@@ -534,6 +653,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 matrix, pool_models, model_spend,
                 head_hashes, routing_for_reveal,
                 epoch_score_dicts, epoch_weight_map,
+                exploration=exploration_for_reveal,
             )
 
             # --- SET WEIGHTS ---
@@ -573,6 +693,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
             if not reveal_ok:
                 anomalies.append("commit_reveal_failed")
+            for uid, why in suspicious.items():
+                # In the published epoch log so it is attributable after the
+                # fact by anyone, not just whoever was reading the validator's
+                # console at the time.
+                anomalies.append(f"implausible_exploration: uid {uid}: {why}")
 
             epoch_log = EpochLog(
                 epoch_id=epoch_id, block_hash=block_hash,
@@ -675,6 +800,64 @@ def _get_bundle_for_uid(uid, resp):
     return proof, head_bytes
 
 
+# Imported at module scope: wait_for_block is called from the epoch loop but
+# defined here, and the nominal block time is only used to render a human
+# estimate — the wait itself is on block height, never on wall clock.
+from fugal_subnet.benchmarks.slicer import BLOCK_TIME_S as _BLOCK_TIME_S  # noqa: E402
+
+
+def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
+    """Block until the chain reaches `target_block`.
+
+    Cheap and deliberately dumb: one block-height read per poll. The wait is
+    what makes the collection point deterministic, so it is not shortened on
+    the grounds that a miner "looks ready" — that would reintroduce exactly the
+    wall-clock dependence the fixed point exists to remove.
+    """
+    announced = False
+    last_log = 0.0
+    while True:
+        try:
+            current = subtensor.get_current_block()
+        except Exception as e:  # noqa: BLE001 - a dropped socket must not end the epoch
+            logger.warning("Could not read block height (%s); retrying", e)
+            time.sleep(poll_s)
+            continue
+        if current >= target_block:
+            return
+        remaining = target_block - current
+        # Say it once, then rarely. A line every minute for half an epoch is
+        # noise an operator learns to scroll past, and the next thing they
+        # scroll past is the one that mattered.
+        now = time.monotonic()
+        if not announced or now - last_log >= 300:
+            logger.info("Waiting for collection block %d (%d blocks, ~%.0f min)",
+                        target_block, remaining, remaining * _BLOCK_TIME_S / 60)
+            announced = True
+            last_log = now
+        time.sleep(min(poll_s * max(1, remaining), 60))
+
+
+def metagraph_at(subtensor, netuid: int, block: int, fallback):
+    """Metagraph as of `block`, falling back to the live one.
+
+    Pinning the read is what makes two validators query the same axons. A node
+    that has pruned the state for that block cannot serve it, though, and a
+    validator that refuses to run because it cannot read 40 blocks of history
+    is worse than one that reads the current state and says so.
+    """
+    try:
+        return subtensor.metagraph(netuid, block=block)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "Could not read the metagraph at block %d (%s) — using the current "
+            "one. Two validators reading at different blocks can see different "
+            "axon sets, so a divergence this epoch has a known cause.",
+            block, e,
+        )
+        return fallback
+
+
 def confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights, tol=1e-3):
     """Read the weights back off chain and check they match what we submitted.
 
@@ -735,7 +918,7 @@ def confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights, tol=1e-3)
     return True, f"{len(got)} weights match within {tol}"
 
 
-def _proof_to_head_score(proof, ref_cost):
+def _proof_to_head_score(proof, ref_cost, head_cost):
     """Convert a verified BenchmarkProof into a HeadScore for scoring.
 
     `ref_cost` is what the reference model would have cost on this same
@@ -758,7 +941,11 @@ def _proof_to_head_score(proof, ref_cost):
         coverage=1.0,
         n_correct=proof.n_correct,
         n_scored=proof.n_total,
-        total_head_cost=proof.scored_cost_usd,
+        # The POLICY's cost, computed by this validator from the pool, the
+        # pinned rates and the frame. proof.scored_cost_usd is what the miner
+        # says it spent; it is still checked for internal consistency because a
+        # miner lying about it is worth knowing, but it decides no score.
+        total_head_cost=head_cost,
         total_oracle_cost=ref_cost,
         total_kl=0.0,
     )

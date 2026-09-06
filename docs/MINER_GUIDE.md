@@ -183,9 +183,143 @@ sudo systemctl enable --now fugal-miner
 | `--wallet-path` | SDK default | Bittensor wallet root directory |
 | `--port` | `8091` | Axon port |
 | `--head-path` | (required) | Path to `.npz` head file |
-| `--benchmark-pool` | (required) | Path to benchmark question pool |
+| `--benchmark-pool` | (optional) | Local pool JSON. Defaults to the same `load_all()` the validator uses, which is what you want on mainnet — override only for offline or local runs. The flag routes through the same loader, so it cannot disagree with a validator reading the same file. |
 | `--mock/--live` | `--mock` | Mock (default) or live TDX attestation |
 | `--log-level` | `INFO` | Logging level |
+
+## Running Under dstack (required for `--live`)
+
+`--live` requires a **measured** image, and a stock cloud VM is not one: the repo
+is cloned onto a filesystem nothing measures, so the attestation would prove
+which OS booted and nothing about which code ran. dstack solves that — its
+initrd extends your application's identity into RTMR3, and that initrd is itself
+measured into RTMR2 via a dm-verity roothash on the kernel command line.
+
+Everything below was found by deploying it, not read from documentation.
+
+### Choose the machine, and know what it commits you to
+
+Only the **0.6.0 prerelease** line ships the UKI package the cloud path needs;
+the stable 0.5.x line does not. So a GCP deployment is a prerelease deployment.
+That is a deliberate project decision, not an oversight — see
+[INVARIANTS.md](INVARIANTS.md) — but you should know it is what you are running.
+
+### Three landmines, in the order you will hit them
+
+**1. `dstack-cloud pull` is broken.** It builds a URL under a
+`guest-os-v{version}` tag that does not exist. The published image is tagged
+`mkosi-os-v0.6.0-rc0` with the asset `dstack-0.6.0-rc0-uki.tar.gz`. Download it
+manually and point `image_search_paths` at the extracted directory.
+
+**2. The default `key_provider` boot-loops, and the symptom is silent.** The
+guest calls Phala's public KMS at `kms.tdxlab.dstack.org:12001`, gets connection
+refused, `dstack-prepare` fails, and `panic=1` reboots it — about every eight
+seconds, forever. There is no error surfaced to the deploy; the VM simply never
+serves. Valid values are `none | kms | local | tpm`.
+
+> **This is a consensus setting, not a preference.** `key_provider` is extended
+> into RTMR3 as its own event and is part of the app-compose, so it lands in the
+> compose hash and therefore in the approved entry. **Every miner must use the
+> same value** or their compose hashes differ and none of them verify against
+> one approved list. Use the value this guide specifies; do not pick your own.
+
+**3. A non-empty `.env` hard-fails the deploy** unless KMS is enabled. Leave it
+empty on the `none` key provider.
+
+You also need `mtools`, `dosfstools` and `gdisk` on the deploying machine
+(`mcopy`, `mkfs.fat`, `sgdisk`).
+
+### Time budget
+
+About 32 minutes from nothing to a serving app, of which roughly 5 is the image
+download and 7.5 is uploading ~825 MB to GCS — on a residential connection that
+upload dominates. **Redeploys are about 4 minutes** once the GCP image exists,
+so the cost is paid once.
+
+### Pin images by digest, never by tag
+
+The compose hash is `sha256` of the **raw bytes** of `app-compose.json`. A tag
+that moves leaves the hash stable while the code beneath it changes — which is
+the exact defect the measured image exists to prevent, wearing a better hat.
+
+### What a validator checks, so you can predict rejection
+
+Your proof is accepted when the base measurement is approved, the event log
+replays to the RTMR3 in your quote, and the `compose-hash` event matches an
+approved application. Note the third: **your RTMR3 will differ from every other
+miner's**, because `instance-id` is extended into it and is new on every deploy.
+That is expected and is not a problem — what is approved is the compose hash
+inside the log, never the register.
+
+On GCP there is a second half. Your attestation carries a TPM quote as well as
+the TDX one, and validators check both — a genuine TDX quote with an unverifiable
+TPM half is rejected. Nothing is required of you to make this work; it is
+produced by the platform.
+
+### Your proof is not anonymous
+
+The attestation key certificate in your proof has a subject like:
+
+    CN=3943619496533622875, OU=my-gcp-project, O=Google Compute Engine, L=us-central1-a
+
+**Your GCP project name, instance id and zone are public** to anyone who reads
+your proof. This is not a leak we can close — the certificate is what proves the
+machine is a real Confidential VM, and it is issued by Google with those fields
+in it. If your project name is something you would rather not publish, rename it
+or use a dedicated project before you register. Said here rather than left for
+you to discover.
+
+If you run in a region whose Google intermediate CA is not yet vendored in
+`fugal_subnet/tee/roots/`, your proof can still verify — the intermediate
+travels with the proof and is checked against the pinned root — but open an
+issue so it can be added, because it is one fewer moving part.
+
+### The `app-compose.json` fields that will hurt you
+
+The compose file is hashed as raw bytes and that hash is what a validator
+approves, so every field below is part of your identity — changing one changes
+your compose hash and you will need the new one approved. Get them right the
+first time.
+
+| Field | Set it to | Why |
+|---|---|---|
+| `public_logs` | **`false`** | Your miner holds an OpenRouter API key. Public logs are public; one stray traceback with a request header in it and your key is on the internet. There is no way to un-publish it. |
+| `public_sysinfo` | `false` | Leaks process and system detail about a machine whose whole purpose is being a sealed box. No upside for a miner. |
+| `gateway_enabled` | `false` | The dstack gateway publishes your service. A miner is reached by validators over its axon, not through a gateway. dstack-cloud auto-disables it whenever `key_provider` is not `kms`, but set it explicitly rather than relying on that. |
+| `key_provider` | `tpm` | Confirmed on a GCP `c3-standard-4`: boots clean, no KMS contact, no restart loop. `kms` boot-loops against Phala's public KMS; `local` needs a VMM a confidential VM does not have; `none` works but seals nothing. `tpm` seals app keys into the vTPM under a PCR policy, so they survive a redeploy and are bound to your measured boot state. |
+
+**Every field above is part of your compose hash.** Change one and your hash
+changes, and the new one needs approving before your proofs verify again.
+
+#### You cannot ship your API key in `.env` or `allowed_envs`
+
+This is the one that will waste your afternoon if nobody tells you. dstack's
+encrypted-env mechanism encrypts environment variables to an X25519 public key
+and the CVM fetches the **decryption key from KMS** by remote attestation at
+boot. No KMS, no decryption key, no environment variables — and the deploy tool
+refuses up front rather than failing later:
+
+    if env_path.exists() and app.key_provider != "kms":
+        raise ValueError(f"{app.env_file} found but KMS is not enabled.")
+
+Since `kms` is not usable (it boot-loops against the public KMS), **`.env` and
+`allowed_envs` are not available to a miner.**
+
+**Do not solve this by putting the key in the compose file.** `app-compose.json`
+is returned *in full* by the guest agent's `/v1/Info`, as the `app_compose`
+field — that is how the reference fixture in this repo was obtained. A key
+written there is readable by anyone who can reach the agent, and it would also
+end up in the provenance of an approved-list entry. It cannot be withdrawn once
+published.
+
+How a miner does get its key is an open design decision, tracked in
+`docs/INVARIANTS.md`. Do not improvise one.
+
+The reference file in `tests/fixtures/app-compose_A.json` is a **connectivity
+test app** (nginx and a socat bridge), not a miner. Do not deploy it and do not
+copy its values: it sets `public_logs`, `public_sysinfo`, `public_tcbinfo` and
+`gateway_enabled` to `true` — those are dstack's defaults, which is fine for a
+box holding no secrets and wrong for yours.
 
 ## Updating Your Head
 

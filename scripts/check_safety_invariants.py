@@ -21,7 +21,13 @@ IMMUTABLE_V1_GRADER_SHA256 = (
 # subnet. Pinned for the same reason graders.py is. Changing prices is a
 # deliberate act — update this hash in the same commit and say why.
 PINNED_PRICE_TABLE_SHA256 = (
-    "26b54ef396d5a92f3a03e6c1bb5a87011eb40ec007803addce0c65ac5bcb7e4a"
+    "7bc8e332a43833bb4eaccef21e784f57ffde9e49e343275f822f35d9a6d19b27"
+)
+
+# Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM
+# quote means trusting this CA in addition to Intel's — see docs/INVARIANTS.md.
+PINNED_TPM_ROOT_SHA256 = (
+    "594759594b9b61524f6c8ef668f7177f7b9066bc0674f2f49fe9e052be78beb2"
 )
 
 
@@ -172,6 +178,65 @@ def check_epoch_id_single_source(errors: list[str]) -> None:
                     "Call slicer.epoch_id_for_block instead — a second "
                     "formatting of the epoch id is a consensus break"
                 )
+
+
+def check_tpm_dependency_pin(errors: list[str]) -> None:
+    """`cryptography` is pinned in two extras and both copies must agree.
+
+    It is in `dev` as well as `tee` because the TPM tests need it, but writing
+    `fugal-subnet[tee]` would drag dcap-qvl into the dev environment and make
+    the `test` and `tee-verifier` CI jobs identical — they differ on purpose.
+    The cost of that choice is a duplicated version string, and this is what
+    keeps it from drifting.
+    """
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    pins = set(re.findall(r'"cryptography==([0-9][^"]*)"', text))
+    if not pins:
+        errors.append(
+            "pyproject.toml no longer pins cryptography — the TPM verifier is a "
+            "consensus rule for --live validators on GCP and its library is "
+            "pinned exactly, like dcap-qvl"
+        )
+    elif len(pins) > 1:
+        errors.append(
+            f"pyproject.toml pins cryptography at {sorted(pins)} in different "
+            "places — validators would disagree on TPM verification depending on "
+            "which extra they installed"
+        )
+
+
+def check_tpm_trust_anchor(errors: list[str]) -> None:
+    """The pinned Google EK/AK root is a trust anchor, so it gets a hash gate.
+
+    A swapped anchor does not fail loudly on its own: every forged TPM quote
+    signed under the substituted CA would simply verify. That is the same
+    failure shape as an edited grader, so it gets the same treatment.
+    """
+    path = ROOT / "fugal_subnet" / "tee" / "roots" / "google_ek_ak_root.der"
+    if not path.exists():
+        errors.append(
+            "fugal_subnet/tee/roots/google_ek_ak_root.der is missing — TPM quotes "
+            "on GCP cannot be chained to any trust anchor"
+        )
+        return
+
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != PINNED_TPM_ROOT_SHA256:
+        errors.append(
+            f"google_ek_ak_root.der hash {actual[:16]}... does not match pin "
+            f"{PINNED_TPM_ROOT_SHA256[:16]}... — this is the trust anchor for "
+            "every TPM quote the subnet accepts; changing it accepts a different "
+            "CA's attestations"
+        )
+
+    # The module's own constant must agree, or the runtime check is checking
+    # something the CI gate never saw.
+    tpm_src = (ROOT / "fugal_subnet" / "tee" / "tpm.py").read_text(encoding="utf-8")
+    if f'_ROOT_SHA256 = "{PINNED_TPM_ROOT_SHA256}"' not in tpm_src:
+        errors.append(
+            "fugal_subnet/tee/tpm.py:_ROOT_SHA256 disagrees with the pin in this "
+            "script — two pins that can drift are worse than one"
+        )
 
 
 def check_price_table_pinned(errors: list[str]) -> None:
@@ -336,6 +401,8 @@ def main() -> None:
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
     check_price_table_pinned(errors)
+    check_tpm_trust_anchor(errors)
+    check_tpm_dependency_pin(errors)
     check_epoch_id_single_source(errors)
     check_paid_call_guards(errors)
     check_tee_safety(errors)

@@ -40,12 +40,28 @@ gcloud compute instances create fugal-tdx \
   --machine-type=c3-standard-4 \
   --confidential-compute-type=TDX \
   --maintenance-policy=TERMINATE \
-  --image-family=ubuntu-2404-lts-amd64 \
+  --image=ubuntu-2404-noble-amd64-v20260903 \
   --image-project=ubuntu-os-cloud \
-  --boot-disk-size=50GB
+  --boot-disk-size=50GB \
+  --boot-disk-type=pd-balanced
 
 gcloud compute ssh fugal-tdx --zone=us-central1-a
 ```
+
+Pin the exact image, not `--image-family`. A family resolves to whatever is
+newest at create time, so two runs a week apart silently boot different kernels
+and produce different RTMR1/RTMR2 — the measurement changing becomes noise
+instead of signal. List what is currently available with:
+
+```bash
+gcloud compute images list \
+  --filter="guestOsFeatures[].type:(TDX_CAPABLE) AND family~ubuntu" \
+  --format="table(name,family)"
+```
+
+`--boot-disk-type=pd-balanced` is also deliberate: TDX instances support
+Balanced Persistent Disk over NVMe only, and being explicit turns a confusing
+boot failure into no failure at all.
 
 ### Azure
 
@@ -67,8 +83,11 @@ az vm create \
 az ssh vm --resource-group fugal-tdx-rg --name fugal-tdx
 ```
 
-Ubuntu 24.04 is specified deliberately: its kernel (6.8) has the configfs-tsm
-interface the quote generator uses. An older image will not expose it.
+Ubuntu 24.04 is specified deliberately: its kernel has the configfs-tsm
+interface the quote generator uses, and an older image will not expose it.
+The kernel version moves — 24.04 shipped 6.8 and now ships 6.17.0-1022-gcp —
+which is exactly why the image version is pinned rather than the family, and
+why RTMR1/RTMR2 (and therefore `measurement_id`) change on kernel updates.
 
 ## Verify you actually got a TD
 
@@ -90,6 +109,24 @@ sudo mount -t configfs none /sys/kernel/config 2>/dev/null || true
 ls -d /sys/kernel/config/tsm/report
 ```
 
+## Get a raw quote before running any of this repo's code
+
+Do this first. It proves the kernel path works, so that if
+`tdx_measurement.py` then fails you know the fault is ours and not the guest's.
+
+```bash
+sudo mkdir /sys/kernel/config/tsm/report/test0
+cat /sys/kernel/config/tsm/report/test0/provider          # expect: tdx_guest
+sudo sh -c 'dd if=/dev/urandom bs=64 count=1 > /sys/kernel/config/tsm/report/test0/inblob'
+sudo sh -c 'wc -c < /sys/kernel/config/tsm/report/test0/outblob'   # expect ~4-5 KB
+sudo rmdir /sys/kernel/config/tsm/report/test0
+```
+
+`No such device or address` on the `mkdir` means configfs-tsm is not wired up in
+this guest, and nothing downstream can work. A quote of a few hundred bytes
+means something answered but it is not a TDX v4 quote — `parse_quote` will
+reject it, correctly.
+
 ## Setup
 
 ```bash
@@ -99,7 +136,6 @@ export PATH="$HOME/.local/bin:$PATH"
 
 git clone https://github.com/fugal-ai/fugal-subnet.git
 cd fugal-subnet
-git checkout mainnet-hardening
 uv sync --extra tee                        # installs dcap-qvl, pinned
 ```
 

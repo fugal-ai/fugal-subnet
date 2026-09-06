@@ -11,6 +11,56 @@ NETUID = int(os.getenv("FUGAL_NETUID", "1"))
 # --- Epoch ---
 EPOCH_INTERVAL = int(os.getenv("FUGAL_EPOCH_INTERVAL", "3600"))
 SLICE_SIZE = int(os.getenv("FUGAL_SLICE_SIZE", "300"))
+# How far into the epoch validators collect proofs, as a fraction of it.
+#
+# A miner cannot begin benchmarking until the boundary block exists — the block
+# hash is what seeds the question slice, and hiding the slice until that moment
+# is the whole anti-overfitting design. So there is an unavoidable gap between
+# an epoch starting and any proof existing for it, and a validator that queries
+# at the boundary asks before anyone can possibly answer.
+#
+# Retrying until something appears would fix the symptom and break I1: how long
+# a validator happened to wait would decide which miners it scored, so two
+# honest validators would grade different fields and publish different weights.
+# The collection point is therefore derived from the block number, identically
+# for everyone, and lives in the consensus digest — a validator collecting at a
+# different offset diverges visibly instead of silently.
+#
+# Half the epoch splits it evenly: miners get half to benchmark, validators get
+# half to verify, score, set weights and publish the reveal. At the default
+# 3600s epoch that is 150 blocks (~30 min) for a 300-question slice — 6s per
+# question, ample for serial API calls.
+EPOCH_COLLECT_FRACTION = float(os.getenv("FUGAL_COLLECT_FRACTION", "0.5"))
+
+# --- Grading policy ---
+# Whether the benchmark harness may EXECUTE model-produced code to grade it.
+#
+# Off, deliberately. graders.py's sandbox is process-level — rlimits, kill-tree,
+# DEVNULL, a size cap — with no filesystem or namespace isolation. Under --live
+# the miner controls where the metering proxy points, so it controls what
+# "model output" the harness receives; executing that inside the TD that
+# produces the attested proof would let a miner run chosen code in its own
+# enclave and walk away with a genuine Intel signature over forged results.
+# That is a total break of I8, not a contained risk.
+#
+# The cost of having it off was invisible and large. exec_io and exec_unittest
+# both return 0 unless permitted, and they are the checkers for humaneval and
+# livecode — so those questions could never score above zero, while miners paid
+# real API money attempting them. Because the slicer equalises benchmarks, that
+# was not humaneval's 0.8% share of the pool but a FULL SIXTH of every graded
+# slice, and routing those questions to a capable model was punished on thrift
+# with no possible quality gain. The scoring was teaching heads to route code to
+# the cheapest model available.
+#
+# So the pool now excludes what the harness cannot score (see loader.load_all),
+# derived from this flag rather than hardcoded: turning execution on re-includes
+# the benchmarks in one place. Doing that safely is docs/CODE_BENCHMARK_PLAN.md.
+HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "", "false", "False")
+
+# Checkers that grade by running the candidate's code, and therefore return 0
+# unless HARNESS_ALLOW_EXEC. Named here rather than in graders.py, which is
+# hash-pinned and must stay byte-identical.
+EXECUTION_CHECKERS = frozenset({"exec_io", "exec_unittest"})
 
 # --- Head constraints ---
 HEAD_MAX_BYTES = int(os.getenv("FUGAL_HEAD_MAX_BYTES", str(1 * 1024 * 1024)))  # 1 MB
@@ -41,17 +91,62 @@ WILSON_CONFIDENCE = float(os.getenv("FUGAL_WILSON_CONFIDENCE", "0.95"))
 # delivered the product, however cheap, and must not outscore simply matching
 # the best model at the best model's price. That is
 #
-#     0.6^w * 6^(1-w) < 1      =>      w > ln 6 / (ln 6 - ln 0.6) = 0.778
+#     0.6^w * R^(1-w) < 1      =>      w > ln R / (ln R - ln 0.6)
 #
-# An unweighted sqrt (w=0.5) fails this: it scores that router 1.095, above the
-# 1.000 of a perfect quality match. w=0.8 scores it 0.951, correctly below.
-SCORE_QUALITY_EXPONENT = float(os.getenv("FUGAL_SCORE_QUALITY_EXPONENT", "0.8"))
+# An unweighted sqrt (w=0.5) fails this at any interesting R.
+#
+# R IS THE COST RATIO, AND IT IS NOT 6. The original derivation solved this at
+# R=6, the saving the product targets, and got w > 0.778. But R is not bounded
+# by what the product targets — it is bounded by what the scoring function
+# PERMITS, which is SCORE_THRIFT_CAP. Solving the same inequality at the cap:
+#
+#     w > ln 10 / (ln 10 + ln(1/0.6)) = 0.8184
+#
+# w=0.8 fails this. It scores the degraded-but-cheap router 1.0532 against the
+# 1.000 of a full quality match — so the documented claim was already false at
+# the old value, by a margin the 6x derivation hid.
+#
+# Two live runs produced it independently: a 63% router beating a 93% one at
+# 13x cheaper, and a 46% router beating a 62% one. Neither was a corner case.
+#
+# WHY 0.9 AND NOT 0.8184. The claim above compares a miner to a fixed baseline,
+# but weights are set by comparing miners to EACH OTHER, and a pairwise gap
+# spans the whole band rather than half of it: one miner at the cap and another
+# at the floor is a ratio of cap^2 = 100, needing
+#
+#     w > ln 100 / (ln 100 + ln(1/0.6)) = 0.9002
+#
+# 0.9 clears the absolute claim with room (0.795 vs 1.000) and the observed live
+# case with room (that needed 0.8412), but sits 0.00015 BELOW the pairwise
+# bound. It is the knife edge of that bound, not a margin above it — at exactly
+# a 40% quality gap and exactly a 100x cost gap the two tie. Going to 0.91 buys
+# that margin; going to 0.95 (which holds to ~16000x) would make the subnet
+# nearly indifferent to cost and defeat the point of it.
+#
+# The alternative fix is to shrink the thrift band so R can never exceed 6 and
+# the original 0.778 holds. Rejected: it would pay a miner who found a genuinely
+# 10x-cheaper route no more than one who found 2.45x, discarding exactly the
+# signal this subnet exists to find.
+#
+# NOTE ON READING THIS NUMBER. w does not set influence on its own; the
+# exponent times the RANGE does. Quality is a ratio against the best model, so
+# it realistically spans ~3x; thrift spans 100x. That is why w=0.8 read as
+# "quality dominates 4:1" while quality and thrift actually contributed 2.41x
+# and 2.51x of effective range — the cost term had marginally MORE pull than
+# the accuracy term. tests/test_scoring_tradeoff.py pins both claims so this
+# cannot silently regress if either the cap or the exponent moves.
+SCORE_QUALITY_EXPONENT = float(os.getenv("FUGAL_SCORE_QUALITY_EXPONENT", "0.9"))
 
 # Caps stop a degenerate running away with an unbounded ratio — a near-free
 # model would otherwise drive thrift toward infinity. The thrift cap is well
 # above the ~6x saving the product targets, so a genuinely frugal router is
 # rewarded for all of its advantage rather than having it truncated; the
 # quality exponent, not the cap, is what keeps cheap-and-wrong from winning.
+#
+# These two constants are coupled and must move together. The exponent is
+# derived from the widest cost ratio the caps permit (see above), so RAISING
+# SCORE_THRIFT_CAP WITHOUT RAISING THE EXPONENT reopens the gap where a
+# cheap-and-wrong router wins.
 SCORE_QUALITY_CAP = float(os.getenv("FUGAL_SCORE_QUALITY_CAP", "2.0"))
 SCORE_THRIFT_CAP = float(os.getenv("FUGAL_SCORE_THRIFT_CAP", "10.0"))
 

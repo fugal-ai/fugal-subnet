@@ -38,6 +38,17 @@ docker compose up --abort-on-container-exit
 # Full dress rehearsal: multi-miner, multi-validator, multi-epoch, on a real chain
 python scripts/dress_rehearsal.py --scenario all
 
+# Provision a subnet on a real network (test or finney) — idempotent
+python scripts/provision_subnet.py --network test --netuid <N> \
+  --owner-wallet <wallet> --status
+
+# Watch a live subnet and assert it is working, rather than reading logs
+python scripts/watch_subnet.py --network test --netuid <N> --epochs 3 \
+  --miners m1=<hotkey> --validators v1=<hotkey>,v2=<hotkey>
+
+# A deterministic OpenAI-compatible endpoint, so miners run with no spend
+python scripts/stub_upstream.py --pool <pool.json> --port 8799
+
 # Train a reference head (synthetic data, no API spend)
 python scripts/train_head.py --synthetic --n-questions 200 \
   --models deepseek/deepseek-v4-flash meta-llama/llama-4-maverick openai/gpt-5.4-nano \
@@ -93,6 +104,7 @@ dataset requiring `huggingface-cli login` and accepted terms, or add `gpqa` to
 
 - **[Miner Guide](docs/MINER_GUIDE.md)** — train a router head, register, commit, run the miner
 - **[Validator Guide](docs/VALIDATOR_GUIDE.md)** — set up API keys, sandboxing, run the validator, monitor epochs
+- **[Mainnet Launch](docs/MAINNET_LAUNCH.md)** — the operational sequence, and the five things that fail silently if you skip them
 - **[Consensus Invariants](docs/INVARIANTS.md)** — the nine properties the subnet rests on, what enforces each, and the known gaps
 - **[Design Decisions](docs/design-decisions.md)** — why the scoring formula, the reference frame and the TEE architecture are what they are
 - **[TDX Validation](docs/TDX_VALIDATION.md)** — the two attestation checks that need real confidential hardware, and how to run them

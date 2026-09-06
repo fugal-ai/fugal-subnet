@@ -9,6 +9,7 @@ for Fugal's model routing benchmark.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -153,7 +154,26 @@ class MeteringProxy:
             def log_message(self, format, *args):
                 logger.debug(format, *args)
 
-        self._server = HTTPServer(("127.0.0.1", self.port), Handler)
+        # Fall back to an ephemeral port if the configured one is taken.
+        # The port is a private detail between this proxy and the harness that
+        # calls it — nothing on the wire and nothing in consensus depends on
+        # its value — but it is a single fixed constant, so two miners sharing
+        # a host collide on it and the second one dies with EADDRINUSE at the
+        # start of every epoch, forever, benchmarking nothing. Binding 0 and
+        # recording what the kernel gave us costs nothing and removes a whole
+        # class of "my second miner earns zero" reports.
+        try:
+            self._server = HTTPServer(("127.0.0.1", self.port), Handler)
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE:
+                raise
+            self._server = HTTPServer(("127.0.0.1", 0), Handler)
+            actual = self._server.server_address[1]
+            logger.warning(
+                "MeteringProxy port %d is in use (another miner on this host?); "
+                "using ephemeral port %d instead", self.port, actual,
+            )
+            self.port = actual
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         logger.info("MeteringProxy started on port %d", self.port)
@@ -288,8 +308,16 @@ def _quote_via_configfs(report_data: bytes) -> bytes | None:
 def _real_quote(report_data: bytes) -> bytes:
     """Generate a real TDX quote.
 
-    Two paths, tried in order:
+    Three paths, tried in order, and the order is load-bearing:
 
+    0. **The dstack guest agent**, when its socket is present. Under a measured
+       dstack image this is the only source that yields a usable proof: it
+       returns the whole envelope — quote, event log, and on GCP a TPM quote —
+       and RTMR3 on a measured image is a chain including per-deploy values, so
+       without the log there is nothing to replay and an approved entry naming
+       a compose hash cannot be checked. Falling through to configfs here would
+       produce a bare quote and a rejection that reads as "unapproved image"
+       rather than "wrong API".
     1. **configfs-tsm** (`/sys/kernel/config/tsm/report`) — the kernel's own
        interface on Linux 6.7+, and what the confidential guests on GCP and
        Azure actually provide. No vendor package required.
@@ -304,6 +332,17 @@ def _real_quote(report_data: bytes) -> bytes:
     from pathlib import Path
 
     padded = report_data[:64].ljust(64, b"\x00")
+
+    from fugal_subnet.tee import dstack_client
+
+    if dstack_client.available():
+        # No try/except: under dstack this is the correct source and a failure
+        # here must stop the miner, not quietly downgrade it to a proof shape
+        # that every validator rejects.
+        blob = dstack_client.attest(padded)
+        logger.info("attestation obtained from the dstack guest agent (%d bytes)",
+                    len(blob))
+        return blob
 
     quote = _quote_via_configfs(padded)
     if quote is not None:

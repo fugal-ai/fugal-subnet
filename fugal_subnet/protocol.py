@@ -32,6 +32,16 @@ HEAD_B64_MAX_LEN = 1_400_000
 # first point miner-controlled bytes enter the process.
 PROOF_JSON_MAX_LEN = 4_000_000
 HASH_MAX_LEN = 128
+# The TDX event log, when the runtime image publishes one. A dstack boot writes
+# a handful of RTMR3 entries; 64 KB is generous for that and still bounded, per
+# I2 — every miner-supplied field carries a cap or it is an allocation primitive.
+#
+# It is NOT covered by the proof's content_hash, deliberately. Its integrity does
+# not come from the proof: a log is believable only because replaying it must
+# reproduce a register inside the Intel-signed quote, and no forged log can do
+# that. Folding it into content_hash would change the attestation's binding for
+# every existing proof to buy a guarantee the replay already gives.
+EVENT_LOG_MAX_LEN = 65_536
 
 
 class FugalProofSynapse(bt.Synapse):
@@ -46,6 +56,7 @@ class FugalProofSynapse(bt.Synapse):
     head_npz_b64: str = pydantic.Field(default="", max_length=HEAD_B64_MAX_LEN)
     proof_hash: str = pydantic.Field(default="", max_length=HASH_MAX_LEN)
     weights_hash: str = pydantic.Field(default="", max_length=HASH_MAX_LEN)
+    event_log_json: str = pydantic.Field(default="", max_length=EVENT_LOG_MAX_LEN)
 
     def deserialize(self) -> "FugalProofSynapse":
         return self

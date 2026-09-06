@@ -753,10 +753,44 @@ Checks: `tests/test_tee.py::test_runtime_identity_is_register_width_and_determin
 changes that: rotating an approved list of measurements that do not cover the
 workload rotates a value proving only which OS booted.
 
-Operational consequence for validators: DCAP collateral is fetched from Intel's
-PCS directly, with no local caching service. A `--live` validator therefore
-needs outbound HTTPS to `api.trustedservices.intel.com`, and an Intel PCS
-outage degrades verification for every validator at once.
+Operational consequence for validators: **collateral is fetched from Phala's
+PCCS, not from Intel.** This was recorded here as Intel for months and was
+wrong. `verify_dcap` calls `get_collateral_and_verify(quote)` with no
+`pccs_url`, and `dcap-qvl` 0.6.3 resolves that as:
+
+    url = (pccs_url or "").strip() or PHALA_PCCS_URL   # https://pccs.phala.network
+
+So a `--live` validator needs outbound HTTPS to `pccs.phala.network`, and a
+validator firewalled to `api.trustedservices.intel.com` on the strength of the
+old sentence would fail every verification while its configuration looked
+correct.
+
+**What Phala is and is not.** It is an availability dependency and a privacy
+leak: every miner's quote is sent to a third party, and a PCCS outage degrades
+verification for every validator at once. It is **not** a correctness trust
+root. Collateral is Intel-signed TCB info, QE identity and CRLs, and `verify`
+checks those signatures against an Intel root CA compiled into the library
+(`IntelSGXRootCA.der`; `verify_with_root_ca` exists to supply a different one).
+A malicious mirror cannot forge collateral — it can only withhold it. That
+distinction is why this is an operational finding rather than a repeat of the
+Google Attestation Verifier decision, which was rejected because a live service
+returned a *verdict*. A mirror returns *evidence* we verify ourselves.
+
+**Two related defects in the same function**, found with it and not yet fixed
+because both are decisions rather than typos:
+
+  - The `timeout=30` guards only the `ThreadPoolExecutor` branch, which runs
+    when an event loop is already running. On the validator's synchronous path
+    `loop.is_running()` is False, so `run_until_complete` is used with **no
+    timeout at all**. Measured: a stub sleeping 60s blocked `verify_dcap` for
+    the full 60s.
+  - `verify_dcap` **discards the verdict**. `get_collateral_and_verify` returns
+    a `VerifiedReport` with `.status` ("OK" / "OUT_OF_DATE" / "REVOKED" / ...)
+    and `.advisory_ids`; the function logs it and returns True for anything that
+    does not raise. **A quote from revoked or out-of-date TCB passes today.**
+    `dcap-qvl` ships `QuotePolicy.strict(now)` and `verify_with_policy` for
+    exactly this. Tightening it is a policy call that would start rejecting
+    miners who pass now, so it is recorded here rather than changed silently.
 
 ### I8 — what "attested" actually means
 

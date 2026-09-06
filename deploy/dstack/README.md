@@ -35,6 +35,8 @@ sha256 over MRTD‖RTMR1‖RTMR2).
 | `public_logs` | `false` | The miner holds an API key; one traceback with a header in it and the key is public |
 | `public_sysinfo` | `false` | A sealed box has no reason to describe itself |
 | `gateway_enabled` | `false` | Validators reach the axon directly |
+| `public_tcbinfo` | `false` | Nothing reads the agent's public TCB endpoint: validators verify the quote inside the proof, the pusher gets its quote over `/provision/attest`. Surface with no consumer |
+| `no_instance_id` | `false` | The `instance-id` event is what lets the pusher refuse a correctly-imaged TD somebody else booted |
 | `.env` | absent | Refused without KMS anyway; the key travels over the attested channel |
 
 `docker-compose.yaml` in this directory is the compose. Pin the image by digest.

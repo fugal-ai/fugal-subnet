@@ -7,8 +7,7 @@ Fugal processes untrusted miner artifacts, interacts with Bittensor wallets and 
 | Version | Supported |
 |---|---|
 | `main` | Yes |
-| `0.1.x` | Yes |
-| Older versions | No |
+| Anything else | No — the project is pre-launch and has no release branches |
 
 Support means best-effort investigation and fixes while the project is pre-launch; it is not a service-level guarantee.
 
@@ -40,16 +39,20 @@ Please do not exploit a vulnerability against public infrastructure, access data
 | Understated or fabricated costs | Costs priced from the hash-pinned `data/models.json`, metered inside the attested enclave, and reconciled per-question and per-model against the attested total |
 | Steering the shared reference frame | Exploration questions and target models are nonce-derived, not miner-chosen; the frame pools over time rather than over miners |
 | Credential disclosure | Environment-based secrets, no-key logging rule, ignored `.env` and key files |
-| Malicious executable answers | Trusted parent-side output comparison (`exec_io` grader), time/resource/output caps, Docker isolation recommended for validators |
+| Malicious executable answers | Execution graders disabled inside the TD (`HARNESS_ALLOW_EXEC=0`) and the code benchmarks excluded from the pool; validators never run model output |
+| Secret delivery into the TD | Head, hotkey keyfile, coldkeypub and API key cross only the attested push channel after the operator verifies nonce, base measurement, event-log replay, compose hash and instance id; a closed allow-list pinned by a test; nothing per-miner in the compose or on the cloud-readable shared disk |
 | Validator disagreement | Single-source epoch identity (structurally enforced), pinned backbone batch size, CPU kernel dispatch pinning (torch + numpy/OpenBLAS), quantized routing decisions, pinned HF dataset revisions, deterministic HMAC-seeded slicing, immutable hash-pinned graders, commit-reveal epoch artifacts, environment fingerprint + startup assertion, two-process differential harness in CI |
 
 ## Known limitations
 
-- Code execution graders (`exec_io`, `exec_unittest`) run generated code on the
-  validator host. Operators should run the validator inside a Docker container
-  or VM to contain untrusted execution. The `exec_io` grader mitigates forgery
-  by comparing outputs parent-side, but host isolation remains the primary
-  defense.
+- Validators never execute model output: grading happens inside the miner's
+  TD, and the code-execution graders (`exec_io`, `exec_unittest`) are disabled
+  there (`FUGAL_HARNESS_ALLOW_EXEC=0`), so the code benchmarks are excluded
+  from the pool. Re-enabling them needs the sandbox work in
+  `docs/CODE_BENCHMARK_PLAN.md`.
+- A miner's container logs are not observable from outside its TD when
+  `public_logs=false` (the required setting); a failing miner is a black box
+  to its own operator until an operator-only log path exists.
 - Exact receipt verification depends on an archive-capable Bittensor endpoint
   retaining the historical blocks referenced by a reveal.
 - External model providers can be unavailable, change behavior, or return inconsistent outputs.

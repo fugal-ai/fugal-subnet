@@ -49,15 +49,17 @@ that drifts from the lockfile hides exactly the failures CI exists to find.
 you are iterating. Exit status is 0 only if every step of every selected job
 passed.
 
-None of it requires a chain or paid API calls. Use mock mode for local testnet work:
+None of it requires a chain or paid API calls. For a local chain run of the
+shipped neurons (Docker required, no spend):
 
 ```bash
-python scripts/launch_testnet.py --mock --epochs 3
+python scripts/dress_rehearsal.py --scenario all
 ```
 
-Never run real OpenRouter tests as part of automated validation. Any intentional
-paid run must be initiated manually with both `--live` and an explicit positive
-budget, and be documented with a `[PAID ~$X]` comment.
+Never run real OpenRouter calls as part of automated validation. The only paid
+path in the project is a `--live` miner whose key arrives over the attested
+provisioning channel; any intentional paid run is started by hand and
+documented with a `[PAID ~$X]` comment.
 
 ## Consensus changes
 
@@ -67,7 +69,10 @@ Validators must derive identical grades and compatible scores from the same epoc
 - Benchmark identity, normalization, revision pins, and slicing
 - Epoch nonce derivation and boundary selection
 - Head artifact schema and validation
-- Matrix, soft-target, evaluation, scoring, deduplication, and reward formulas
+- TEE proof verification: every binding in `fugal_subnet/tee/verify.py`, the
+  approved-entry format, and the provisioning allow-list
+- The pinned price table, the pool manifest, and the reference-frame,
+  evidence, scoring, deduplication and reward formulas
 - Commitment eligibility and reveal artifact schema
 
 Do not make a semantic change to any of these as an ordinary bug fix. Open an issue first and include:

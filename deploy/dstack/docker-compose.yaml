@@ -14,7 +14,7 @@
 # prevent. Replace the digest below with the one Cloud Build printed.
 services:
   miner:
-    image: us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:REPLACE_WITH_BUILD_DIGEST
+    image: us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:3430da97f5f9182f0d2e8f90f64da8c6ab859a995320591745d6c69d36a8541f
     restart: unless-stopped
     ports:
       - "8091:8091"   # axon: validators reach the miner here (open to the world)

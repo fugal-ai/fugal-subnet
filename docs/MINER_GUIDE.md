@@ -400,6 +400,8 @@ first time.
 | `public_logs` | **`false`** | Your miner holds an OpenRouter API key. Public logs are public; one stray traceback with a request header in it and your key is on the internet. There is no way to un-publish it. |
 | `public_sysinfo` | `false` | Leaks process and system detail about a machine whose whole purpose is being a sealed box. No upside for a miner. |
 | `gateway_enabled` | `false` | The dstack gateway publishes your service. A miner is reached by validators over its axon, not through a gateway. dstack-cloud auto-disables it whenever `key_provider` is not `kms`, but set it explicitly rather than relying on that. |
+| `public_tcbinfo` | `false` | Nothing in Fugal reads the agent's public TCB endpoint — validators verify the quote inside your proof — so it is surface with no consumer. The reference fixture has it `true` because that is dstack's default, not because anything needs it. |
+| `no_instance_id` | `false` | Keeps the `instance-id` event in your RTMR3 log, which is what lets `scripts/provision_td.py` refuse to hand your key to a correctly-imaged TD you did not create. (The CLI's `--no-instance-id` flag defaults to `false` on every key provider; an earlier reading that it was forced on for non-KMS providers was wrong.) |
 | `key_provider` | `tpm` | Confirmed on a GCP `c3-standard-4`: boots clean, no KMS contact, no restart loop. `kms` boot-loops against Phala's public KMS; `local` needs a VMM a confidential VM does not have; `none` works but seals nothing. `tpm` seals app keys into the vTPM under a PCR policy, so they survive a redeploy and are bound to your measured boot state. |
 
 **Every field above is part of your compose hash.** Change one and your hash

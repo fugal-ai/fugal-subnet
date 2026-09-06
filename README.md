@@ -7,9 +7,9 @@
 
 A Bittensor subnet for continuously improving cost-aware LLM routing.
 
-**Validators** build ground truth matrices — calling frontier models on benchmark questions, grading responses with mechanical checkers. **Miners** submit trained router heads — small linear layers (~10K-73K params) on a frozen Qwen3-0.6B backbone — that route any question to the optimal model for the cheapest price.
+**Miners** run the benchmark themselves inside an Intel TDX confidential VM: they load a trained router head — a small linear layer (~10K-73K params) on a frozen Qwen3-0.6B backbone — route each question to a model, pay for the call, grade the reply with hash-pinned checkers, and produce a hardware-attested proof. **Validators** never call a model; they verify the attestation and every binding in the proof, score quality per dollar against the best single model, and set weights.
 
-The subnet's core output is a continuously refreshed ground-truth matrix that miners can use to train and improve routing policies.
+The subnet's output is a continuously refreshed, publicly revealed record of which model answered which question correctly and at what cost — the data miners train better routers on.
 
 ## Architecture
 
@@ -29,14 +29,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Local testnet (Docker chain + full epoch pipeline, no API spend)
-python scripts/launch_testnet.py --mock --epochs 3
+# Full dress rehearsal: the shipped neurons, multi-miner, multi-validator,
+# multi-epoch, against a real local chain (Docker), no API spend
+python scripts/dress_rehearsal.py --scenario all
 
 # Or the single-command container demo (chain + miner + validator, one epoch)
 docker compose up --abort-on-container-exit
-
-# Full dress rehearsal: multi-miner, multi-validator, multi-epoch, on a real chain
-python scripts/dress_rehearsal.py --scenario all
 
 # Provision a subnet on a real network (test or finney) — idempotent
 python scripts/provision_subnet.py --network test --netuid <N> \
@@ -63,10 +61,11 @@ python neurons/miner.py --netuid 1 \
 python neurons/validator.py --netuid 1 --mock
 ```
 
-The commands above do not call OpenRouter. Mock mode is the default. Paid
-operation requires both `--live` and an explicitly configured positive
-`--epoch-budget` (or `FUGAL_EPOCH_BUDGET`); there is no implicit budget or paid
-default. Review the [Validator Guide](docs/VALIDATOR_GUIDE.md) first.
+The commands above do not call OpenRouter. Mock mode is the default. A
+validator has no API key and no budget at all — it verifies proofs, it never
+calls a model. The only paid path is a miner running `--live` with an
+OpenRouter key delivered over the attested provisioning channel; see the
+[Miner Guide](docs/MINER_GUIDE.md).
 
 ### Requirements
 

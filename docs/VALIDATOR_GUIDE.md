@@ -132,8 +132,11 @@ All settings are configurable via environment variables (see `fugal_subnet/confi
 | `FUGAL_NETUID` | `1` | Subnet netuid |
 | `FUGAL_EPOCH_INTERVAL` | `3600` | Seconds between epochs |
 | `FUGAL_SLICE_SIZE` | `300` | Questions per epoch |
-| `FUGAL_TEE_MEASUREMENTS` | — | Comma-separated approved TDX runtime measurements |
-| `FUGAL_TEE_PROOF_TIMEOUT` | `600` | Timeout for proof verification (seconds) |
+| `FUGAL_TEE_MEASUREMENTS` | — | Comma-separated approved entries, each `<base_measurement>:<compose_hash>`. Required for `--live`; a bare base accepts any application on that image (see `deploy/dstack/README.md`) |
+| `FUGAL_PCCS_URL` | `https://pccs.phala.network` | Where DCAP collateral is fetched. Not a trust root; point at a local caching proxy to remove the third party from the epoch path |
+| `FUGAL_COLLATERAL_TIMEOUT` | `10` | Seconds one collateral fetch may take before the proof is recorded `unverifiable` |
+| `FUGAL_COLLATERAL_EPOCH_BUDGET` | `600` | Seconds the whole verification phase may spend fetching collateral (I6) |
+| `FUGAL_BENCHMARK_POOL` | — | Leave unset. A materialised pool file is accepted only if it matches the pinned manifest and the size floor; a non-pinned pool must declare `FUGAL_POOL_UNPINNED=1` and is for local rehearsals only |
 | `FUGAL_REQUIRE_COMMITMENT` | `1` | Require on-chain commitment before scoring |
 | `FUGAL_EVIDENCE_HALF_LIFE` | `200` | EWMA decay half-life for evidence accumulation |
 | `FUGAL_LAMBDA` | `2.0` | Miner-side TRAINING hyperparameter only. The routing rule has no cost term — see `TRAINING_COST_LAMBDA` in config.py |
@@ -168,8 +171,11 @@ When a miner submits a proof, the validator checks:
    genuine Intel TDX confidential VM.
 
 2. **Measurement Match** — `measurement_id(quote)` — sha256 over the quote's
-   MRTD and RTMR0-2, which the CPU fills in and Intel's signature covers — must
-   match one of `FUGAL_TEE_MEASUREMENTS`.
+   MRTD, RTMR1 and RTMR2, which the CPU fills in and Intel's signature covers —
+   must be the base half of an approved entry, and the `compose-hash` event
+   replayed out of the quote's RTMR3 log must be that entry's application half.
+   RTMR0 is excluded because it records host-chosen virtual hardware and would
+   fork the approved list by instance size.
 
    This deliberately does **not** use the proof's `source_hash` field. DCAP
    proves the hardware is real; it says nothing about the code inside it, so an
@@ -252,5 +258,14 @@ verification. The epoch is skipped and logged.
 
 **Weight-setting failed** — Check that your validator has enough stake.
 
-**DCAP verification fails** — Ensure `dcap-qvl` is installed:
-`pip install dcap-qvl`. This requires network access to Intel's PCS.
+**DCAP verification fails** — Install the verifier with the project's own
+lock (`uv sync --locked --extra tee`; `--live` refuses to start without it) and
+make sure the host has outbound HTTPS to the PCCS named by `FUGAL_PCCS_URL`
+(default `https://pccs.phala.network`, not Intel). The PCCS supplies
+Intel-signed collateral that `dcap-qvl` verifies against a compiled-in Intel
+root, so it is an availability dependency, not a trust root. A stalled PCCS
+does not stop the epoch: fetches are bounded per proof and per epoch, and
+proofs that could not be checked are logged as `unverifiable`, never as
+invalid. To take the third party and the ~700 ms round trip out of the epoch
+path, run a caching proxy in front of it and point `FUGAL_PCCS_URL` at that
+(measured: a cache hit verifies in ~15 ms against ~780 ms direct).

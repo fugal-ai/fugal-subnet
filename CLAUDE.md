@@ -49,8 +49,8 @@ python scripts/check_determinism.py --perturb
 # Safety invariants (grader hash, no-pickle, no paid defaults)
 python scripts/check_safety_invariants.py
 
-# Local testnet (Docker, mock mode)
-python scripts/launch_testnet.py --mock --epochs 3
+# Shipped neurons against a real local chain (Docker, no spend)
+python scripts/dress_rehearsal.py --scenario all
 ```
 
 ## Project Layout

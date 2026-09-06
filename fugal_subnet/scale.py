@@ -190,3 +190,48 @@ def decode_dstack_attestation(blob: bytes) -> dict:
         "tpm_quote": tpm_quote,
         "remainder": blob[pos:],
     }
+
+
+def decode_pcr_value(buf: bytes, offset: int = 0) -> tuple[dict, int]:
+    """One PcrValue: { index: u32, algorithm: String, value: Vec<u8> }."""
+    pos = offset
+    index, used = decode_u32(buf, pos); pos += used
+    algorithm, used = decode_str(buf, pos); pos += used
+    value, used = decode_bytes(buf, pos); pos += used
+    return {"index": index, "algorithm": algorithm, "value": value.hex()}, pos - offset
+
+
+def decode_tpm_quote(buf: bytes, offset: int = 0) -> dict:
+    """A dstack TpmQuote, decoded as far as the attestation key certificate.
+
+    Field order from dstack's tpm-types, confirmed against a real blob:
+
+        message      Vec<u8>          TPMS_ATTEST, magic ff544347
+        signature    Vec<u8>          TPMT_SIGNATURE
+        pcr_values   Vec<PcrValue>
+        ak_cert      Vec<u8>          DER X.509
+        platform     Platform         NOT decoded
+        event_log    Vec<TpmEvent>    NOT decoded
+
+    Stops after `ak_cert` deliberately: that is everything the signature check
+    needs, and the two fields after it have shapes nobody here has confirmed
+    against an artifact. Writing a plausible parser for an unconfirmed structure
+    is how three separate things in this integration came to be confidently
+    wrong.
+    """
+    pos = offset
+    message, used = decode_bytes(buf, pos); pos += used
+    signature, used = decode_bytes(buf, pos); pos += used
+    pcr_values, used = decode_vec(buf, pos, decode_pcr_value); pos += used
+    ak_cert, used = decode_bytes(buf, pos); pos += used
+    if message[:4] != DSTACK_TPM_MAGIC:
+        raise ScaleError(f"TPMS_ATTEST magic is {message[:4]!r}, not {DSTACK_TPM_MAGIC!r}")
+    if ak_cert[:1] != b"\x30":
+        raise ScaleError("ak_cert does not begin with a DER SEQUENCE tag")
+    return {
+        "message": message,
+        "signature": signature,
+        "pcr_values": pcr_values,
+        "ak_cert": ak_cert,
+        "consumed": pos - offset,
+    }

@@ -251,6 +251,29 @@ miner's**, because `instance-id` is extended into it and is new on every deploy.
 That is expected and is not a problem — what is approved is the compose hash
 inside the log, never the register.
 
+On GCP there is a second half. Your attestation carries a TPM quote as well as
+the TDX one, and validators check both — a genuine TDX quote with an unverifiable
+TPM half is rejected. Nothing is required of you to make this work; it is
+produced by the platform.
+
+### Your proof is not anonymous
+
+The attestation key certificate in your proof has a subject like:
+
+    CN=3943619496533622875, OU=my-gcp-project, O=Google Compute Engine, L=us-central1-a
+
+**Your GCP project name, instance id and zone are public** to anyone who reads
+your proof. This is not a leak we can close — the certificate is what proves the
+machine is a real Confidential VM, and it is issued by Google with those fields
+in it. If your project name is something you would rather not publish, rename it
+or use a dedicated project before you register. Said here rather than left for
+you to discover.
+
+If you run in a region whose Google intermediate CA is not yet vendored in
+`fugal_subnet/tee/roots/`, your proof can still verify — the intermediate
+travels with the proof and is checked against the pinned root — but open an
+issue so it can be added, because it is one fewer moving part.
+
 ## Updating Your Head
 
 Retrain on newer data and restart the miner with the new `.npz` file. The

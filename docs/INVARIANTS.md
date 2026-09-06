@@ -309,6 +309,109 @@ Google's API said this morning" is not verifying anything.
 certificate-chain validation, consensus-affecting, and it needs the same pinning
 and attack-suite discipline as `dcap-qvl`. It is not a dependency bump.
 
+### I8 — built: the TPM half, and the second trust root it adds
+
+`fugal_subnet/tee/tpm.py`, verified against two real dstack attestations from
+two different GCP Confidential VMs (`tests/fixtures/attestation_{A,B}.bin`).
+Both real ECDSA P-256 signatures verify; a single flipped bit in the quote
+fails; one machine's quote presented under the other's certificate fails.
+
+**This adds Google's CA as a trust root, alongside Intel's.** Stated plainly
+because it is a change to the threat model, not an implementation detail: the
+subnet now believes a TPM quote because a certificate chains to
+`CN=EK/AK CA Root, O=Google LLC`. Intel attests the TD; Google attests that the
+machine underneath is a genuine Confidential VM. Neither replaces the other and
+a validator must check both — checking one and not the other is a fork.
+
+**The chain is pinned, never fetched.** The AK certificate's AIA extension
+points at `http://privateca-content-<uuid>.storage.googleapis.com/.../ca.crt`.
+Fetching it per proof is refused on three grounds, in increasing order of
+seriousness: it is plain HTTP; it is a live availability dependency for every
+validator; and two validators fetching at different moments can get different
+answers, which is a consensus fork with no bug behind it — the same objection
+that ruled out Google's Attestation Verifier service. The root is vendored at
+`fugal_subnet/tee/roots/google_ek_ak_root.der`, hash-pinned in **two** places
+that `check_safety_invariants.py` forces to agree (`tpm._ROOT_SHA256` and
+`PINNED_TPM_ROOT_SHA256`). A substituted anchor does not fail loudly on its
+own — it just starts accepting a different CA's attestations — so it gets the
+grader treatment.
+
+**Intermediates rotate, so they are not the anchor.** The observed intermediate
+was issued 2026-05-19 and lives at a per-CA-instance URL that cannot be
+enumerated in advance; pinning it would reject miners the day Google rotates,
+and pinning a per-region set would reject any region not yet vendored. Instead
+`verify_ak_chain(..., extra_certs=...)` lets a proof carry its own
+intermediates, exactly as TLS does: a supplied certificate is worthless unless
+it chains to the pinned root. Determinism is preserved because the bytes are in
+the proof rather than on the network. One intermediate (us-central1) is vendored
+so the common case needs nothing extra.
+
+**Signature and chain are one check, not two.** Either alone proves nothing: a
+signature without a chain accepts a quote the miner signed with their own key
+and their own certificate; a chain without a signature accepts a genuine
+certificate stapled to somebody else's quote. `verify_tpm_quote` exists so no
+caller can do one half and believe it did both. `tests/test_tpm.py` defeats each
+half separately and shows neither defeat survives composition.
+
+**Certificate validity is the one time-dependent input**, so it is a parameter
+(`at=`) rather than a hidden call to the clock, and two validators evaluating a
+certificate across its expiry boundary would disagree. Observed leaves are valid
+for 30 years, so the window is wide — but this was not theoretical while writing
+it: the fixture's `notBefore` was 56 minutes in the past, and the same test
+written an hour earlier would have failed for a reason that has nothing to do
+with correctness.
+
+**A proof is not anonymous.** The AK certificate's subject is
+`CN=<instance id>, OU=<GCP project>, O=Google Compute Engine, L=<zone>`. Every
+miner's project name, instance id and zone are public in their proof. Not a
+vulnerability, but miners are told in `MINER_GUIDE.md` rather than discovering
+it.
+
+**Not yet wired into `verify_proof`.** The seam depends on the locked dstack
+image, which does not exist yet. Until then this is exercised only by its tests,
+which is a known and deliberately recorded gap — an unexercised path is the
+failure mode this document exists to prevent.
+
+**Five unidentified trailing bytes.** Real `TPMT_SIGNATURE` fields carry five
+bytes past the structure (`0000010000`). They are not identified and are not
+guessed at. Ignoring them is safe because `r` and `s` are read from fixed
+offsets at the front, so nothing appended can change what is verified. Recorded
+so that nobody later mistakes silence for knowledge.
+
+### I8 — there is no hourly TDX bare metal, so there is no quick fallback
+
+Recorded because the obvious escape hatch from the Google trust root does not
+exist in the form everyone assumes. Checked, and both first guesses were wrong:
+Equinix Metal was sunset 30 June 2026, and Latitude.sh's confidential compute is
+AMD SEV-SNP only, not TDX. Providers that do rent TDX bare metal — OpenMetal,
+Hydra Host, OVHcloud — bill **monthly**, and OpenMetal states outright that
+there is no per-hour tier. Realistic figure for an Emerald Rapids box:
+$500–1500/mo, some of it behind a sales conversation.
+
+Two consequences, and the second is the one that matters:
+
+**Bare metal cannot be spun up to dodge a problem.** It is a migration with lead
+time, not an afternoon's work. Anything in the GCP path that turns out to be a
+dead end is a real schedule event.
+
+**Therefore the Google trust root is a permanent, named cost, not a temporary
+one.** The three properties above — Google's CA as a second trust root, its
+intermediate served over plain HTTP, the GCP project and instance named in every
+proof — are properties of the design we are committing to, not inconveniences we
+are passing through on the way to something else. That is also the argument for
+permissionlessness: a subnet whose miners must sign a monthly contract and talk
+to a salesperson has no miners.
+
+**The recorded alternative, not proposed and not built.** AMD SEV-SNP bare metal
+is roughly a third of the price (~$207/mo observed) and dstack supports SNP on
+its stable line, with measurements derivable the same way. That would replace
+Intel with AMD as the sole silicon root and remove Google from the chain
+entirely. The blocker is ours: `attestation.py` hard-checks
+`tee_type == TDX (0x81)` and `parse_quote` rejects anything else, so it is a
+porting job rather than a configuration change. Written down so that if the
+Google trust root ever becomes a problem, nobody concludes the only alternative
+costs $1000/mo and drops the question.
+
 ### I8 — why we believe `dcap-qvl==0.6.3` is safe
 
 CVE-2026-22696 (GHSA-796p-j2gh-9m2q, critical): `dcap-qvl` lacked mandatory

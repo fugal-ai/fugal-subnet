@@ -237,3 +237,13 @@ All times UTC.
   files, two empty packages, nine unused constants, every stale doc claim
   corrected) merged as `8befb1a`. PR #15 (sealed provisioning channel,
   operator-only encrypted log pull) opened from `2018ea0`; gate green.
+- **21:05 — thread pin lifted (PR #16).** Measured on the laptop (12 cores,
+  short 37-char prompts, so absolute rates are optimistic but the ratio holds):
+  1 thread 2.38 q/s, 12 threads 5.99 q/s — **2.5x**, not 12x; the backbone is
+  memory-bound past a few cores. On a 4-vCPU TD expect roughly 2–3x, so the
+  ~13 h pass should become ~5 h. Decision (user): redeploy both TDs on the new
+  image now rather than wait out the single-threaded run. Source reading by B:
+  `dstack-cloud deploy` refuses on an existing instance, `--delete` recreates
+  it, and the data disk is auto-delete — so a redeploy discards the cache and
+  the sealed seed (new instance ids); only `stop`/`start` preserve them. The
+  compose comment that claimed otherwise is corrected in the same PR.

@@ -236,6 +236,39 @@ download and 7.5 is uploading ~825 MB to GCS — on a residential connection tha
 upload dominates. **Redeploys are about 4 minutes** once the GCP image exists,
 so the cost is paid once.
 
+### Building the image on a fresh GCP project fails twice first
+
+Not a Fugal problem, but everyone building their own image hits it, so it is
+here rather than left to be rediscovered. On a **new** GCP project the default
+compute service account has no permissions, so `gcloud builds submit` fails with
+`PERMISSION_DENIED`, and then fails again with a confusing 403 **on its own
+staging bucket**. Grant these by hand first:
+
+    roles/storage.objectAdmin
+    roles/artifactregistry.writer
+    roles/logging.logWriter
+
+on `<project-number>-compute@developer.gserviceaccount.com`. Observed twice on a
+fresh project; the build succeeds in about 12 minutes once they are in place.
+
+### Your image repository must be publicly pullable
+
+This is a requirement, not a convenience, and it has two reasons.
+
+The practical one: **dstack has no private registry authentication.** Its only
+registry feature sets `registry-mirrors` in `daemon.json`, which is a mirror
+list and not credentials. There is nowhere to put a pull secret.
+
+The one that actually matters: **an approved compose hash that names an image
+nobody can pull is an unauditable approved list.** The whole point of the
+`base_measurement:app_identity` pair is that anyone can check what was approved.
+If the image behind an approved hash is private, "this compose hash is approved"
+becomes a claim nobody outside its owner can verify, and the approved list stops
+being evidence and becomes an assertion.
+
+So publish the image. It contains no secrets — your key arrives at runtime and
+never enters the compose (see above), and your head is pushed after boot.
+
 ### Pin images by digest, never by tag
 
 The compose hash is `sha256` of the **raw bytes** of `app-compose.json`. A tag

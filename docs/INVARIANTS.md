@@ -433,6 +433,29 @@ hotkey produces proofs bound to *that* hotkey, which their own uid cannot use.
 reject, it needs no hardware, and a relayed proof should not cost a DCAP
 verification to refuse.
 
+### I8 — an approved image must be publicly pullable
+
+An approved-list entry is `<base_measurement>:<app_identity>`, and the app half
+is a compose hash. **If the image that hash names cannot be pulled by anyone,
+the approved list is an assertion rather than evidence.**
+
+That is the reason, and it outranks the practical one. The practical one is that
+dstack has no private registry authentication at all — its only registry feature
+sets `registry-mirrors` in `daemon.json`, which is a mirror list, not
+credentials, so there is nowhere for a pull secret to live.
+
+The point of computing the app identity off-hardware (`compute_app_identity.py`)
+is that **what the subnet accepts is reviewable in a pull request**. A private
+image breaks that at the last step: the compose file is reviewable, the hash is
+reproducible, and the thing the compose actually runs is opaque. Reviewing the
+first two while the third is unavailable is the shape of check this document
+exists to reject — one that reports success while examining nothing.
+
+Nothing in a Fugal miner's image is secret. The API key arrives at runtime and
+is deliberately excluded from the compose because `/v1/Info` publishes it; the
+head is pushed after boot. So publishing costs nothing that is not already
+public by design.
+
 ### I8 — the app-identity chain, closed against hardware
 
 Every link verified on a real deploy rather than argued, in

@@ -636,6 +636,27 @@ patched one" is a weaker answer than "we read it". A pinned security-critical
 verifier that silently misses a fix is a bad failure mode, and pinning is what
 makes it possible.
 
+### I8 — why `cryptography` is pinned at 50.0.1, and what pinning cost
+
+The first pin was `46.0.3`, chosen because it was what the resolver produced.
+CI rejected it: `pip-audit` found **11 known vulnerabilities** in that version,
+with fixes spread across 46.0.5, 46.0.6, 46.0.7, 48.0.1, 49.0.0 and 50.0.0.
+Clearing all of them requires >= 50.0.0, so the pin is 50.0.1.
+
+**This is the failure mode the `dcap-qvl` note warns about, caught in the act.**
+An exact pin freezes a security-critical dependency at whatever the resolver
+happened to pick, and it stays frozen while advisories accumulate behind it.
+Pinning is still right — a behaviour change in the TPM verifier is a consensus
+change and must arrive deliberately — but it is only safe when something
+actively re-checks the pinned version. `pip-audit` in CI is that something, and
+it is why the audit step is not optional decoration.
+
+The bump was verified, not assumed: 46 -> 50 is four major versions, and the
+verifier does real X.509 chain building and ECDSA verification against real
+Google certificates. All TPM, SCALE and dstack-client tests pass under 50.0.1
+against the committed fixtures, so the artifacts confirm the API surface we use
+is unchanged.
+
 ### I8 — the approved entry is a PAIR, not a hash
 
 An approved-list entry is `<base_measurement>` or `<base_measurement>:<app_identity>`.

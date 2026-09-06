@@ -55,7 +55,7 @@ dev = [
     # when the library is absent, and two tests once passed in CI only because
     # it was missing. The duplicated version is held in step by
     # check_safety_invariants.check_tpm_dependency_pin.
-    "cryptography==46.0.3",
+    "cryptography==50.0.1",
 ]
 # Required for --live validation: DCAP quote verification against Intel
 # collateral. A validator running --live without this cannot verify any
@@ -75,7 +75,7 @@ tee = [
     #
     # Hand-rolling ECDSA and X.509 to avoid a dependency would be strictly worse
     # than depending on the library every other Python project depends on.
-    "cryptography==46.0.3",
+    "cryptography==50.0.1",
 ]
 
 [project.scripts]

@@ -1168,12 +1168,18 @@ What decides that is the **granularity of the fail-closed**:
 | Granularity | Consequence |
 |---|---|
 | **Per miner** — skip the unverifiable ones | Validator A scores 256, B scores 255. Divergent weight vectors. Smaller and more honest than a false accusation, but still a fork. |
-| **Per epoch** — publish nothing unless everything verified | No divergent weights; the validator simply abstains, which Yuma tolerates. Consensus-safe — but with 256 per-proof fetches the probability of at least one failure approaches 1, so a validator would almost never publish. A halt by another name. |
+| **Per epoch** — publish nothing unless everything verified | **Refuted: this is the most dangerous of the three, not the safe one.** It was recorded here as "consensus-safe with an abstention cost". That was wrong. I6 says no *miner* behaviour may stop a validator completing an epoch and setting weights — and with the crafted-FMSPC path open, per-epoch abandon hands **every miner a subnet kill switch**, fired simultaneously across all validators because the collection point is a deterministic block. One miner, one malformed FMSPC, no weights anywhere. A threshold hybrid inherits the same property at the price of N+1 registrations. |
 
-Neither is acceptable, and that is the point: **no local handling of a
-per-validator network failure can be consensus-safe, because the divergence is
-in the input, not in the handling.** Error handling cannot repair a
-nondeterministic input.
+**So skip-the-miner is the only I6-compatible answer**, and that is what
+`validator.py` already does — `if not result.valid: n_invalid += 1; continue`.
+The epoch already completes and weights already get set. What remains is
+therefore **accounting, not behaviour**: count unverifiable separately from
+invalid, so an outage reads as an outage rather than as mass fraud.
+
+That still does not make the weights agree — **no local handling of a
+per-validator network failure can, because the divergence is in the input and
+not in the handling.** Error handling cannot repair a nondeterministic input.
+Skip-the-miner is the least bad option available locally, not a fix.
 
 So items like the timeout, the `unverifiable` outcome, widening I6 and making
 `pccs_url` explicit are **honesty and hygiene improvements, and all of them are

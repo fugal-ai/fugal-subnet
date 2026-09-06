@@ -403,6 +403,13 @@ BACKBONE_MODEL = os.getenv("FUGAL_BACKBONE", "Qwen/Qwen3-0.6B")
 # different embeddings for the same question, which flips near-tie routing
 # decisions. Pin it here rather than leaving it a call-site default.
 BACKBONE_BATCH_SIZE = int(os.getenv("FUGAL_BACKBONE_BATCH_SIZE", "8"))
+# torch intra-op threads for the backbone. Miner-side only: validators never
+# run the backbone, and embeddings shape only the miner's own routing choices,
+# so this is a throughput knob and not consensus state (see
+# fugal_subnet/determinism.py). Default 1 keeps every other tool's behaviour;
+# a TD miner sets 0 (all vCPUs) in its compose. Read by determinism.py before
+# torch imports, so it is documented here and consumed there.
+# FUGAL_BACKBONE_THREADS=1
 ROUTER_SYSTEM_PROMPT = (
     "You are a routing model. Given a question, your hidden state will be used to "
     "predict which language model can best answer it. Read the question carefully."

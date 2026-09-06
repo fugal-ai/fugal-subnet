@@ -258,14 +258,21 @@ because at the time the override skipped the manifest check and a tiny pool
 was the only way to get a miner up quickly. That bypass is closed.)
 
 What the earlier warning was really about is **time**: embedding the ~21,500
-questions takes **about 13 hours** single-threaded before the miner answers
+questions takes **about 13 hours on one thread** before the miner answers
 anything, with no error — the process is running, the logs look busy, and the
-miner produces nothing for half a day. Two things make that bearable:
+miner produces nothing for half a day. Three things make that bearable:
+
+- Give the backbone every vCPU: `FUGAL_BACKBONE_THREADS=0` in the compose
+  (`deploy/dstack/docker-compose.yaml` does). This is miner-side only —
+  validators never run the backbone — and cuts the pass roughly by the core
+  count.
 
 - Cache the embeddings on the encrypted data volume
   (`FUGAL_EMBEDDING_CACHE` on a named volume, as in
-  `deploy/dstack/docker-compose.yaml`) so the pass is paid once, not on every
-  restart or redeploy.
+  `deploy/dstack/docker-compose.yaml`) so the pass survives container restarts
+  and instance stop/start. It does not survive `dstack-cloud deploy --delete`:
+  that recreates the instance and its data disk is auto-deleted with it, so an
+  image upgrade re-pays the pass. Stop, do not recreate, when you can.
 - Provision and start the miner **before** you expect it to earn. It commits
   its head hash only after the axon serves, and a head committed after an
   epoch's boundary block is unscoreable for that epoch by design.

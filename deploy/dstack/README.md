@@ -85,6 +85,12 @@ python scripts/provision_td.py --address http://<ip>:8092 \
     --api-key-file ~/.fugal/openrouter.key
 ```
 
+`deploy` refuses when the instance exists; `deploy --delete` recreates it. The
+data disk is created auto-delete, so a recreate discards the LUKS disk, the
+TPM-sealed seed (new instance id) and the embedding cache; `stop`/`start` keep
+all three. There is no update-in-place path in this tool, so an image upgrade
+means re-provisioning and re-paying the backbone pass.
+
 Until the push, the miner serves nothing and logs "waiting to be provisioned".
 After it, the miner embeds the pinned pool — about 13 hours at one thread on a
 `c3-standard-4`, once, cached on the encrypted data volume — then serves its

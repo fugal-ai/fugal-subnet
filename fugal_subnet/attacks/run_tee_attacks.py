@@ -37,11 +37,12 @@ HEAD = b"the head that was committed on chain"
 HEAD_HASH = hashlib.sha256(HEAD).hexdigest()
 
 
-def _quote(report_data: bytes, mrtd: bytes) -> bytes:
+def _quote(report_data: bytes, mrtd: bytes, rtmr3: bytes = b"\x00" * 48) -> bytes:
     q = bytearray(632)
     struct.pack_into("<H", q, 0, 4)        # version 4
     struct.pack_into("<I", q, 4, 0x81)     # tee_type TDX
     q[184:232] = mrtd
+    q[520:568] = rtmr3
     q[568:632] = report_data.ljust(64, b"\x00")[:64]
     return bytes(q)
 
@@ -57,7 +58,7 @@ def _qr(qid, model="cheap", correct=True, cost=0.001, explore=False):
 
 
 def _proof(results, mrtd=HONEST_MRTD, weights_hash=HEAD_HASH,
-           nonce="n" * 64, qhash=None, total=None):
+           nonce="n" * 64, qhash=None, total=None, rtmr3=b"\x00" * 48):
     per_model: dict[str, float] = {}
     for r in results:
         per_model[r.routed_model] = per_model.get(r.routed_model, 0.0) + r.cost_usd
@@ -69,7 +70,7 @@ def _proof(results, mrtd=HONEST_MRTD, weights_hash=HEAD_HASH,
         per_model_costs=per_model if total is None else {"cheap": total},
         attestation_quote=b"", timestamp=1.0,
     )
-    p.attestation_quote = _quote(bytes.fromhex(p.content_hash()), mrtd)
+    p.attestation_quote = _quote(bytes.fromhex(p.content_hash()), mrtd, rtmr3)
     return p
 
 
@@ -162,6 +163,113 @@ def a_duplicate_results():
     return _verify(_proof([_qr(q) for q in SLICE] + [_qr(SLICE[0])]))
 
 
+# --- the surface added with the runtime-identity work ------------------------
+#
+# Event logs, approved-entry parsing and RTMR3 replay all take untrusted miner
+# input and were shipped with unit tests and no adversarial cases. These are the
+# cases that matter: a log is believable ONLY because replaying it reproduces a
+# register the CPU signed, so every attack here is a way of trying to be
+# believed without reproducing it.
+
+from fugal_subnet.tee.attestation import (  # noqa: E402
+    dstack_event_digest,
+    replay_event_log,
+    runtime_identity,
+)
+
+APP_ID = runtime_identity("src", "pool", "grader", "https://openrouter.ai/api/v1")
+_HONEST_LOG = [
+    {"imr": 3, "event": "compose-hash", "event_payload": "abcd",
+     "digest": dstack_event_digest("compose-hash", bytes.fromhex("abcd"))},
+    {"imr": 3, "event": "instance-id", "event_payload": "beef",
+     "digest": dstack_event_digest("instance-id", bytes.fromhex("beef"))},
+]
+_HONEST_RTMR3 = bytes.fromhex(replay_event_log(_HONEST_LOG)[0])
+BASE = next(iter(APPROVED))
+APPROVED_APP = {f"{BASE}:abcd"}
+
+
+def _verify_log(log, rtmr3=_HONEST_RTMR3, approved=None):
+    proof = _proof([_qr(q) for q in SLICE], rtmr3=rtmr3)
+    return _verify(proof, approved_measurements=approved or APPROVED_APP,
+                   event_log=log)
+
+
+def a_forged_event_log():
+    """Claim an approved compose hash in a log that does not reproduce RTMR3."""
+    forged = [dict(_HONEST_LOG[0]),
+              {"imr": 3, "event": "instance-id", "event_payload": "0bad",
+               "digest": dstack_event_digest("instance-id", bytes.fromhex("0bad"))}]
+    return _verify_log(forged)
+
+
+def a_reordered_event_log():
+    """Extends are not commutative. Reorder to try to reach the target value."""
+    return _verify_log(list(reversed(_HONEST_LOG)))
+
+
+def a_truncated_event_log():
+    """Drop the trailing entries so the chain stops on a chosen register."""
+    return _verify_log(_HONEST_LOG[:1])
+
+
+def a_lying_preimage():
+    """A v2 preimage that does not hash to the digest it accompanies."""
+    log = [dict(_HONEST_LOG[0], preimage="00" * 16), dict(_HONEST_LOG[1])]
+    return _verify_log(log)
+
+
+def a_wrong_width_digest():
+    """A SHA256 digest where the register needs SHA384."""
+    log = [dict(_HONEST_LOG[0], digest="ab" * 32), dict(_HONEST_LOG[1])]
+    return _verify_log(log)
+
+
+def a_unapproved_app_in_a_valid_log():
+    """A log that replays correctly but names an app nobody approved.
+
+    The one that matters most: the chain is honest, the CPU signed it, and the
+    application is still not ours. This is the check the whole locked-image
+    argument exists to make.
+    """
+    other = [
+        {"imr": 3, "event": "compose-hash", "event_payload": "dead",
+         "digest": dstack_event_digest("compose-hash", bytes.fromhex("dead"))},
+        dict(_HONEST_LOG[1]),
+    ]
+    rtmr3 = bytes.fromhex(replay_event_log(other)[0])
+    return _verify_log(other, rtmr3=rtmr3)
+
+
+def a_smuggled_colon_in_the_approved_entry():
+    """A trailing colon must not silently degrade to an image-only entry.
+
+    Not a miner attack — the operator owns the approved list. It is a
+    CONFIGURATION failure that silently disables a security check: an unexpanded
+    shell variable or a stray copy-paste leaves '<base>:' and the app binding
+    quietly stops being enforced while the operator believes it is on. Rejecting
+    the whole verification is the correct outcome, so a raise counts as blocked.
+    """
+    proof = _proof([_qr(q) for q in SLICE], rtmr3=b"\xff" * 48)
+    try:
+        return _verify(proof, approved_measurements={f"{BASE}:"}, event_log=None)
+    except ValueError as e:
+        return verify_mod.VerifyResult(False, f"rejected malformed entry: {e}")
+
+
+def a_oversized_event_log():
+    """Allocation through the log (I2). Bounded at the protocol edge, but the
+    replay must not be quadratic or a crash on a large one."""
+    big = [dict(_HONEST_LOG[0]) for _ in range(20_000)]
+    return _verify_log(big)
+
+
+def a_single_extend_identity_mismatch():
+    """No log supplied: the register must still replay from an approved identity."""
+    proof = _proof([_qr(q) for q in SLICE], rtmr3=b"\x11" * 48)
+    return _verify(proof, approved_measurements={f"{BASE}:{APP_ID}"}, event_log=None)
+
+
 ATTACKS = [
     ("modified harness in a real TDX VM", "I8", a_modified_image),
     ("answer easy questions, claim the slice", "I3", a_substituted_questions),
@@ -174,6 +282,16 @@ ATTACKS = [
     ("skip the exploration quota", "I3", a_skipped_exploration),
     ("redirect exploration to a chosen model", "I3", a_redirected_exploration),
     ("pad the result list with duplicates", "I3", a_duplicate_results),
+    ("forge an event log for an approved app", "I8", a_forged_event_log),
+    ("reorder the event log to hit a target", "I8", a_reordered_event_log),
+    ("truncate the event log", "I8", a_truncated_event_log),
+    ("v2 preimage that lies about its digest", "I8", a_lying_preimage),
+    ("SHA256 digest where SHA384 is required", "I8", a_wrong_width_digest),
+    ("valid log, unapproved application", "I8", a_unapproved_app_in_a_valid_log),
+    ("smuggle a colon to drop the app requirement", "I8",
+     a_smuggled_colon_in_the_approved_entry),
+    ("20k-entry event log", "I2", a_oversized_event_log),
+    ("single-extend identity mismatch", "I8", a_single_extend_identity_mismatch),
 ]
 
 

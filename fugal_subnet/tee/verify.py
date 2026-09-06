@@ -86,10 +86,26 @@ def parse_approved(entries) -> dict[str, set[str]]:
         entry = str(raw).strip()
         if not entry:
             continue
-        base, _, app = entry.partition(":")
-        out.setdefault(base.strip(), set())
-        if app.strip():
-            out[base.strip()].add(app.strip())
+        base, sep, app = entry.partition(":")
+        base, app = base.strip(), app.strip()
+        # A colon with nothing after it is a typo, not an intention, and
+        # interpreting it as the weaker form silently disables the app binding
+        # while the operator believes they configured one. That is the exact
+        # failure this codebase keeps finding: a security check that reports
+        # success and does nothing. An unexpanded shell variable or a trailing
+        # copy-paste is all it takes, so it fails loudly instead.
+        if sep and not app:
+            raise ValueError(
+                f"Approved measurement {entry!r} ends in a colon with no runtime "
+                "identity. Write '<base>' for an image-only entry, or "
+                "'<base>:<app_identity>' to require one — never a bare colon, "
+                "which would silently accept any runtime."
+            )
+        if not base:
+            raise ValueError(f"Approved measurement {entry!r} has no base measurement")
+        out.setdefault(base, set())
+        if app:
+            out[base].add(app)
     return out
 
 

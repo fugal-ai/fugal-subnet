@@ -138,8 +138,12 @@ through the constructor, which produces collateral with no chain attached.
   `pck_crl`, `tcb_info_signature`, `qe_identity_signature`) — use
   `bytes.fromhex`. The other five are `str`. Passing hex strings straight
   through raises `TypeError: Can't extract 'str' to 'Vec'`.
-- This cannot break an honest miner: a real dstack quote carries its own chain
-  (**measured** on `attestation_A.bin` — 3677 bytes, 3 certificates).
+- This cannot break an honest miner: a real dstack quote carries its own chain,
+  and it is a **complete** one. Measured on `attestation_A.bin` — 3677 bytes,
+  three certificates, `Intel SGX PCK Certificate` -> `Intel SGX PCK Platform
+  CA` -> `Intel SGX Root CA`. The quote alone therefore chains to Intel's root
+  with nothing borrowed from collateral, which is *why* discarding the supplied
+  chain is safe rather than merely observed to be.
 - The sanitiser *is* the security boundary, so it needs a `run_miner_attacks`
   case that feeds hostile collateral through it and asserts the chain is gone —
   not a unit test that only checks the honest round trip.

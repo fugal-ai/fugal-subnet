@@ -23,12 +23,33 @@ uv sync --locked --extra dev
 ## Before opening a pull request
 
 ```bash
-python scripts/check_safety_invariants.py
-python tests/test_integration.py
-python -m fugal_subnet.attacks.run_attacks
+scripts/gate.sh
 ```
 
-These commands do not require a chain or paid API calls. Use mock mode for local testnet work:
+That is the whole gate, and it is the only thing worth trusting before pushing.
+
+**Do not hand-roll a subset.** This section used to list three commands run
+against whatever `python` was on the path. CI runs nine, in **two different
+environments**, and the gap has already cost a red `main`: `dcap-qvl` lives in
+the optional `[tee]` extra, a local `.venv` happened to have it, and tests that
+imported it unconditionally passed locally nine times and failed in CI. A venv
+that drifts from the lockfile hides exactly the failures CI exists to find.
+
+`scripts/gate.sh` closes both halves of that:
+
+- It builds each environment with `uv sync --locked`, so what you test is what
+  the lockfile says — including running the suite **without** the DCAP verifier,
+  which is a real code path (`verify_dcap` behaves differently when it is
+  absent) and the one that broke.
+- **It reads its steps out of `.github/workflows/ci.yml`** rather than listing
+  them. A step added to CI is picked up on the next run with no edit here, so
+  this document cannot fall behind CI again the way it just did.
+
+`scripts/gate.sh test` or `scripts/gate.sh tee` runs one job's environment if
+you are iterating. Exit status is 0 only if every step of every selected job
+passed.
+
+None of it requires a chain or paid API calls. Use mock mode for local testnet work:
 
 ```bash
 python scripts/launch_testnet.py --mock --epochs 3

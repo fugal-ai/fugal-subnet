@@ -23,8 +23,10 @@ SOURCE = REPO / "fugal_subnet" / "tee" / "provision.py"
 # pool, the slice or the cost model reads:
 #   head_b64            per-miner, changes every epoch, bound by the on-chain
 #                       weights_hash committed before the nonce
+#   hotkey_ss58         public, on chain; binds the proof to a miner so relay
+#                       fails cryptographically rather than statistically
 #   openrouter_api_key  a secret, and only the miner's own money
-EXPECTED = {"head_b64", "openrouter_api_key"}
+EXPECTED = {"head_b64", "hotkey_ss58", "openrouter_api_key"}
 
 # Named individually so a failure says WHICH consensus input leaked in, rather
 # than that a set comparison failed. Every one of these is covered by
@@ -93,7 +95,7 @@ def test_rejection_never_echoes_the_value():
 
 
 def test_allowed_payload_passes_through_unchanged():
-    payload = {"head_b64": "AAAA", "openrouter_api_key": "sk-or-v1-x"}
+    payload = {"head_b64": "AAAA", "hotkey_ss58": "5Fk...", "openrouter_api_key": "sk-or-v1-x"}
     assert validate_payload(payload) == payload
 
 

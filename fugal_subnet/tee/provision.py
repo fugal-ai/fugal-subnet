@@ -29,6 +29,11 @@ WHAT MAY CROSS, and this list is the security boundary:
                     on-chain weights_hash committed before the nonce. Untrusted
                     bytes that are *bound* are safe; that is the existing
                     pattern for the head and this changes nothing about it.
+    hotkey ss58     public — it is on chain. The TD needs it to bind the proof
+                    to a miner, which is what kills proof relay
+                    cryptographically rather than statistically. A miner who
+                    pushes someone else's hotkey produces a proof bound to that
+                    hotkey, which their own uid cannot use.
     api key         a secret, and only the miner's own money.
 
 WHAT MUST NEVER CROSS: the model upstream, the pool, the grader, or anything
@@ -37,6 +42,26 @@ a miner cannot choose them. A channel that can carry FUGAL_OPENROUTER_BASE hands
 a miner the upstream-substitution exploit that `scripts/stub_upstream.py` exists
 to demonstrate — perfect accuracy at near-zero attested cost, with every hash
 binding and the approved measurement still passing.
+
+ORDERING: THE AXON DOES NOT SERVE UNTIL PROVISIONING COMPLETES.
+
+A miner today serves immediately and commits afterwards, deliberately — committing
+first gets the serve extrinsic rate-limited and leaves the miner unreachable.
+Provisioning inserts a step before readiness, and the failure mode needs choosing
+rather than defaulting: an axon that serves before the TD has a head and a key
+answers a validator with no proof, and reads as a dead miner rather than a
+starting one.
+
+The choice here is to HOLD THE AXON. An unprovisioned miner is not partially
+ready, it is not ready, and pretending otherwise spends a validator's query
+budget to learn nothing. The alternative — serving and answering with an explicit
+not-ready — needs a protocol field and gives a validator something it must then
+decide what to do with, for a state that lasts one round trip.
+
+Holding fails loudly in the miner's own log, which is the property that matters:
+"waiting to be provisioned" is a sentence an operator can act on. Silent
+emptiness is the failure shape this project keeps finding, and it is the one
+thing this must not be.
 
 That is why `ALLOWED_FIELDS` is a closed allow-list and an unknown field is a
 hard rejection rather than an ignored extra. Silently dropping what it does not
@@ -54,7 +79,7 @@ logger = logging.getLogger(__name__)
 # this literal out of the AST and fails when it changes, so a new field cannot
 # arrive in a diff nobody reads. Nothing here may be an input the grader, the
 # pool, the slice or the cost model depends on.
-ALLOWED_FIELDS = frozenset({"head_b64", "openrouter_api_key"})
+ALLOWED_FIELDS = frozenset({"head_b64", "hotkey_ss58", "openrouter_api_key"})
 
 # Nonce the miner chooses per provisioning attempt. The TD signs it into
 # report_data, which is what makes a captured attestation useless later: a

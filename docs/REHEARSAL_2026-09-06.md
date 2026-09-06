@@ -230,3 +230,10 @@ All times UTC.
   the embedding signature, with no console errors — the pool load over
   HuggingFace egress inside the enclave succeeded, inferred rather than read.
   TD1's trace: 59% pull/extract → 14% idle awaiting the push → 26% steady.
+- **20:16** ARM validator's second live epoch `e00022079` reproduced the first
+  exactly (mock miner rejected at DCAP parse, epoch skipped, `n_heads_invalid=1`,
+  no weights). Next boundary 7948800.
+- **20:00–21:00 — code landed during the wait.** PR #14 (lean sweep: four dead
+  files, two empty packages, nine unused constants, every stale doc claim
+  corrected) merged as `8befb1a`. PR #15 (sealed provisioning channel,
+  operator-only encrypted log pull) opened from `2018ea0`; gate green.

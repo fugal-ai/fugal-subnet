@@ -34,11 +34,15 @@ _determinism_configured = False
 
 
 def configure_determinism() -> None:
-    """Lock down torch thread counts and deterministic mode for reproducible embeddings."""
+    """Deterministic algorithms, one inter-op thread, and the intra-op thread
+    count FUGAL_BACKBONE_THREADS asks for (default 1). Embeddings are miner-side
+    only — see fugal_subnet/determinism.py for why the count is a knob."""
     global _determinism_configured
     if _determinism_configured:
         return
-    torch.set_num_threads(1)
+    from fugal_subnet.determinism import backbone_threads
+
+    torch.set_num_threads(backbone_threads())
     try:
         torch.set_num_interop_threads(1)
     except RuntimeError:

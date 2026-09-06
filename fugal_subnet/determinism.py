@@ -15,25 +15,57 @@ enforces the ordering.
 
 Thread counts are pinned too: multi-threaded reductions vary in order run to
 run, which is nondeterminism on a single machine, not just across machines.
+
+THE BACKBONE IS THE EXCEPTION, AND ONLY FOR THE MINER. Under the TEE design a
+validator never runs the backbone: it scores routing decisions read out of an
+attested proof, and `scripts/check_determinism.py --perturb` asserts that the
+whole scoring path is identical with thread pins removed. Embeddings shape only
+the miner's own routing choices — which are exactly what it is scored on, and
+which it already controls through its head — so they are not consensus state.
+Pinning them to one thread bought the miner nothing and cost it ~13 hours of
+startup on a 4-vCPU TD (measured, 21,553 questions at 0.46 q/s). So the torch
+thread count is settable with FUGAL_BACKBONE_THREADS (default 1, unchanged; 0
+means every core). numpy's OpenBLAS stays at one thread regardless: the miner's
+routing arithmetic (W @ h + b) runs there, and there is no reason to spend
+determinism where nothing is gained.
 """
 from __future__ import annotations
 
 import os
 
-DETERMINISM_ENV = {
-    # torch: ATen kernels, MKL BLAS, and oneDNN each dispatch separately.
-    "ATEN_CPU_CAPABILITY": "avx2",
-    "MKL_CBWR": "AVX2",
-    "DNNL_MAX_CPU_ISA": "AVX2",
-    "MKL_NUM_THREADS": "1",
-    "OMP_NUM_THREADS": "1",
-    # numpy: PyPI wheels bundle OpenBLAS, which dispatches by detected CPU just
-    # as ATen does. OPENBLAS_NUM_THREADS is set explicitly rather than relying
-    # on OpenBLAS's fallback to OMP_NUM_THREADS, which only applies to OpenMP
-    # builds. Haswell is the AVX2-era kernel family, matching the torch pin.
-    "OPENBLAS_CORETYPE": "Haswell",
-    "OPENBLAS_NUM_THREADS": "1",
-}
+
+def backbone_threads() -> int:
+    """torch intra-op threads for the backbone. 1 unless FUGAL_BACKBONE_THREADS
+    says otherwise; 0 means all cores; anything unparsable means 1."""
+    raw = os.getenv("FUGAL_BACKBONE_THREADS", "1").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return 1
+    if n <= 0:
+        return max(1, os.cpu_count() or 1)
+    return n
+
+
+def determinism_env(threads: int = 1) -> dict[str, str]:
+    return {
+        # torch: ATen kernels, MKL BLAS, and oneDNN each dispatch separately.
+        "ATEN_CPU_CAPABILITY": "avx2",
+        "MKL_CBWR": "AVX2",
+        "DNNL_MAX_CPU_ISA": "AVX2",
+        "MKL_NUM_THREADS": str(threads),
+        "OMP_NUM_THREADS": str(threads),
+        # numpy: PyPI wheels bundle OpenBLAS, which dispatches by detected CPU
+        # just as ATen does. OPENBLAS_NUM_THREADS is set explicitly rather than
+        # relying on OpenBLAS's fallback to OMP_NUM_THREADS, which only applies
+        # to OpenMP builds. Haswell is the AVX2-era kernel family, matching the
+        # torch pin. Always 1 — see the module docstring.
+        "OPENBLAS_CORETYPE": "Haswell",
+        "OPENBLAS_NUM_THREADS": "1",
+    }
+
+
+DETERMINISM_ENV = determinism_env(backbone_threads())
 
 
 def pin_cpu_dispatch() -> None:

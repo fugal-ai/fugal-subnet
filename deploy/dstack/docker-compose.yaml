@@ -35,6 +35,9 @@ services:
       # MUST equal tempo x 12 s on every neuron (validators included).
       - FUGAL_EPOCH_INTERVAL=4320
       - FUGAL_EMBEDDING_CACHE=/app/results/embeddings
+      # All vCPUs for the one-time backbone pass over the pool. Miner-side
+      # only; validators never run the backbone (fugal_subnet/determinism.py).
+      - FUGAL_BACKBONE_THREADS=0
       - LOG_LEVEL=INFO
       - PYTHONUNBUFFERED=1
       # NOT set, on purpose: FUGAL_BENCHMARK_POOL (the pool comes from the

@@ -258,9 +258,14 @@ because at the time the override skipped the manifest check and a tiny pool
 was the only way to get a miner up quickly. That bypass is closed.)
 
 What the earlier warning was really about is **time**: embedding the ~21,500
-questions takes **about 13 hours** single-threaded before the miner answers
+questions takes **about 13 hours on one thread** before the miner answers
 anything, with no error — the process is running, the logs look busy, and the
-miner produces nothing for half a day. Two things make that bearable:
+miner produces nothing for half a day. Three things make that bearable:
+
+- Give the backbone every vCPU: `FUGAL_BACKBONE_THREADS=0` in the compose
+  (`deploy/dstack/docker-compose.yaml` does). This is miner-side only —
+  validators never run the backbone — and cuts the pass roughly by the core
+  count.
 
 - Cache the embeddings on the encrypted data volume
   (`FUGAL_EMBEDDING_CACHE` on a named volume, as in

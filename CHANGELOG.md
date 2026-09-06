@@ -4,6 +4,15 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — the backbone thread count is a miner-side knob
+
+`FUGAL_BACKBONE_THREADS` (default 1, unchanged; `0` = all cores) sets torch's
+intra-op threads for the backbone. The single-thread pin cost a 4-vCPU TD
+about 13 hours of startup and bought no consensus property: validators never
+run the backbone, `check_determinism.py --perturb` already proves the scoring
+path is thread-independent, and embeddings shape only the miner's own routing
+choices. numpy's OpenBLAS stays at one thread. The dstack compose sets `0`.
+
 ### Fixed — the attested channel was authenticated, not confidential
 
 The pusher verified an Intel-signed quote over its nonce and then POSTed the

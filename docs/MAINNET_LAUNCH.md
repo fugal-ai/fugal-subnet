@@ -155,12 +155,15 @@ Two consequences worth deciding on before launch, not after:
   miners verify rather than recompute. That is not built, and until it is, the
   practical entry cost for a miner is much higher than the ~14KB head suggests.
 
-Note also that `fugal_subnet/determinism.py` pins the backbone to a single
-thread. That costs roughly a factor of four in throughput, and it buys less
-than it appears to: validators never run the backbone, and its output already
-differs across architectures. Raising the pin to a fixed thread count above one
-is the obvious lever on the figure above, but it is a consensus-adjacent change
-and needs its own verification before anyone reaches for it.
+`fugal_subnet/determinism.py` used to pin the backbone to a single thread,
+which cost roughly a factor of four on the figure above and bought nothing:
+validators never run the backbone, and `scripts/check_determinism.py --perturb`
+asserts the scoring path is identical with the pins removed. The torch thread
+count is now `FUGAL_BACKBONE_THREADS` (default 1, unchanged; `0` = all cores),
+and the dstack compose in `deploy/dstack/` sets `0`. Embeddings shape only the
+miner's own routing choices, which it already controls through its head, so
+this is a miner-side throughput knob and not consensus state. numpy's OpenBLAS
+stays single-threaded.
 
 The cache is shared by every miner on a host with the same pool, so three
 miners on one machine pay it once between them.

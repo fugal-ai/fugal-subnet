@@ -274,7 +274,7 @@ If you run in a region whose Google intermediate CA is not yet vendored in
 travels with the proof and is checked against the pinned root — but open an
 issue so it can be added, because it is one fewer moving part.
 
-### Four fields in `app-compose.json` that will hurt you
+### The `app-compose.json` fields that will hurt you
 
 The compose file is hashed as raw bytes and that hash is what a validator
 approves, so every field below is part of your identity — changing one changes
@@ -285,13 +285,41 @@ first time.
 |---|---|---|
 | `public_logs` | **`false`** | Your miner holds an OpenRouter API key. Public logs are public; one stray traceback with a request header in it and your key is on the internet. There is no way to un-publish it. |
 | `public_sysinfo` | `false` | Leaks process and system detail about a machine whose whole purpose is being a sealed box. No upside for a miner. |
-| `gateway_enabled` | `false` unless you need it | The dstack gateway publishes your service. A miner is reached by validators over its axon, not through a gateway. |
-| `allowed_envs` | list `OPENROUTER_API_KEY` | This is an allow-list of environment variables the app will ACCEPT, not a list of things it publishes. Leave it empty and your key never reaches the container — the miner starts, answers nothing, and looks like a routing failure. |
+| `gateway_enabled` | `false` | The dstack gateway publishes your service. A miner is reached by validators over its axon, not through a gateway. dstack-cloud auto-disables it whenever `key_provider` is not `kms`, but set it explicitly rather than relying on that. |
+| `key_provider` | `tpm` | `kms` boot-loops against Phala's public KMS; `local` needs a VMM that a GCP confidential VM does not have; `none` works but seals nothing. `tpm` seals app keys to the vTPM under a PCR policy, so they survive a redeploy. |
+
+**Every field above is part of your compose hash.** Change one and your hash
+changes, and the new one needs approving before your proofs verify again.
+
+#### You cannot ship your API key in `.env` or `allowed_envs`
+
+This is the one that will waste your afternoon if nobody tells you. dstack's
+encrypted-env mechanism encrypts environment variables to an X25519 public key
+and the CVM fetches the **decryption key from KMS** by remote attestation at
+boot. No KMS, no decryption key, no environment variables — and the deploy tool
+refuses up front rather than failing later:
+
+    if env_path.exists() and app.key_provider != "kms":
+        raise ValueError(f"{app.env_file} found but KMS is not enabled.")
+
+Since `kms` is not usable (it boot-loops against the public KMS), **`.env` and
+`allowed_envs` are not available to a miner.**
+
+**Do not solve this by putting the key in the compose file.** `app-compose.json`
+is returned *in full* by the guest agent's `/v1/Info`, as the `app_compose`
+field — that is how the reference fixture in this repo was obtained. A key
+written there is readable by anyone who can reach the agent, and it would also
+end up in the provenance of an approved-list entry. It cannot be withdrawn once
+published.
+
+How a miner does get its key is an open design decision, tracked in
+`docs/INVARIANTS.md`. Do not improvise one.
 
 The reference file in `tests/fixtures/app-compose_A.json` is a **connectivity
 test app** (nginx and a socat bridge), not a miner. Do not deploy it and do not
-copy its values: it sets `public_logs`, `public_sysinfo` and `gateway_enabled`
-to `true`, which is fine for a box holding no secrets and wrong for yours.
+copy its values: it sets `public_logs`, `public_sysinfo`, `public_tcbinfo` and
+`gateway_enabled` to `true` — those are dstack's defaults, which is fine for a
+box holding no secrets and wrong for yours.
 
 ## Updating Your Head
 

@@ -308,8 +308,16 @@ def _quote_via_configfs(report_data: bytes) -> bytes | None:
 def _real_quote(report_data: bytes) -> bytes:
     """Generate a real TDX quote.
 
-    Two paths, tried in order:
+    Three paths, tried in order, and the order is load-bearing:
 
+    0. **The dstack guest agent**, when its socket is present. Under a measured
+       dstack image this is the only source that yields a usable proof: it
+       returns the whole envelope — quote, event log, and on GCP a TPM quote —
+       and RTMR3 on a measured image is a chain including per-deploy values, so
+       without the log there is nothing to replay and an approved entry naming
+       a compose hash cannot be checked. Falling through to configfs here would
+       produce a bare quote and a rejection that reads as "unapproved image"
+       rather than "wrong API".
     1. **configfs-tsm** (`/sys/kernel/config/tsm/report`) — the kernel's own
        interface on Linux 6.7+, and what the confidential guests on GCP and
        Azure actually provide. No vendor package required.
@@ -324,6 +332,17 @@ def _real_quote(report_data: bytes) -> bytes:
     from pathlib import Path
 
     padded = report_data[:64].ljust(64, b"\x00")
+
+    from fugal_subnet.tee import dstack_client
+
+    if dstack_client.available():
+        # No try/except: under dstack this is the correct source and a failure
+        # here must stop the miner, not quietly downgrade it to a proof shape
+        # that every validator rejects.
+        blob = dstack_client.attest(padded)
+        logger.info("attestation obtained from the dstack guest agent (%d bytes)",
+                    len(blob))
+        return blob
 
     quote = _quote_via_configfs(padded)
     if quote is not None:

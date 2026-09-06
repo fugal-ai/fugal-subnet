@@ -418,6 +418,44 @@ appears in the quote as `content_hash || 32 zero bytes`, which is exactly what
 `verify_proof` compares against. A different convention here would fail every
 live proof on a binding check that looks like tampering rather than a mismatch.
 
+### I8 — OPEN DECISION: how a miner's API key reaches the enclave
+
+**Unresolved, and it changes what a miner's `app-compose.json` looks like, so it
+blocks packaging.** Recorded here rather than decided, because it is a product
+question and not a packaging one.
+
+The constraint chain, each link verified in dstack's source rather than inferred:
+
+    encrypted env vars       are decrypted with a key fetched from KMS at boot
+    therefore .env           is refused unless key_provider == "kms"
+                             (a hard client-side raise, hit in practice)
+    key_provider == "kms"    boot-loops against Phala's public KMS
+    key_provider == "local"  needs dstack-vmm, which a GCP CVM does not have
+    therefore                key_provider == "tpm", and .env is unavailable
+
+So `allowed_envs` — the obvious answer, and one this guide briefly stated as a
+requirement before it was falsified — **cannot deliver the key**.
+
+**Putting it in the compose is not the fallback.** `app-compose.json` is
+returned in full by the guest agent's `/v1/Info` as the `app_compose` field;
+that is how this repo's reference fixture was obtained. A key there is readable
+by anyone who reaches the agent and becomes part of an approved entry's
+provenance. Unwithdrawable.
+
+Three options, none free, none chosen:
+
+| | Cost |
+|---|---|
+| **Self-hosted KMS** — dstack-cloud can stand one up (`kms deploy`/`attest`), restoring encrypted env with `key_provider=kms` | Either every miner runs a KMS, or the subnet runs one and miners trust it — a new centralisation, which is the thing dstack was chosen to avoid |
+| **Miner fetches its key at runtime** from an endpoint it controls, after boot | Keeps the key out of the measurement entirely, but makes the fetch endpoint miner-controlled input reaching inside the TD — the `FUGAL_OPENROUTER_BASE` problem in a different coat |
+| **The subnet supplies the key** | Changes who pays for inference; an economic decision, not a deployment one |
+
+Note the first two converge: a self-hosted KMS *is* an attested key-fetch
+endpoint. The real axis is who operates it and who is trusted.
+
+**Nothing should be improvised here.** A miner who invents a fourth answer will
+most likely put the key somewhere `/v1/Info` publishes it.
+
 **Five unidentified trailing bytes.** Real `TPMT_SIGNATURE` fields carry five
 bytes past the structure (`0000010000`). They are not identified and are not
 guessed at. Ignoring them is safe because `r` and `s` are read from fixed

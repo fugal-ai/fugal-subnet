@@ -35,6 +35,17 @@ WHAT MAY CROSS, and this list is the security boundary:
                     pushes someone else's hotkey produces a proof bound to that
                     hotkey, which their own uid cannot use.
     api key         a secret, and only the miner's own money.
+    hotkey keyfile  a secret, and only the miner's own identity. The TD has to
+                    sign two extrinsics itself — serve_axon and the head
+                    commitment — so the signing key must be inside it, and
+                    this channel is the only path that never touches storage
+                    the cloud provider can read (the compose is public, the
+                    shared disk is plaintext FAT32 in GCS). Held in tmpfs,
+                    never on the data volume. A miner who pushes it to a TD
+                    they did not verify has handed over their own identity and
+                    nobody else's — the same blast radius as the API key.
+    coldkeypub      public. The SDK's serve_axon reads the coldkey ADDRESS
+                    off the wallet, so the hotkey alone does not serve.
 
 WHAT MUST NEVER CROSS: the model upstream, the pool, the grader, or anything
 else `runtime_identity()` covers. Those are inside the measurement precisely so
@@ -79,7 +90,13 @@ logger = logging.getLogger(__name__)
 # this literal out of the AST and fails when it changes, so a new field cannot
 # arrive in a diff nobody reads. Nothing here may be an input the grader, the
 # pool, the slice or the cost model depends on.
-ALLOWED_FIELDS = frozenset({"head_b64", "hotkey_ss58", "openrouter_api_key"})
+ALLOWED_FIELDS = frozenset({
+    "head_b64",
+    "hotkey_ss58",
+    "openrouter_api_key",
+    "hotkey_keyfile_b64",
+    "coldkeypub_b64",
+})
 
 # Nonce the miner chooses per provisioning attempt. The TD signs it into
 # report_data, which is what makes a captured attestation useless later: a

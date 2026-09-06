@@ -4,6 +4,34 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — found preparing the first `--live` run on netuid 552
+
+- **A dstack TD had no permitted way to receive its hotkey.** The miner signs
+  `serve_axon` and the head commitment itself, so the keyfile must be inside
+  the TD, and every route in had been ruled out: the compose is public, the
+  shared disk is plaintext to the cloud provider, and the attested channel
+  allowed only the head, the public hotkey address and the API key. The
+  channel now carries `hotkey_keyfile_b64` and `coldkeypub_b64` (the SDK reads
+  the coldkey address to serve); the TD holds them in tmpfs. Operator side:
+  `scripts/provision_td.py`, which never prints a secret and refuses an
+  encrypted hotkey. INVARIANTS § "I8 — the wallet crosses the attested channel".
+- **`FUGAL_BENCHMARK_POOL` bypassed both pool guards.** The override returned
+  before the manifest check and the size floor, so the documented production
+  path was the unguarded one; a 150-question pool served 40+ live epochs
+  unremarked. The override is now checked like the loader path, and a
+  deliberately non-pinned pool must say so with `FUGAL_POOL_UNPINNED=1`.
+
+### Added
+
+- `deploy/systemd/`, `deploy/env/`, `deploy/dstack/` — the production shapes of
+  a validator service (raised fd limit, restart, env file) and of the dstack
+  miner compose (image by digest, persistent embedding cache, provisioning
+  port), with the recipe that produces an approved `<base>:<compose_hash>`.
+- `scripts/make_rehearsal_heads.py` — distinct, balanced heads over the three
+  cheapest pinned models, for rehearsals that must spend cents rather than
+  dollars. Synthetic-trained heads collapse onto one model on real embeddings
+  and would be deduplicated as copies.
+
 ## [0.2.0] - 2026-09-05
 
 ### Fixed — first run against a real chain

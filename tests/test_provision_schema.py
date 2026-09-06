@@ -26,7 +26,13 @@ SOURCE = REPO / "fugal_subnet" / "tee" / "provision.py"
 #   hotkey_ss58         public, on chain; binds the proof to a miner so relay
 #                       fails cryptographically rather than statistically
 #   openrouter_api_key  a secret, and only the miner's own money
-EXPECTED = {"head_b64", "hotkey_ss58", "openrouter_api_key"}
+#   hotkey_keyfile_b64  a secret, and only the miner's own identity; the TD
+#                       signs serve_axon and the head commitment itself
+#   coldkeypub_b64      public; the SDK reads the coldkey address to serve
+EXPECTED = {
+    "head_b64", "hotkey_ss58", "openrouter_api_key",
+    "hotkey_keyfile_b64", "coldkeypub_b64",
+}
 
 # Named individually so a failure says WHICH consensus input leaked in, rather
 # than that a set comparison failed. Every one of these is covered by

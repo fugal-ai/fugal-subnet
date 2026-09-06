@@ -1,0 +1,40 @@
+# Fugal validator as a systemd service.
+#
+#   sudo cp deploy/systemd/fugal-validator.service /etc/systemd/system/
+#   sudo install -m 0600 deploy/env/validator.env.example /etc/fugal/validator.env  # then edit
+#   sudo systemctl daemon-reload && sudo systemctl enable --now fugal-validator
+#
+# Every setting below exists because its absence has failed before:
+#   LimitNOFILE   an abandoned collateral fetch leaks ~1 fd until the socket dies;
+#                 the 1024 default runs out in a few epochs against a stalled PCCS
+#                 (config.TEE_COLLATERAL_MAX_TIMEOUTS) and takes the axon and
+#                 subtensor sockets with it.
+#   Restart       the validator persists its state (FUGAL_STATE_PATH) and resumes
+#                 the epoch loop, so a restart costs nothing; a dead validator costs
+#                 every epoch until someone notices.
+#   EnvironmentFile  the approved measurement, epoch interval and paths live in
+#                 one 0600 file, not in this unit, so they can change without a
+#                 daemon-reload and never appear in `ps`.
+[Unit]
+Description=Fugal subnet validator (--live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fugal
+WorkingDirectory=/opt/fugal/fugal-subnet
+EnvironmentFile=/etc/fugal/validator.env
+ExecStart=/opt/fugal/fugal-subnet/.venv/bin/python neurons/validator.py \
+  --network ${FUGAL_NETWORK} --netuid ${FUGAL_NETUID} \
+  --coldkey ${WALLET_NAME} --hotkey ${HOTKEY_NAME} \
+  --live
+Restart=always
+RestartSec=30
+LimitNOFILE=65536
+# The validator never needs the coldkey; the wallet dir holds hotkey + coldkeypub only.
+ProtectSystem=full
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

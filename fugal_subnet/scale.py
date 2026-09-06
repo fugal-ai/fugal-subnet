@@ -124,3 +124,69 @@ def decode_vec(buf: bytes, offset: int, item) -> tuple[list, int]:
         out.append(value)
         pos += consumed
     return out, pos - offset
+
+
+# --- dstack attestation blob ---------------------------------------------------
+#
+# Layout, decoded from two real 39471-byte blobs rather than from a field list:
+#
+#     byte 0        platform/variant tag
+#     byte 1        version
+#     compact       quote length, then that many bytes  (TDX v4 quote)
+#     compact       event count, then that many TdxEvents
+#     compact       TPMS_ATTEST length, then that many bytes (TPM quote)
+#     remainder     TPM signature and AK certificate chain
+#
+# A TdxEvent on the wire is imr, event_type, digest, event name, payload — and
+# NOT the `version` or `preimage` fields that appear in dstack's JSON. Those are
+# serde-only and the scale codec skips them, which is exactly the kind of gap
+# between a serialisation and a struct that has bitten this integration twice.
+
+DSTACK_TPM_MAGIC = b"\xffTCG"
+
+
+def decode_tdx_event(buf: bytes, offset: int = 0) -> tuple[dict, int]:
+    """One TdxEvent. Field order is load-bearing and comes from real blobs."""
+    pos = offset
+    imr, used = decode_u32(buf, pos); pos += used
+    event_type, used = decode_u32(buf, pos); pos += used
+    digest, used = decode_bytes(buf, pos); pos += used
+    name, used = decode_str(buf, pos); pos += used
+    payload, used = decode_bytes(buf, pos); pos += used
+    return {
+        "imr": imr,
+        "event_type": event_type,
+        "digest": digest.hex(),
+        "event": name,
+        "event_payload": payload.hex(),
+    }, pos - offset
+
+
+def decode_dstack_attestation(blob: bytes) -> dict:
+    """Split a dstack attestation blob into quote, event log and TPM quote.
+
+    Returns the pieces only. It does NOT decide whether any of them should be
+    believed: the event log is authenticated by replaying it against the quote's
+    own register, which is the caller's job and the only thing that makes a
+    single field of it trustworthy.
+    """
+    if len(blob) < 2:
+        raise ScaleError("attestation blob is too short to carry a header")
+    pos = 2                                    # variant tag, version
+    quote, used = decode_bytes(blob, pos); pos += used
+    events, used = decode_vec(blob, pos, decode_tdx_event); pos += used
+    tpm_quote, used = decode_bytes(blob, pos); pos += used
+    if tpm_quote[:4] != DSTACK_TPM_MAGIC:
+        raise ScaleError(
+            f"expected the TPM quote to start with the TCG magic "
+            f"{DSTACK_TPM_MAGIC!r}, found {tpm_quote[:4]!r} — the layout has "
+            "moved and everything decoded before this point is suspect"
+        )
+    return {
+        "variant": blob[0],
+        "version": blob[1],
+        "quote": quote,
+        "events": events,
+        "tpm_quote": tpm_quote,
+        "remainder": blob[pos:],
+    }

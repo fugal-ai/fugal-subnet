@@ -80,6 +80,19 @@ def parse_approved(entries) -> dict[str, set[str]]:
     image an RTMR3 match proves nothing anyway, since an attacker running
     modified code extends whatever value is expected. Requiring it becomes
     meaningful when the extend is performed from a measured initrd.
+
+    THE APP IDENTITY IS NEVER AN RTMR3 VALUE, and storing one here would be a
+    subtle, expensive mistake. A measured image extends RTMR3 several times
+    during boot and one of those events is `instance-id`, which changes on every
+    deploy — so two honest miners running the identical approved application
+    produce different RTMR3 values, as does the same miner after a redeploy.
+    Measured on two real dstack deploys of the same compose.
+
+    What is approved is the compose hash carried in an event PAYLOAD. The replay
+    authenticates the log against the register the CPU signed; the payload is the
+    thing compared. An approved list holding RTMR3 values would pass its first
+    test and reject every honest miner from their second deploy onward, and the
+    symptom would look like an attack rather than a design error.
     """
     out: dict[str, set[str]] = {}
     for raw in entries:
@@ -241,6 +254,26 @@ def verify_proof(
                         f"Unapproved application: compose-hash {app_seen[:16]}... "
                         f"not among {len(required_apps)} approved for this image",
                     )
+            elif any(len(a) == 64 for a in required_apps):
+                # A 64-hex identity is a dstack compose hash, and a dstack TD
+                # extends RTMR3 NINE times during boot — including `instance-id`,
+                # WHICH CHANGES ON EVERY DEPLOY. Two honest miners running the
+                # identical approved compose therefore produce DIFFERENT RTMR3
+                # values, and so does one miner after a redeploy. Measured on two
+                # real deploys: same compose, different RTMR3.
+                #
+                # So RTMR3 can never be compared to a fixed value for this shape,
+                # and without the log there is nothing to replay. Refusing is the
+                # only correct answer; falling through to the single-extend
+                # comparison below would reject an honest miner on their second
+                # deploy and look exactly like an attack.
+                return VerifyResult(
+                    False,
+                    "Approved entry names a compose hash but the proof carries no "
+                    "TDX event log. RTMR3 on a measured image is a chain that "
+                    "includes per-deploy values, so it can only be checked by "
+                    "replaying the log — never by comparison.",
+                )
             else:
                 # No log: the single-extend case a Fugal miner produces today,
                 # where the whole chain is one runtime_identity from a zeroed

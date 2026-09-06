@@ -58,7 +58,15 @@ SKILL = {"a/cheap": 0.3, "b/mid": 0.6, "c/expensive": 0.9}
 #         validator's path `loop.is_running()` is False, so it calls
 #         `run_until_complete` with no timeout of its own, and the only
 #         bound is whatever the Rust HTTP client applies internally.
-RTT_SWEEP = [0.05, 0.25, 1.0, 3.0, 30.0]
+RTT_SWEEP = [0.05, 0.25, 0.69, 1.0, 3.0, 30.0]
+
+# The one row that is not a guess. Measured on a c3-standard-8 dstack CVM in
+# GCP us-central1 against Phala's PCCS: 788 ms cold, then 688 and 699 ms warm
+# (docs/INVARIANTS.md, "what a live dstack CVM actually reports"). Labelled with
+# its network on purpose -- a validator on a home connection or another
+# continent sees something else, so this is one point, not the constant.
+MEASURED_RTT = 0.69
+MEASURED_NOTE = "measured, GCP us-central1 -> Phala"
 FIELD_SIZES = [16, 64, 128, 256]
 
 
@@ -233,16 +241,18 @@ def main():
 
     local = m["local_mean"]
     print("--- serial epoch verify time = n x (local + collateral RTT) ---")
-    hdr = "  RTT/proof |" + "".join(f"{n:>12}" for n in FIELD_SIZES)
+    hdr = "  RTT/proof   |" + "".join(f"{n:>12}" for n in FIELD_SIZES)
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
     for rtt in RTT_SWEEP:
-        row = f"  {rtt:>8.2f}s |"
+        mark = " *" if rtt == MEASURED_RTT else "  "
+        row = f"  {rtt:>8.2f}s{mark}|"
         for n in FIELD_SIZES:
             total = n * (local + rtt)
             flag = "" if total < budget else " !"
             row += f"{total:>10.0f}s{flag:<2}"
         print(row)
+    print(f"\n  * {MEASURED_NOTE}; every other row is swept, not observed")
     print(f"\n  ! = exceeds the {budget:.0f}s post-collection budget")
     print("  (and that budget must also cover scoring, weight-setting and the reveal)\n")
 

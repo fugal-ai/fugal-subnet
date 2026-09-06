@@ -984,6 +984,49 @@ miner's own.)
 Not built. Recorded because the throughput work will otherwise fix the symptom
 that was measured rather than the property that is wrong.
 
+### I4 — "unverifiable" is a privilege, and the miner picks the fetch target
+
+If a proof can be classified *unverifiable* rather than *invalid*, that outcome
+must be unreachable by miner action. Otherwise a miner triggers it deliberately
+and becomes **unscoreable at will** — neither rewarded nor punished, immune to
+the attack suite, and invisible in the invalid count. That is an I4 problem
+(non-interference) wearing an I6 costume.
+
+**Two facts make this harder than picking the right exception, and both were
+checked in the library rather than assumed:**
+
+  - **The fetch target is derived from the miner's own bytes.**
+    `get_collateral(pccs_url, raw_quote)` parses the quote and extracts the
+    FMSPC to build the request. A miner supplying a well-formed quote with an
+    unknown FMSPC causes a fetch that fails for a reason that is entirely their
+    doing — and at fetch time nothing has verified that FMSPC yet.
+  - **dcap-qvl collapses every failure into one exception type.** Its own
+    docstring: *"ValueError: If the quote is invalid, the HTTP client can't be
+    built, or the PCCS / PCS fetch fails (all Rust-side errors are surfaced as
+    ``ValueError`` for consistency with the rest of this module)."* So
+    "Failed to find Fmspc" (the miner's bytes) and "Failed to get collateral"
+    (the network) are **indistinguishable at the Python boundary**.
+
+The consequence is that the rule "set `unverifiable` only for failures with no
+miner-controlled input" **cannot be implemented through the current API**.
+Branching on the message text is the alternative, and that is precisely the
+"never branch on prose" failure the flag exists to avoid.
+
+Splitting the calls helps and does not finish the job: `parse_quote` first
+(miner's bytes, so a failure is invalid), then `get_collateral` (network). But
+`get_collateral` still re-parses and can still fail on a crafted FMSPC, and an
+HTTP 404 — a *definitive negative answer* — is not distinguishable from a
+timeout, because the status code is not surfaced.
+
+**So this is not a fifth item on the hygiene list; it is another consequence
+that only collateral-in-proof resolves.** With collateral supplied by the miner
+there is no fetch, therefore no fetch-failure class, and `unverifiable` narrows
+to genuinely local conditions — a missing dependency, which no miner can cause.
+The I4 hole closes by construction rather than by classification.
+
+Whatever lands, it needs a `run_miner_attacks` case: hostile proof in, assert
+the outcome is **invalid** and never **unverifiable**.
+
 ### I1/I6 — a bare timeout trades a visible halt for a silent fork
 
 The obvious fix for the hang is a timeout on the collateral fetch. **It is not

@@ -247,3 +247,11 @@ All times UTC.
   it, and the data disk is auto-delete — so a redeploy discards the cache and
   the sealed seed (new instance ids); only `stop`/`start` preserve them. The
   compose comment that claimed otherwise is corrected in the same PR.
+- **21:40 — second approved entry.** Image `main-45729c2` →
+  `59039d0121d074da62e3dc380e88e01a7fe1e8f5e46409392e950a660158692a`
+  (build 11 m 47 s); frozen compose `12d945d278ac746655afa9487c1d63b7932e7f2029413147acd425c1c8363910`
+  (3564 bytes, TD1/TD2 identical, rehashed by the coordinator from the raw
+  bytes; diff vs the first compose is exactly the digest, the cache comment
+  and `FUGAL_BACKBONE_THREADS=0`). Both validators carry old+new entries —
+  the first exercise of the rotation window — then both TDs are recreated
+  with `deploy --delete`.

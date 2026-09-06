@@ -187,6 +187,70 @@ sudo systemctl enable --now fugal-miner
 | `--mock/--live` | `--mock` | Mock (default) or live TDX attestation |
 | `--log-level` | `INFO` | Logging level |
 
+## Running Under dstack (required for `--live`)
+
+`--live` requires a **measured** image, and a stock cloud VM is not one: the repo
+is cloned onto a filesystem nothing measures, so the attestation would prove
+which OS booted and nothing about which code ran. dstack solves that — its
+initrd extends your application's identity into RTMR3, and that initrd is itself
+measured into RTMR2 via a dm-verity roothash on the kernel command line.
+
+Everything below was found by deploying it, not read from documentation.
+
+### Choose the machine, and know what it commits you to
+
+Only the **0.6.0 prerelease** line ships the UKI package the cloud path needs;
+the stable 0.5.x line does not. So a GCP deployment is a prerelease deployment.
+That is a deliberate project decision, not an oversight — see
+[INVARIANTS.md](INVARIANTS.md) — but you should know it is what you are running.
+
+### Three landmines, in the order you will hit them
+
+**1. `dstack-cloud pull` is broken.** It builds a URL under a
+`guest-os-v{version}` tag that does not exist. The published image is tagged
+`mkosi-os-v0.6.0-rc0` with the asset `dstack-0.6.0-rc0-uki.tar.gz`. Download it
+manually and point `image_search_paths` at the extracted directory.
+
+**2. The default `key_provider` boot-loops, and the symptom is silent.** The
+guest calls Phala's public KMS at `kms.tdxlab.dstack.org:12001`, gets connection
+refused, `dstack-prepare` fails, and `panic=1` reboots it — about every eight
+seconds, forever. There is no error surfaced to the deploy; the VM simply never
+serves. Valid values are `none | kms | local | tpm`.
+
+> **This is a consensus setting, not a preference.** `key_provider` is extended
+> into RTMR3 as its own event and is part of the app-compose, so it lands in the
+> compose hash and therefore in the approved entry. **Every miner must use the
+> same value** or their compose hashes differ and none of them verify against
+> one approved list. Use the value this guide specifies; do not pick your own.
+
+**3. A non-empty `.env` hard-fails the deploy** unless KMS is enabled. Leave it
+empty on the `none` key provider.
+
+You also need `mtools`, `dosfstools` and `gdisk` on the deploying machine
+(`mcopy`, `mkfs.fat`, `sgdisk`).
+
+### Time budget
+
+About 32 minutes from nothing to a serving app, of which roughly 5 is the image
+download and 7.5 is uploading ~825 MB to GCS — on a residential connection that
+upload dominates. **Redeploys are about 4 minutes** once the GCP image exists,
+so the cost is paid once.
+
+### Pin images by digest, never by tag
+
+The compose hash is `sha256` of the **raw bytes** of `app-compose.json`. A tag
+that moves leaves the hash stable while the code beneath it changes — which is
+the exact defect the measured image exists to prevent, wearing a better hat.
+
+### What a validator checks, so you can predict rejection
+
+Your proof is accepted when the base measurement is approved, the event log
+replays to the RTMR3 in your quote, and the `compose-hash` event matches an
+approved application. Note the third: **your RTMR3 will differ from every other
+miner's**, because `instance-id` is extended into it and is new on every deploy.
+That is expected and is not a problem — what is approved is the compose hash
+inside the log, never the register.
+
 ## Updating Your Head
 
 Retrain on newer data and restart the miner with the new `.npz` file. The

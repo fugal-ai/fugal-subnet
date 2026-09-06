@@ -929,6 +929,15 @@ The attack, and its exact limit:
     a byte array. Splatting nine JSON values into the constructor does not work,
     which is where a "cheap and unconditional" sanitiser stops being either.
 
+    **A real dstack quote carries its own PCK chain, so stripping the
+    collateral's is safe in practice.** Measured on `attestation_A.bin`:
+    `cert_chain_pem_bytes` is **3677 bytes** and `ca` is `platform`, i.e. the
+    certification data embeds the chain in the quote itself. So forcing the
+    quote's chain cannot break a legitimate dstack miner — which is what makes
+    the sanitiser viable rather than merely correct. Whether `verify` *prefers*
+    a collateral-supplied chain when both are present is still open, but the
+    sanitiser is safe either way for the quotes this subnet actually receives.
+
     **It is the security boundary, so it needs an attack case, not a unit
     test.** `run_miner_attacks` must feed hostile collateral through the real
     path and assert the chain is gone. A test that only checks the honest
@@ -1007,19 +1016,35 @@ checked in the library rather than assumed:**
     "Failed to find Fmspc" (the miner's bytes) and "Failed to get collateral"
     (the network) are **indistinguishable at the Python boundary**.
 
-The consequence is that the rule "set `unverifiable` only for failures with no
-miner-controlled input" **cannot be implemented through the current API**.
-Branching on the message text is the alternative, and that is precisely the
-"never branch on prose" failure the flag exists to avoid.
+**The exception type carries zero information — demonstrated, not inferred.**
+With every fetch pointed at a closed local port so nothing left the host,
+garbage bytes, a truncated header and a mock quote all produced the identical
+`ValueError`. Branching on the type is impossible; branching on the message is
+the "never branch on prose" failure the flag exists to prevent.
 
-Splitting the calls helps and does not finish the job: `parse_quote` first
-(miner's bytes, so a failure is invalid), then `get_collateral` (network). But
-`get_collateral` still re-parses and can still fail on a crafted FMSPC, and an
-HTTP 404 — a *definitive negative answer* — is not distinguishable from a
-timeout, because the status code is not surfaced.
+**But splitting the calls filters more than first stated.** All three of those
+failed at **parse**, before any network call — the unreachable URL never
+mattered. `parse_quote` is separately exposed, so a parse-first split cleanly
+classifies every malformed-bytes case as *invalid*, and those are the cases a
+miner reaches by sending rubbish. Confirmed against a **real dstack TDX quote**
+as well as against garbage: it parses, `fmspc` is `00806F050000`, `ca` is
+`platform`.
 
-**So this is not a fifth item on the hygiene list; it is another consequence
-that only collateral-in-proof resolves.** With collateral supplied by the miner
+**The residual is one case, and its size is unmeasured:** a quote that *parses*
+but carries an FMSPC the upstream does not know, producing a fetch-time 404
+that is the miner's doing. That stands as **reasoned, not run** — demonstrating
+it needs a real upstream, and crafted quotes are not worth sending to a third
+party to find out. The binary does carry "Failed to find Fmspc" as a literal
+distinct from "Failed to parse quote", so the case is *classifiable in
+principle* if the library ever surfaced a code; it is not inherently
+indistinguishable, it is merely inaccessible without branching on prose.
+
+So the accurate claim is **not** that item 1 is unimplementable. It is that
+item 1 is implementable with a residual hole of unknown size that cannot be
+closed through this API.
+
+**The conclusion is unchanged: this is another consequence that only
+collateral-in-proof resolves.** With collateral supplied by the miner
 there is no fetch, therefore no fetch-failure class, and `unverifiable` narrows
 to genuinely local conditions — a missing dependency, which no miner can cause.
 The I4 hole closes by construction rather than by classification.

@@ -112,6 +112,27 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
             raise ValueError(
                 f"Head model ID is {len(name)} chars (max {HEAD_MAX_MODEL_ID_LEN})"
             )
+    # Distinct names, because HEAD_MAX_MODELS is a CAPACITY bound and duplicates
+    # spend it on something else. The cap exists to stop a head large enough to
+    # memorise the question pool rather than learn to route; a row is a
+    # parameter vector, and 64 rows all naming one model is 64 rows of capacity
+    # wearing the costume of a one-model head.
+    #
+    # Measured: a linear head fits random labels on 21,717 questions at 26.9%
+    # with distinct models, and **44.1%** at 32 rows over 8 names. Not enough
+    # for a lookup table, and not what 64 was chosen to permit either.
+    #
+    # It is also meaningless on its own terms — two rows naming the same model
+    # are two ways to say the same route, and softmax over them is a
+    # reparameterisation with no routing content. Nothing honest produces it.
+    if len(set(models)) != L:
+        dupes = sorted({m for m in models if models.count(m) > 1})
+        raise ValueError(
+            f"Head names {len(set(models))} distinct models across {L} rows — "
+            f"duplicates: {dupes[:3]}. Rows must name distinct models: the row "
+            "cap bounds head capacity, and duplicate names spend that capacity "
+            "without declaring it."
+        )
 
     if not np.all(np.isfinite(W)):
         raise ValueError("Head W contains non-finite values")

@@ -13,6 +13,7 @@ AXON_PROTOCOL_FILES = (
     ROOT / "neurons" / "miner.py",
     ROOT / "fugal_subnet" / "protocol.py",
 )
+_GUARDED = {"fugal_subnet", "neurons"}
 IMMUTABLE_V1_GRADER_SHA256 = (
     "895809dedf0d14c45d9ec046bcbec2f50a09fcf7d31d9996a178e35f3539c55f"
 )
@@ -286,6 +287,252 @@ def check_collateral_endpoint_explicit(errors: list[str]) -> None:
         )
 
 
+def check_external_calls_bounded(errors: list[str]) -> None:
+    """I6. No external party may stop a validator completing an epoch.
+
+    I6 used to say "no MINER behaviour", and that wording is what let the hang
+    through: the collateral fetch is a call to a THIRD PARTY, so no reading of
+    the old invariant was violated while a stalled PCCS blocked every validator
+    in the field simultaneously -- no weights, and no log line either, because
+    the code that records the failure sits downstream of the block.
+
+    The lesson is that the invariant was wrong, not merely unenforced. A
+    timeout on the one call that happened to be unbounded fixes today; this
+    check is what stops the NEXT network call added inside the epoch loop from
+    recreating it, and there will be one.
+
+    Two things are enforced:
+
+    1. Every `_run_coro` call passes a `timeout`. The helper runs a coroutine
+       from sync code and defaults to unbounded, which is correct for a helper
+       and fatal for a call on the epoch path.
+    2. Every blocking network primitive passes a `timeout`. Each of these
+       defaults to "wait forever" if the argument is omitted, and the omission
+       is invisible at the call site -- it looks like every other call.
+
+    Deliberately a syntactic check on argument presence, not a claim about the
+    VALUE. A budget can be wrong; an absent budget is unbounded, and only the
+    second kind produces a subnet that stops setting weights.
+    """
+    # Split by whether the NAME alone is evidence. `urlopen` and
+    # `create_connection` mean one thing in Python; `get` and `post` are also
+    # dict and mapping methods, so those need a receiver that looks like an
+    # HTTP client before they count.
+    #
+    # They were one set for a commit, gated as a whole on the receiver. That
+    # silently disabled the two unambiguous names in their normal
+    # module-qualified form -- `urllib.request.urlopen(url)` has receiver
+    # `request`, `socket.create_connection(addr)` has receiver `socket`, and
+    # neither is in the client list. Recall measured at 2 of 6 planted calls.
+    # The fix for a false positive had quietly created false negatives, which
+    # is worse: the check kept reporting success while inspecting less.
+    unambiguous_apis = {"urlopen", "create_connection"}
+    ambiguous_apis = {
+        "get", "post", "put", "head", "delete", "patch", "request",
+    }
+    unbounded_apis = unambiguous_apis | ambiguous_apis
+    # Bare `get`/`post` are far too common as method names, so an attribute
+    # call only counts when its receiver looks like an HTTP client.
+    #
+    # `s` was in this set for one commit, for `s = requests.Session()`. It
+    # matched `s.get("accuracy", ...)` on a plain dict in epoch_logger instead.
+    # Dropped deliberately: the cost of a false positive here is not noise, it
+    # is that somebody eventually silences the whole check, and then the real
+    # unbounded call lands unremarked. Precision over recall.
+    #
+    # KNOWN GAP, stated rather than papered over, and MEASURED rather than
+    # guessed at. Against six deliberately planted unbounded calls this catches
+    # four: `requests.get(url)`, `urlopen(url)`, `urllib.request.urlopen(url)`
+    # and `socket.create_connection(addr)`. It misses the two that bind a
+    # client to a name first -- `sess = requests.Session(); sess.get(url)` and
+    # `httpx.Client().get(url)` -- because that needs assignment tracking.
+    #
+    # Four of six is worth having and is not worth mistaking for six of six.
+    # I6 claims every call leaving the process on the epoch path is bounded and
+    # names this check as the enforcement, so the distance between the claim
+    # and the check belongs in writing, next to the check.
+    http_receivers = {"requests", "httpx", "session", "client", "http"}
+
+    for path in python_files():
+        rel = path.relative_to(ROOT)
+        if rel.parts[0] not in {"fugal_subnet", "neurons"}:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            has_timeout = any(k.arg == "timeout" for k in node.keywords)
+            if has_timeout:
+                continue
+
+            if isinstance(node.func, ast.Name):
+                name, receiver = node.func.id, None
+            elif isinstance(node.func, ast.Attribute):
+                name = node.func.attr
+                receiver = (
+                    node.func.value.id
+                    if isinstance(node.func.value, ast.Name) else None
+                )
+            else:
+                continue
+
+            if name == "_run_coro":
+                errors.append(
+                    f"{rel}:{node.lineno} calls _run_coro without a timeout — "
+                    "the helper is unbounded by default, so this is a call that "
+                    "can block a validator's epoch forever (I6)"
+                )
+                continue
+            if name not in unbounded_apis:
+                continue
+            if name in ambiguous_apis and isinstance(node.func, ast.Attribute) and (
+                receiver is None or receiver.lower() not in http_receivers
+            ):
+                continue
+            errors.append(
+                f"{rel}:{node.lineno} calls {name}() with no timeout — a "
+                "blocking network call on the validator's path waits forever by "
+                "default, and one stalled upstream then halts every validator "
+                "at once, because the collection point is a deterministic block "
+                "(I6)"
+            )
+
+    cfg = (ROOT / "fugal_subnet" / "config.py").read_text(encoding="utf-8")
+    if "TEE_COLLATERAL_TIMEOUT" not in cfg:
+        errors.append(
+            "config.TEE_COLLATERAL_TIMEOUT is missing — the collateral fetch is "
+            "the one external call inside the epoch loop, and its bound is what "
+            "keeps a stalled PCCS from halting the subnet (I6)"
+        )
+
+
+def check_measured_registers_documented(errors: list[str]) -> None:
+    src = (ROOT / "fugal_subnet" / "tee" / "attestation.py").read_text(encoding="utf-8")
+    body = re.search(
+        r"def measurement_id\(.*?\n(.*?)(?=\n(?:def |class |@))", src, re.S)
+    if body is None:
+        errors.append("could not locate measurement_id() to derive its register set (I8)")
+        return
+    # The registers the CODE actually hashes.
+    actual = {m.lower() for m in re.findall(r"quote\.(mrtd|rtmr\d)", body.group(1))}
+    if not actual:
+        errors.append("measurement_id() names no registers — cannot check docs against it (I8)")
+        return
+
+    # LIMITATION, found by this check firing on INVARIANTS.md prose that quoted
+    # a wrong register set as an example of what not to write: it cannot tell an
+    # assertion from an illustration. Documentation discussing a wrong set
+    # should describe it rather than format it as a claim. Loosening the pattern
+    # to fix that would cost more than it buys.
+    #
+    # Only claims of MEMBERSHIP are checked. Docs discuss RTMR0 and RTMR3 at
+    # length to explain why they are EXCLUDED, and that prose must not trip.
+    # Two assertion shapes, both anchored on MRTD appearing with the register
+    # list, which is what a membership claim looks like:
+    #   "sha256(MRTD || RTMR1 || RTMR2)"   explicit formula
+    #   "(MRTD, RTMR0-2)"                  range form
+    claim_re = re.compile(
+        r"\(\s*MRTD\s*(?:[,‖|]|and)\s*RTMR\s*(\d)\s*(?:[-–]\s*(\d))?"
+        r"(?:\s*(?:[,‖|]|and)\s*RTMR\s*(\d))?[^)]*\)", re.I)
+
+    for rel in ("docs/MINER_GUIDE.md", "docs/INVARIANTS.md", "docs/VALIDATOR_GUIDE.md",
+                "docs/design-decisions.md", "AGENTS.md", "README.md"):
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in claim_re.finditer(line):
+                lo, hi, extra = m.group(1), m.group(2), m.group(3)
+                claimed = {"mrtd"}
+                if hi:                      # a range: RTMR0-2
+                    claimed |= {f"rtmr{i}" for i in range(int(lo), int(hi) + 1)}
+                else:
+                    claimed.add(f"rtmr{lo}")
+                    if extra:
+                        claimed.add(f"rtmr{extra}")
+                if claimed != actual:
+                    why = (
+                        " RTMR0 is host-chosen, so a reader who believes it is "
+                        "measured expects the approved list to fork by instance "
+                        "size, and it does not."
+                        if "rtmr0" in claimed - actual else ""
+                    )
+                    errors.append(
+                        f"{rel}:{lineno} says the base measurement is "
+                        f"{sorted(claimed)} but measurement_id() hashes "
+                        f"{sorted(actual)} — a miner reading this predicts the "
+                        f"wrong rejection.{why} (I8)"
+                    )
+
+
+def check_one_accuracy_definition_on_the_consensus_path(errors: list[str]) -> None:
+    """I1. Every validator must divide by the same denominator.
+
+    Two accuracy definitions exist in this repo and they differ by ~7 points:
+
+      - `proof.accuracy` = `n_correct / len(scored_results)` — every scored
+        question is in the denominator. THIS is what scoring reads, via
+        `_proof_to_head_score`.
+      - `head_eval.evaluate_head` drops questions no model in the pool answered
+        correctly ("carry no routing signal", head_eval.py:203) before dividing.
+
+    Both are defensible. Only one is consensus, and `evaluate_head` is not on
+    that path at all — verified: it has zero callers under `fugal_subnet/` or
+    `neurons/`, and every reference lives in tests, scripts or comments.
+
+    So this guards a hazard rather than a bug. The trap is the NAME: it is the
+    function you would reach for to reason about head scoring, and it is not
+    the scoring function. Someone did reach for it and got a number 7% high
+    with no warning — a reference model scoring 1.065 against itself, which the
+    shipped definitions make impossible. A docstring would not have helped;
+    docstrings are read by people already looking at the function, and the
+    failure mode is someone grepping for a scoring function and finding one
+    with the right name. Wiring it in would move every miner's apparent
+    accuracy by ~7 points while reading as a refactor.
+
+    NOTE FOR ANY RENAME. This check hardcodes the string "evaluate_head". If
+    the function is renamed — `evaluate_head_offline` and
+    `training_head_score` have both been suggested, and the name IS the trap —
+    the string must move in the same commit, or this guard silently stops
+    guarding. Deferred for now only because the rename would break a teammate's
+    in-flight experiment, not because it is wrong.
+    """
+    for path in sorted(ROOT.rglob("*.py")):
+        rel = path.relative_to(ROOT)
+        if rel.parts[0] not in _GUARDED or rel.parts[-1] == "head_eval.py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            hit = (
+                isinstance(node, ast.ImportFrom)
+                and any(a.name == "evaluate_head" for a in node.names)
+            ) or (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "evaluate_head"
+            ) or (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "evaluate_head"
+            )
+            if hit:
+                errors.append(
+                    f"{rel}:{node.lineno} puts head_eval.evaluate_head on the "
+                    f"consensus path. It uses a DIFFERENT accuracy denominator "
+                    f"from proof.accuracy -- it drops questions no model "
+                    f"answered, which inflated a measured score from 0.994 to "
+                    f"1.065. Scoring must read accuracy from the proof "
+                    f"(_proof_to_head_score), so that every validator divides "
+                    f"by the same thing (I1)"
+                )
+
+
 def check_price_table_pinned(errors: list[str]) -> None:
     """The consensus price table must match its pin, and be well-formed."""
     path = ROOT / "data" / "models.json"
@@ -449,6 +696,9 @@ def main() -> None:
     check_immutable_v1_grader(errors)
     check_price_table_pinned(errors)
     check_collateral_endpoint_explicit(errors)
+    check_external_calls_bounded(errors)
+    check_measured_registers_documented(errors)
+    check_one_accuracy_definition_on_the_consensus_path(errors)
     check_tpm_trust_anchor(errors)
     check_tpm_dependency_pin(errors)
     check_epoch_id_single_source(errors)

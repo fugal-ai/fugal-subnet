@@ -31,12 +31,114 @@ here, and a check that enforces it.**
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time |
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
-| **I6** | **Liveness.** No miner behavior can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py` |
+| **I6** | **Liveness.** No miner behavior **and no external dependency** can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. Every call that leaves the process on the epoch path is bounded. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py`, `tests/test_collateral_timeout.py`, `check_safety_invariants.check_external_calls_bounded` |
 | **I7** | **Auditability.** Any divergence between two validators is diagnosable after the fact from published artifacts. | `fugal_subnet/fingerprint.py`, `environment` block in every `reveal.json` |
 | **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (11 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
 | **I9** | **Reference-frame agreement.** Every validator derives the same reference frame from the same published exploration samples, and no single miner can materially move it. | `fugal_subnet/reference_frame.py` (order-independent accumulation), `check_determinism.py` `frame` stage, `tests/test_non_interference.py` |
 
 ## How TEE resolves prior gaps
+
+### I3 — OPEN: not routing at all outscores routing
+
+**Status: measured, unfixed, and a product decision rather than a tuning one.**
+
+I3 says a miner cannot raise its score except by routing better or more
+cheaply. On the shipped constants that holds in the letter and fails in
+substance. Measured on 5,000 held-out questions with the shipped trainer and
+the shipped routing rule:
+
+| strategy | score |
+|---|---|
+| **always gpt-4o-mini** — `W=0` plus a one-hot bias | **1.183** |
+| trained head (SFT) | 1.058 |
+| trained head (+CMA) | 1.060 |
+| per-benchmark lookup | 1.036 |
+| best single model *(the reference)* | 0.985 |
+| random head | 0.868 |
+| always cheapest | 0.479 |
+
+**The head is not the problem.** It genuinely routes — 13 models used,
+within-source top share 0.45 where a benchmark lookup would be 1.00 by
+construction — and it beats chance by 0.24, the reference by 0.07, and a domain
+lookup. On MATH it reaches 0.895 against best-single's 0.775 by routing to a
+model 12x cheaper and better at maths. That is the product working. The problem
+is that a head which never reads the question beats it by 12%, costs nothing to
+build, and any miner finds it on day one.
+
+**Why the existing defence misses it.** `scoring.py` argues the geometric mean
+stops degenerates because "neither axis can rescue the other". That was tested
+at the ENDS of the price range and holds there — always-cheapest scores 0.479.
+The winner is in the MIDDLE. `config.py` derives `w` from "a router that gives
+up **40%** of quality must not outscore a quality match"; this one gives up
+**5%** and wins. The constraint was applied to the wrong corner.
+
+**It is not an artefact of the dataset it was found on.** The break-even is a
+property of the scoring constants alone:
+
+    acc_k / acc_best  >  thrift ^ (-(1-w)/w)
+
+At `w=0.9` and `SCORE_THRIFT_CAP=10`, a constant policy beats the reference on
+**77.4%** of its accuracy and beats the trained head on **82.3%**. On
+`data/models.json` the 17 pinned models span **168x** in cost and **8 of 17**
+sit at or beyond the thrift cap. Establishing whether any pinned model clears
+82.3% costs ~$688 of real inference and has not been run — so this is treated
+as LIVE on the pinned table.
+
+**Three resolutions, and they are not the same kind of change:**
+
+1. **Re-tune** (exponent, thrift cap). Cheapest to act on, and constrained:
+   the pairwise bound already forces `w > 0.9002`, the cap is *already* binding
+   at 10 against gpt-4o-mini's raw 14.7 and still leaves the exploit
+   profitable, and pushing `w` toward 0.96 leaves the subnet nearly
+   indifferent to cost — the thing it exists to measure.
+2. **Accept it.** The subnet's claim is quality per dollar, and by that measure
+   a cheap-and-decent model honestly *is* better value than a router costing
+   9x more for 5% more accuracy. If so, routing is not worth doing on this
+   model set, and no exponent hides that.
+3. **Change the reference.** Scoring against the best *single* model hands a
+   cheap model a large thrift ratio for free. A cost-matched frontier prices it
+   differently. This is a consensus redesign.
+
+Recorded here rather than patched because (1) is the cheapest to reach for and
+the analysis does not support it being obviously right.
+
+`tests/test_degenerate_constant_policy.py` pins the break-even so the constants
+cannot move without meeting this. **The check that would have caught it
+originally is 13 evaluations** — assert a trained head beats every constant
+policy — and it would have failed on the commit that moved `w` to 0.9.
+
+### I1 — two accuracy definitions exist, and only one is consensus
+
+They differ by about **7 points**, and both are defensible:
+
+| | Denominator | Where |
+|---|---|---|
+| `proof.accuracy` | every scored question | `proof.py` — **this is what scoring reads**, via `_proof_to_head_score` |
+| `head_eval.evaluate_head` | scored questions *minus* those no model in the pool answered correctly | `head_eval.py:203` — "carry no routing signal" |
+
+Excluding unanswerable questions is reasonable for measuring routing skill:
+nobody could have got them right, so they say nothing about the router. Keeping
+them is reasonable for scoring: it is the miner's realised accuracy on the slice
+it was given. The problem is not that either is wrong. It is that **two exist
+and one is called the obvious name.**
+
+`evaluate_head` is not on the consensus path — verified, it has zero callers
+under `fugal_subnet/` or `neurons/`, and every reference is in tests, scripts or
+comments. So there is no bug in the shipped subnet. What there is, is a trap:
+it is the function you would reach for to reason about head scoring, and it is
+not the scoring function. Someone did reach for it and got a reference model
+scoring **1.065 against itself** — impossible under the shipped definitions,
+where the reference's thrift is exactly 1 and its quality cannot exceed 1.
+
+`check_one_accuracy_definition_on_the_consensus_path` fails CI if anything under
+`fugal_subnet/` or `neurons/` imports or calls it. A docstring was considered and
+rejected: docstrings are read by people already looking at the function, and the
+failure mode is someone grepping for a scoring function and finding one with the
+right name. Wiring it in would move every miner's apparent accuracy by ~7 points
+while reading as a refactor.
+
+The invariant is not "use this function". It is that **every validator divides
+by the same denominator**, and the denominator comes from the proof.
 
 ### I1 — matrix agreement (resolved by architecture)
 
@@ -122,6 +224,62 @@ architecture — every other Bittensor subnet has miners pay for expensive work.
 **Resolution:** Validators verify proofs, never call models. Zero validator
 inference cost. Miners pay for their own API calls inside the TEE, metered by
 the attested MeteringProxy.
+
+### I8 — image identity and code identity are two claims, and only one is in the measurement
+
+The two are routinely collapsed, in this repo's own documentation twice, in
+opposite directions at the same time. `docs/MINER_GUIDE.md` simultaneously
+over-claimed what the base measurement proves ("running a modified harness
+produces an unapproved measurement" — it does not) and mis-stated which
+registers compose it ("MRTD, RTMR0-2" — RTMR0 is excluded). One document, one
+section apart, wrong both ways. That is not carelessness so much as a sign that
+the distinction was never named as a pair, so there was nothing to be
+consistent with.
+
+Named as a pair:
+
+| Claim | What proves it | What it does NOT prove |
+|---|---|---|
+| **Image identity** — which OS image booted | `measurement_id` = `sha256(MRTD ‖ RTMR1 ‖ RTMR2)`, filled by the CPU and covered by the Intel signature | Which Fugal code ran. On a stock VM the repo is git-cloned onto an unmeasured filesystem; **measured directly**, editing `harness.py` left the value byte-identical |
+| **Code identity** — which application ran | The `compose-hash` event replayed out of RTMR3 and checked at `verify.py:366`, which covers the image the compose names | Anything, unless the image is pinned by digest — a moving tag leaves the hash stable while the code beneath it changes |
+
+Three consequences follow, and each has previously been rediscovered rather
+than read:
+
+- **RTMR0 is excluded and its exclusion is load-bearing.** It records the TDVF
+  configuration the host builds — CPU count, memory size, device config — which
+  the cloud provider chooses, not us. Including it would fork the approved list
+  by instance size while proving nothing about the code. This is why miners may
+  pick any machine shape, and a document that lists RTMR0 as measured silently
+  revokes that permission.
+- **RTMR3 is excluded from `measurement_id` but is not ignorable.** It carries
+  code identity. Excluding it from the *image* identity is correct; treating it
+  as unused is the error that would make dstack adoption buy nothing.
+- **`--live` requires dstack for this reason and no other.** Not because a
+  stock TDX VM cannot produce a genuine quote — it can — but because nothing on
+  it binds the code to the quote.
+
+The general form, which is the reason this is here rather than only in the
+guide: **a measurement is evidence for exactly the claim its inputs cover, and
+the inputs are not in the sentence.** "Attested" reads as covering whatever the
+reader had in mind. Whenever this document or any other asserts that something
+is attested, it should name the registers, because two readings that differ by
+one register differ by the whole security property.
+
+`check_measured_registers_documented` enforces the membership half. It derives
+the expected register set from `measurement_id`'s own body rather than
+hardcoding it, so changing the code to include RTMR3 for dstack fails the check
+until the documentation follows — which is the direction the failure should
+point. Falsified against both the sentence this audit removed and a plausible future
+drift naming RTMR3 in place of RTMR2; it fires on each and passes clean.
+
+Note the shape of its one limitation, discovered by it firing on the sentence
+above when that drift was written out in full: **the check cannot tell an
+assertion from an illustration.** A membership claim quoted as an example of
+what NOT to write reads identically to the claim itself. That is the same
+precision-over-recall trade as the `s.get` false positive, and the cost is
+borne here rather than by loosening the pattern — prose that needs to discuss a
+wrong register set should describe it rather than format it as a claim.
 
 ### I8 — BROKEN AS IMPLEMENTED: the measurement does not cover the miner's code
 
@@ -1187,6 +1345,159 @@ worth doing** — but none restores determinism. The only fix for the fork is to
 remove the per-validator network dependency from the verdict entirely, which is
 what collateral-in-proof does. Anything short of that is choosing which bad
 outcome to prefer.
+
+### I6 — the invariant was wrong, not merely unenforced
+
+I6 read "no **miner** behaviour can stop a validator completing an epoch". The
+hang that halted the subnet did not arrive through a miner. It arrived through
+a third party, so **no reading of the old invariant was violated** while every
+validator in the field blocked simultaneously on a stalled PCCS.
+
+That is worth stating plainly, because the tempting conclusion — "we forgot a
+timeout" — is the wrong one and leads to the wrong fix. A timeout on the one
+call that happened to be unbounded repairs today. It does nothing about the
+next call added inside the epoch loop, and there will be one. What failed was
+the **scope of the property**: the invariant named the adversary (a miner)
+rather than the requirement (the epoch completes). Anything outside the process
+can stall, whether or not it is hostile, and whether or not it is a miner.
+
+So I6 now reads **"no miner behaviour and no external dependency"**, and
+`check_external_calls_bounded` enforces it syntactically: every `_run_coro`
+call and every blocking network primitive under `fugal_subnet/` and `neurons/`
+must pass a `timeout`. The check asserts the argument is *present*, not that
+its value is *right* — a wrong budget is a tuning bug, an absent budget is
+unbounded, and only the second kind stops the subnet.
+
+**What the timeout actually cost to get right, and why it is recorded here.**
+The pre-existing `timeout=30` was not merely inapplicable to the validator's
+synchronous path. It was **ineffective on both branches**:
+
+- `run_until_complete` had no bound of its own. Measured: a stub sleeping 60 s
+  blocked for the full 60 s.
+- `Future.result(timeout=30)` does raise on time, but `with
+  ThreadPoolExecutor()` calls `shutdown(wait=True)` on exit, so the
+  `TimeoutError` cannot propagate until the hung call finishes anyway.
+  Measured: a 2 s bound over a 6 s stall returned at **6.01 s**.
+
+Reading the code found a timeout and stopped there. Only running it showed the
+timeout was decorative — the same lesson recorded in the method note of
+`docs/OPEN_WORK.md`, arrived at again by the same route. The fix is
+`asyncio.wait_for` **inside** the coroutine, because it *cancels* the work
+rather than abandoning the wait: the loop unwinds, the worker thread finishes,
+and shutdown has nothing to wait for. One mechanism, both branches.
+
+`tests/test_collateral_timeout.py` therefore asserts the bound in **wall-clock
+time**. An assertion that a timeout argument was *passed* passes against the
+broken code; only a clock distinguishes a bound that fires from one that is
+merely present. Falsified against the pre-fix implementation: the suite takes
+120 s and fails, and 5 s and passes after.
+
+**The bound must ABANDON the fetch, not cancel it — and this was found by
+crashing the interpreter, not by reading.** The obvious implementation,
+`asyncio.wait_for`, bounds the call correctly and then cancels the coroutine.
+Cancelling *this* coroutine unwinds a Rust future inside pyo3, whose tokio
+worker then touches the interpreter during finalization:
+
+    thread 'tokio-rt-worker' panicked at pyo3/src/interpreter_lifecycle.rs:
+    assertion failed: The Python interpreter is not initialized
+
+Measured against a local socket that accepts and never answers: the bound fires
+correctly at 2.01 s, the process stays usable, and then exits 134 or 139 — **4
+runs in 10**. `neurons/validator.py` contains no `async def`, so it takes that
+path for every proof of every epoch. A hang had been traded for an intermittent
+crash.
+
+The whole test suite passed throughout, because every case stubbed
+`get_collateral` with an `asyncio.sleep`. **A Python coroutine cancels cleanly;
+the Rust future does not.** The stub differed from the real thing at exactly
+the point under test — the same error as the decorative `timeout=30` those
+tests were written to catch, committed while writing them. So
+`tests/test_collateral_timeout.py` now runs the real binding in a subprocess
+against a stalled socket and asserts the **exit code**, six times, because the
+broken version passed six runs in ten.
+
+The fix is a daemon thread with a bounded `join`. On timeout the thread is left
+running: the fetch finishes on its own, or the process exits without it.
+Nothing is cancelled, so pyo3 is never unwound. Measured 12/12 clean.
+
+**The cost of abandoning is a leaked file descriptor per abandoned fetch**
+(measured: 1.02), because the socket outlives the wait. A container on the
+common 1024 default would exhaust it within a few epochs against a stalled
+PCCS and lose its axon and subtensor sockets — an I6 failure by a different
+road. The only way to leak fewer is to dial fewer times, so `CollateralBudget`
+carries a circuit breaker: `TEE_COLLATERAL_MAX_TIMEOUTS` (3) consecutive
+timeouts and this validator stops dialling that endpoint for the rest of the
+epoch.
+
+**The threshold is 10, and 3 — the intuitive answer — was measurably wrong.** A
+breaker turns a graded failure into an all-or-nothing cliff, so where the cliff
+sits decides how far two honest validators *on the same PCCS* diverge.
+Simulated over 400 validator-epochs per cell at the real defaults, the p10..p90
+spread in proofs verified was 11 with no breaker and 11 at K=10, but **136 at
+K=3** once one call in ten stalls: one validator trips at proof ~5 and verifies
+100 while its neighbour never trips and verifies 236. The breaker was free when
+the endpoint was healthy and maximally divergent exactly when it was degraded,
+which is the only case it exists for. K=10 is indistinguishable from no breaker
+on divergence and still caps a dead PCCS at 10 abandoned fetches.
+
+The fd cost of the higher threshold is also smaller than the first measurement
+suggested: abandoned descriptors **are** reclaimed once the connection dies, by
+peer close or by the kernel's retransmit timeout (~15 min, well inside a 3600 s
+epoch). The leak is transient, not cumulative across epochs. The original
+"exhausts 1024 in four epochs" came from a stall server that held every
+connection open forever, which no real PCCS does. Consecutive rather than cumulative — an upstream answering in between is
+slow, and slow is what the time budget is for. That bounds the leak at 3 per
+epoch instead of one per miner.
+
+**The per-proof bound does not by itself satisfy I6 at field scale**, and that
+is worth stating because "the fetch has a timeout now" reads like the problem
+is solved. The verify loop is serial over every UID, so a slow-but-alive PCCS
+costs N x the per-call bound: 256 proofs at 10 s is 2560 s against an 1800 s
+post-collection window. The epoch completes in the sense that the function
+returns, and misses its weight-setting window regardless — an I6 failure
+wearing the costume of a successful run.
+
+So the bound is **two bounds**. `CollateralBudget`
+(`config.TEE_COLLATERAL_EPOCH_BUDGET`, 600 s) caps what the whole phase may
+spend, is charged on every exit rather than only on success, and refuses
+without dialling once spent. Sized at ~3.4x the measured healthy cost
+(256 x 690 ms = 178 s) and a third of the post-collection window.
+
+Two consequences that are not obvious:
+
+- **Verification order became a fairness question.** When the ceiling binds,
+  whoever is last in line goes unverified. In UID order that is the same miners
+  every epoch. The order is therefore derived from the epoch nonce — identical
+  across validators, not miner-influenceable, and it rotates the exposure.
+- **A time ceiling biases persistently, not just once.** A count cap would cut
+  at the same index on every validator; a time budget cuts where each
+  validator's network luck puts it. That difference is not noise — a validator
+  on a poor link verifies systematically fewer proofs **every epoch**, so the
+  divergence is correlated with infrastructure quality rather than averaging
+  out. It is a real cost of choosing time over count, it is accepted because a
+  count cap cannot bound time at all (to avoid binding a healthy epoch it must
+  exceed the field size, which is the 2560 s overrun being fixed), and only
+  collateral-in-proof removes it.
+- **A shared ceiling is a shared resource**, so I4 applies to it. A malformed
+  quote cannot drain it, because parsing happens before fetching and is judged
+  locally; that is now asserted by a test rather than left as a property of the
+  code's current shape. The crafted-FMSPC residual still reaches the fetch, but
+  buys one fetch per miner per epoch, so exhausting the ceiling also requires
+  the upstream to be slow.
+
+  That last clause turned out to rest on a quantity **nobody has measured**:
+  how long a PCCS takes to refuse an FMSPC it does not recognise. A fast 404
+  (~0.7 s) needs >850 hostile UIDs to drain 600 s and the attack is impossible
+  at 256; a stall to the full per-call bound needs ~60, and with the circuit
+  breaker as few as three landing consecutively in the permutation would end
+  verification for the rest of the field. Registration is at the floor
+  (~$0.12/UID).
+
+  So the allowance enforces a **per-proof fair share** —
+  `min(per_call, remaining, remaining/proofs_left)` — which bounds what any one
+  proof can take from the miners behind it regardless of that timing. The
+  design is no longer conditional on an unmeasured fact. Measuring it is still
+  worth doing, but it decides tuning now rather than safety.
 
 ### I6 — a PCCS hang halts the subnet, and does it invisibly
 

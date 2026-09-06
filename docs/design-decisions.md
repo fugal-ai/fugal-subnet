@@ -56,7 +56,7 @@ per-question oracle:
 ```
 quality = wilson_lcb(accuracy) / acc_best
 thrift  = ref_cost / miner_cost
-score   = quality^0.8 * thrift^0.2
+score   = quality^0.9 * thrift^0.1
 ```
 
 Three revisions to the sketch above, each forced by something concrete:
@@ -95,6 +95,46 @@ Three revisions to the sketch above, each forced by something concrete:
    future change to `SCORE_THRIFT_CAP` must re-derive the exponent;
    `tests/test_scoring_tradeoff.py` fails loudly if one moves without the
    other.
+
+   **And it must re-run the economics model, because this exponent is an
+   economic parameter as well as a scoring one.** That coupling was unnoticed
+   until `docs/MINER_ECONOMICS.md` was derived at both values. Raising w from
+   0.8 to 0.9 cut cost pressure from `100^0.2` = 2.51 of effective range to
+   `100^0.1` = 1.58, against quality's `3^0.9` = 2.69 — so the indifference
+   ratio `w/(1-w)` moved from "a 4% cost rise per 1% of quality" to 9%, and the
+   quality advantage needed to justify the dearest model over the cheapest fell
+   from **3.62x to 1.77x**. At 0.8 that was outside the ~3x quality span and so
+   unreachable; at 0.9 it is comfortably inside it.
+
+   The consequence is not a scoring bug — the 0.9 correction was forced by a
+   real exploit (a 63%-accuracy router outscoring a 93% one) and stands. The
+   consequence is that the *expensive* routing corner became reachable, and the
+   sustainable field size there is ~37 miners, inside the 1–63 earning miners
+   observed on live subnets. **Miner solvency in that corner is enforced by
+   exit, not by the incentive.** A future exponent change moves that number and
+   nothing in the scoring tests would notice.
+
+   In one line: **w decides where in the 10.7x routing-cost range miners
+   settle, and therefore how large a field the subnet can sustain** — N* is
+   392.8 at the cheap end of that range and 36.6 at the dear end.
+
+   **And this is forced, not a side effect of choosing 0.9.** Recomputed from
+   the pinned table: the dearest model costs **172.3x** the cheapest per epoch
+   (gpt-5.5 at $2.41 against deepseek-v4-flash at $0.014). The quality ratio a
+   miner needs to justify the dearest over the cheapest is `R^((1-w)/w)`, which
+   crosses the ~3x quality span at **w\* = 0.824** — and the pairwise bound
+   derived above already requires **w > 0.9002**. The bound sits above the
+   crossover, so *every exponent this derivation permits puts the expensive
+   corner in reach.* The scoring requirement and the economic consequence are
+   not independent: satisfying the first forces the second. The only ways out
+   are a different thrift cap or a different price table.
+
+   The conditional worth keeping: this holds while the quality span exceeds
+   **1.77x** (the ratio needed at w = 0.9002). At the stated ~3x there is real
+   room, but ~3x is itself an estimate. If per-model accuracy measured on
+   testnet puts the true span below 1.77x, this reverses — which puts it on the
+   same list as the cost/revenue coupling caveat in `MINER_ECONOMICS.md`, both
+   waiting on the same measurement.
 
 ---
 
@@ -279,7 +319,7 @@ Miner discovers which questions are in the pool and overfits.
 | Step 3: TEE infrastructure | **Implemented** | `fugal_subnet/tee/` — attestation, runtime, confine, proof, verify, harness. TDX patterns forked from ThirtySpokes/Chutes (MIT). |
 | Step 3: TEE *bindings* | **Implemented** | Measurement from the quote's own registers, slice binding, head binding, bundle binding, cost consistency as rejection. `run_tee_attacks.py` keeps an exploit for each. |
 | Step 4: Evidence accumulation | **Implemented** | EWMA-decayed binomial, artifact-keyed reset, miss=0, effective-n capped by pool size, burn-in ramp. |
-| Step 2: Scoring formula | **Implemented** | `quality^0.8 * thrift^0.2` against the best single model. Exponent derived from the product claim. |
+| Step 2: Scoring formula | **Implemented** | `quality^0.9 * thrift^0.1` against the best single model. Exponent derived from the product claim — 0.8 was the original value and is refuted above. |
 | Step 2: Cost model | **Implemented** | Pinned `data/models.json` as the consensus denominator; attested provider spend recorded alongside for drift detection. |
 | — : Exploration + reference frame | **Implemented** | Nonce-derived quota recovers the counterfactual the TEE removes; frame pooled over time, not over miners. |
 | Step 5: Anti-gaming (held-out) | **Deferred, deliberately** | See below. |

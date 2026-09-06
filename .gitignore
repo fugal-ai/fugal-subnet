@@ -12,6 +12,10 @@ build/
 data/benchmarks/*.json
 data/benchmarks/*.parquet
 data/*.npz
+# Derived experiment caches: embeddings and fetched datasets, ~79MB and
+# regenerable from scripts/experiment_routing_dataset.py. The findings live in
+# docs/HEAD_EFFICACY.md; the inputs do not belong in git.
+data/experiments/
 results/
 
 # Environment

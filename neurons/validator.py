@@ -180,6 +180,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
     from fugal_subnet.commitments import get_commitments_with_blocks
+    from fugal_subnet.config import TEE_COLLATERAL_EPOCH_BUDGET
     from fugal_subnet.dedup import find_duplicates
     from fugal_subnet.epoch_logger import (
         EpochLog,
@@ -202,6 +203,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.rewards import cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
+    from fugal_subnet.tee.attestation import CollateralBudget, verification_order
     from fugal_subnet.tee.proof import BenchmarkProof
     from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
 
@@ -383,7 +385,27 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # the difference between an outage and an accusation.
             n_unverifiable = 0
 
-            for uid, resp in enumerate(responses):
+            # One ceiling for the whole phase. Every fetch is already bounded
+            # individually; this bounds their SUM, which is the quantity I6
+            # actually cares about -- the loop below is serial, so 256
+            # individually-bounded fetches still overrun the epoch and miss the
+            # weight-setting window they exist to hit.
+            collateral_budget = CollateralBudget(
+                TEE_COLLATERAL_EPOCH_BUDGET, expected_proofs=len(responses))
+
+            # Verify in an order derived from the epoch nonce rather than in UID
+            # order. This matters ONLY when the budget runs out, and then it
+            # matters a lot: whoever is last in line goes unverified, and in UID
+            # order that is the same miners every epoch -- a permanent
+            # disadvantage for high UIDs that no miner caused and none could
+            # escape. The nonce comes from the epoch id and a block hash, so it
+            # is identical on every validator (no new I1 divergence) and no
+            # miner can influence it (I4), while the disadvantage it allocates
+            # rotates each epoch instead of settling on the same miners.
+            order = verification_order(nonce_hex, len(responses))
+
+            for uid in order:
+                resp = responses[uid]
                 if resp is None or not hasattr(resp, "proof_hash") or not resp.proof_hash:
                     continue
 
@@ -445,6 +467,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         expected_proof_hash=getattr(resp, "proof_hash", ""),
                         head_bytes=head_bytes,
                         mock=mock,
+                        collateral_budget=collateral_budget,
                     )
                 except ImportError:
                     raise
@@ -735,6 +758,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # signal that the field looks bad for reasons that are ours rather
             # than the miners'. Correlated across validators when the endpoint
             # is at fault, which is exactly what makes it diagnosable (I7).
+            if collateral_budget.exhausted:
+                logger.error(
+                    "COLLATERAL BUDGET EXHAUSTED: this epoch spent its entire "
+                    "%.0fs collateral allowance and stopped fetching. Proofs "
+                    "after that point were skipped WITHOUT being checked and "
+                    "are counted unverifiable, not invalid. Weights were still "
+                    "set (I6) — but on a smaller verified set than the field. "
+                    "Look at the PCCS before raising FUGAL_COLLATERAL_EPOCH_BUDGET.",
+                    TEE_COLLATERAL_EPOCH_BUDGET,
+                )
+
             if n_unverifiable:
                 anomalies.append(
                     f"collateral_unavailable: {n_unverifiable} proof(s) unchecked"

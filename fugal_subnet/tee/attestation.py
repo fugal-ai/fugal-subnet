@@ -388,6 +388,174 @@ def _log_pccs_endpoint(url: str) -> None:
         logger.info("DCAP collateral endpoint: %s", url)
 
 
+def verification_order(nonce_hex: str, n: int) -> list[int]:
+    """The order proofs are verified in, derived from the epoch nonce.
+
+    Order is invisible until the collateral ceiling binds, and then it decides
+    who goes unverified. In UID order that is the same high-UID miners every
+    epoch -- a standing disadvantage no miner caused and none could escape,
+    which is an I4 problem even though no miner produced it.
+
+    The nonce is `derive_nonce(epoch_id, block_hash)`, so this permutation is:
+
+      - **identical on every validator** (I1) -- it depends only on the nonce
+        and the field size, both of which are chain-derived;
+      - **not miner-influenceable** (I4) -- no part of it comes from anything a
+        miner sends;
+      - **different every epoch**, so the exposure rotates instead of settling.
+
+    A miner can compute it once the nonce is public and know it is late in the
+    queue. It still cannot know where the cut falls, and UID order leaked
+    strictly more, so this is not a regression.
+
+    Extracted from the validator loop so it can be tested at all. Inline, the
+    property that two validators agree was asserted only by argument.
+    """
+    return sorted(
+        range(n),
+        key=lambda uid: hashlib.sha256(f"{nonce_hex}:{uid}".encode()).digest(),
+    )
+
+
+class CollateralBudget:
+    """A per-epoch ceiling on time spent fetching DCAP collateral.
+
+    WHY A SECOND BOUND EXISTS, when every fetch is already bounded.
+
+    The per-proof timeout stops one call hanging forever. It does not stop the
+    EPOCH hanging, because the verify loop is serial over every UID: 256 proofs
+    against a slow-but-alive PCCS costs 256 x the per-proof budget, which is
+    2560 s at the default against an 1800 s post-collection window. The epoch
+    returns and still misses its weight-setting window, which is an I6 failure
+    wearing the costume of a successful run. Bounding one call was never
+    sufficient; bounding the sum is.
+
+    This is the *aggregate* half of that. Once the budget is spent, remaining
+    proofs are reported unverifiable with **no network call at all**, so the
+    phase has a hard ceiling no upstream can raise.
+
+    A DESIGN TENSION, recorded because the rejected option looks better than it
+    is. A budget measured in TIME adapts -- a healthy epoch verifies every
+    proof -- but where it runs out depends on each validator's network luck, so
+    two validators hold different verified sets. Capping the COUNT of fetches
+    instead would cut at the same place on every validator and be deterministic,
+    but it would also cap a healthy epoch below the field size, which is the
+    normal case. Time is chosen because it only binds when something is already
+    wrong, and because the divergence it leaves is the one INVARIANTS.md already
+    accepts as unavoidable locally: the input is nondeterministic, and no error
+    handling repairs a nondeterministic input. Only collateral-in-proof does.
+
+    So this does NOT make validators agree. It converts "misses the weight
+    window entirely" into "sets weights with a bounded unverifiable set", which
+    is strictly better and still not a fix.
+    """
+
+    __slots__ = (
+        "_max_timeouts", "_proofs_left", "_remaining", "_timeouts", "_total",
+    )
+
+    def __init__(
+        self,
+        total_s: float,
+        max_timeouts: int | None = None,
+        expected_proofs: int | None = None,
+    ):
+        from fugal_subnet.config import TEE_COLLATERAL_MAX_TIMEOUTS
+
+        self._total = float(total_s)
+        self._remaining = float(total_s)
+        self._timeouts = 0
+        self._max_timeouts = (
+            TEE_COLLATERAL_MAX_TIMEOUTS if max_timeouts is None else int(max_timeouts)
+        )
+        # None means "unknown", and then no per-proof fair share is enforced.
+        self._proofs_left = (
+            None if expected_proofs is None else max(1, int(expected_proofs))
+        )
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self._remaining)
+
+    @property
+    def exhausted(self) -> bool:
+        """Spent, or the endpoint has proven it is not going to answer.
+
+        The second half is not a time bound at all -- it is what keeps the file
+        descriptors leaked by abandoned fetches to a handful per epoch instead
+        of one per miner. A fetch cannot be cancelled without crashing the
+        interpreter, so it is abandoned and keeps its socket; the only way to
+        leak fewer is to dial fewer times.
+        """
+        return self._remaining <= 0.0 or self._timeouts >= self._max_timeouts
+
+    @property
+    def circuit_open(self) -> bool:
+        """True when it was the endpoint, not the clock, that stopped us."""
+        return self._timeouts >= self._max_timeouts
+
+    def record_timeout(self) -> None:
+        """One fetch was ABANDONED, and the endpoint is why.
+
+        Only abandonment counts, because only abandonment leaks a descriptor --
+        that is the entire quantity this breaker bounds. A fetch that ended in
+        any other way, however unhappily, closed its socket on the way out.
+        """
+        self._timeouts += 1
+
+    def record_completion(self) -> None:
+        """One fetch finished on its own: a result, or an error, either way.
+
+        Named for COMPLETION rather than success, and that distinction was a
+        bug before it was a name. The reset used to fire only on a successful
+        fetch, so a 5xx, a DNS failure or a reset left the counter standing --
+        and three timeouts separated by two instant HTTP 500s opened a breaker
+        that three comments described as "consecutive". Measured: the breaker
+        opened after 5 dials, having seen the endpoint answer twice in ~0 ms.
+
+        An endpoint that returns an error ANSWERED. It leaked no descriptor and
+        it proved it is reachable, which is the opposite of the evidence this
+        counter accumulates.
+        """
+        self._timeouts = 0
+
+    def allowance(self, per_call_max: float) -> float:
+        """The bound for the next fetch: whichever limit runs out first.
+
+        Three limits, and the third is what makes a shared ceiling safe to
+        have at all.
+
+        1. `per_call_max` -- the hang guard.
+        2. What is left. Handing the last fetch a full per-call budget would let
+           it overshoot the epoch ceiling by that much, which is the quantity
+           this class exists to bound.
+        3. **A fair share of what is left.** A ceiling is a shared resource, so
+           I4 applies to it: without this, one miner whose fetch stalls can
+           consume time that belonged to everyone behind it in the queue.
+           Whether that is reachable in practice turns on how long a PCCS takes
+           to refuse an FMSPC it does not know -- a quantity nobody has
+           measured. Rather than make the safety of the design depend on an
+           unmeasured fact, the share is enforced and the question stops
+           mattering.
+
+        Dynamic rather than a static `total/N`: unused time from fast successes
+        flows to later proofs, so a healthy epoch is untouched while the bound
+        on any single proof still holds. With 600 s over 256 proofs the floor is
+        2.34 s against a measured 690 ms warm round trip.
+        """
+        limits = [float(per_call_max), self.remaining]
+        if self._proofs_left is not None:
+            limits.append(self.remaining / max(1, self._proofs_left))
+        return min(limits)
+
+    def spend(self, elapsed_s: float) -> None:
+        self._remaining -= max(0.0, float(elapsed_s))
+        # Every fetch that got as far as costing time has had its turn, so the
+        # share the REMAINING proofs are entitled to grows accordingly.
+        if self._proofs_left is not None:
+            self._proofs_left = max(1, self._proofs_left - 1)
+
+
 class CollateralUnavailable(Exception):
     """DCAP collateral could not be fetched, so the quote was never judged.
 
@@ -402,7 +570,11 @@ class CollateralUnavailable(Exception):
     """
 
 
-def verify_dcap(quote_bytes: bytes, pccs_url: str | None = None) -> bool:
+def verify_dcap(
+    quote_bytes: bytes,
+    pccs_url: str | None = None,
+    budget: "CollateralBudget | None" = None,
+) -> bool:
     """Verify TDX quote via Intel DCAP collateral.
 
     Returns True if the quote is genuine and Intel-signed. Returns False when
@@ -432,10 +604,23 @@ def verify_dcap(quote_bytes: bytes, pccs_url: str | None = None) -> bool:
     cases but not this one. It closes only when the fetch goes away entirely --
     see the collateral-in-proof design in docs/INVARIANTS.md.
 
+    The fetch is bounded by `config.TEE_COLLATERAL_TIMEOUT`. A stalled PCCS is
+    reported as unavailable, never as invalid: a timeout says this validator
+    ran out of patience, which is a statement about the validator and not about
+    the miner.
+
+    `budget`, when given, bounds the collateral time of the WHOLE EPOCH rather
+    than of this one call, and it is the half that actually satisfies I6 -- the
+    verify loop is serial, so 256 individually-bounded fetches still overrun the
+    epoch. Once it is spent this returns unavailable without touching the
+    network. Omitting it leaves only the per-call bound, which is correct for a
+    one-off caller and NOT sufficient inside the epoch loop.
+
     Raises:
         ImportError: If dcap_qvl is not installed (configuration error).
         ValueError: If no PCCS endpoint is configured (configuration error).
-        CollateralUnavailable: If collateral could not be fetched.
+        CollateralUnavailable: If collateral could not be fetched, INCLUDING
+            when the fetch timed out.
     """
     try:
         from dcap_qvl import get_collateral
@@ -447,7 +632,11 @@ def verify_dcap(quote_bytes: bytes, pccs_url: str | None = None) -> bool:
             "Install with: pip install dcap-qvl"
         )
 
-    from fugal_subnet.config import TEE_PCCS_URL
+    from fugal_subnet.config import (
+        TEE_COLLATERAL_MAX_TIMEOUTS,
+        TEE_COLLATERAL_TIMEOUT,
+        TEE_PCCS_URL,
+    )
 
     url = (pccs_url or TEE_PCCS_URL or "").strip()
     if not url:
@@ -472,12 +661,73 @@ def verify_dcap(quote_bytes: bytes, pccs_url: str | None = None) -> bool:
 
     # 2. Fetch collateral. Everything here is the operator's infrastructure,
     #    so a failure raises rather than condemning the miner.
+    # 1b. Refuse before dialling if the epoch's collateral budget is gone.
+    #     Checked BEFORE the fetch, not after: the point is to stop spending
+    #     time, and a call that is going to be abandoned anyway should never
+    #     leave the process. This is what gives the phase a hard ceiling.
+    if budget is not None and budget.exhausted:
+        why = (
+            f"{url} failed to answer the last "
+            f"{TEE_COLLATERAL_MAX_TIMEOUTS} attempts, so this validator stopped "
+            "dialling it for the rest of this epoch"
+            if budget.circuit_open
+            else "this epoch's collateral budget is exhausted"
+        )
+        raise CollateralUnavailable(
+            f"{why}, so the fetch was not attempted. The proof was never "
+            "judged -- this is an outage, not a bad proof."
+        )
+
+    allowance = (
+        TEE_COLLATERAL_TIMEOUT if budget is None
+        else budget.allowance(TEE_COLLATERAL_TIMEOUT)
+    )
+    started = time.monotonic()
     try:
-        collateral = _run_coro(lambda: get_collateral(url, quote_bytes))
+        collateral = _run_coro(
+            lambda: get_collateral(url, quote_bytes), timeout=allowance,
+        )
+    except TimeoutError as e:
+        # Blame the endpoint ONLY if it had the full budget and still did not
+        # answer. When the epoch ceiling has nearly run out, `allowance` is
+        # whatever remains -- so a healthy endpoint answering in a flat 100 ms
+        # "times out" at 0.047 s and gets a strike it did not earn. That is the
+        # outage-versus-accusation distinction the unverifiable path exists for,
+        # one level down: the clock ran out, the endpoint did not fail.
+        endpoint_had_a_fair_chance = allowance >= TEE_COLLATERAL_TIMEOUT
+        if budget is not None and endpoint_had_a_fair_chance:
+            budget.record_timeout()
+        # Named separately because `str(TimeoutError())` is empty, and the
+        # generic branch below would render this as "TimeoutError: " with no
+        # indication of what was waited on or for how long. An operator reading
+        # the epoch log needs to see the budget to know whether to raise it or
+        # to go and look at their PCCS.
+        raise CollateralUnavailable(
+            f"DCAP collateral fetch from {url} exceeded {allowance:g}s and was "
+            + ("abandoned" if endpoint_had_a_fair_chance else
+               "abandoned -- but that was this epoch's REMAINING budget, not "
+               f"the {TEE_COLLATERAL_TIMEOUT:g}s an endpoint is normally given, "
+               "so it is not evidence against the endpoint")
+            + ". The proof was never judged -- this is an outage, not a bad proof."
+        ) from e
     except Exception as e:  # noqa: BLE001 - network, DNS, TLS, upstream 5xx
+        # It answered, badly. That still resets the breaker: the socket closed,
+        # nothing leaked, and the endpoint demonstrated it is reachable.
+        if budget is not None:
+            budget.record_completion()
         raise CollateralUnavailable(
             f"could not fetch DCAP collateral from {url}: {type(e).__name__}: {e}"
         ) from e
+    else:
+        if budget is not None:
+            budget.record_completion()
+    finally:
+        # Charged on EVERY exit, not only success. A fetch that timed out or
+        # errored still consumed wall-clock the epoch does not get back, and a
+        # budget that only counts successes would be spent slowest exactly when
+        # the upstream is at its worst -- which is the case it exists for.
+        if budget is not None:
+            budget.spend(time.monotonic() - started)
 
     # 3. Judge the quote against the collateral. Local and deterministic given
     #    both inputs, so a failure here is the miner's again.
@@ -519,24 +769,76 @@ def verify_dcap(quote_bytes: bytes, pccs_url: str | None = None) -> bool:
     return True
 
 
-def _run_coro(make_coro):
+def _run_coro(make_coro, timeout: float | None = None):
     """Run one coroutine from sync code, whatever loop state we are in.
 
     `make_coro` is a factory rather than a coroutine because dcap-qvl's bindings
     require the coroutine to be CREATED inside the running loop -- constructing
     it first raises "no running event loop".
+
+    `timeout` ABANDONS the work; it does not cancel it. That distinction is the
+    whole design, and it was arrived at by crashing the interpreter.
+
+    THE OBVIOUS IMPLEMENTATION IS UNSAFE HERE. `asyncio.wait_for` bounds the
+    call correctly and then cancels the coroutine, and cancelling *this*
+    coroutine unwinds a Rust future inside pyo3. Its tokio worker then touches
+    the interpreter during finalization:
+
+        thread 'tokio-rt-worker' panicked at pyo3/src/interpreter_lifecycle.rs:
+        assertion failed: The Python interpreter is not initialized
+
+    Measured against a local socket that accepts and never answers: the bound
+    fires correctly at 2.01 s, the process stays usable, and then exits 134 or
+    139 -- 4 runs in 10. The validator has no `async def` anywhere, so it takes
+    this path for every proof of every epoch.
+
+    So the work is handed to a DAEMON THREAD and the JOIN is what gets bounded.
+    On timeout the thread is left running: the fetch finishes on its own, or the
+    process exits without waiting for it. Nothing is ever cancelled, so pyo3 is
+    never unwound. Measured with the same stalled socket: 12 runs, 12 clean
+    exits.
+
+    A thread rather than the old `ThreadPoolExecutor` because the pool's context
+    manager calls `shutdown(wait=True)` on exit, which blocks until the hung
+    call finishes and is exactly why the previous `timeout=30` did nothing.
+
+    THE COST, stated because it is real and is not fully closed: an abandoned
+    fetch keeps its socket, so each one leaks a file descriptor until the
+    connection dies on its own -- measured at 1.02 fds per abandoned fetch.
+    `CollateralBudget` bounds how many can be abandoned per epoch, and its
+    circuit breaker stops dialling a PCCS that has already proven unresponsive,
+    which is what keeps that number small. See `record_timeout`.
     """
     import asyncio
+    import threading
+
+    box: dict = {}
 
     async def _outer():
         return await make_coro()
 
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, _outer()).result(timeout=30)
-    return loop.run_until_complete(_outer())
+    def _worker():
+        try:
+            box["value"] = asyncio.run(_outer())
+        except BaseException as e:  # noqa: BLE001 - re-raised on the caller
+            box["error"] = e
+
+    # Daemon so an abandoned fetch can never hold the process open at exit.
+    worker = threading.Thread(
+        target=_worker, name="dcap-collateral", daemon=True,
+    )
+    worker.start()
+    worker.join(timeout)
+
+    if worker.is_alive():
+        # Deliberately still running. Raising here abandons it; joining or
+        # cancelling is what we are avoiding.
+        raise TimeoutError(
+            f"collateral fetch abandoned after {timeout}s (still running)"
+        )
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 def extract_report_data(quote_bytes: bytes) -> bytes:

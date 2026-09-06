@@ -198,6 +198,7 @@ def verify_proof(
     head_bytes: bytes | None = None,
     event_log: list | None = None,
     mock: bool = False,
+    collateral_budget=None,
 ) -> VerifyResult:
     """Verify a miner's TEE-attested benchmark proof.
 
@@ -281,7 +282,8 @@ def verify_proof(
 
     if not mock:
         try:
-            dcap_ok = verify_dcap(attestation_quote)
+            dcap_ok = verify_dcap(
+                attestation_quote, budget=collateral_budget)
         except ImportError:
             raise
         except CollateralUnavailable as e:

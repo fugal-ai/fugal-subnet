@@ -64,6 +64,29 @@ def get_backbone(
     unsupported/slow on most CPUs). trust_remote_code stays False — Qwen3 is
     natively supported by transformers, and a validator must never execute
     code fetched from a model hub.
+
+    THE CUDA DEFAULT IS RIGHT FOR TENSOR-CORE HARDWARE AND WRONG BELOW IT, and
+    it fails silently in both directions. Measured on a consumer card without
+    tensor cores: fp32 ran at 2.66 TFLOPS against fp16's 0.60 — **4.4x faster
+    in the direction nobody expects** — and the batch size that fits differs by
+    4x between the two, so a miner sizing a box from this default gets both the
+    speed and the memory wrong.
+
+    Neither error announces itself. There is no warning and no OOM; the job
+    simply runs, and past ~95% VRAM the WSL2 driver spills to host memory and
+    throughput collapses. Measured: an embedding pass at batch 32 sat at
+    5,864 MiB of 6,144 and ran below 1 prompt/s; at batch 8 it used 3,428 MiB
+    and ran at ~29 — 30x, same work, same card.
+
+    That is the same failure shape as a miner starting a 13-hour embedding job
+    because FUGAL_BENCHMARK_POOL was missing: healthy-looking and hours wrong.
+    So if embedding the pool is taking hours, check VRAM headroom and try
+    `dtype=torch.float32` before concluding the machine is too small.
+
+    Left as the default rather than changed, because it IS correct on the
+    datacentre cards a serious miner would rent, and because dtype is a
+    miner-side performance choice — it does not touch consensus, which is
+    computed from the routing decisions in a proof and not from embeddings.
     """
     cache_key = f"{model_name}:{device}"
     if cache_key in _model_cache:

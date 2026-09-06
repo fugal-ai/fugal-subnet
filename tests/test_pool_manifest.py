@@ -123,41 +123,58 @@ def test_the_default_configuration_does_not_bypass_verification(monkeypatch):
         _verify_against_manifest(wrong_pool, _default_skip(), strict=True)
 
 
-def test_the_manifest_ships_in_the_wheel():
+def test_the_manifest_ships_in_the_wheel(tmp_path):
     """The bug this closes twice over.
 
     `content_hash` was imported from scripts/ (not a package, not in the wheel),
     which crashed the loader outside the repo root — loud. The fix for that left
-    the manifest itself in data/, which is ALSO not in the wheel, and absence was
-    the silent branch: an installed validator defaulted to skipping nothing and
-    verified nothing, logging neither. Reading pyproject would not have caught
-    it; building the wheel does.
+    the manifest itself in data/, which is ALSO not in the wheel, and absence
+    was the silent branch: an installed validator defaulted to skipping nothing
+    and verified nothing, logging neither.
+
+    Reading pyproject would not catch either. Building the wheel does — but only
+    from a CLEAN tree. Built in place, setuptools reuses build/ and
+    *.egg-info/SOURCES.txt, and this test passed while the manifest was deleted
+    from disk. A test that cannot fail is the thing this file exists to prevent,
+    so the source is copied somewhere pristine first.
     """
+    import shutil
     import subprocess
     import sys
-    import tempfile
     import zipfile
 
-    with tempfile.TemporaryDirectory() as tmp:
-        r = subprocess.run(
-            [sys.executable, "-m", "pip", "wheel", "--no-deps",
-             "--no-build-isolation", "-w", tmp, "."],
-            capture_output=True, text=True, timeout=300,
-        )
-        if r.returncode != 0:
-            import pytest
-            pytest.skip(f"wheel build unavailable: {r.stderr[-200:]}")
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = tmp_path / "src"
+    shutil.copytree(
+        root, src,
+        ignore=shutil.ignore_patterns(
+            ".git", ".venv", "build", "*.egg-info", "__pycache__", ".pytest_cache",
+            "data",          # deliberately absent: nothing consensus needs may live here
+        ),
+    )
 
-        wheels = list(pathlib.Path(tmp).glob("fugal_subnet-*.whl"))
-        assert wheels, "no wheel produced"
-        names = zipfile.ZipFile(wheels[0]).namelist()
+    out = tmp_path / "wheel"
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
+         "-w", str(out), str(src)],
+        capture_output=True, text=True, timeout=300,
+    )
+    if r.returncode != 0:
+        import pytest
+        pytest.skip(f"wheel build unavailable: {r.stderr[-300:]}")
+
+    wheels = list(out.glob("fugal_subnet-*.whl"))
+    assert wheels, "no wheel produced"
+    names = zipfile.ZipFile(wheels[0]).namelist()
+    shipped = [n for n in names if not n.endswith(".py") and "dist-info" not in n]
 
     assert "fugal_subnet/benchmarks/pool_manifest.json" in names, (
         "the pinned pool manifest is not in the wheel. An installed validator "
-        f"would verify nothing and say nothing. Shipped non-Python files: "
-        f"{[n for n in names if not n.endswith('.py') and 'dist-info' not in n]}"
+        f"would verify nothing and say nothing. Shipped non-Python files: {shipped}"
     )
-    assert any(n.endswith(".der") for n in names), "the TPM trust anchor is not in the wheel"
+    assert any(n.endswith(".der") for n in names), (
+        f"the TPM trust anchor is not in the wheel. Shipped: {shipped}"
+    )
 
 
 def test_an_absent_manifest_is_never_silent(monkeypatch, tmp_path, caplog):

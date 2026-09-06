@@ -418,7 +418,7 @@ appears in the quote as `content_hash || 32 zero bytes`, which is exactly what
 `verify_proof` compares against. A different convention here would fail every
 live proof on a binding check that looks like tampering rather than a mismatch.
 
-### I8 — OPEN DECISION: how a miner's API key reaches the enclave
+### I8 — OPEN DECISION: the miner's per-instance data channel
 
 **Unresolved, and it changes what a miner's `app-compose.json` looks like, so it
 blocks packaging.** Recorded here rather than decided, because it is a product
@@ -455,6 +455,51 @@ endpoint. The real axis is who operates it and who is trusted.
 
 **Nothing should be improvised here.** A miner who invents a fourth answer will
 most likely put the key somewhere `/v1/Info` publishes it.
+
+#### The question is bigger than the key, and that makes it easier
+
+An API key is not the only per-miner value a miner needs inside the TD. From
+`neurons/miner.py`, the minimum is:
+
+| | |
+|---|---|
+| the **wallet keyfile** | a secret, and a different one per miner |
+| the **head artifact** (`--head-path`) | per miner, and it *changes between epochs* — updating it is the entire competitive activity |
+| the **API key** | a secret, per miner |
+| netuid, network, port | uniform across miners; these can live in the compose |
+
+Two of those three cannot be in `app-compose.json` for a reason that has nothing
+to do with secrecy: **the compose hash must be identical across every honest
+miner.** It is the app identity in the approved list. Put anything per-miner in
+that file and every miner has a distinct hash, the approved list needs an entry
+per miner, and the whole single-approved-application model collapses. The head
+settles it on its own — a value that changes every epoch can never live in a
+measured file.
+
+So a post-boot channel for per-instance data is **required regardless of how the
+key question is answered**. The key is a passenger on a channel that has to
+exist anyway. That is the useful reframing: we are not choosing a secret-delivery
+mechanism, we are choosing the miner's data channel, and encrypted env was only
+ever one candidate for it.
+
+It also means the "miner-controlled input inside the TD" objection is not an
+argument against the channel — the channel is unavoidable — but a constraint on
+what may travel it. The existing pattern already handles this correctly and
+should be extended rather than replaced: the head arrives as untrusted bytes and
+is *bound* by an on-chain `weights_hash` committed before the nonce. Untrusted
+input that is bound is safe; unbound input is not. Concretely, what may cross:
+
+  - **secrets and per-miner artifacts** — wallet, head, API key. Bound where
+    consensus depends on them (the head already is), irrelevant where it does
+    not (the wallet and key are the miner's own).
+  - **NOT the upstream URL, the pool, the grader, or anything else consensus
+    reads.** Those are in the measurement precisely so a miner cannot choose
+    them, which is what `runtime_identity(source, pool, grader, upstream)` is
+    for. A channel that can carry `FUGAL_OPENROUTER_BASE` hands a miner the
+    upstream-substitution exploit that `scripts/stub_upstream.py` demonstrates.
+
+That line — secrets and bound artifacts yes, consensus inputs never — is the
+thing to decide and then enforce, and it is narrower than "how do we do KMS".
 
 **Five unidentified trailing bytes.** Real `TPMT_SIGNATURE` fields carry five
 bytes past the structure (`0000010000`). They are not identified and are not

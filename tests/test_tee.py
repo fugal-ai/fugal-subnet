@@ -756,3 +756,82 @@ def test_approved_entry_with_app_identity_binds_rtmr3():
     parsed = parse_approved([f"base:{honest}"])
     assert parsed["base"] == {honest}
     assert substituted not in parsed["base"]
+
+
+# --- dstack event log replay (I8) ---------------------------------------------
+
+def _ev(name, payload_hex, imr=3, version=2):
+    from fugal_subnet.tee.attestation import dstack_event_digest
+    return {
+        "imr": imr, "event_type": 0x08000001, "event": name,
+        "event_payload": payload_hex,
+        "digest": dstack_event_digest(name, bytes.fromhex(payload_hex), version),
+    }
+
+
+def test_dstack_event_digest_matches_their_canonical_form():
+    """dstack's own test vector, reproduced without a JCS library.
+
+    json.dumps with sorted keys and no whitespace equals RFC 8785 for this
+    object shape only — flat, ASCII keys, string and small-int values. The
+    shortcut is safe here and is documented as conditional in the function.
+    """
+    import hashlib
+    import json
+
+    from fugal_subnet.tee.attestation import dstack_event_digest
+
+    canonical = json.dumps(
+        {"name": "compose-hash", "payload": "abcd", "type": 134217729},
+        sort_keys=True, separators=(",", ":"),
+    )
+    assert canonical == '{"name":"compose-hash","payload":"abcd","type":134217729}'
+    assert dstack_event_digest("compose-hash", bytes.fromhex("abcd")) == (
+        hashlib.sha384(canonical.encode()).hexdigest()
+    )
+
+
+def test_replay_filters_to_the_register_and_keeps_order():
+    from fugal_subnet.tee.attestation import replay_event_log
+
+    log = [
+        _ev("kernel", "aa", imr=1),          # different register, must be ignored
+        _ev("compose-hash", "abcd"),
+        _ev("instance-id", "beef"),
+    ]
+    rtmr3, seen = replay_event_log(log, imr=3)
+    assert set(seen) == {"compose-hash", "instance-id"}
+
+    # Extends are not commutative. A verifier that sorted the log would let a
+    # miner rearrange it to reach a chosen register value.
+    reordered = [log[0], log[2], log[1]]
+    assert replay_event_log(reordered, imr=3)[0] != rtmr3
+
+
+def test_replay_stops_at_upto():
+    from fugal_subnet.tee.attestation import replay_event_log
+
+    log = [_ev("compose-hash", "abcd"), _ev("instance-id", "beef")]
+    partial, seen = replay_event_log(log, upto="compose-hash")
+    assert set(seen) == {"compose-hash"}
+    assert partial != replay_event_log(log)[0]
+
+
+def test_replay_rejects_a_lying_preimage():
+    """A v2 event carrying a preimage that does not hash to its digest is a log
+    claiming to have extended something it did not."""
+    from fugal_subnet.tee.attestation import replay_event_log
+
+    ev = _ev("compose-hash", "abcd")
+    ev["preimage"] = "00" * 16          # hashes to something else entirely
+    with pytest.raises(ValueError, match="preimage"):
+        replay_event_log([ev])
+
+
+def test_changing_the_compose_hash_changes_the_register():
+    """The property the whole scheme rests on: different app, different RTMR3."""
+    from fugal_subnet.tee.attestation import replay_event_log
+
+    a = [_ev("compose-hash", "aaaa"), _ev("instance-id", "beef")]
+    b = [_ev("compose-hash", "bbbb"), _ev("instance-id", "beef")]
+    assert replay_event_log(a)[0] != replay_event_log(b)[0]

@@ -235,6 +235,89 @@ def expected_rtmr3(runtime_identity_hex: str) -> str:
     return replay_rtmr([runtime_identity_hex])
 
 
+# dstack tags every runtime event it extends with this type.
+_DSTACK_EVENT_TYPE = 0x08000001
+
+
+def dstack_event_digest(name: str, payload: bytes, version: int = 2) -> str:
+    """The 48-byte value dstack extends for one runtime event.
+
+    Two encodings, both SHA384:
+
+      v1  sha384( u32_le(type) || b":" || name || b":" || payload )
+      v2  sha384( RFC 8785 canonical JSON of
+                  {"name": name, "type": type, "payload": hex(payload)} )
+
+    NOTE THE TWO DIFFERENT HASHES. Event *payloads* are SHA-256 content hashes
+    (the compose hash is sha256 of the docker-compose), while the *extend* over
+    them is SHA-384 because that is the register width. Conflating them
+    produces a value that never reproduces the quote.
+
+    json.dumps with sorted keys and no whitespace equals JCS **for this object
+    shape only** — flat, ASCII keys, string and small-integer values. JCS and
+    json.dumps diverge on floats and non-ASCII escaping, so if this object ever
+    grows a field that is not one of those, this shortcut stops being correct
+    and a real JCS encoder is required.
+    """
+    import json
+    import struct
+
+    if version == 1:
+        blob = (struct.pack("<I", _DSTACK_EVENT_TYPE) + b":"
+                + name.encode("utf-8") + b":" + bytes(payload))
+        return hashlib.sha384(blob).hexdigest()
+    canonical = json.dumps(
+        {"name": name, "payload": bytes(payload).hex(), "type": _DSTACK_EVENT_TYPE},
+        sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha384(canonical.encode("utf-8")).hexdigest()
+
+
+def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str, dict]:
+    """Replay one measurement register from an event log; return (rtmr, events).
+
+    THE LOG IS UNTRUSTED. It reaches a validator from the miner, and the only
+    reason any field in it can be believed is that replaying it must reproduce a
+    register value inside the Intel-signed quote. So the caller must compare the
+    returned register to the quote BEFORE reading a single event payload — a log
+    that does not reproduce it is discarded whole, not partially trusted.
+
+    Order is load-bearing and preserved: extends are not commutative, so a
+    verifier that sorted or de-duplicated the log would let a miner rearrange it
+    to reach a chosen value.
+
+    `upto` stops after the named event, which is how a verifier can bind only as
+    far as `compose-hash` and ignore per-instance events that follow it.
+    """
+    reg = b"\x00" * _RTMR_DIGEST_BYTES
+    seen: dict[str, bytes] = {}
+    for i, ev in enumerate(events):
+        if int(ev.get("imr", -1)) != imr:
+            continue
+        digest_hex = ev.get("digest", "")
+        digest = bytes.fromhex(digest_hex) if isinstance(digest_hex, str) else bytes(digest_hex)
+        if len(digest) != _RTMR_DIGEST_BYTES:
+            raise ValueError(f"event {i} digest is {len(digest)} bytes, need 48")
+
+        # v2 events may carry the preimage. When present it must hash to the
+        # digest, or the log is lying about what it extended.
+        preimage = ev.get("preimage")
+        if preimage:
+            raw = bytes.fromhex(preimage) if isinstance(preimage, str) else bytes(preimage)
+            if hashlib.sha384(raw).hexdigest() != digest.hex():
+                raise ValueError(
+                    f"event {i} ({ev.get('event','?')}) preimage does not hash to "
+                    "its digest"
+                )
+        reg = hashlib.sha384(reg + digest).digest()
+        name = str(ev.get("event", ""))
+        payload = ev.get("event_payload", b"")
+        seen[name] = bytes.fromhex(payload) if isinstance(payload, str) else bytes(payload)
+        if upto is not None and name == upto:
+            break
+    return reg.hex(), seen
+
+
 def extend_rtmr3(identity_hex: str) -> bool:
     """Extend RTMR3 with the runtime identity. True if the hardware took it.
 

@@ -276,6 +276,26 @@ train accuracy **0.269 to three decimals in every case** *(measured)*. Full-batc
 AdamW with no weight decay and no early stop, i.e. harder-working than
 `train_head.train_sft`.
 
+#### Confirmed on the real pool, not just argued
+
+The Gaussian table above is an upper bound by an argument — clustered points
+span fewer effective dimensions, so they should be *harder* to separate
+arbitrarily. This project's own method note says arguments about an adjacent
+layer are where things go wrong, so it was run rather than trusted. 6,000 real
+pool questions embedded with the actual backbone *(measured)*:
+
+| questions | real pool embeddings | Gaussian upper bound |
+|---|---|---|
+| 500 | 1.000 | 1.000 |
+| 1,000 | 1.000 | 1.000 |
+| 2,000 | **0.958** | 1.000 |
+| 4,000 | **0.625** | 0.812 |
+| 6,000 | **0.486** | ~0.55 (interpolated) |
+
+The real pool is consistently **harder** to memorise than the bound predicts,
+which is the direction the argument required. The conclusion is now measured at
+both ends rather than measured at one and reasoned at the other.
+
 So at the pool's current size a head cannot hold a lookup table. **This is a
 statement about 21,717, not about the design.** At 2,000 questions memorisation
 is complete and the subnet would measure nothing at all — and the only thing
@@ -307,9 +327,29 @@ rows by construction (extra rows can be zeroed), so a drop is the optimiser
 giving up at a fixed budget, not the architecture. Read the row as "at least
 0.441 is reachable".
 
-Duplicate rows do not enable a lookup table at 21,717 questions. They do
-roughly double what a head can memorise, and `HEAD_MAX_MODELS` was plainly not
-chosen with that in mind.
+**But that is a Gaussian result, and the real pool does not reproduce it.**
+Re-run on the actual embeddings, 32 rows buys nothing at all *(measured)*:
+
+| questions | 8 rows | 32 rows | difference |
+|---|---|---|---|
+| 500 | 1.000 | 1.000 | 0.000 |
+| 1,000 | 1.000 | 1.000 | 0.000 |
+| 2,000 | 0.958 | 0.941 | −0.017 |
+| 4,000 | 0.625 | 0.621 | −0.004 |
+| 6,000 | 0.486 | 0.522 | +0.036 |
+
+Three of the five differences are zero or negative and the largest is +0.036,
+against a Gaussian gain of +0.172 at 21,717. The extra rows helped on isotropic
+vectors and do not materially help on clustered ones — the binding constraint on
+real embeddings is how few directions the questions actually span, and more
+partitions of a low-dimensional cloud do not separate more points.
+
+So the honest version of this finding is narrower than it first looked:
+`HEAD_MAX_MODELS` **does** permit duplicate model names, which is a real gap
+between what the constant is named and what it bounds, and it is worth closing
+on those grounds. It is **not** a measurable memorisation advantage on this
+pool. Recorded rather than deleted because the Gaussian number is what a
+reviewer would find if they checked the synthetic case alone.
 
 ### The generalisation gap, on real routing labels
 
@@ -426,5 +466,6 @@ Chasing it turned up something worth keeping:
    capacity curve as the justification and a floor enforced in
    `check_safety_invariants.py`.
 4. **Make `HEAD_MAX_MODELS` mean what it says** — either require distinct model
-   names or document that 64 rows over few models is permitted and why.
+   names or document that 64 rows over few models is permitted and why. On the
+   naming gap, not on memorisation: the real pool shows no capacity gain.
 5. **Decide the two-accuracy-definitions question.** Not a live bug; a trap.

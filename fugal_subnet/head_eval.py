@@ -118,9 +118,19 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
     # parameter vector, and 64 rows all naming one model is 64 rows of capacity
     # wearing the costume of a one-model head.
     #
-    # Measured: a linear head fits random labels on 21,717 questions at 26.9%
-    # with distinct models, and **44.1%** at 32 rows over 8 names. Not enough
-    # for a lookup table, and not what 64 was chosen to permit either.
+    # The justification is the NAMING GAP, not a measured exploit, and that
+    # distinction was itself a correction. On synthetic isotropic embeddings,
+    # 32 rows over 8 names lifted random-label fit from 0.269 to 0.441, which
+    # looked like real capacity bought cheaply. Re-measured on actual pool
+    # embeddings it does not reproduce: three of five differences are zero or
+    # negative and the largest gain is +0.036, against the +0.172 the synthetic
+    # case suggested. Clustered real embeddings span fewer effective dimensions
+    # than Gaussian ones, so the synthetic figure was an upper bound behaving
+    # like a finding.
+    #
+    # So this is not closing a demonstrated memorisation route. It is closing
+    # the gap between what HEAD_MAX_MODELS is NAMED and what it bounds, which
+    # stands on its own.
     #
     # It is also meaningless on its own terms — two rows naming the same model
     # are two ways to say the same route, and softmax over them is a

@@ -372,7 +372,9 @@ architectural, not under-training (four optimiser settings agree to three
 decimals). Two consequences now guarded: pool size is a security parameter
 (`BENCHMARK_POOL_MIN_SIZE`, enforced in `load_all`), and `HEAD_MAX_MODELS` was
 wider than intended because duplicate model names were accepted — 64 rows could
-all name one model, raising random-label fit from 26.9% to 44.1%. Now rejected.
+all name one model. Now rejected, on the naming gap alone: the synthetic
+random-label advantage (0.269 -> 0.441) did NOT reproduce on real pool
+embeddings, where the largest gain was +0.036.
 
 ---
 

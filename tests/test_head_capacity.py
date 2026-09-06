@@ -43,10 +43,17 @@ def test_rows_must_name_distinct_models():
     """The row cap bounds capacity; duplicates spend it without declaring it.
 
     Before this check, 64 rows all naming one model loaded cleanly — verified.
-    That is 64 parameter vectors wearing the costume of a one-model head, and
-    it measurably buys the adversary capacity: random-label fit on the real
-    pool size rises from 26.9% with distinct models to 44.1% at 32 rows over
-    8 names. Not a lookup table, and not what 64 was chosen to permit.
+    That is 64 parameter vectors wearing the costume of a one-model head.
+
+    What this does NOT rest on: a measured memorisation advantage. The
+    synthetic result (0.269 -> 0.441 at 32 rows over 8 names) did not survive
+    re-measurement on real pool embeddings — three of five differences zero or
+    negative, largest gain +0.036 against a predicted +0.172. Recorded because
+    a reviewer checking only the synthetic case would find the larger number
+    and think it settled.
+
+    The check stands on the naming gap alone: HEAD_MAX_MODELS bounds head
+    capacity, and duplicate names spend that capacity without declaring it.
     """
     with pytest.raises(ValueError, match="distinct"):
         load_head_from_npz(_head(["openai/gpt-4o-mini"] * HEAD_MAX_MODELS))

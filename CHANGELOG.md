@@ -4,6 +4,14 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — the validator says which entries it approved
+
+`Approved entries: N — <base>…:<compose>…; …` at startup, before any chain
+connection, and a malformed entry (a bare trailing colon would silently accept
+any application) fails there instead of at the first proof. During a rotation
+two validators must carry the same two entries; until this line the only
+evidence of what a validator had loaded was its env file on its own host.
+
 ### Changed — the backbone thread count is a miner-side knob
 
 `FUGAL_BACKBONE_THREADS` (default 1, unchanged; `0` = all cores) sets torch's

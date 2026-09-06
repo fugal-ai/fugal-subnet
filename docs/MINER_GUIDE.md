@@ -236,6 +236,28 @@ download and 7.5 is uploading ~825 MB to GCS — on a residential connection tha
 upload dominates. **Redeploys are about 4 minutes** once the GCP image exists,
 so the cost is paid once.
 
+### `FUGAL_BENCHMARK_POOL` is not optional, and the failure mode is silent
+
+**Set it in your compose.** Leave it out and the miner falls through to
+`load_all()`, starts embedding the full ~21,000-question pool, and takes
+**about 13 hours** single-threaded before it answers anything.
+
+There is no error. The process is running, the logs look busy, the axon may even
+be serving — and the miner produces nothing for half a day. This was hit during
+a real rehearsal by someone who had been warned about it hours earlier, which is
+why it is here in bold rather than in a footnote.
+
+### You may choose any instance size
+
+Your base measurement is `sha256(MRTD ‖ RTMR1 ‖ RTMR2)` and it does **not**
+include the machine shape. Measured across three real deploys — `c3-standard-4`
+and `c3-standard-8`, two different applications — the value is byte-identical:
+
+    12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+
+So pick the instance size that suits your workload and your budget. You do not
+need to match a reference shape, and doing so buys you nothing.
+
 ### Building the image on a fresh GCP project fails twice first
 
 Not a Fugal problem, but everyone building their own image hits it, so it is

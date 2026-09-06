@@ -402,3 +402,31 @@ def test_the_key_provider_is_readable_from_the_replayed_log(name):
 
     assert json.loads(seen["key-provider"])["name"] == "none"
     assert seen["storage-fs"] == b"ext4"
+
+
+def test_the_base_measurement_ignores_instance_shape_and_application():
+    """Measured across three real deploys, not reasoned.
+
+    `measurement_id` is sha256(MRTD || RTMR1 || RTMR2). The fixtures are
+    c3-standard-4 running an nginx/socat test app; a rehearsal on a
+    c3-standard-8 running the real Fugal miner image produced the identical
+    value. Two shapes, two applications, one measurement.
+
+    That is the base/app split working as designed — the base says what BOOTED
+    and the app half says what RAN — and it is what lets a miner choose their
+    instance size without forking the approved list. Pinned here because if it
+    ever stops being true, every published measurement is wrong and the symptom
+    would be honest miners rejected as unapproved.
+    """
+    from fugal_subnet.tee.attestation import measurement_id, parse_quote
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    MEASURED_ON_HARDWARE = (
+        "12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141"
+    )
+    for name in ("A", "B"):
+        p = FIXTURES / f"attestation_{name}.bin"
+        if not p.exists():
+            pytest.skip(f"fixture {p.name} not present")
+        quote, _ = unwrap_attestation(p.read_bytes())
+        assert measurement_id(parse_quote(quote)) == MEASURED_ON_HARDWARE

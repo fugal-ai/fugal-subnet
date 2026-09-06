@@ -23,7 +23,6 @@ carry their own licences and this repo does not redistribute them.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -33,31 +32,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 MANIFEST_PATH = os.path.join("data", "pool_manifest.json")
 
 
-def content_hash(pool: list[dict]) -> str:
-    """Hash over everything a validator grades against, in id order.
+# content_hash lives in the package, not here: load_all() calls it at
+# startup, and a consensus function reachable only from a checkout is one
+# an installed validator does not have.
+from fugal_subnet.benchmarks.loader import content_hash  # noqa: E402
 
-    Deliberately covers the four fields that decide an outcome: which question
-    it is, what the miner is asked, what counts as right, and which checker
-    decides. A change in any of them changes a score, so a change in any of them
-    must change this hash.
-    """
-    h = hashlib.sha256()
-    for q in sorted(pool, key=lambda x: x["question_id"]):
-        h.update(json.dumps([
-            q.get("question_id", ""),
-            q.get("prompt", ""),
-            # Canonicalised the way the GRADER canonicalises it, not with str().
-            # exec_io compares json.dumps(got) to json.dumps(gold), so a tuple
-            # and a list of the same values grade identically — and eight
-            # HumanEval golds are tuples in memory and lists after a JSON round
-            # trip, which is what FUGAL_BENCHMARK_POOL does. Hashing str() made
-            # this manifest reject the documented override for a difference no
-            # score depends on. An identity hash must be sensitive to exactly
-            # what changes an outcome: no less, and no more.
-            json.dumps(q.get("gold", ""), sort_keys=True, default=str),
-            q.get("grader_id", ""),
-        ], separators=(",", ":"), sort_keys=True).encode("utf-8"))
-    return h.hexdigest()
+__all__ = ["content_hash", "build"]
 
 
 def build(pool: list[dict], skip: list[str]) -> dict:

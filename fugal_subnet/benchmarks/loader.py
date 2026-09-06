@@ -126,11 +126,11 @@ def load_all(strict: bool = True) -> list[dict]:
         )
         return pool
 
-    skip = set(os.getenv("FUGAL_SKIP_BENCHMARKS", "").split(",")) - {""}
+    skip = _default_skip()
     pool = []
     for name in sorted(_BENCHMARKS):
         if name in skip:
-            logger.info("Skipping benchmark %s (FUGAL_SKIP_BENCHMARKS)", name)
+            logger.info("Skipping benchmark %s", name)
             continue
         try:
             items = load_benchmark(name)
@@ -169,10 +169,75 @@ def load_all(strict: bool = True) -> list[dict]:
     return pool
 
 
+def content_hash(pool: list[dict]) -> str:
+    """Hash over everything a validator grades against, in id order.
+
+    Deliberately covers the four fields that decide an outcome: which question
+    it is, what the miner is asked, what counts as right, and which checker
+    decides. A change in any of them changes a score, so a change in any of them
+    must change this hash.
+
+    Lives HERE and not in scripts/. It is called by `load_all` at startup, and
+    scripts/ is not a package and is not shipped in the wheel — so importing it
+    from there crashed the loader for anyone whose working directory was not the
+    repo root, and would have shipped no verification at all to an installed
+    validator. Consensus code belongs in the package; the build script imports
+    it from here.
+    """
+    h = hashlib.sha256()
+    for q in sorted(pool, key=lambda x: x["question_id"]):
+        h.update(json.dumps([
+            q.get("question_id", ""),
+            q.get("prompt", ""),
+            # Canonicalised the way the GRADER canonicalises it, not with str().
+            # exec_io compares json.dumps(got) to json.dumps(gold), so a tuple
+            # and a list of the same values grade identically — and eight
+            # HumanEval golds are tuples in memory and lists after a JSON round
+            # trip, which is what FUGAL_BENCHMARK_POOL does. Hashing str() made
+            # this manifest reject the documented override for a difference no
+            # score depends on. An identity hash must be sensitive to exactly
+            # what changes an outcome: no less, and no more.
+            json.dumps(q.get("gold", ""), sort_keys=True, default=str),
+            q.get("grader_id", ""),
+        ], separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    return h.hexdigest()
+
+
 _MANIFEST_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "pool_manifest.json",
 )
+
+
+def _default_skip() -> set:
+    """Which benchmarks to skip, defaulting to the pinned manifest's list.
+
+    The pool is consensus state, so "an operator who configures nothing" must
+    get the pinned pool rather than whatever their machine happens to be able to
+    load. Before this, the default was empty: an operator with a HuggingFace
+    token loaded GPQA, produced a larger pool than everyone else, and — worse —
+    the skip-list mismatch made `_verify_against_manifest` return early, so the
+    one check that would have caught it disabled itself and logged a warning.
+    A divergence that silences its own alarm is the failure mode this codebase
+    keeps finding.
+
+    An explicitly set FUGAL_SKIP_BENCHMARKS still wins, including when it is set
+    to empty to mean "skip nothing". Unset and empty are different answers here,
+    so `getenv(...) is None` is the test rather than truthiness.
+    """
+    env = os.getenv("FUGAL_SKIP_BENCHMARKS")
+    if env is not None:
+        return set(env.split(",")) - {""}
+
+    try:
+        with open(_MANIFEST_PATH, encoding="utf-8") as f:
+            pinned = set(json.load(f).get("skip_benchmarks", []))
+    except Exception:  # noqa: BLE001 - absent or broken manifest is legitimate
+        return set()
+    if pinned:
+        logger.info("Skipping %s, per data/pool_manifest.json",
+                    ",".join(sorted(pinned)))
+    return pinned
 
 
 def _verify_against_manifest(pool: list[dict], skip: set, strict: bool) -> None:
@@ -208,8 +273,6 @@ def _verify_against_manifest(pool: list[dict], skip: set, strict: bool) -> None:
             ",".join(sorted(skip)) or "(none)",
         )
         return
-
-    from scripts.build_pool_manifest import content_hash  # local: script-side helper
 
     actual_ids, actual_content = pool_hash(pool), content_hash(pool)
     if actual_ids == pinned.get("pool_hash") and actual_content == pinned.get("content_hash"):

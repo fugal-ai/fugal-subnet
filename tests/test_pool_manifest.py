@@ -64,3 +64,57 @@ def test_manifest_matches_the_shipped_pool_configuration():
     assert "gpqa" in manifest["skip_benchmarks"]
     assert "livecode" in manifest["skip_benchmarks"]
     assert sum(manifest["per_benchmark"].values()) == manifest["n_questions"]
+
+
+# --- Where the pool could still diverge silently ---------------------------
+
+def test_content_hash_is_importable_from_the_package_not_only_a_checkout():
+    """`load_all` calls this at startup. It used to be imported from scripts/,
+    which is not a package and is not shipped in the wheel — so the loader
+    raised ModuleNotFoundError for anyone whose working directory was not the
+    repo root, and an installed validator carried no verification at all."""
+    import fugal_subnet.benchmarks.loader as loader_mod
+
+    assert callable(loader_mod.content_hash)
+
+    import scripts.build_pool_manifest as script_mod
+    assert script_mod.content_hash is loader_mod.content_hash
+
+
+def test_an_operator_who_configures_nothing_gets_the_pinned_skip_list(monkeypatch):
+    """The pool is consensus state, so the default must be the pinned pool and
+    not whatever this machine happens to be able to load."""
+    from fugal_subnet.benchmarks.loader import _default_skip
+
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+    pinned = set(json.load(open("data/pool_manifest.json"))["skip_benchmarks"])
+    assert _default_skip() == pinned
+    assert pinned, "the manifest pins no skips; this test would prove nothing"
+
+
+def test_an_explicit_setting_still_wins_including_the_empty_one(monkeypatch):
+    """Unset and empty are different answers: empty means 'skip nothing', which
+    an operator must be able to say."""
+    from fugal_subnet.benchmarks.loader import _default_skip
+
+    monkeypatch.setenv("FUGAL_SKIP_BENCHMARKS", "mmlu")
+    assert _default_skip() == {"mmlu"}
+
+    monkeypatch.setenv("FUGAL_SKIP_BENCHMARKS", "")
+    assert _default_skip() == set()
+
+
+def test_the_default_configuration_does_not_bypass_verification(monkeypatch):
+    """The bug this closes: a skip-list mismatch made _verify_against_manifest
+    return early, so the check that would have caught a divergent pool disabled
+    itself and logged a warning. A divergence that silences its own alarm is
+    worse than no check."""
+    import pytest
+
+    from fugal_subnet.benchmarks.loader import _default_skip, _verify_against_manifest
+
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+    wrong_pool = [{"question_id": "q1", "prompt": "x", "gold": "y",
+                   "grader_id": "exec_io"}]
+    with pytest.raises(RuntimeError, match="does not match"):
+        _verify_against_manifest(wrong_pool, _default_skip(), strict=True)

@@ -43,7 +43,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _read_private(path: str, what: str) -> bytes:
     path = os.path.expanduser(path)
-    st = os.stat(path)
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        raise SystemExit(f"{what} not found at {path}") from None
     if stat.S_IMODE(st.st_mode) & 0o077:
         raise SystemExit(
             f"{what} at {path} is readable by group/other "
@@ -93,13 +96,23 @@ def inspect(address: str, timeout: int) -> int:
         headers={"Content-Type": "application/json"}, method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        blob = bytes.fromhex(json.loads(r.read())["attestation"])
+        answer = json.loads(r.read())
+    blob = bytes.fromhex(answer["attestation"])
+    pubkey = bytes.fromhex(answer.get("pubkey", ""))
     quote_bytes, event_log = unwrap_attestation(blob)
     quote = parse_quote(quote_bytes)
-    # The guest right-pads report_data with zeros (measured; see INVARIANTS I8).
-    expected_rd = bytes.fromhex(nonce).ljust(64, b"\0").hex()
     print(f"attestation        {len(blob)} bytes, quote {len(quote_bytes)} bytes")
-    print(f"nonce honoured     {quote.report_data == expected_rd}")
+    if len(pubkey) == 32:
+        from fugal_subnet.tee.provision import report_data_for
+        bound = quote.report_data == report_data_for(nonce, pubkey).hex()
+        print(f"sealed channel     TD offers X25519 key {pubkey.hex()[:16]}…; "
+              f"quote covers nonce||sha256(key): {bound}")
+    else:
+        # A receiver from before the seal: it would accept plaintext. Say so,
+        # because `push` will refuse it and the operator should know why.
+        print("sealed channel     NO — receiver returned no key; push() will refuse it")
+        padded = bytes.fromhex(nonce).ljust(64, b"\0").hex()
+        print(f"nonce honoured     {quote.report_data == padded}")
     print(f"base_measurement   {measurement_id(quote)}")
     print(f"mrtd/rtmr0-3       {quote.mrtd[:16]}… {quote.rtmr0[:16]}… "
           f"{quote.rtmr1[:16]}… {quote.rtmr2[:16]}… {quote.rtmr3[:16]}…")
@@ -138,6 +151,13 @@ def main() -> int:
                     help="Push without an API key (stub-upstream rehearsals only)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Validate everything locally and print field names; contact nothing")
+    ap.add_argument("--session-file", default="",
+                    help="Where to save the session key after a push (0600), and where "
+                         "--logs reads it from. Default ~/.fugal/<wallet>-<hotkey>.session")
+    ap.add_argument("--logs", action="store_true",
+                    help="Pull the TD's recent log lines as the operator who provisioned "
+                         "it (needs the session file); pushes nothing")
+    ap.add_argument("--since", type=int, default=0, help="--logs: only lines after this sequence number")
     ap.add_argument("--timeout", type=int, default=30)
     args = ap.parse_args()
 
@@ -146,6 +166,25 @@ def main() -> int:
 
     if args.inspect:
         return inspect(args.address, args.timeout)
+
+    def session_path() -> str:
+        if args.session_file:
+            return os.path.expanduser(args.session_file)
+        if not args.wallet:
+            raise SystemExit("--session-file or --wallet/--hotkey is needed to locate the session key")
+        return os.path.expanduser(f"~/.fugal/{args.wallet}-{args.hotkey}.session")
+
+    if args.logs:
+        from fugal_subnet.tee.provision import pull_logs
+
+        key = _read_private(session_path(), "session key file")
+        if len(key) != 32:
+            raise SystemExit("session key file must hold exactly 32 bytes")
+        seq, lines = pull_logs(args.address, key, since=args.since, timeout=args.timeout)
+        for line in lines:
+            print(line)
+        print(f"-- {len(lines)} line(s); next --since {seq}", file=sys.stderr)
+        return 0
 
     missing = [n for n, v in (("--approved", args.approved), ("--head", args.head),
                               ("--wallet", args.wallet)) if not v]
@@ -192,14 +231,25 @@ def main() -> int:
         print("dry run: nothing sent")
         return 0
 
-    push(
+    session_key = push(
         args.address, payload,
         approved_measurements={base},
         expected_app_identity=app,
         expected_instance_id=args.instance_id,
         timeout=args.timeout,
     )
-    print(f"PUSHED to {args.address}: {sorted(payload)}")
+    print(f"PUSHED (sealed) to {args.address}: {sorted(payload)}")
+    # The session key is what lets this operator, and nobody else, read the
+    # TD's logs later. It never crossed the wire and cannot be recovered, so it
+    # is saved the way the API key is stored: a 0600 file, never printed.
+    sp = session_path()
+    os.makedirs(os.path.dirname(sp), mode=0o700, exist_ok=True)
+    fd = os.open(sp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, session_key)
+    finally:
+        os.close(fd)
+    print(f"session key saved  {sp} (use --logs to read the TD's log lines)")
     return 0
 
 

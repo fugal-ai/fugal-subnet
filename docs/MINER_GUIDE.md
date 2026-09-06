@@ -477,7 +477,17 @@ python scripts/provision_td.py --address http://<td-ip>:8092 \
     --approved <base>:<compose_hash> --instance-id <from --inspect> \
     --head my_head.npz --wallet fugal_miner --hotkey default \
     --api-key-file ~/.fugal/openrouter.key      # a 0600 file, never argv
+python scripts/provision_td.py --logs --address http://<td-ip>:8092 \
+    --wallet fugal_miner --hotkey default        # your miner's own log lines
 ```
+
+**The push is encrypted, and only to the TD the quote vouches for.** The TD's
+attestation covers your nonce *and* the hash of an X25519 key it generated at
+start; the tool encrypts your head, key and wallet to that key and sends
+ciphertext. A TD that returns no key is refused. Keep the session file the push
+writes (`~/.fugal/<wallet>-<hotkey>.session`, 0600): it is the only way to read
+the TD's logs, and nobody else can — with `public_logs=false` the miner is
+otherwise a black box even to you.
 
 The full recipe, including the compose file and the `dstack-cloud` steps, is
 `deploy/dstack/README.md`.

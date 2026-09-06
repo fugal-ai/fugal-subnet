@@ -70,15 +70,33 @@ def normalise_app_compose(obj) -> str:
     covers three of those; the fourth needs a pass, because Python emits `NaN`
     and `Infinity` — which are not JSON — where the spec wants `null`.
     """
-    def finite(x):
-        if isinstance(x, float) and (x != x or x in (float("inf"), float("-inf"))):
-            return None
+    def finite(x, path="$"):
+        if isinstance(x, float):
+            if x != x or x in (float("inf"), float("-inf")):
+                return None                      # dstack's rule: non-finite -> null
+            # A FINITE float is where json.dumps and JCS genuinely diverge, and a
+            # silently wrong compose hash is far worse than an error. RFC 8785
+            # specifies ES6 Number::toString, which Python does not reproduce:
+            # JCS writes 1.0 as "1" and 1e30 as "1e+30" where Python writes "1.0"
+            # and "1e+30" inconsistently across values. Rather than guess, refuse
+            # and say why. A compose file has no ordinary need for a float, and
+            # if one ever does, this needs a real JCS encoder rather than a
+            # cleverer json.dumps call.
+            raise ValueError(
+                f"app-compose contains a float at {path} ({x!r}). "
+                "json.dumps does not reproduce RFC 8785 number formatting, so the "
+                "compose hash would differ from dstack's. Use a string or an "
+                "integer, or add a real JCS encoder."
+            )
         if isinstance(x, dict):
-            return {k: finite(v) for k, v in x.items()}
+            return {k: finite(v, f"{path}.{k}") for k, v in x.items()}
         if isinstance(x, list):
-            return [finite(v) for v in x]
+            return [finite(v, f"{path}[{i}]") for i, v in enumerate(x)]
         return x
 
+    # ensure_ascii=False emits UTF-8 directly, which is what JCS requires and
+    # where json.dumps happens to agree. Sorted keys and compact separators
+    # cover the rest of the shape dstack uses.
     return json.dumps(
         finite(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     )

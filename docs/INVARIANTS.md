@@ -279,6 +279,54 @@ cannot accumulate extends across restarts to walk the register toward a chosen
 value: the chain restarts from 48 zero bytes every boot. That closes the obvious
 question about an advisory, userspace extend.
 
+### I8 — the TPM half on GCP, and why it is not a service call
+
+On GCP, dstack's attestation is a distinct variant: a TDX quote **and** a TPM
+quote. Verifying only the TDX half is not an option, and if some validators
+check the TPM half while others do not they disagree on validity — a consensus
+fork with no bug behind it. It has to be one rule for everyone.
+
+`tpm-qvl` does not exist on PyPI, so the rule has to be built. Three paths were
+examined and the middle one is a trap:
+
+| | |
+|---|---|
+| **`cryptography`, hand-rolled — CHOSEN** | Parse `TPMS_ATTEST`, verify the quote signature against the vTPM attestation key, chain the AK certificate to Google's root. ~200 lines, deterministic, no native dependency, no external service, pinnable and auditable the way `graders.py` is |
+| **`google-cloud-confidentialcomputing` — REJECTED** | Google's Attestation Verifier: hand it the attestation, receive a signed verdict |
+| `tpm2-pytss` | CFFI over `libtss2`. Every validator would need the native library installed, to marshal structures we can parse ourselves. Fine as a cross-check, poor as the dependency |
+
+**Why the service call is rejected**, since it is the easy option and looks
+harmless: it would make Google a **trust root and a per-proof availability
+dependency for every validator**, which is the exact property that ruled out
+GCP Confidential Space when the stack was chosen. It is strictly worse than the
+Intel PCS dependency already accepted — PCS serves *static collateral* every
+validator can cache, whereas a per-proof verdict from a live service can in
+principle differ between callers or over time, and two validators disagreeing on
+validity is a consensus fork. A subnet whose notion of a valid proof is "what
+Google's API said this morning" is not verifying anything.
+
+**Budget it as real work.** ~200 lines of security-critical binary parsing plus
+certificate-chain validation, consensus-affecting, and it needs the same pinning
+and attack-suite discipline as `dcap-qvl`. It is not a dependency bump.
+
+### I8 — why we believe `dcap-qvl==0.6.3` is safe
+
+CVE-2026-22696 (GHSA-796p-j2gh-9m2q, critical): `dcap-qvl` lacked mandatory
+Quoting Enclave identity validation, so a verifier could accept quotes from an
+unauthorised QE — a direct attack on this invariant. The advisory names <0.3.9
+as affected and 0.3.9 as patched, and says nothing about 0.6.x.
+
+**Version ordering is not evidence**, so the source was read rather than
+inferred: v0.6.3 carries a `qe_identity` module and calls
+`verify_qe_identity_signature` unconditionally in the main verify path with `?`,
+so a failure is fatal; it rejects on `mr_signer` and `isv_prod_id` mismatch and
+gates the expected QE id to `TD_QE`. The fix is present and mandatory.
+
+Recorded because the next person will ask, and "we pin a version above the
+patched one" is a weaker answer than "we read it". A pinned security-critical
+verifier that silently misses a fix is a bad failure mode, and pinning is what
+makes it possible.
+
 ### I8 — the approved entry is a PAIR, not a hash
 
 An approved-list entry is `<base_measurement>` or `<base_measurement>:<app_identity>`.

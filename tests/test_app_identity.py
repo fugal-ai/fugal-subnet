@@ -40,6 +40,22 @@ def test_normalisation_is_deterministic_and_key_order_independent():
     assert " " not in norm(a)                       # compact separators
 
 
+def test_finite_floats_are_refused_not_silently_mishashed():
+    """RFC 8785 specifies ES6 number formatting, which Python does not reproduce.
+
+    A wrong compose hash is silent and total: the approved entry names something
+    dstack never extended, so every honest miner is rejected for a reason nobody
+    would look for. Refusing is the correct failure.
+    """
+    import pytest
+
+    norm = _script().normalise_app_compose
+    with pytest.raises(ValueError, match="float"):
+        norm({"scale": 1.5})
+    with pytest.raises(ValueError, match=r"\$\.a\.b"):
+        norm({"a": {"b": 2.0}})              # the path is named, so it is fixable
+
+
 def test_non_finite_floats_become_null_not_nan():
     """json.dumps emits `NaN` and `Infinity`, which are not JSON. dstack's
     normalisation calls for null, and a hash over invalid JSON would differ

@@ -14,13 +14,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.request import Request, urlopen
 
 import numpy as np
 
 from fugal_subnet.benchmarks.slicer import select_slice
-from fugal_subnet.config import HARNESS_ALLOW_EXEC
+from fugal_subnet.config import HARNESS_ALLOW_EXEC, HARNESS_CONCURRENCY
 from fugal_subnet.exploration import expected_exploration
 from fugal_subnet.graders import grade
 from fugal_subnet.grading_task import build_grader_task
@@ -80,30 +82,23 @@ def run_benchmark(
     proxy.clear()
     results: list[QuestionResult] = []
 
+    # Route every question first (pure numpy, deterministic), then make the
+    # model calls several at a time, then grade in slice order on this thread.
+    # The calls are the only part that waits on a network, so they are the only
+    # part that runs concurrently; routing and grading stay sequential and
+    # single-threaded, exactly as before.
+    scheduled: list[tuple[dict, str, bool]] = []
     for q in questions:
         q_idx = q_to_pool_idx.get(q["question_id"])
         if q_idx is None or q_idx >= hidden_states.shape[0]:
             logger.warning("Question %s not in hidden states, skipping", q["question_id"])
             continue
+        model_id = head.models[_route_question(head, hidden_states[q_idx])]
+        scheduled.append((q, model_id, False))
 
-        h = hidden_states[q_idx]
-        routing_decision = _route_question(head, h)
-        model_id = head.models[routing_decision]
-
-        # Cost is attributed from the records this call actually appended.
-        # Reading proxy.records[-1] unconditionally re-bills the PREVIOUS
-        # question whenever a call fails and appends nothing, so the
-        # per-question costs stop summing to the attested total.
-        calls_before = len(proxy.records)
-        # `or ""`: a reply that is not text is a wrong answer, never an abort.
-        # One aborted question used to take the whole epoch's proof with it.
-        response_text = _call_model(proxy, model_id, q) or ""
-        new_calls = proxy.records[calls_before:]
-        cost = sum(r.cost_usd for r in new_calls)
-        prompt_tokens = sum(r.prompt_tokens for r in new_calls)
-        completion_tokens = sum(r.completion_tokens for r in new_calls)
-        response_hash = hashlib.sha256(response_text.encode()).hexdigest()
-
+    for q, model_id, response_text, cost, prompt_tokens, completion_tokens in _call_all(
+        proxy, scheduled, epoch_id,
+    ):
         # grade() needs a grader task dict, not a raw loader question: it reads
         # task["checker"]["id"] / task["domain"], neither of which the loader
         # schema has. Passing the raw dict raises KeyError inside grade(), which
@@ -113,13 +108,12 @@ def run_benchmark(
         # They drifted apart once and a sixth of every slice scored zero.
         correct = bool(grade(build_grader_task(q), response_text,
                              allow_exec=HARNESS_ALLOW_EXEC))
-
         results.append(QuestionResult(
             question_id=q["question_id"],
             routed_model=model_id,
             correct=correct,
             cost_usd=cost,
-            response_hash=response_hash,
+            response_hash=hashlib.sha256(response_text.encode()).hexdigest(),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         ))
@@ -134,26 +128,23 @@ def run_benchmark(
         explore_map = expected_exploration(
             nonce_bytes, benchmark_pool, set(question_ids), explore_models, explore_size,
         )
-        for qid in sorted(explore_map):
-            q = pool_by_id.get(qid)
-            if q is None:
-                continue
-            model_id = explore_map[qid]
-
-            calls_before = len(proxy.records)
-            response_text = _call_model(proxy, model_id, q) or ""
-            new_calls = proxy.records[calls_before:]
+        explore_sched = [
+            (pool_by_id[qid], explore_map[qid], True)
+            for qid in sorted(explore_map) if qid in pool_by_id
+        ]
+        for q, model_id, response_text, cost, prompt_tokens, completion_tokens in _call_all(
+            proxy, explore_sched, epoch_id,
+        ):
             correct = bool(grade(build_grader_task(q), response_text,
                                  allow_exec=HARNESS_ALLOW_EXEC))
-
             results.append(QuestionResult(
-                question_id=qid,
+                question_id=q["question_id"],
                 routed_model=model_id,
                 correct=correct,
-                cost_usd=sum(r.cost_usd for r in new_calls),
+                cost_usd=cost,
                 response_hash=hashlib.sha256(response_text.encode()).hexdigest(),
-                prompt_tokens=sum(r.prompt_tokens for r in new_calls),
-                completion_tokens=sum(r.completion_tokens for r in new_calls),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
                 is_exploration=True,
             ))
 
@@ -191,6 +182,51 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
     return exp / exp.sum()
 
 
+# The request id of the model call THIS thread is making, so that _call_model
+# can label it and the proxy can attribute the record to the right question.
+# Thread-local rather than a parameter: every stub that stands in for
+# _call_model in tests and scripts keeps its (proxy, model_id, question)
+# signature and reads current_request_id() when it appends its record.
+_request_ctx = threading.local()
+
+
+def current_request_id() -> str:
+    return getattr(_request_ctx, "request_id", "")
+
+
+def _call_all(proxy, scheduled, epoch_id):
+    """Make every scheduled model call, HARNESS_CONCURRENCY at a time, and yield
+    (question, model_id, text, cost, prompt_tokens, completion_tokens) in the
+    ORDER SCHEDULED — never completion order. Cost is attributed by request id,
+    so interleaved calls cannot bill one question for another's tokens, and a
+    failed call that appended no record costs nothing (as before).
+    """
+    def one(item):
+        q, model_id, _explore = item
+        rid = f"{epoch_id}:{q['question_id']}:{model_id}"
+        _request_ctx.request_id = rid
+        try:
+            # `or ""`: a reply that is not text is a wrong answer, never an
+            # abort. One aborted question used to take the whole proof.
+            text = _call_model(proxy, model_id, q) or ""
+        finally:
+            _request_ctx.request_id = ""
+        return rid, text
+
+    if not scheduled:
+        return
+    with ThreadPoolExecutor(max_workers=HARNESS_CONCURRENCY) as pool:
+        outcomes = list(pool.map(one, scheduled))
+    for (q, model_id, _explore), (rid, text) in zip(scheduled, outcomes):
+        mine = [r for r in proxy.records if r.request_id == rid]
+        yield (
+            q, model_id, text,
+            sum(r.cost_usd for r in mine),
+            sum(r.prompt_tokens for r in mine),
+            sum(r.completion_tokens for r in mine),
+        )
+
+
 def _call_model(
     proxy: MeteringProxy,
     model_id: str,
@@ -207,12 +243,17 @@ def _call_model(
     req = Request(
         f"http://127.0.0.1:{proxy.port}/chat/completions",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 "X-Fugal-Request": current_request_id()},
         method="POST",
     )
 
     try:
-        with urlopen(req, timeout=180) as resp:
+        # Slightly longer than the proxy's own 180 s upstream timeout, so the
+        # proxy's 502 reaches us before we give up on the proxy; otherwise the
+        # proxy writes into a closed socket (BrokenPipe) and the failure is
+        # logged twice as two different errors.
+        with urlopen(req, timeout=200) as resp:
             data = json.loads(resp.read())
         return _text_of(data)
     except Exception:

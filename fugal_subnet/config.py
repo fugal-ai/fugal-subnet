@@ -58,6 +58,19 @@ EPOCH_COLLECT_FRACTION = float(os.getenv("FUGAL_COLLECT_FRACTION", "0.5"))
 # the benchmarks in one place. Doing that safely is docs/CODE_BENCHMARK_PLAN.md.
 HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "", "false", "False")
 
+# How many model calls the miner's benchmark runs at once. Miner-side only:
+# nothing in consensus depends on how fast a miner answers, only on whether
+# its proof exists at the collection block.
+#
+# Measured 2026-09-07 on the first live epoch on real TDX: 315 serial calls to
+# the three cheapest models with 2048-token completions ran past 49 minutes —
+# the collection point is 36 minutes after the boundary. The config note above
+# assumed "6 s per question, ample for serial API calls"; real completions on
+# math prompts run ~10 s, and one 180 s timeout eats 5% of the window on its
+# own. Eight in flight brings a 315-question slice to a few minutes and makes
+# a stalled call cost one worker rather than the epoch.
+HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "8")))
+
 # Checkers that grade by running the candidate's code, and therefore return 0
 # unless HARNESS_ALLOW_EXEC. Named here rather than in graders.py, which is
 # hash-pinned and must stay byte-identical.

@@ -161,6 +161,7 @@ def run_pipeline(seed: int) -> dict:
             model_id=model_id, prompt_tokens=500, completion_tokens=300,
             cost_usd=proxy.price_call(model_id, 500, 300), timestamp=0.0,
             response_hash=hashlib.sha256(text.encode()).hexdigest(),
+            request_id=harness_mod.current_request_id(),
         ))
         return text
 

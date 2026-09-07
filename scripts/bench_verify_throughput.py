@@ -108,6 +108,7 @@ def _stub_call(proxy, model_id, question):
         model_id=model_id, prompt_tokens=p_tok, completion_tokens=c_tok,
         cost_usd=proxy.price_call(model_id, p_tok, c_tok),
         timestamp=0.0, response_hash=hashlib.sha256(text.encode()).hexdigest(),
+        request_id=harness_mod.current_request_id(),
     ))
     return text
 

@@ -414,8 +414,14 @@ def _stub_model_call(proxy, model_id, question):
         model_id=model_id, prompt_tokens=500, completion_tokens=300,
         cost_usd=proxy.price_call(model_id, 500, 300), timestamp=0.0,
         response_hash=hashlib.sha256(text.encode()).hexdigest(),
+        request_id=_current_request_id(),
     ))
     return text
+
+
+def _current_request_id() -> str:
+    from fugal_subnet.tee.harness import current_request_id
+    return current_request_id()
 
 
 def _synthetic_pool(n=100):

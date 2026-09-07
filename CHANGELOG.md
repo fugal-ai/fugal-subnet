@@ -4,6 +4,18 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — one non-text model reply aborted the miner's whole epoch
+
+Found 2026-09-07 on the first live epoch of the first real TDX miners, both of
+which failed it. A chat completion carried `"content": null`; `_call_model`
+returned `None`; `run_benchmark` called `.encode()` on it and raised, so no
+proof existed for the epoch — for one reply out of three hundred. Every test
+stub returns a string, so the path had never run. Replies that are not text
+(null, missing, a parts list, an error body) now grade as a wrong answer with
+the hash of the empty string, and the epoch completes.
+`tests/test_harness_non_text_reply.py` drives the null reply through the real
+HTTP path and through `run_benchmark`.
+
 ### Added — the validator says which entries it approved
 
 `Approved entries: N — <base>…:<compose>…; …` at startup, before any chain

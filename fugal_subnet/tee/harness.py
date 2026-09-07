@@ -95,7 +95,9 @@ def run_benchmark(
         # question whenever a call fails and appends nothing, so the
         # per-question costs stop summing to the attested total.
         calls_before = len(proxy.records)
-        response_text = _call_model(proxy, model_id, q)
+        # `or ""`: a reply that is not text is a wrong answer, never an abort.
+        # One aborted question used to take the whole epoch's proof with it.
+        response_text = _call_model(proxy, model_id, q) or ""
         new_calls = proxy.records[calls_before:]
         cost = sum(r.cost_usd for r in new_calls)
         prompt_tokens = sum(r.prompt_tokens for r in new_calls)
@@ -139,7 +141,7 @@ def run_benchmark(
             model_id = explore_map[qid]
 
             calls_before = len(proxy.records)
-            response_text = _call_model(proxy, model_id, q)
+            response_text = _call_model(proxy, model_id, q) or ""
             new_calls = proxy.records[calls_before:]
             correct = bool(grade(build_grader_task(q), response_text,
                                  allow_exec=HARNESS_ALLOW_EXEC))
@@ -212,12 +214,40 @@ def _call_model(
     try:
         with urlopen(req, timeout=180) as resp:
             data = json.loads(resp.read())
-        choices = data.get("choices", [])
-        if choices:
-            return choices[0].get("message", {}).get("content", "")
-        return ""
+        return _text_of(data)
     except Exception:
         logger.exception("Model call failed for %s", model_id)
         return ""
+
+
+def _text_of(data) -> str:
+    """The reply text, or "" — never None, never a non-string.
+
+    Found on real hardware with a real provider, 2026-09-07: a chat completion
+    can carry `"content": null` (a refusal, a tool-only turn, an upstream error
+    dressed as a completion), and `.get("content", "")` returns None for a key
+    that is present with a null value. The harness then called `.encode()` on
+    it and the whole epoch aborted — no proof, for one odd reply out of three
+    hundred. Every stub in the test-suite returns a string, so nothing had ever
+    exercised this. A reply that is not text is graded as a wrong answer, which
+    is what it is; the epoch goes on.
+    """
+    try:
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+    except AttributeError:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # Some providers return content parts: [{"type": "text", "text": ...}].
+        return "".join(
+            part.get("text", "") for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+    return ""
 
 

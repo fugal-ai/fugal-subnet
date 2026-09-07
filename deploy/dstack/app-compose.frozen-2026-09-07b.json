@@ -1,0 +1,17 @@
+{
+  "manifest_version": 2,
+  "name": "fugal-miner",
+  "runner": "docker-compose",
+  "docker_compose_file": "# The Fugal miner as a dstack application. This file becomes the\n# `docker_compose_file` string inside app-compose.json, and sha256 of THAT\n# file's raw bytes is the app identity validators approve \u2014 so every byte here\n# is part of what the subnet accepts. Change one and the entry must be\n# re-approved.\n#\n# Nothing per-miner is in here, deliberately: the head, the hotkey, coldkeypub\n# and the API key all arrive after boot over the attested channel\n# (scripts/provision_td.py). That is what lets every honest miner share one\n# compose hash.\n#\n# Pin the image BY DIGEST. A tag that moves leaves this hash stable while the\n# code under it changes, which is the exact defect the measured image exists to\n# prevent. Replace the digest below with the one Cloud Build printed.\nservices:\n  miner:\n    image: us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:e4c2deff9c9ee2b38b3495690c7e5c5b52acb740a96e1b16664a235725736ca4\n    restart: unless-stopped\n    ports:\n      - \"8091:8091\"   # axon: validators reach the miner here (open to the world)\n      - \"8092:8092\"   # provisioning receiver: firewall to the operator's IP only\n    volumes:\n      # The guest agent socket: how the miner asks for TDX+TPM attestations.\n      - /var/run/dstack.sock:/var/run/dstack.sock\n      # Embedding cache and epoch artifacts. A named volume lives on dstack's\n      # encrypted data disk, so the backbone pass over the pool survives a\n      # container restart and an instance stop/start. It does NOT survive\n      # `dstack-cloud deploy --delete`: that tool recreates the instance and\n      # its data disk is created auto-delete (read from the CLI source), so an\n      # image upgrade re-pays the pass. Mounted at /app/results (image-owned\n      # by uid 10001), NOT /app/data: a\n      # volume over /app/data would shadow the pinned data/models.json across\n      # image upgrades, which is a consensus hazard wearing a convenience hat.\n      - fugal-results:/app/results\n    environment:\n      - FUGAL_NETWORK=test\n      - FUGAL_NETUID=552\n      # MUST equal tempo x 12 s on every neuron (validators included).\n      - FUGAL_EPOCH_INTERVAL=4320\n      - FUGAL_EMBEDDING_CACHE=/app/results/embeddings\n      # All vCPUs for the one-time backbone pass over the pool. Miner-side\n      # only; validators never run the backbone (fugal_subnet/determinism.py).\n      - FUGAL_BACKBONE_THREADS=0\n      - LOG_LEVEL=INFO\n      - PYTHONUNBUFFERED=1\n      # NOT set, on purpose: FUGAL_BENCHMARK_POOL (the pool comes from the\n      # pinned loader and is verified against the manifest), and\n      # FUGAL_OPENROUTER_BASE (the upstream is inside the measurement; a\n      # settable upstream is the exploit scripts/stub_upstream.py demonstrates).\n    entrypoint:\n      - /app/.venv/bin/python\n      - /app/neurons/miner.py\n      - --live\n      - --await-provisioning\n      - --network\n      - test\n      - --netuid\n      - \"552\"\n      - --coldkey\n      - fugal\n      - --hotkey\n      - default\n      - --port\n      - \"8091\"\n\nvolumes:\n  fugal-results:\n",
+  "gateway_enabled": false,
+  "public_logs": false,
+  "public_sysinfo": false,
+  "public_tcbinfo": false,
+  "key_provider_id": "",
+  "allowed_envs": [],
+  "no_instance_id": false,
+  "secure_time": false,
+  "key_provider": "tpm",
+  "storage_fs": "ext4",
+  "pre_launch_script": "#!/bin/sh\n# Prelaunch script - runs before starting containers\n"
+}

@@ -81,6 +81,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # traceback — is silently discarded. See fugal_subnet/logging_setup.
     from fugal_subnet.logging_setup import configure_logging
     configure_logging(log_level)
+    # Internet scanners probe any public port within seconds of it opening
+    # (measured on the first live TD: 114 requests for .env, wp-config.php,
+    # actuator, ... in the first minute). The SDK logs each as an ERROR-level
+    # UnknownSynapseError, which buries the miner's own lines. Drop that one
+    # message class; a real error from the axon still gets through.
+    class _DropSynapseScans(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return "UnknownSynapseError" not in record.getMessage()
+    logging.getLogger("bittensor").addFilter(_DropSynapseScans())
 
     from fugal_subnet.api import load_prices
     from fugal_subnet.benchmarks.slicer import (
@@ -148,7 +157,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     logger.info("Price table: %d models; exploration quota %d questions/epoch",
                 len(pool_models), explore_size)
 
-    logger.info("Head loaded: %s (%d bytes)", head_path, len(head_data))
+    logger.info("Head loaded: %s (%d bytes)", head_path or "(pushed over the attested channel)", len(head_data))
     logger.info("Weights hash: %s", weights_hash[:16])
 
     # Once, at startup — not per epoch. See _compute_hidden_states.

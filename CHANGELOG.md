@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — the miner's benchmark calls models concurrently
+
+Measured 2026-09-07 on the first live epoch on real TDX: 315 serial calls to
+the three cheapest models with 2048-token completions were still running 49
+minutes after the boundary, against a collection point 36 minutes in — real
+replies on math prompts take ~10 s, not the 6 s the config note assumed, and
+one 180 s timeout alone is 5% of the window. `HARNESS_CONCURRENCY` (default 8,
+miner-side) keeps that many calls in flight. What it must not change is
+pinned by `tests/test_harness_concurrency.py`: results stay in slice order,
+each question is billed exactly its own calls (the proxy attributes records by
+an `X-Fugal-Request` id, not by list position), a stalled call costs one
+worker rather than the epoch, and cost totals use `math.fsum` so the attested
+figures are identical whatever order the records landed in. The metering
+proxy is now a threading server; grading stays on the main thread. Also: the
+miner drops the SDK's `UnknownSynapseError` log spam from internet scanners
+(114 probes in the first minute on a public axon).
+
 ### Fixed — one non-text model reply aborted the miner's whole epoch
 
 Found 2026-09-07 on the first live epoch of the first real TDX miners, both of

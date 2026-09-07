@@ -13,10 +13,12 @@ import errno
 import hashlib
 import json
 import logging
+import math
 import os
+import threading
 import time
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from threading import Thread
 from urllib.request import Request, urlopen
 
@@ -45,6 +47,11 @@ class APICallRecord:
     timestamp: float
     response_hash: str
     provider_cost_usd: float = 0.0  # what the provider itself reported, if any
+    # Which question this call belonged to, from the X-Fugal-Request header the
+    # harness sends. The harness attributes cost by this, not by list position:
+    # with several calls in flight the records interleave, and "the records
+    # appended since I started" would bill one question for another's tokens.
+    request_id: str = ""
 
 
 @dataclass
@@ -68,6 +75,7 @@ class MeteringProxy:
     records: list[APICallRecord] = field(default_factory=list)
     prices: dict[str, tuple[float, float]] = field(default_factory=dict)
     _server: HTTPServer | None = field(default=None, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _thread: Thread | None = field(default=None, repr=False)
 
     def price_call(self, model_id: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -100,6 +108,7 @@ class MeteringProxy:
                 body = self.rfile.read(content_length)
                 request_data = json.loads(body)
                 model_id = request_data.get("model", "unknown")
+                request_id = self.headers.get("X-Fugal-Request", "")
 
                 upstream_url = f"{_OPENROUTER_BASE}/chat/completions"
                 req = Request(
@@ -130,15 +139,17 @@ class MeteringProxy:
                     except (TypeError, ValueError):
                         provider_cost = 0.0
 
-                    proxy.records.append(APICallRecord(
-                        model_id=model_id,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        cost_usd=cost,
-                        timestamp=time.time(),
-                        response_hash=resp_hash,
-                        provider_cost_usd=provider_cost,
-                    ))
+                    with proxy._lock:
+                        proxy.records.append(APICallRecord(
+                            model_id=model_id,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            cost_usd=cost,
+                            timestamp=time.time(),
+                            response_hash=resp_hash,
+                            provider_cost_usd=provider_cost,
+                            request_id=request_id,
+                        ))
 
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -162,12 +173,15 @@ class MeteringProxy:
         # start of every epoch, forever, benchmarking nothing. Binding 0 and
         # recording what the kernel gave us costs nothing and removes a whole
         # class of "my second miner earns zero" reports.
+        # Threaded: the harness keeps several model calls in flight
+        # (config.HARNESS_CONCURRENCY), and a single-threaded server would
+        # serialise them again behind its accept loop.
         try:
-            self._server = HTTPServer(("127.0.0.1", self.port), Handler)
+            self._server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
         except OSError as e:
             if e.errno != errno.EADDRINUSE:
                 raise
-            self._server = HTTPServer(("127.0.0.1", 0), Handler)
+            self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
             actual = self._server.server_address[1]
             logger.warning(
                 "MeteringProxy port %d is in use (another miner on this host?); "
@@ -186,21 +200,25 @@ class MeteringProxy:
             self._thread.join(timeout=5)
             self._thread = None
 
+    # math.fsum, not sum: with several calls in flight the records complete in
+    # a different order every run, and a left-to-right float sum rounds
+    # differently with the order. fsum returns the correctly rounded total
+    # whatever the order, so the attested figures do not depend on scheduling.
     @property
     def total_cost(self) -> float:
-        return sum(r.cost_usd for r in self.records)
+        return math.fsum(r.cost_usd for r in self.records)
 
     @property
     def provider_total_cost(self) -> float:
         """What the provider itself reported, where it reported anything."""
-        return sum(r.provider_cost_usd for r in self.records)
+        return math.fsum(r.provider_cost_usd for r in self.records)
 
     @property
     def per_model_costs(self) -> dict[str, float]:
-        costs: dict[str, float] = {}
+        by_model: dict[str, list[float]] = {}
         for r in self.records:
-            costs[r.model_id] = costs.get(r.model_id, 0.0) + r.cost_usd
-        return costs
+            by_model.setdefault(r.model_id, []).append(r.cost_usd)
+        return {m: math.fsum(v) for m, v in sorted(by_model.items())}
 
     def clear(self) -> None:
         self.records.clear()

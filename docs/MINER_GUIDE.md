@@ -76,8 +76,11 @@ btcli subnet register \
 python scripts/train_head.py \
   --synthetic --n-questions 300 \
   --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
-  --output data/my_head.npz
+  --output data/synthetic_head_test.npz
 ```
+
+Synthetic output is for training tests; use observed data and the benchmark
+manifest for the miner commands below.
 
 ### Success-head training (observed binary labels)
 

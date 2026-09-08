@@ -9,6 +9,11 @@ and the number of paid calls per benchmark are unchanged.
 The portable core implementation is vendored in
 `fugal_subnet/vendor/success_contract.py` under Apache-2.0. Its source commit and
 SHA256 are recorded in `SOURCE.json`; CI verifies exact synchronization with core.
+Because the repositories are private, CI uses a small test-only core projection
+plus its commit/tree Git objects as a Merkle proof. It recomputes object IDs
+through the pinned commit to each file, then runs the real serving interface
+on the subnet-exported fixture. No cross-repository token or serving runtime
+dependency is introduced. A local core checkout can also be compared directly.
 The serving application is not a subnet dependency.
 
 The embedding profile pins Qwen/Qwen3-0.6B and its tokenizer revision
@@ -121,3 +126,15 @@ Rollback stops the new runtime and restores **the old runtime and its matching
 archived state/configuration together**, including matching approved measurements.
 Keep new evidence separately archived. Preserve wallets and registrations in both
 directions. Never feed success-protocol evidence to the old runtime or vice versa.
+
+To update the vendor after a reviewed core change:
+
+```bash
+python scripts/vendor_success_contract.py --core /path/to/core --commit <full-core-commit>
+python scripts/check_success_vendor.py --core /path/to/core
+```
+
+The runtime package contains only the reference module and license/provenance
+resources. `tests/core_snapshot` is a test dependency only. CI checks its actual
+Git blob/tree/commit identities; changing a SHA256 manifest alongside modified code
+cannot make an unrelated source file pass that proof.

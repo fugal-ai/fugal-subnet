@@ -100,6 +100,8 @@ include = ["fugal_subnet*", "neurons*"]
 testpaths = ["tests"]
 
 [tool.ruff]
+# Immutable test-only core projection, checked against Git objects in CI.
+extend-exclude = ["tests/core_snapshot"]
 target-version = "py310"
 line-length = 100
 

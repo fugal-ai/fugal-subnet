@@ -176,18 +176,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           path: subnet
-      - name: Read exact core source pin
-        id: source
-        run: echo "commit=$(python3 -c 'import json; print(json.load(open("subnet/fugal_subnet/vendor/SOURCE.json"))["commit"])')" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: fugal-ai/fugal-core
-          ref: ${{ steps.source.outputs.commit }}
-          path: core
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - run: python subnet/scripts/check_success_vendor.py --core core
+      - run: python subnet/scripts/check_success_vendor.py --materialize-core
       - run: pip install numpy
       - name: Both modules reproduce core fixtures
         run: python subnet/scripts/check_success_fixtures.py
@@ -196,11 +188,11 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install transformers huggingface_hub httpx
       - name: Fetch the pinned reference backbone
-        run: python core/scripts/fetch_backbone.py
+        run: python subnet/tests/core_snapshot/scripts/fetch_backbone.py
       - name: Exported subnet fixture reproduces core serving
         run: |
-          python core/verify/verify_success_contract.py --subnet subnet \
-            --backbone core/artifacts/Qwen3-0.6B \
+          python subnet/tests/core_snapshot/verify/verify_success_contract.py --subnet subnet \
+            --backbone subnet/tests/core_snapshot/artifacts/Qwen3-0.6B \
             --head subnet/tests/fixtures/success_bundle/head.npz \
             --prices subnet/tests/fixtures/success_bundle/prices.json
 

@@ -1,0 +1,36 @@
+Fugal
+Copyright 2026 The Fugal Contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this project except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+================================================================================
+THIRD-PARTY ATTRIBUTION
+================================================================================
+
+--------------------------------------------------------------------------------
+OpenFugu
+Copyright 2026 The OpenFugu Contributors
+Licensed under the Apache License, Version 2.0.
+Source: github.com/trotsky1997/OpenFugu
+--------------------------------------------------------------------------------
+
+Portions of `fugal/router.py` are derived from OpenFugu's `openfugu/mini.py`
+(Apache-2.0). The derived material has been substantially modified.
+
+OpenFugu's NOTICE attributes the following, reproduced here per Apache-2.0 §4(d):
+
+1. TRINITY: An Evolved LLM Coordinator (arXiv:2512.04695), Sakana AI.
+2. Learning to Orchestrate Agents in Natural Language with the Conductor
+   (arXiv:2512.04388), Sakana AI.
+3. Backbone model: Qwen/Qwen3-0.6B (Apache-2.0), Alibaba Cloud.
+
+================================================================================
+TRAINED WEIGHTS
+================================================================================
+
+The router head (`data/router_head.npz`) is original work of this project,
+distributed under Apache-2.0. See `docs/HEAD_FORMAT.md` for its contract.

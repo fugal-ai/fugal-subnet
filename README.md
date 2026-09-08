@@ -47,8 +47,14 @@ python scripts/watch_subnet.py --network test --netuid <N> --epochs 3 \
 # A deterministic OpenAI-compatible endpoint, so miners run with no spend
 python scripts/stub_upstream.py --pool <pool.json> --port 8799
 
-# Train a reference head (synthetic data, no API spend)
+# Exercise reference training (test-only artifact, no API spend)
 python scripts/train_head.py --synthetic --n-questions 200 \
+  --models deepseek/deepseek-v4-flash meta-llama/llama-4-maverick openai/gpt-5.4-nano \
+  --output data/synthetic_head_test.npz
+
+# Train a benchmark-compatible candidate from aligned observed labels
+python scripts/train_head.py --matrix data/matrix.npz \
+  --manifest data/benchmark_tokens_v1.json \
   --models deepseek/deepseek-v4-flash meta-llama/llama-4-maverick openai/gpt-5.4-nano \
   --output data/my_head.npz
 
@@ -71,7 +77,7 @@ OpenRouter key delivered over the attested provisioning channel; see the
 
 - Linux or WSL2 and Python 3.10–3.12
 - Docker for the full local-chain testnet
-- CPU float32 inference for backbone determinism (CUDA optional for training)
+- CPU float32 for the shared embedding profile and reference trainer
 
 ## How It Works
 
@@ -80,7 +86,7 @@ OpenRouter key delivered over the attested provisioning channel; see the
 3. **Miners also answer a nonce-chosen ~5% of extra questions using a model they do not pick.** These are never scored against them; they are the only unbiased samples of how good each model actually is, and a proof missing them is rejected.
 4. **Validators never call a model.** They verify the proof: the Intel DCAP signature, the hardware's own measurement registers against the approved runtime image, the attested content hash, the head against its on-chain commitment, the answers against the assigned slice, the exploration set against the nonce, and the cost figures against each other.
 5. **Scoring is headroom above the constant-policy frontier.** `frontier(c)` is the best accuracy any single model, or random mixture of models, buys at cost `c` (upper convex hull from the exploration frame and the pinned prices); `score = max(0, wilson_lcb(accuracy) − frontier(cost per question)) × burn_in × frontier_confidence`, zero below 80% of the frontier's best accuracy. A head that never reads the question scores zero at any price; a router earns exactly the accuracy it adds. See `docs/I3_DECISION.md`.
-6. The validator publishes the full epoch artifact (`results/epochs/<epoch>/reveal.json`): questions, results, the reference frame, scores, and weights. Miners download it, retrain, and commit improved heads.
+6. The validator publishes the full epoch artifact (`results/success-v1/epochs/<epoch>/reveal.json`): questions, results, the reference frame, scores, and weights. Miners download it, retrain, and commit improved heads.
 
 ## Benchmarks
 

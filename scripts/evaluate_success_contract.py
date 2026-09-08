@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import platform
 import resource
@@ -51,10 +52,12 @@ def main():
     p.add_argument("--backbone", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--max-length", type=int, choices=[512, 2048], required=True)
-    p.add_argument("--batch-size", type=int, default=8)
+    p.add_argument("--batch-size", type=int, default=2)
     p.add_argument("--threads", type=int, default=8)
     p.add_argument("--epochs", type=int, default=200)
     args = p.parse_args()
+    if min(args.batch_size, args.threads, args.epochs) < 1:
+        p.error("batch size, threads and epochs must be positive")
     torch.set_num_threads(args.threads)
     out, src = Path(args.output), Path(args.data)
     out.mkdir(parents=True, exist_ok=True)
@@ -82,16 +85,35 @@ def main():
         model = AutoModel.from_pretrained(args.backbone, local_files_only=True, dtype=torch.float32).eval()
         lengths = [len(tok(c.format_question(q))["input_ids"]) for q in questions]
         order = np.argsort(lengths, kind="stable")
-        hidden = np.empty((len(questions), 1024), dtype=np.float32)
+        partial = out / f"embedding-progress-{args.max_length}.npz"
+        hidden = np.zeros((len(questions), 1024), dtype=np.float32)
+        completed, previous_seconds, previous_peak = 0, 0., 0
+        if partial.exists():
+            with np.load(partial, allow_pickle=False) as saved:
+                if str(saved["key"]) != c.cache_key(questions, profile_id):
+                    raise ValueError("partial embedding cache profile/input mismatch")
+                hidden = saved["H"]
+                completed, previous_seconds = int(saved["completed"]), float(saved["seconds"])
+                previous_peak = int(saved["peak_rss_kib"]) if "peak_rss_kib" in saved else 0
+            if hidden.shape != (len(questions), 1024) or not np.isfinite(hidden).all() or not 0 <= completed <= len(questions):
+                raise ValueError("invalid partial embedding cache")
+            print(f"Resuming {args.max_length} at {completed}/{len(questions)}", flush=True)
         started = time.monotonic()
-        for start in range(0, len(questions), args.batch_size):
+        for start in range(completed, len(questions), args.batch_size):
             batch = order[start:start + args.batch_size]
             hidden[batch] = c.embed(tok, model, [questions[i] for i in batch], args.batch_size, args.max_length)
-            if start % (args.batch_size * 25) == 0:
-                print(f"{args.max_length}: {start}/{len(questions)}; {time.monotonic()-started:.1f}s", flush=True)
-        seconds = time.monotonic() - started
+            done = start + len(batch)
+            if done % 200 < args.batch_size or done == len(questions):
+                elapsed = previous_seconds + time.monotonic() - started
+                temporary = partial.with_suffix(".tmp.npz")
+                np.savez(temporary, H=hidden, completed=done, seconds=elapsed,
+                         key=c.cache_key(questions, profile_id),
+                         peak_rss_kib=max(previous_peak, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+                temporary.replace(partial)
+                print(f"{args.max_length}: {done}/{len(questions)}; {elapsed:.1f}s; checkpoint saved", flush=True)
+        seconds = previous_seconds + time.monotonic() - started
         metrics = {"seconds": seconds, "seconds_per_question": seconds / len(questions),
-                   "peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                   "peak_rss_kib": max(previous_peak, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
                    "truncated": sum(n > args.max_length for n in lengths), "n": len(questions),
                    "batch_size": args.batch_size, "threads": args.threads,
                    "device": "cpu", "dtype": "float32", "profile_id": profile_id}
@@ -165,7 +187,8 @@ def main():
             mixtures.append({"left": models[j], "right": models[k], "right_weight": weight,
                              "accuracy": interval(mixture_y, draws), "recorded_cost": interval(mixture_c, draws)})
     report = {"scope": "SPROUT offline mechanism test, not live-subnet calibration; historical assumed prices",
-              "software": {"python": platform.python_version(), "numpy": np.__version__, "torch": torch.__version__},
+              "software": {"python": platform.python_version(), "numpy": np.__version__, "torch": torch.__version__,
+                           "transformers": importlib.metadata.version("transformers")},
               "training": {"epochs": args.epochs, "learning_rate": .01, "seed": 42, "checkpoint": "minimum validation BCE"},
               "sources": sources, "embedding": metrics, "label_conversion": "finite score >= 1 => 1; lower => 0; NaN remains missing",
               "observed_label_cells": int(np.isfinite(labels).sum()),

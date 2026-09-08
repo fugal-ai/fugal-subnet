@@ -88,6 +88,7 @@ def run_pipeline(seed: int) -> dict:
 
     import numpy as np
 
+    from fugal_subnet import success_test_fixtures as success_fixtures
     from fugal_subnet.benchmarks.slicer import (
         derive_nonce,
         epoch_id_for_block,
@@ -165,6 +166,7 @@ def run_pipeline(seed: int) -> dict:
         ))
         return text
 
+    harness_mod.benchmark_costs = success_fixtures.costs
     harness_mod._call_model = _stub_call
 
     # Heads whose utilities land close together on purpose, so the argmax
@@ -177,7 +179,7 @@ def run_pipeline(seed: int) -> dict:
         W = (hrng.randn(len(models), HEAD_HIDDEN_DIM) * 0.01).astype(np.float32)
         b = (hrng.randn(len(models)) * 1e-6).astype(np.float32)
         buf = io.BytesIO()
-        np.savez(buf, W=W, b=b, models=np.array(models, dtype="U100"))
+        np.savez(buf, **success_fixtures.arrays(W, b, models))
         head_bytes = buf.getvalue()
 
         proxy = _Proxy(port=0)

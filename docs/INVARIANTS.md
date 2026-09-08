@@ -1975,3 +1975,14 @@ every `set_weights` failed while the neurons reported success.
 7. Validate the cost path against real OpenRouter —
    `docs/LIVE_API_VALIDATION.md`. The pinned price table is deterministic, not
    necessarily correct; only a live comparison distinguishes the two.
+
+## Success protocol transition
+
+Success heads share core's versioned CPU embedding and sigmoid-minus-dollar selector.
+Benchmark λ is exactly 1. Token means must equal the versioned recorded manifest;
+prices remain pinned. Contract/profile/λ/manifest/prices are bound into the protocol
+identity, runtime identity, proof content, saved validator state and frame/reveals.
+Unknown or pre-transition identities fail admission; no old evidence is resumed.
+`tests/test_success_contract.py` enforces these boundaries, and the reference module
+is checked against its exact core source in CI. The candidate manifest blocks live
+startup/export pending review. See `SUCCESS_CONTRACT.md` for the reset runbook.

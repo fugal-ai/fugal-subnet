@@ -79,42 +79,32 @@ python scripts/train_head.py \
   --output data/my_head.npz
 ```
 
-### Competitive training (with matrix data)
-
-Once the subnet is running, download published epoch artifacts and train:
+### Success-head training (observed binary labels)
 
 ```bash
 python scripts/train_head.py \
   --matrix data/matrix.npz \
+  --manifest data/benchmark_tokens_v1.json \
   --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
-  --output data/my_head.npz \
-  --device cuda \
-  --use-backbone \
-  --sft-epochs 100 \
-  --cma-generations 50
+  --output data/my_head.npz --epochs 100
 ```
 
-`--use-backbone` is required. Without it, the trainer falls back to random
-hidden states and produces a head that scores near zero.
+The matrix contains aligned `models`, `questions`, and `matrix` arrays. Labels
+are 0 or 1; NaN means unobserved. The trainer retains observed all-failure rows,
+uses masked binary cross-entropy, and selects a checkpoint by validation BCE.
+Exact duplicate prompts stay together in deterministic 60/20/20 splits. The
+held-out test split is reported only after checkpoint selection.
 
-### Head format
+Embeddings are computed with the pinned CPU float32 2048-token profile. An
+optional `--hidden-states` argument accepts a profile-tagged NPZ cache. There is
+no implicit random fallback. Synthetic training is explicitly test-only.
 
-The `.npz` file must contain:
-
-| Array | Shape | Description |
-|-------|-------|-------------|
-| `W` | `(L, 1024)` | Weight matrix, float32. L = number of models |
-| `b` | `(L,)` | Bias vector, float32 |
-| `models` | `(L,)` | Model ID strings (e.g. `openai/gpt-5.4-mini`) |
-
-Max file size: **1 MB** (`HEAD_MAX_BYTES`). Hidden dimension must be 1024
-(Qwen3-0.6B).
-
-There is a **second limit that is easy to trip and was previously undocumented**:
-the arrays must not exceed **8 MB decompressed** (`HEAD_MAX_DECOMPRESSED_BYTES`).
-`.npz` is compressed, so a file comfortably under 1 MB on disk can still be
-rejected on load. Both limits are bounds on untrusted input, so neither is
-negotiable per miner.
+Heads require the versioned success contract, not just W/b/models. See
+[the contract and transition guide](SUCCESS_CONTRACT.md) for metadata, archive
+limits, export, and the required fresh evidence namespace. The checked-in token
+manifest is a review candidate derived from historical recorded calls. Live
+startup and deployable export reject it until it is reviewed; mocked rehearsals
+can exercise the candidate without publishing or spending on inference.
 
 ## Step 4: Run the Miner
 

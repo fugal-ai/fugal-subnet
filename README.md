@@ -14,7 +14,7 @@ The subnet's output is a continuously refreshed, publicly revealed record of whi
 ## Architecture
 
 ```
-Question → Qwen3-0.6B (frozen) → hidden state → W·h + b → softmax → select model → call model → answer
+Question → Qwen3-0.6B (frozen) → hidden state → independent sigmoid success → subtract estimated dollars (λ=1) → select model → call model → answer
                                                   ↑
                                           trainable head (~14KB .npz)
 ```

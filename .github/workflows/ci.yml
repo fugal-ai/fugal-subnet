@@ -168,3 +168,26 @@ jobs:
         run: |
           docker run --rm fugal-subnet:ci -m neurons.validator --help
           docker run --rm fugal-subnet:ci -m neurons.miner --help
+
+  success-contract:
+    name: Shared success contract conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: subnet
+      - name: Read exact core source pin
+        id: source
+        run: echo "commit=$(python3 -c 'import json; print(json.load(open("subnet/fugal_subnet/vendor/SOURCE.json"))["commit"])')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: fugal-ai/fugal-core
+          ref: ${{ steps.source.outputs.commit }}
+          path: core
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: python subnet/scripts/check_success_vendor.py --core core
+      - run: pip install numpy
+      - name: Both modules reproduce core fixtures
+        run: python subnet/scripts/check_success_fixtures.py

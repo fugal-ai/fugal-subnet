@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/fugal-ai/fugal-core",
+  "commit": "2d34e4d6c4ee1b16f864e05fa4e85dfb991bc53e",
+  "files": {
+    "fugal/success_contract.py": {
+      "vendored": "success_contract.py",
+      "sha256": "352148606c848852e4a47f63f70066c1bd7fa4264a096d7c48621a4c7758b5be"
+    },
+    "data/success_conformance.json": {
+      "vendored": "conformance.json",
+      "sha256": "bb5d00b60711bea749f997115d1a72d203747fe6789d14a60b7a42ef17d33529"
+    }
+  }
+}

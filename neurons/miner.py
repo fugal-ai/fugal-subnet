@@ -736,9 +736,8 @@ def _compute_hidden_states(pool):
         logger.info("Embeddings loaded from cache: %s", cache_path)
         return hidden
 
-    # batch_size is pinned in config, not left to the call site: padding is
-    # batch-composition dependent, so two hosts using different batch sizes are
-    # a latent cross-validator divergence.
+    # Use the configured memory bound for the 2048-token CPU profile. The shared
+    # implementation excludes padding from pooling and has batch/single checks.
     try:
         hidden = compute_hidden_states(questions, batch_size=BACKBONE_BATCH_SIZE)
     finally:

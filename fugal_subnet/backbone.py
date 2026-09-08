@@ -82,7 +82,7 @@ def compute_hidden_states(
     prompts: list[str],
     model_name: str = BACKBONE_MODEL,
     device: str = "cpu",
-    batch_size: int = 8,
+    batch_size: int = 2,
     max_length: int = 2048,
 ) -> np.ndarray:
     """Standalone, mask-mean-L2 embeddings under the shared success profile."""

@@ -33,6 +33,7 @@ def main():
         lines.append(f"| {name} | `{value}` |")
     lines += ["", "## Embedding and calibration comparison", "",
               "Full embedding passes run on CPU float32 with the pinned model/tokenizer and exact core prompt. Timing is wall time on this WSL host during development; concurrent checks and memory pressure can affect it. Peak RSS is per-process high-water memory, not GPU memory. These timings are mechanism measurements, not a controlled hardware performance claim.", "",
+              "See [execution notes](RUN_NOTES.md) for the discarded memory-limited attempt and the checkpointed rerun. The comparison below uses the successful passes only.", "",
               "| Input limit | Truncated | Total seconds | Seconds/question | Peak RSS MiB | Selected epoch | Pooled test Brier |",
               "| --- | --- | --- | --- | --- | --- | --- |"]
     for n, r in reports.items():

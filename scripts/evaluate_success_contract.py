@@ -46,6 +46,31 @@ def interval(values, draws):
     return {"mean": float(np.nanmean(values)), "ci95": np.quantile(estimates, [.025, .975]).tolist()}
 
 
+def load_progress(path, questions, profile_id):
+    if not path.exists():
+        return np.zeros((len(questions), 1024), dtype=np.float32), 0, 0., 0
+    with np.load(path, allow_pickle=False) as saved:
+        if str(saved["key"]) != c.cache_key(questions, profile_id):
+            raise ValueError("partial embedding cache profile/input mismatch")
+        hidden, counter = saved["H"], saved["completed"]
+        if counter.shape != () or counter.dtype.kind not in "iu":
+            raise ValueError("invalid partial embedding counter")
+        completed, seconds = int(counter), float(saved["seconds"])
+        peak = int(saved["peak_rss_kib"]) if "peak_rss_kib" in saved else 0
+    if (hidden.shape != (len(questions), 1024) or hidden.dtype != np.float32
+            or not np.isfinite(hidden).all() or not 0 <= completed <= len(questions)
+            or not np.isfinite(seconds) or seconds < 0 or peak < 0):
+        raise ValueError("invalid partial embedding cache")
+    return hidden, completed, seconds, peak
+
+
+def save_progress(path, questions, profile_id, hidden, completed, seconds, peak):
+    temporary = path.with_suffix(".tmp.npz")
+    np.savez(temporary, H=hidden, completed=completed, seconds=seconds,
+             key=c.cache_key(questions, profile_id), peak_rss_kib=peak)
+    temporary.replace(path)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data", required=True)
@@ -86,17 +111,8 @@ def main():
         lengths = [len(tok(c.format_question(q))["input_ids"]) for q in questions]
         order = np.argsort(lengths, kind="stable")
         partial = out / f"embedding-progress-{args.max_length}.npz"
-        hidden = np.zeros((len(questions), 1024), dtype=np.float32)
-        completed, previous_seconds, previous_peak = 0, 0., 0
+        hidden, completed, previous_seconds, previous_peak = load_progress(partial, questions, profile_id)
         if partial.exists():
-            with np.load(partial, allow_pickle=False) as saved:
-                if str(saved["key"]) != c.cache_key(questions, profile_id):
-                    raise ValueError("partial embedding cache profile/input mismatch")
-                hidden = saved["H"]
-                completed, previous_seconds = int(saved["completed"]), float(saved["seconds"])
-                previous_peak = int(saved["peak_rss_kib"]) if "peak_rss_kib" in saved else 0
-            if hidden.shape != (len(questions), 1024) or not np.isfinite(hidden).all() or not 0 <= completed <= len(questions):
-                raise ValueError("invalid partial embedding cache")
             print(f"Resuming {args.max_length} at {completed}/{len(questions)}", flush=True)
         started = time.monotonic()
         for start in range(completed, len(questions), args.batch_size):
@@ -105,11 +121,8 @@ def main():
             done = start + len(batch)
             if done % 200 < args.batch_size or done == len(questions):
                 elapsed = previous_seconds + time.monotonic() - started
-                temporary = partial.with_suffix(".tmp.npz")
-                np.savez(temporary, H=hidden, completed=done, seconds=elapsed,
-                         key=c.cache_key(questions, profile_id),
-                         peak_rss_kib=max(previous_peak, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
-                temporary.replace(partial)
+                save_progress(partial, questions, profile_id, hidden, done, elapsed,
+                              max(previous_peak, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
                 print(f"{args.max_length}: {done}/{len(questions)}; {elapsed:.1f}s; checkpoint saved", flush=True)
         seconds = previous_seconds + time.monotonic() - started
         metrics = {"seconds": seconds, "seconds_per_question": seconds / len(questions),

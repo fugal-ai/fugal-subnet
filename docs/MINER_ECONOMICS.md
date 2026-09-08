@@ -439,3 +439,23 @@ One further lever nobody had costed as a lever: **`SCORE_QUALITY_EXPONENT` sets
 the sustainable field size**, because it decides where in the 10.7× routing
 range miners settle. That is an argument for measuring per-model accuracy
 early — not for changing the exponent, which is derived and correct.
+
+## Measured on the first live epochs (2026-09-07/08)
+
+Two heads routing only among the three cheapest pinned models, 300-question
+slices plus the 15-question exploration quota, real OpenRouter calls inside
+dstack TDs:
+
+- Pinned cost per epoch per miner: **$0.16–$0.22** (proof totals), against
+  the $0.014 + $0.027 this document's table implied for that routing. Two
+  reasons: completions averaged **534 tokens** (max 2,049) where 256 was
+  assumed, and the exploration quota — nonce-assigned across all 16 priced
+  models including the dearest — was **~60% of the epoch's cost** for a head
+  that otherwise never calls them.
+- OpenRouter's account meter tracked the pinned totals within ~5% across four
+  miner-epochs (account-level; the proof does not yet carry provider cost).
+- Startup: 7 h 39 m of `c3-standard-4` time (~$1.60) to embed the pool once.
+
+The exploration share is a product question: the quota is what makes the
+reference frame unbiased, and it is charged to miners in proportion to how
+cheap their own routing is.

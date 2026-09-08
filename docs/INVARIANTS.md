@@ -1879,6 +1879,25 @@ different question pools, and epoch geometry duplicated across both.
 python scripts/dress_rehearsal.py --scenario all
 ```
 
+### The production rehearsal on netuid 552 (2026-09-06/07)
+
+The record is `docs/REHEARSAL_2026-09-06.md`, every line labelled measured or
+read. In one sentence: two `--live` validators on different CPU architectures
+scored three consecutive epochs from two dstack TDX miners' real, DCAP-verified
+proofs with byte-identical scores, weights and reveals, set those weights on
+chain at the subnet's tempo, rejected a mock miner's proof and a genuine proof
+against a retired entry, and did so while the entry was rotated four times.
+
+It found and fixed, in order: a TD with no way to receive its hotkey (I8); a
+pool-file path that skipped both pool guards (I4); a provisioning channel that
+authenticated the TD and then sent secrets in plaintext (I8); a miner whose
+whole epoch aborted on one null model reply (I6, miner side); a serial
+benchmark that could not fit the collection window on real providers (I6,
+miner side); and an operator tool that had drifted from the verifier's
+contract. None of them was reachable by any test in this repository, because
+every one lived in the gap between a stub and a provider, a guide and a tool,
+or a design and its allow-list.
+
 ## Running the checks
 
 ```bash
@@ -1904,14 +1923,19 @@ subnet had never been activated. `start_call` was never made, so it had no
 first-emission block — staking was rejected, no validator earned a permit, and
 every `set_weights` failed while the neurons reported success.
 
-1. Deploy on testnet with two validators and verify they produce identical
-   weights from the same set of TEE proofs, and identical reference frames from
-   the same published exploration samples (I9).
-2. Run miners on real Intel TDX VMs (GCP `c3-standard` or Azure confidential
-   VMs) and verify DCAP attestation end-to-end.
-3. Publish approved runtime measurements (`FUGAL_TEE_MEASUREMENTS`) and
-   document the process for updating them. These are `measurement_id()` values
-   — sha256 over the quote's MRTD and RTMR0-2 — not source hashes.
+1. ~~Deploy on testnet with two validators and verify they produce identical
+   weights from the same set of TEE proofs~~ — **done 2026-09-07/08**, three
+   consecutive epochs, identical scores, weights, reveals and frames (I1, I9).
+2. ~~Run miners on real Intel TDX VMs and verify DCAP attestation
+   end-to-end~~ — **done**, GCP `c3-standard-4` under dstack 0.6.0-rc0.
+3. Publish approved entries and their rotation — the procedure is
+   `docs/APPROVED_ENTRY_ROTATION.md` (entries are `<base>:<compose_hash>`;
+   the base is sha256 over MRTD and RTMR1-2, RTMR0 excluded). What remains is
+   the publication channel: a signed release note per entry.
+4. Decide I3 (`docs/I3_DECISION.md`) before launch — the incentive currently
+   rewards a constant policy over a router.
+5. Second independent validator operator; coldkeys encrypted and off every
+   neuron host; monitoring with an alert channel.
 4. Recalibrate the reference-frame prior from real testnet data. It currently
    sits at a deliberately neutral 0.5 for every model, which is honest (the
    subnet has measured nothing yet) but is wrong for real models and biases the

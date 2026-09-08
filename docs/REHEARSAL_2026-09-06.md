@@ -255,3 +255,263 @@ All times UTC.
   and `FUGAL_BACKBONE_THREADS=0`). Both validators carry old+new entries —
   the first exercise of the rotation window — then both TDs are recreated
   with `deploy --delete`.
+- **21:06–21:10** TD1 recreated with `deploy --delete` (instance deleted in
+  2 m 20 s, shared image rebuilt, new instance up at 21:10:14) — **new
+  external IP 35.184.229.7**; the old data disk and sealed seed are gone with
+  the old instance, as the tool's source said. TD2 recreation follows.
+  Both validators restarted with old+new entries at 20:59 (ARM env sha256
+  `bcc03a8a…`; x86 verified by grep); both re-derived `e00022080` with the same
+  slice hash and commit `c849e407…` as their pre-restart processes — a second
+  unplanned restart drill, byte-identical.
+- **21:07** Branch protection on `main` (seven required checks, strict, PR
+  required) caught its first case: PR #19 was green but behind `main` and
+  could not merge until updated.
+- **21:13–21:15 — sealed channel on real hardware.** New TD1 (35.184.229.7,
+  instance id `2106b176…`) answered on 8092 3 m 38 s after create.
+  `--inspect`: the receiver offers an X25519 key and the Intel-signed quote
+  covers `nonce || sha256(key)`; compose `12d945d2…` (the new entry); log
+  replays to RTMR3. Sealed push accepted (`provisioned: true`), session key
+  saved 0600. Then **the first operator log pull from a live TD**
+  (`provision_td.py --logs`, 180 lines, encrypted): the miner logged
+  `Backbone determinism configured: capability=avx2, threads=4` — the thread
+  knob is in effect inside the enclave — `Computing backbone embeddings for
+  21553 questions`, and the backbone weights downloading from HuggingFace
+  over egress. The black box is open to its operator and to nobody else.
+  Cosmetic: the miner logs `Head loaded: None` under provisioning (no path);
+  fix later. TD2 recreated 21:13:45, same IP 35.193.250.187, new instance.
+- **21:17** New TD2 (35.193.250.187, instance id `ad80f161…`) answered on 8092
+  3 m 54 s after create; `--inspect` matched key binding, compose `12d945d2…`
+  and the console's instance id; sealed push accepted; session key saved.
+  **Both TDs provisioned over the sealed channel; embedding with 4 threads.**
+  PR #19 (validator logs its approved entries) merged as `5b50dfd` once its
+  branch was brought up to date.
+- **21:20–21:22** Both recreated TDs at a flat **100% CPU** (all four vCPUs)
+  against 26% before — the thread knob in effect. If throughput scaled with
+  cores the pass would take ~3.3 h; the laptop measurement says ~2.5x, so
+  expect the axons around 01:00–02:30 UTC.
+- **21:30–22:48 (laptop closed; sessions suspended).** Nothing on the boxes
+  noticed. Both validators completed `e00022080` and `e00022081` with the same
+  shape as before (ARM: mock miner rejected at DCAP parse, `n_heads_invalid=1`;
+  x86: `n_heads_invalid=0`, it cannot reach the private axon), identical
+  commit hashes on both hosts every epoch, no weights set. Both TDs at a flat
+  **100% CPU from 21:22 to 22:52** (Cloud Monitoring, 5-min means), no
+  container restart, no console error. Peer sessions did not survive the
+  suspend; the ARM watch timer did.
+- **Finding (operability), corrected within the hour.** After the resume,
+  probes of `/provision/status` on both TDs timed out from the laptop, and one
+  slow answer (16 s) was read as the receiver thread starving behind four torch
+  threads. Wrong. Session B found the real cause: the laptop's public IP had
+  changed while it was closed (71.105.160.190 → 96.246.150.17), so the
+  operator-only firewall rule silently dropped every packet, and the one slow
+  answer coincided with the rule being updated. Re-timed after the fix: **64 ms
+  on both TDs at 100% CPU** — the receiver is not starved. The real lesson: an
+  operator-IP-pinned firewall rule fails as a *timeout*, not a refusal, and a
+  residential IP changes without notice; a production operator needs a stable
+  egress (or a jump host) for the provisioning and log path.
+
+## 2026-09-07
+
+- **04:53–04:57 — both TDs finished embedding and came up.** Measured
+  inside the enclaves (sealed log pull): TD1 embedded 21,553 questions in
+  **7 h 39 m** (21:14:46 → 04:53:51), TD2 in 7 h 38 m — **1.7x** faster than
+  the 13 h single-thread figure on 4 vCPUs, not the 3.6x an earlier line here
+  claimed (a subtraction error, caught on the third pass when TD1 was only at
+  11,520/21,553 after 3 h 45 m at 0.85 q/s). The backbone is memory-bound
+  past a few cores; the laptop's 2.5x at 12 threads was the better predictor. Each then registered its axon at
+  its public IP, served, and committed its head hash on chain
+  (TD1 `b0ce2fcb…` at block 7951219, TD2 `bb18e523…` at 7951231) — the first
+  time a dstack TD signed its own extrinsics with a pushed wallet.
+- **04:56 / 04:59 — first epoch run FAILED on both miners.** A real bug, found
+  only on real hardware with a real provider: one model call
+  (`deepseek/deepseek-v4-flash` through the metering proxy) timed out after
+  180 s; `harness._call_model` returned `None`; `run_benchmark` then called
+  `.encode()` on it and the whole epoch aborted (`Epoch run failed (1
+  consecutive)`), leaving no proof. The second attempt (`e00022087`) failed
+  the same way. Every test and rehearsal stub returns a string, so nothing
+  ever exercised the failure path. OpenRouter spend at that point:
+  **$0.0094**. Validators saw no TD proof for `e00022086`, as they should.
+- **05:39–06:00 — harness fix landed and the third entry issued.** PR #20
+  merged (`d9fa3a5`); image `main-d9fa3a5` →
+  `9d7916c34f176929374c577f2bd8d94a01f954cc60ecd781e7fe61b5df5ce0a9`
+  (Cloud Build 19 m 32 s). The previous session's scratchpad — the deploy
+  toolchain and both project directories — had been deleted with that
+  session, so the CLI, the UKI image and mtools were rebuilt here and both
+  projects recreated from the documented fields; the frozen compose hashed to
+  `003545255166b57c991a9c0f1d3dd8fada19e40e1afb0133e37df9795251ab0d`,
+  identical for TD1/TD2 and equal to the repo compose with the new digest.
+  Both validators rotated to entries 2+3 (entry 1 retired: no instance ever
+  verified on it) and restarted.
+- **06:01–06:12 — third redeploy.** Both TDs recreated with `deploy --delete`
+  (TD1 → new IP **34.122.55.116**, instance id `36abf3df…`; TD2 stays at
+  35.193.250.187, instance id `92ae6841…`); post-deploy compose hash unchanged
+  (`00354525…`). `--inspect` on each: sealed key offered and covered by the
+  quote, base matches, log replays, compose is entry 3. Sealed pushes accepted
+  at 06:09:35 and 06:12:18; session keys saved. Expected (corrected): axons
+  ~13:00 UTC, first scored epoch at the next 72-minute boundary after both
+  commitments.
+- **13:48–13:52 — third pass done; miners live on the fixed image.** TD1
+  embedded in 7 h 38 m (06:09:51 → 13:48:20), TD2 in ~7 h 40 m; both served
+  their axons at their public IPs and found their head hashes already
+  committed (same heads, blocks 7951219/7951231), so both are scoreable at
+  once. Both started `e00022094` (TD1 13:49:36, TD2 13:52:46) — the first
+  epoch runs on the non-text-reply fix. TD2 logged two 180 s model-call
+  timeouts (`deepseek-v4-flash`, `gpt-5.4-nano`) and **kept going**, where the
+  old harness aborted. OpenRouter spend rose from $0.0117 to $0.0657 during
+  the run — real calls, priced.
+- **Finding (operability):** within seconds of serving, TD1's public axon
+  received 114 scanner probes (`.env`, `wp-config.php`, `actuator`, …); the
+  SDK logs each as an ERROR-level `UnknownSynapseError`. Harmless, but it buries
+  the miner's own lines; a production log filter for that class is warranted.
+- **14:15 — `e00022094`: no TD proof on either validator.** Both TDs were still
+  running the epoch at the collection block: TD1 started 10 min into the
+  epoch, TD2 13 min in (they came up mid-epoch), and 31–33 min later neither
+  had finished 315 serial model calls; TD2 had also spent 2 × 180 s on
+  timeouts. The validators queried the TD axons and got an empty reply within
+  a second (correct: "no proof yet" is not an error), and skipped the epoch.
+  Whether a full slice fits the 36-minute window when a run starts *at* the
+  boundary is exactly what `e00022095` measures; the run-time of this epoch's
+  (uncollected) proof is the number that decides it.
+- **14:42 — finding: a serial benchmark cannot fit the window.** 53 minutes
+  after starting `e00022094`, neither miner had finished its 315 calls (TD1
+  with zero timeouts, so this is plain latency: ~10 s per call for
+  2048-token completions on math prompts, against the "6 s per question,
+  ample for serial API calls" assumed where `EPOCH_COLLECT_FRACTION` is
+  defined). The collection point is 36 minutes after the boundary. So even a
+  miner that starts exactly at the boundary would miss it. Spend for the
+  partial run: ~$0.19 across both miners. Fix (miner-side, in progress):
+  `HARNESS_CONCURRENCY=8` calls in flight, attribution by request id, fsum
+  totals, threading proxy; grading and result order unchanged.
+- **15:03–15:15 — fourth entry.** PR #25 (concurrent benchmark, request-id
+  attribution, fsum totals, threading proxy, scan-spam filter) merged as
+  `37495ae`; image → `e4c2deff9c9ee2b38b3495690c7e5c5b52acb740a96e1b16664a235725736ca4`
+  (Cloud Build 15 m 42 s); frozen compose
+  `41de1e4c12da1edd86fdfdd4c61279d1d82f08cb242f10551d5799e58e0f9e10`
+  (TD1/TD2 identical, equals the repo compose). Both validators rotated to
+  entries 3+4 (entry 2 retired, never verified) and restarted; both TDs to be
+  recreated. Fourth embedding pass follows (~7.6 h).
+- **15:05–15:12 — fourth redeploy.** TD1 recreated → **136.64.249.27**,
+  instance id `63636f20…`; `--inspect` matched entry 4 and the sealed key;
+  pushed at 15:12. TD2 recreation in progress. PR #26 (entry 4) merged as
+  `da6f0d9`.
+- **15:16** TD2 recreated at 35.193.250.187 (instance id `d72bf92b…`),
+  inspected (entry 4, sealed key bound) and provisioned. Both miners now run
+  the concurrent harness; fourth embedding pass under way — expected to serve
+  ~22:50 UTC, first scored epoch at the next boundary after that.
+- **07:06–08:50 — finding (liveness, I6): the ARM box lost DNS for ~1 h 40 m
+  and the validator rode it out.** `websockets keepalive ping failed` at
+  07:06, then `ConnectionError: Temporary failure in name resolution` on every
+  chain call; the epoch loop logged `Error in epoch` and retried every ~70 s
+  (72 iterations) until resolution returned, then resumed at the next boundary
+  on its own. Cost: epoch `e00022089` has no ARM entry (the x86 validator has
+  one) — a one-validator gap, which Yuma tolerates and which would have shown
+  as a weight disagreement for that epoch had there been valid proofs. No
+  operator action, no restart, no state loss. Two notes for production: the
+  retry has no backoff (72 tracebacks in the journal), and a validator on a
+  host with flaky DNS should pin a resolver.
+- **22:53–23:05 — the concurrent harness fits the window.** Fourth pass done
+  (TD1 embedded 15:15 → ~22:50, 7 h 35 m). Both miners started `e00022101` at
+  the boundary and finished the full 315-call slice in **~10–12 minutes**
+  (TD1 22:53:12 → 23:05:02: 227/300 correct, $0.1879; TD2 22:55:15 →
+  23:05:07: 215/300, $0.1554) against the 36-minute collection point — where
+  the serial harness ran past 53 minutes. Real OpenRouter calls, priced from
+  the pinned table, inside the enclave. Proofs held for collection at block
+  7956540.
+- **23:14 — `e00022101`: no TD proof on either validator, by timing.** Its
+  collection block (7956540) fell at 22:39, before either miner had finished
+  embedding; they ran that epoch late (22:53–23:05) and held proofs nobody
+  would collect. `e00022102` (boundary 7956720, 23:15) is the first epoch both
+  miners started at the boundary: TD2 done 23:22 (223/300, $0.2021), TD1
+  23:27 (222/300, $0.2177), 24–29 minutes before its collection block.
+- **Finding (tooling):** `scripts/verify_live_miner.py` lagged the verifier's
+  contract — it never passed `expected_hotkey`, so it fetched and saved a
+  genuine 315-result live proof (`results/live_proofs/proof-uid5-e00022101.json`,
+  38,248-byte attestation) and then refused to verify it. The validator's
+  own call was correct; only the operator tool had drifted. Fixed in the
+  working tree; the positive and negative controls run against the fix.
+- **23:30 — POSITIVE CONTROL PASSED.** `verify_live_miner.py` (fixed) fetched
+  TD2's `e00022102` proof over its axon — 315 results, 38,247-byte dstack
+  attestation — and ran the full `--live` verification path on the laptop:
+  **DCAP verification passed (status=UpToDate)**, base measurement and
+  compose hash matched entry 4, report_data bound the proof body, hotkey,
+  slice, exploration set, head, and advertised bundle hash all matched:
+  `valid: True — All checks passed`. Saved to
+  `results/live_proofs/proof-uid6-e00022102.json`. The first Fugal proof from
+  real Intel TDX hardware to verify end to end.
+- **23:40 — NEGATIVE CONTROL PASSED.** The same genuine `e00022102` proof
+  from TD1 (315 results, real quote) checked against the *retired* entry 1:
+  `valid: False — Unapproved application: compose-hash 41de1e4c… not among 1
+  approved for this image`. DCAP and the base measurement pass (the hardware
+  is real); the application binding refuses it. A check that can say no.
+
+## FIRST SCORED EPOCH — `e00022102`, 2026-09-07 23:51 UTC (measured)
+
+Both validators, independently, on different CPU architectures:
+
+| | ARM (aarch64, uid 0) | GCP x86_64 (uid 1) |
+|---|---|---|
+| Proofs verified | 2 (uids 5, 6), DCAP `UpToDate` both | 2, DCAP `UpToDate` both |
+| Mock control (uid 4) | rejected at DCAP parse | unreachable (private IP) |
+| Unverifiable | 0 | 0 |
+| Scores | uid 5: acc 0.740, quality 1.2605, thrift 0.0412, score 0.0895; uid 6: acc 0.7433, quality 1.2669, thrift 0.0756, score 0.0956 | **identical to the last digit** |
+| Weights | {5: 0.48372370450239816, 6: 0.5162762954976018} | **identical** |
+| `set_weights` | Success; commit recorded at block 7956902 | Success; block 7956912 |
+| Chain `LastUpdate` | 7956902 ≥ boundary 7956720 | 7956912 ≥ boundary |
+| Reveal | verified; `reveal.json` identical to the other host's in every field but `environment` (the host fingerprint, by design) | same |
+| Anomalies | 0 | 0 |
+| Consensus digest | `1d51078642731d50` | `1d51078642731d50` |
+
+That is I1 and I9 on real attested proofs, and the first weights the subnet
+has ever set from a TEE-verified benchmark. Verification cost on the ARM host
+(Phala collateral): ~1.6 s for two proofs including DCAP.
+
+**What the scores say, and why they look small.** `thrift` is 0.04–0.08 because
+the reference frame is two epochs old: with two trials per model the prior
+ties and `best_model()` breaks the tie toward the cheapest (`gpt-5.4-nano`,
+reference cost $0.0066 against the miners' $0.09–$0.16). This is the cold-start
+behaviour `FRAME_PRIOR_STRENGTH` is calibrated for and it washes out with
+exploration samples; it is not a scoring defect. The two heads are ranked in
+the expected order (TD2's cheaper routing wins).
+
+**Cost, real vs pinned.** TD2's proof prices its 315 calls at **$0.2021** from
+the pinned table. OpenRouter's account meter rose $0.455 → $1.264 across the
+two miners' two epochs, whose pinned totals sum to $0.77 — so the pinned table
+tracked real billing within roughly 5% for this mix (approximate: account-level
+meter, not per-proof; the proof carries no provider-cost field, which is worth
+adding). Two things the economics docs assumed differently: completions
+averaged **534 tokens** (max 2,049) against the 256 assumed, and the 15
+exploration questions — nonce-assigned across all 16 priced models including
+`gpt-5.5` and `claude-opus-4.8` — were **~60% of the epoch's cost** for a head
+that routes only among the three cheapest models.
+
+**Correction to this record.** The 2026-09-06 20:10 entry says `fugal-val2`
+ran on the PCCS cache from then on. It did not: the env line was never written
+(found at 23:55 when its log named Phala), so every verification so far used
+Phala on both hosts. The cache itself was measured correctly (15 ms vs 730 ms
+with the validator's own `verify_dcap`). Fixed at 23:58; the remaining epochs
+compare the two paths.
+
+## 2026-09-08 — three consecutive scored epochs, then stop
+
+| epoch | ARM (Phala collateral) | x86 (local PCCS cache from `e00022103`) | agreement |
+|---|---|---|---|
+| `e00022102` | 2 valid, mock rejected, weights {5: 0.4837, 6: 0.5163}, set+confirmed @7956902 | 2 valid, same weights, set+confirmed @7956912 | scores, weights, commit, digest identical |
+| `e00022103` | 2 valid, weights {5: 0.48878, 6: 0.51122}, **capped**, set+confirmed | same weights, capped, set+confirmed | identical |
+| `e00022104` | 2 valid, weights {5: 0.49195, 6: 0.50805}, capped, set+confirmed | same, set+confirmed | identical |
+
+Weight capping engaged from the second scored epoch (±0.3 per UID), as
+designed. `n_heads_unverifiable = 0` on both hosts in all three epochs — the
+number OPEN_WORK §2 asked for. Route A comparison: the x86 validator fetched
+collateral from its local cache (`DCAP collateral endpoint:
+http://127.0.0.1:8081`) for `e00022103`/`e00022104` while the ARM validator
+used Phala, and both produced identical weights — the collateral source does
+not move the verdict when both succeed. Verification of two proofs took ~1.4 s
+(cache) and ~2.1 s (Phala) end to end including everything but the query.
+
+**02:21 UTC — both TDs stopped** (`gcloud compute instances stop`: disks,
+sealed seeds and embedding caches preserved; compute and OpenRouter spend
+halted). Validators left running; they log `no_valid_proofs` epochs until the
+TDs are started again or deleted. **OpenRouter total: $1.93 of $20.** GCP:
+two `c3-standard-4` for ~29 h of instance time across four deployments plus
+the e2-medium ≈ $13.
+
+The observation phase of the rehearsal is complete.

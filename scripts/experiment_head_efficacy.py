@@ -84,10 +84,15 @@ import numpy as np  # noqa: E402
 
 from fugal_subnet.config import (  # noqa: E402
     HEAD_HIDDEN_DIM,
-    SCORE_QUALITY_CAP,
-    SCORE_QUALITY_EXPONENT,
-    SCORE_THRIFT_CAP,
 )
+
+# The LEGACY score this experiment measured, kept verbatim so the numbers in
+# docs/HEAD_EFFICACY.md stay reproducible. Scoring moved to headroom above the
+# constant-policy frontier (fugal_subnet/frontier.py) because of what this
+# experiment found; these constants no longer exist in config.
+SCORE_QUALITY_CAP = 2.0
+SCORE_QUALITY_EXPONENT = 0.9
+SCORE_THRIFT_CAP = 10.0
 from fugal_subnet.head_eval import HeadArtifact, evaluate_head  # noqa: E402
 from fugal_subnet.scoring import wilson_lower_bound  # noqa: E402
 from fugal_subnet.soft_targets import compute_soft_targets  # noqa: E402

@@ -515,3 +515,17 @@ two `c3-standard-4` for ~29 h of instance time across four deployments plus
 the e2-medium ≈ $13.
 
 The observation phase of the rehearsal is complete.
+
+## 2026-09-08 — I3 decided and implemented
+
+Option 3 from `docs/I3_DECISION.md`: the score is headroom above the
+constant-policy frontier (`fugal_subnet/frontier.py`). Every single model and
+every random mixture of models scores zero by construction; a router earns the
+accuracy it adds at its own price; a quality floor of 0.8 of the frontier's
+best accuracy and a frontier-confidence factor (`FRONTIER_MIN_TRIALS`) keep
+"match frontier quality" a requirement and stop a cold frame paying constant
+policies for its own ignorance — while the frontier is cold, unassigned weight
+burns to UID 0. `SCORE_QUALITY_EXPONENT` and the thrift/quality caps are gone.
+Pinned by `tests/test_frontier.py` and the rewritten
+`tests/test_degenerate_constant_policy.py`. This re-scores every miner and is
+the consensus change the rehearsal's "not yet" was about.

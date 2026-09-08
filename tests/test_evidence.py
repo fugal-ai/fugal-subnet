@@ -1,10 +1,9 @@
-"""Tests for artifact-keyed evidence accumulation and the scoring formula."""
+"""Tests for artifact-keyed evidence accumulation and the headroom score."""
 from __future__ import annotations
 
 import dataclasses
-import math
 
-from fugal_subnet.config import BURN_IN_QUESTIONS, SCORE_QUALITY_EXPONENT
+from fugal_subnet.config import BURN_IN_QUESTIONS
 from fugal_subnet.evidence import (
     Evidence,
     _wilson_lower_bound,
@@ -12,10 +11,9 @@ from fugal_subnet.evidence import (
     apply_miss,
     decay_factor,
 )
-from fugal_subnet.scoring import burn_in_factor, composite, quality_term
+from fugal_subnet.scoring import burn_in_factor, composite
 
 HALF_LIFE = 200
-ACC_BEST = 0.8
 
 
 def _epoch(ev, *, n_correct=8, n_total=10, cost=0.5, ref_cost=0.3,
@@ -145,105 +143,59 @@ def test_serialization_roundtrip():
 
 # --- the scoring formula ---
 
-def test_composite_is_the_weighted_geometric_mean():
-    ev = _epoch(None, n_correct=800, n_total=1000, cost=0.5, ref_cost=0.3)
-    w = SCORE_QUALITY_EXPONENT
-    expected = (
-        quality_term(ev.wilson_lcb, ACC_BEST) ** w
-        * ev.thrift ** (1 - w)
-    ) * burn_in_factor(ev.n_total)
-    assert abs(composite(ev, ACC_BEST) - expected) < 1e-12
+from fugal_subnet.frontier import Frontier  # noqa: E402
+
+# A fixed, fully-measured frontier for these tests: cost per question on the
+# x-axis, accuracy on the y-axis. Origin, a cheap model, a dear one.
+FRONTIER = Frontier(points=((0.0, 0.0), (0.001, 0.5), (0.01, 0.8)), least_trials=1e6)
+
+
+def _priced(ev, cost_per_question):
+    n = ev.n_priced if ev.n_priced > 0 else ev.n_total
+    return dataclasses.replace(ev, cost_sum=cost_per_question * n, n_priced=n)
+
+
+def test_composite_is_headroom_ramped_and_confidence_scaled():
+    ev = _priced(_epoch(None, n_correct=800, n_total=1000), 0.001)
+    expected = (ev.wilson_lcb - FRONTIER.accuracy_at(0.001)) * burn_in_factor(ev.n_total)
+    assert abs(composite(ev, FRONTIER) - expected) < 1e-12
 
 
 def test_composite_uses_wilson_lcb_not_raw_accuracy():
-    ev = _epoch(None, n_correct=8, n_total=10)
+    ev = _priced(_epoch(None, n_correct=8, n_total=10), 0.001)
     assert ev.wilson_lcb < ev.accuracy
-    w = SCORE_QUALITY_EXPONENT
-    raw = quality_term(ev.accuracy, ACC_BEST) ** w * ev.thrift ** (1 - w)
-    assert composite(ev, ACC_BEST) < raw
+    raw = (ev.accuracy - FRONTIER.accuracy_at(0.001)) * burn_in_factor(ev.n_total)
+    assert composite(ev, FRONTIER) < raw
 
 
-def test_neither_axis_can_rescue_the_other():
-    """The reason for a geometric mean rather than a weighted sum.
-
-    Neither degenerate strategy — perfect accuracy at any price, or near-zero
-    cost at any accuracy — may outscore simply matching the reference model.
-    Under the old additive composite each collected its own term's weight
-    regardless of the other.
-
-    This asserts the ordering rather than a magic threshold, deliberately. It
-    previously required the ruinous router to score below 0.05, a number
-    calibrated to w=0.8's cost penalty; raising w to 0.9 to stop the CHEAP
-    degenerate winning necessarily punishes the EXPENSIVE one less, and the
-    threshold failed at 0.09 while the property it was standing in for still
-    held. The property is what matters: at w=0.9 both degenerates land near 79%
-    of the baseline, symmetrically below it, which is what a geometric mean is
-    supposed to produce.
-    """
-    ev = _epoch(None, n_correct=1000, n_total=1000, pool_size=1e9)
-    accurate_but_ruinous = dataclasses.replace(ev, cost_sum=1e6, ref_cost_sum=0.3)
-    cheap_but_wrong = dataclasses.replace(
-        ev, n_correct=0.0, cost_sum=1e-9, ref_cost_sum=0.3,
-    )
-    balanced = dataclasses.replace(ev, cost_sum=0.3, ref_cost_sum=0.3)
-
-    assert composite(cheap_but_wrong, ACC_BEST) == 0.0
-    assert composite(accurate_but_ruinous, ACC_BEST) < composite(balanced, ACC_BEST)
-    assert composite(balanced, ACC_BEST) > composite(cheap_but_wrong, ACC_BEST)
-
-    # And the expensive degenerate must stay a clear loser, not merely a
-    # narrower one: less than half of what routing at the reference price earns.
-    assert composite(accurate_but_ruinous, ACC_BEST) < 0.5 * composite(
-        balanced, ACC_BEST
-    )
+def test_a_constant_policy_on_the_frontier_scores_zero():
+    """The reason the reference is the whole curve and not one model on it."""
+    for cost, acc in FRONTIER.points[1:]:
+        ev = Evidence(weights_hash="h", n_correct=acc * 1e6, n_total=1e6,
+                      cost_sum=cost * 1e6, n_priced=1e6, pool_size=1e12)
+        assert composite(ev, FRONTIER) == 0.0
+    # And a point on the segment between them (a random mixture) too.
+    ev = Evidence(weights_hash="h", n_correct=0.65 * 1e6, n_total=1e6,
+                  cost_sum=0.0055 * 1e6, n_priced=1e6, pool_size=1e12)
+    assert composite(ev, FRONTIER) == 0.0
 
 
-def test_score_of_one_means_matched_the_reference_model():
-    """The formula's headline claim, stated as a test."""
-    ev = Evidence(
-        weights_hash="h",
-        n_correct=100_000.0, n_total=100_000.0,   # accuracy ~1.0, tight LCB
-        cost_sum=1.0, ref_cost_sum=1.0,            # same cost as the reference
-        pool_size=1e9,
-    )
-    # Matching the reference on both axes scores ~1.0.
-    assert abs(composite(ev, acc_best=1.0) - 1.0) < 0.01
-    # Beating it on cost scores above 1.0.
-    cheaper = dataclasses.replace(ev, cost_sum=0.5)
-    assert composite(cheaper, acc_best=1.0) > 1.0
+def test_cheaper_at_equal_quality_scores_higher():
+    """The incentive the subnet exists to create: the frontier is lower at a
+    lower price, so the same accuracy is more headroom there."""
+    expensive = Evidence("h1", n_correct=0.8 * 1e6, n_total=1e6, cost_sum=0.01 * 1e6,
+                         n_priced=1e6, pool_size=1e12)
+    frugal = Evidence("h2", n_correct=0.8 * 1e6, n_total=1e6, cost_sum=0.001 * 1e6,
+                      n_priced=1e6, pool_size=1e12)
+    assert composite(frugal, FRONTIER) > composite(expensive, FRONTIER) >= 0.0
 
 
 def test_nothing_to_route_toward_scores_zero():
-    """acc_best == 0 means no model answers anything — a real state, not a
-    division to paper over."""
-    ev = _epoch(None, n_correct=8, n_total=10)
-    assert composite(ev, acc_best=0.0) == 0.0
-
-
-def test_terms_are_capped():
-    """A near-free model must not drive thrift to infinity.
-
-    n_total is past the burn-in here on purpose, so the ramp is 1.0 and the cap
-    is what is actually under test rather than the ramp masking it.
-    """
-    from fugal_subnet.config import (
-        SCORE_QUALITY_CAP,
-        SCORE_QUALITY_EXPONENT,
-        SCORE_THRIFT_CAP,
-    )
-
-    ev = Evidence(
-        weights_hash="h",
-        n_correct=BURN_IN_QUESTIONS * 10.0, n_total=BURN_IN_QUESTIONS * 10.0,
-        cost_sum=1e-12, ref_cost_sum=1e9,   # absurd thrift
-        pool_size=1e12,
-    )
-    assert burn_in_factor(ev.n_total) == 1.0
-    assert ev.thrift > SCORE_THRIFT_CAP
-
-    w = SCORE_QUALITY_EXPONENT
-    ceiling = SCORE_QUALITY_CAP ** w * SCORE_THRIFT_CAP ** (1 - w)
-    assert composite(ev, acc_best=0.01) <= ceiling + 1e-9
+    """An empty frontier means no model answers anything — a real state, not a
+    division to paper over. (Floor: 0 * anything is 0; headroom over an empty
+    hull is the raw accuracy, but confidence is 0 with no trials.)"""
+    ev = _priced(_epoch(None, n_correct=8, n_total=10), 0.001)
+    assert composite(ev, Frontier(points=())) == 0.0
 
 
 def test_burn_in_makes_penalty_washing_cost_what_earning_cost():
@@ -256,19 +208,20 @@ def test_burn_in_makes_penalty_washing_cost_what_earning_cost():
     good = None
     for _ in range(40):
         good = _epoch(good, n_correct=90, n_total=100, weights_hash="v1",
-                      cost=0.3, ref_cost=0.3)
-    established = composite(good, ACC_BEST)
+                      cost=0.1, ref_cost=0.3)
+    established = composite(good, FRONTIER)
+    assert established > 0
 
     poisoned = good
     for _ in range(20):
         poisoned = _epoch(poisoned, n_correct=5, n_total=100, weights_hash="v1",
-                          cost=0.3, ref_cost=0.3)
+                          cost=0.1, ref_cost=0.3)
 
     washed = _epoch(poisoned, n_correct=90, n_total=100, weights_hash="v2",
-                    cost=0.3, ref_cost=0.3)
+                    cost=0.1, ref_cost=0.3)
 
-    assert washed.n_total == 100.0                      # accumulator did reset
-    assert composite(washed, ACC_BEST) < established     # but the score did not
+    assert washed.n_total == 100.0                        # accumulator did reset
+    assert composite(washed, FRONTIER) < established      # but the score did not
     assert burn_in_factor(washed.n_total) < 0.2
 
     # And the ramp completes only after real work.
@@ -280,34 +233,3 @@ def test_wilson_lower_bound_edge_cases():
     assert _wilson_lower_bound(1.0, 1.0, 0.95) > 0.0
     assert _wilson_lower_bound(0.5, 1000.0, 0.95) > 0.45
     assert _wilson_lower_bound(0.5, 1000.0, 0.95) < 0.5
-
-
-def test_quality_exponent_satisfies_its_derivation():
-    """w is derived from the product claim, not chosen — pin the derivation.
-
-    "Match frontier quality at a fraction of the cost" makes quality a
-    near-constraint: a router that gives up 40% of quality has not delivered
-    the product however cheap it is, so it must not outscore simply matching
-    the best model at the best model's price. That forces
-    w > ln(6)/(ln(6)-ln(0.6)) = 0.778. An unweighted sqrt (w=0.5) fails it.
-    """
-    w_min = math.log(6) / (math.log(6) - math.log(0.6))
-    assert SCORE_QUALITY_EXPONENT > w_min
-
-    def score(quality, thrift):
-        ev = Evidence(
-            weights_hash="h",
-            n_correct=quality * 1e6, n_total=1e6,
-            cost_sum=1.0 / thrift, ref_cost_sum=1.0,
-            pool_size=1e12,
-        )
-        return composite(ev, acc_best=1.0)
-
-    matched_at_full_price = score(1.0, 1.0)
-    lost_40pct_but_6x_cheaper = score(0.6, 6.0)
-    the_product = score(1.0, 6.0)
-
-    assert lost_40pct_but_6x_cheaper < matched_at_full_price
-    assert the_product > matched_at_full_price
-    # And 0.5 would have failed the same test.
-    assert 0.6 ** 0.5 * 6 ** 0.5 > 1.0

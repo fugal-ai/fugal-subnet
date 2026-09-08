@@ -223,6 +223,12 @@ def run_pipeline(seed: int) -> dict:
         for r in proof_objs[uid].exploration_results
     ])
     ref_model, acc_best = best_model(frame, prices)
+    from fugal_subnet.frontier import build_frontier
+    from fugal_subnet.pricing import question_input_tokens
+    frontier = build_frontier(
+        frame, prices, sum(question_input_tokens(q.get("prompt", "")) for q in questions),
+        len(questions), 300.0,
+    )
 
     for uid in sorted(proof_objs):
         proof = proof_objs[uid]
@@ -241,7 +247,7 @@ def run_pipeline(seed: int) -> dict:
         )
 
     state = update_scores(
-        ScoringState(), epoch_scores, head_hashes, acc_best=acc_best,
+        ScoringState(), epoch_scores, head_hashes, frontier=frontier,
         hotkeys={uid: f"hk{uid}" for uid in epoch_scores},
         n_questions=len(questions), pool_size=len(pool),
     )

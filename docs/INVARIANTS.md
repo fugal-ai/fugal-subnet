@@ -28,7 +28,7 @@ here, and a check that enforces it.**
 |---|---|---|
 | **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 9 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, TEE proof verification (all validators verify the same attested proof) |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
-| **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
+| **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time |
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior **and no external dependency** can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. Every call that leaves the process on the epoch path is bounded. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py`, `tests/test_collateral_timeout.py`, `check_safety_invariants.check_external_calls_bounded` |
@@ -38,9 +38,34 @@ here, and a check that enforces it.**
 
 ## How TEE resolves prior gaps
 
-### I3 — OPEN: not routing at all outscores routing
+### I3 — RESOLVED 2026-09-08: the score is headroom above the constant-policy frontier
 
-**Status: measured, unfixed, and a product decision rather than a tuning one.**
+**Status: decided (`docs/I3_DECISION.md`, option 3) and implemented.** The
+score is no longer `quality^0.9 * thrift^0.1` against the best single model.
+It is the accuracy a miner achieves **above what any non-routing policy buys at
+the miner's own cost**, where the reference is the upper convex hull of the
+per-model (cost, accuracy) points from the reference frame plus the origin
+(`fugal_subnet/frontier.py`, `fugal_subnet/scoring.py`). Every constant
+policy — one model, or a random mixture of models — has zero headroom by
+construction; a router earns exactly the value of reading the question. A
+quality floor (`SCORE_QUALITY_FLOOR`, 0.8 of the frontier's maximum accuracy)
+keeps "match frontier quality" a requirement rather than a suggestion, and the
+frontier's own confidence (`FRONTIER_MIN_TRIALS` decayed exploration trials on
+every hull model) scales scores so that a cold frame pays nobody rather than
+paying constant policies for the frame's ignorance. Until the frontier is
+trusted, the whole weight vector burns to UID 0 — deliberately.
+
+Enforced by `tests/test_frontier.py` (every constant policy and every mixture
+scores zero; a router above the hull scores its headroom; the frontier is
+unmoved by other miners; two validators build identical frontiers; a cold
+frame pays nothing; skipping epochs does not make a miner look cheaper) and
+`tests/test_degenerate_constant_policy.py` (the measured finding, pinned in
+the form "constant policies score zero, a trained router beats them all").
+
+What follows is the analysis as it stood when the defect was open, kept
+because it is the reason the reference is a curve and not a point.
+
+**Status when found: measured, unfixed, and a product decision rather than a tuning one.**
 
 I3 says a miner cannot raise its score except by routing better or more
 cheaply. On the shipped constants that holds in the letter and fails in
@@ -1640,19 +1665,20 @@ proof verifies, the miner is paid, and nothing in a log says otherwise.
 
 ### I4 — the reference frame must not move with the field
 
-Scoring against "the best single model" needs an estimate of how good that
-model is, and that estimate is built from miners' exploration samples. If it
-tracked the miner population, every miner would move every other miner's score
-and the same head would be worth more in a thin epoch than a busy one.
+The constant-policy frontier needs an estimate of how good each model is,
+and that estimate is built from miners' exploration samples. If it tracked the
+miner population, every miner would move every other miner's score and the
+same head would be worth more in a thin epoch than a busy one.
 
 Two things keep it from doing so. The frame accumulates over *time*, not over
 miners, so one epoch's samples are a single decayed contribution to a
-long-running estimate. And the ceiling is valued at the posterior *mean* rather
-than a lower confidence bound — an LCB's pessimism shrinks as evidence
-accumulates, which made the ceiling a function of sample count and therefore of
-field size (measured: 0.14 of score between a 3-miner and a 50-miner field).
-The LCB still *selects* which model is the reference, so a lucky model cannot
-be crowned; it just does not *value* it.
+long-running estimate. And every frontier point is valued at the posterior
+*mean* rather than a lower confidence bound — an LCB's pessimism shrinks as
+evidence accumulates, which made the old ceiling a function of sample count and
+therefore of field size (measured: 0.14 of score between a 3-miner and a
+50-miner field). A thin frame is discounted once, through the frontier's
+confidence factor (`FRONTIER_MIN_TRIALS`), which is the same for every miner in
+the epoch and so cannot reorder them.
 
 Residual: convergence speed still depends on field size. A small subnet reaches
 a stable frame more slowly. The prior strength was calibrated against this

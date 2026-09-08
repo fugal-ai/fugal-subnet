@@ -29,6 +29,8 @@ Living document. Each step records the decision, the reasoning, and what to impl
 
 ## Step 2: Scoring formula
 
+> **Superseded 2026-09-08.** Scoring moved to headroom above the constant-policy frontier — see `docs/I3_DECISION.md` and `fugal_subnet/frontier.py`. The derivation below is the historical record; it was right about the corner it examined and silent about the middle of the price curve, which is where a constant policy won.
+
 **Decision:** Replace hardcoded 55/35/10 composite with headroom scoring.
 
 **Formula:**
@@ -319,7 +321,7 @@ Miner discovers which questions are in the pool and overfits.
 | Step 3: TEE infrastructure | **Implemented** | `fugal_subnet/tee/` — attestation, runtime, confine, proof, verify, harness. TDX patterns forked from ThirtySpokes/Chutes (MIT). |
 | Step 3: TEE *bindings* | **Implemented** | Measurement from the quote's own registers, slice binding, head binding, bundle binding, cost consistency as rejection. `run_tee_attacks.py` keeps an exploit for each. |
 | Step 4: Evidence accumulation | **Implemented** | EWMA-decayed binomial, artifact-keyed reset, miss=0, effective-n capped by pool size, burn-in ramp. |
-| Step 2: Scoring formula | **Implemented** | `quality^0.9 * thrift^0.1` against the best single model. Exponent derived from the product claim — 0.8 was the original value and is refuted above. |
+| Step 2: Scoring formula | **Superseded 2026-09-08** | Now headroom above the constant-policy frontier (`docs/I3_DECISION.md`, `fugal_subnet/frontier.py`). The geometric mean and its w=0.9 derivation below are kept as the record of why a single-model reference could not work: a constant policy on a cheaper point of the same curve beat every router. |
 | Step 2: Cost model | **Implemented** | Pinned `data/models.json` as the consensus denominator; attested provider spend recorded alongside for drift detection. |
 | — : Exploration + reference frame | **Implemented** | Nonce-derived quota recovers the counterfactual the TEE removes; frame pooled over time, not over miners. |
 | Step 5: Anti-gaming (held-out) | **Deferred, deliberately** | See below. |

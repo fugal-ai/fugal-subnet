@@ -27,8 +27,9 @@ the relationship catches a third definition too, survives a rename, and records
 the divergence as a measured quantity rather than a prohibition.
 
 It also fails if anyone "fixes" `evaluate_head` to match the proof. That would
-be a silent consensus change: SCORE_QUALITY_EXPONENT is calibrated against the
-accuracy scale the proof produces.
+be a silent consensus change: the frontier and the quality floor
+(SCORE_QUALITY_FLOOR) are calibrated against the accuracy scale the proof
+produces.
 """
 import numpy as np
 

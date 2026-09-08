@@ -502,11 +502,13 @@ def test_unpriced_and_expensive_models():
     print(f"  Price table distinguishes models: ${cheap:.6f} vs ${pricey:.6f}")
 
     # Routing expensively is permitted and self-punishing.
+    from fugal_subnet.frontier import Frontier
+    frontier = Frontier(points=((0.0, 0.0), (1e-4, 0.5), (6e-3, 0.85)), least_trials=1e6)
     frugal = Evidence("h", n_correct=9000.0, n_total=10000.0,
-                      cost_sum=1.0, ref_cost_sum=6.0, pool_size=1e9)
+                      cost_sum=1.0, ref_cost_sum=6.0, pool_size=1e9, n_priced=10000.0)
     lavish = Evidence("h", n_correct=9000.0, n_total=10000.0,
-                      cost_sum=36.0, ref_cost_sum=6.0, pool_size=1e9)
-    assert composite(frugal, 0.9) > composite(lavish, 0.9)
+                      cost_sum=36.0, ref_cost_sum=6.0, pool_size=1e9, n_priced=10000.0)
+    assert composite(frugal, frontier) > composite(lavish, frontier)
     print("  Expensive routing costs the miner, not the validator")
     print("  [PASS] Unpriced and expensive models")
 

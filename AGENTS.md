@@ -54,7 +54,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 ### TEE pipeline (miner side, inside TDX VM)
 1. `tee/harness.py` → runs benchmark: loads head, routes questions, calls models via proxy, grades, produces proof
 2. `tee/runtime.py` → MeteringProxy (records API calls with token counts/costs) + TEERuntime (TDX attestation)
-3. `tee/confine.py` → network namespace confinement (only proxy port allowed)
+3. `tee/provision.py` → the attested, sealed provisioning channel (head, wallet, API key in; operator-only log pull out)
 4. `tee/proof.py` → BenchmarkProof and QuestionResult data models
 5. `tee/attestation.py` → TDX v4 quote parsing + DCAP verification (forked from ThirtySpokes/Chutes)
 
@@ -65,11 +65,11 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 4. `commitments.py` → read/write on-chain head commitments (Commitments pallet)
 5. `tee/verify.py` → verify TEE proofs (DCAP attestation, measurement match, nonce, questions hash, cost consistency)
 6. `graders.py` → 7 deterministic mechanical checkers (consensus-critical, hash-versioned)
-7. `grading_task.py` → loader question → grader task translation (shared by matrix.py and the TEE harness so miner and validator grading cannot drift)
+7. `grading_task.py` → loader question → grader task translation (shared by the TEE harness and every validator-side consumer so grading cannot drift)
 8. `exploration.py` → nonce-derived exploration assignment (recovers the counterfactual the TEE removes)
-9. `reference_frame.py` → per-model accuracy pooled over time; supplies `acc_best` and the reference cost
+9. `reference_frame.py` → per-model accuracy and verbosity pooled over time from nonce-assigned exploration; the frontier is built from it
 10. `evidence.py` → EWMA-decayed evidence accumulation with Wilson LCB, effective-n capped by pool size
-11. `scoring.py` → `quality^0.9 * thrift^0.1`, ramped in over a burn-in period
+11. `frontier.py` + `scoring.py` → headroom above the constant-policy frontier (upper convex hull of per-model cost/accuracy from the frame), quality floor, burn-in ramp, frontier confidence
 12. `rewards.py` → weight computation (single pool, weight capping ±0.3/epoch)
 13. `dedup.py` → behavioural dedup (cosine similarity on routing decisions, GLOBAL model index space)
 14. `commit_reveal.py` → commit-reveal integrity + publish epoch artifacts
@@ -79,7 +79,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 - `neurons/miner.py` → TEE miner (runs benchmarks each epoch, produces attested proofs)
 
 ### Support
-- `config.py` → all env-overridable constants (single source), including TEE config. Read the comments: several constants record *why* a value is what it is, and two (the scoring exponent, the frame prior) are derived or measured rather than chosen.
+- `config.py` → all env-overridable constants (single source), including TEE config. Read the comments: several constants record *why* a value is what it is, and some (the frame prior, the frontier warm-up) are measured rather than chosen.
 - `data/models.json` → the pinned price table. Consensus-critical and hash-pinned like `graders.py`: a price change re-scores every miner.
 - `backbone.py` → Qwen3-0.6B hidden state extraction (float32 on CPU, float16 on CUDA)
 - `api.py` → call models via OpenRouter (used by miner inside TEE, not by validator)
@@ -106,7 +106,7 @@ Changing prices means updating the pin in the same commit and saying why.
 
 ## Consensus Invariants
 
-`docs/INVARIANTS.md` states the eight properties the subnet rests on (I1-I8),
+`docs/INVARIANTS.md` states the nine properties the subnet rests on (I1-I9),
 what enforces each, and the known gaps. A consensus-affecting change means
 updating that file and adding a check that enforces the property — the reason
 it exists is that a real consensus bug survived five code reviews because the

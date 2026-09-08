@@ -17,7 +17,7 @@ validator:
 5. Queries all registered miners for TEE-attested benchmark proofs
 6. Verifies each proof against every binding (see "TEE Proof Verification")
 7. Pools the verified exploration samples into the **reference frame**
-8. Scores each miner as quality per dollar against the best single model
+8. Scores each miner as accuracy headroom above the constant-policy frontier (what any single model or random mixture buys at the miner's own cost)
 9. Deduplicates copied routing behavior (earliest on-chain commitment wins)
 10. Computes weights, sets weights on-chain
 11. Publishes the epoch reveal artifact
@@ -210,7 +210,7 @@ When a miner submits a proof, the validator checks:
 
 9. **Cost Consistency** — Per-question and per-model costs must both reconcile
    with the attested total. This is a **rejection**, not a warning: understating
-   the total raises the miner's thrift score, and under real attestation every
+   the total lowers the miner's cost per question and so its frontier reference, and under real attestation every
    figure comes from the same metered image, so an inconsistency means the proof
    is not what it claims to be.
 
@@ -222,7 +222,7 @@ Structured JSONL logs are written to `results/epoch_logs/`. Each entry includes:
 
 - Epoch ID and block hash
 - Number of miners queried, valid/invalid proofs
-- Per-miner scores (quality, thrift, composite)
+- Per-miner scores (Wilson LCB, cost per question, frontier reference, headroom, composite)
 - Weight assignments
 - Anomaly flags
 - Phase timing breakdown

@@ -618,6 +618,12 @@ def run_epoch(validator_wallet, subtensor, netuid, pool, models, proof_cache,
         for r in verified[uid].exploration_results
     ])
     ref_model, acc_best = best_model(frame, prices)
+    from fugal_subnet.frontier import build_frontier
+    from fugal_subnet.pricing import question_input_tokens
+    frontier = build_frontier(
+        frame, prices, sum(question_input_tokens(q.get("prompt", "")) for q in questions),
+        len(questions), 300.0,
+    )
     print(f"[Validator] Reference model: {ref_model} (acc={acc_best:.3f})", flush=True)
 
     model_index = {m: i for i, m in enumerate(sorted(prices))}
@@ -646,7 +652,7 @@ def run_epoch(validator_wallet, subtensor, netuid, pool, models, proof_cache,
     print(f"[Validator] Dedup: {dupes or '{}'}", flush=True)
 
     state = update_scores(
-        ScoringState(), epoch_scores, head_hashes, acc_best=acc_best,
+        ScoringState(), epoch_scores, head_hashes, frontier=frontier,
         hotkeys={uid: metagraph.hotkeys[uid] for uid in verified
                  if uid < len(metagraph.hotkeys)},
         n_questions=len(questions), pool_size=len(pool),

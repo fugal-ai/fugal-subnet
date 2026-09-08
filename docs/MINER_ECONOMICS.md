@@ -290,6 +290,16 @@ and "holds unless several assumptions fail together" is the right one.
 
 ## Does the scoring function keep miners solvent? At the shipped exponent, no
 
+> **Superseded 2026-09-08.** Everything in this section is derived against the
+> old score, `quality^w * thrift^(1-w)` against the best single model. That
+> score no longer exists: the shipped score is headroom above the
+> constant-policy frontier (`docs/I3_DECISION.md`), which has no exponent and
+> no thrift term, and under which routing everything to one model earns
+> nothing at any price. The derivation is kept as the record of why the change
+> was made. The solvency question has to be re-asked against the new score
+> with the completion lengths measured on the live epochs below; that is open
+> work, not a result.
+
 **This section previously claimed the opposite, and the claim was wrong.** It
 was derived against `quality^0.8 * thrift^0.2`, which is what five documents in
 this repo said the scoring function was. The shipped value is
@@ -435,10 +445,11 @@ there is no cheaper confidential option today. `--cvm-usd-month 0` puts the
 ceiling at N\* = 168 — so even free hardware only moves the equilibrium 36%.
 The pot is the constraint, and the pot is fixed by the chain.
 
-One further lever nobody had costed as a lever: **`SCORE_QUALITY_EXPONENT` sets
-the sustainable field size**, because it decides where in the 10.7× routing
-range miners settle. That is an argument for measuring per-model accuracy
-early — not for changing the exponent, which is derived and correct.
+One further lever nobody had costed as a lever: under the old score
+**the quality exponent set the sustainable field size**, because it decided
+where in the 10.7× routing range miners settled. The frontier score has no such
+constant; where miners settle is now decided by where the frontier is
+steepest, which is measured from exploration rather than chosen.
 
 ## Measured on the first live epochs (2026-09-07/08)
 

@@ -1,51 +1,46 @@
-"""Scoring: quality per dollar against the best single model.
+"""Scoring: headroom above the constant-policy frontier.
 
-    quality = wilson_lcb(accuracy) / acc_best
-    thrift  = ref_cost / miner_cost
-    score   = quality**w * thrift**(1-w) * burn_in        (w = 0.9, derived)
+    headroom = wilson_lcb(accuracy) - frontier(cost per question)
+    score    = max(0, headroom) * burn_in * frontier_confidence
+               (0 if wilson_lcb < SCORE_QUALITY_FLOOR * frontier max accuracy)
 
-A score of 1.0 means "matched the best single model's quality per dollar";
-above 1.0 means "beat it". That is the product claim stated directly, which is
-the point — the number a miner optimises should be the number the subnet
-exists to produce.
+A router is paid for the value of reading the question: the accuracy it adds
+over the best non-routing policy available at its own price. That reference is
+the upper convex hull of what every single model — and every random mixture
+of models — achieves at each cost, built from the reference frame's
+nonce-assigned exploration samples and the pinned price table
+(`fugal_subnet/frontier.py`). Every constant policy therefore scores zero by
+construction; a router scores its headroom; cheap-and-smart routing, where the
+frontier is low and steep, is where headroom is largest. That is the product,
+stated as arithmetic.
 
-**Why a weighted geometric mean and not a weighted sum.** The old composite was
-`0.55*accuracy + 0.35*cost + 0.10*kl`. Additive terms *substitute*: a miner
-trades accuracy for cost at whatever exchange rate the designer picked, and
-nothing about routing says one accuracy point is worth 0.64 cost points. Worse,
-each degenerate strategy scores well on one axis — route everything to the
-cheapest model, or everything to the best — and collects that term's weight
-regardless of the other. Under a product neither axis can rescue the other:
-both degenerate strategies score badly.
+**Why not the best single model.** The previous score compared a miner's
+quality per dollar against ONE point of the frontier — the most accurate
+model. Measured (docs/HEAD_EFFICACY.md): a head with W=0 that always called
+one mid-priced model scored 1.183 against the best trained router's 1.057,
+for free, because a cheaper point on the same curve gets a cost advantage
+over a dearer one whatever exponent trades quality for cost. The exponent
+derivation and the break-even analysis are kept in docs/design-decisions.md
+as the record; they were correct about the corner they examined and silent
+about the middle of the curve.
 
-The exponent w is derived, not picked. "Match frontier quality at a fraction of
-the cost" makes quality a near-constraint, so giving up 40% of quality must not
-outscore matching the best model at its own price.
+**Why not the other miners.** Emissions are already relative: weights are
+normalised across miners by Yuma. The score itself must be absolute so that
+no miner can move another's by showing up, leaving, or registering copies
+(I4), so that two validators seeing different fields compute the same score
+for the same proof (I1), and so that a field of constant policies is paid
+nothing rather than the best of them being paid everything.
 
-The bound depends on the cost ratio the scoring function PERMITS, not on the
-one the product targets, and getting that wrong is what produced the earlier
-value of 0.8. Solved at a 6x ratio it gives w > 0.778; solved at
-SCORE_THRIFT_CAP (10x), which is what a miner can actually reach, it gives
-w > 0.8184 — so w = 0.8 fails, scoring such a router 1.0532 against a quality
-match's 1.000. Miners are ranked against each other, and a pairwise cost gap
-spans cap² = 100x, which needs w > 0.9002.
+**Where the miner's own tradeoff lives.** The objective a router should
+optimise — quality minus λ·cost minus μ·variance under a budget — is the
+miner's training problem, and each miner picks its own λ and μ
+(`TRAINING_COST_LAMBDA`). The subnet decides what it pays for, not how a
+router should reason.
 
-Hence w = 0.9: it holds the absolute claim with room (0.7949 at the cap) and
-sits on the pairwise bound. Two live runs produced the failure independently
-before it was found — a 63% router beating a 93% one, and a 46% beating a 62%.
-See SCORE_QUALITY_EXPONENT for the full derivation.
-
-**Why the reference is the best single model.** It needs only per-model
-marginals, so it is well-estimated within a few epochs and stable at any miner
-count — see `reference_frame.py`. A per-question oracle measures pure routing
-skill more precisely but is unreachable in practice, needs a dense
-question-by-model matrix, and compresses every real router into a narrow band.
-
-The KL term is gone. Under the TEE architecture the validator has no oracle
-distribution to compare against, so it was hardcoded to zero — which
-`_normalize_kl` mapped to a constant 0.0731 added to every miner. A constant
-cannot rank; it only flattened the gradient between good and bad miners in the
-proportional weight computation.
+Variance on the miner's side is the Wilson lower bound; a noisy router earns
+less. Variance on the frontier's side is the frame's warmth: a frontier built
+from the prior alone shows every decent model as "headroom", so scores scale
+with how well the hull is measured (`Frontier.confidence`).
 """
 from __future__ import annotations
 
@@ -55,12 +50,11 @@ from dataclasses import dataclass, field
 from fugal_subnet.config import (
     BURN_IN_QUESTIONS,
     EVIDENCE_HALF_LIFE,
-    SCORE_QUALITY_CAP,
-    SCORE_QUALITY_EXPONENT,
-    SCORE_THRIFT_CAP,
+    SCORE_QUALITY_FLOOR,
     SLICE_SIZE,
 )
 from fugal_subnet.evidence import Evidence, accumulate_epoch, apply_miss
+from fugal_subnet.frontier import Frontier
 from fugal_subnet.head_eval import HeadScore
 
 
@@ -75,8 +69,15 @@ class MinerRecord:
     epochs_missed: int = 0
     current_head_hash: str = ""
     accuracy: float = 0.0
+    # Accuracy relative to the frontier at this miner's cost (1.0 = matches the
+    # best constant policy at that price). Informational; the score is headroom.
     quality: float = 0.0
+    # Reference cost over miner cost against the best single model. Kept for the
+    # reveal because operators read it; it decides nothing.
     thrift: float = 0.0
+    headroom: float = 0.0
+    reference_accuracy: float = 0.0
+    cost_per_question: float = 0.0
     composite_score: float = 0.0
     wilson_lcb: float = 0.0
     evidence: Evidence | None = None
@@ -92,7 +93,7 @@ def update_scores(
     state: ScoringState,
     epoch_scores: dict[int, HeadScore],
     head_hashes: dict[int, str],
-    acc_best: float,
+    frontier: Frontier,
     hotkeys: dict[int, str] | None = None,
     n_questions: int = 0,
     pool_size: float = 0.0,
@@ -100,7 +101,7 @@ def update_scores(
     """Update scores with new epoch results using evidence accumulation.
 
     Args:
-        acc_best: Reference accuracy — the best single model's lower bound.
+        frontier: This epoch's constant-policy frontier (fugal_subnet.frontier).
         hotkeys: {uid: hotkey} so a recycled UID drops the old occupant's record.
         pool_size: Distinct questions available, capping the effective sample size.
     """
@@ -121,7 +122,7 @@ def update_scores(
             rec.epochs_missed += 1
             if rec.evidence is not None:
                 rec.evidence = apply_miss(rec.evidence, n_expected, EVIDENCE_HALF_LIFE)
-                _refresh(rec, acc_best)
+                _refresh(rec, frontier)
 
     for uid, score in epoch_scores.items():
         if uid not in state.records:
@@ -144,45 +145,52 @@ def update_scores(
             half_life=EVIDENCE_HALF_LIFE,
             pool_size=pool_size,
         )
-        _refresh(rec, acc_best)
+        _refresh(rec, frontier)
 
     return state
 
 
-def _refresh(rec: MinerRecord, acc_best: float) -> None:
+def _refresh(rec: MinerRecord, frontier: Frontier) -> None:
     ev = rec.evidence
     if ev is None:
         return
     rec.wilson_lcb = ev.wilson_lcb
-    rec.quality = quality_term(ev.wilson_lcb, acc_best)
     rec.thrift = ev.thrift
-    rec.composite_score = composite(ev, acc_best)
+    rec.cost_per_question = ev.cost_per_question
+    rec.reference_accuracy = frontier.accuracy_at(ev.cost_per_question)
+    rec.quality = quality_term(ev.wilson_lcb, rec.reference_accuracy)
+    rec.headroom = ev.wilson_lcb - rec.reference_accuracy
+    rec.composite_score = composite(ev, frontier)
 
 
-def quality_term(accuracy_lcb: float, acc_best: float) -> float:
-    """Accuracy relative to the reference model.
+def quality_term(accuracy_lcb: float, reference_accuracy: float) -> float:
+    """Accuracy relative to the best constant policy at the miner's price.
 
-    An `acc_best` of zero means no model in the pool answers anything, so there
-    is nothing to route toward and nobody has demonstrated routing skill. That
-    is a real state of the world, not a division to paper over.
+    A reference of zero means no constant policy answers anything at that
+    price — a real state of the world, not a division to paper over.
     """
-    if acc_best <= 1e-9:
+    if reference_accuracy <= 1e-9:
         return 0.0
-    return accuracy_lcb / acc_best
+    return accuracy_lcb / reference_accuracy
 
 
-def composite(ev: Evidence, acc_best: float) -> float:
-    """quality^w * thrift^(1-w), ramped in over the burn-in period.
+def composite(ev: Evidence, frontier: Frontier) -> float:
+    """Headroom above the frontier, ramped in, scaled by frontier confidence.
 
-    See config.SCORE_QUALITY_EXPONENT for where w comes from — it is derived
-    from the product claim rather than chosen.
+    Zero when the miner's lower-bound accuracy is below SCORE_QUALITY_FLOOR of
+    the frontier's maximum — a router that gives up that much of the best
+    model's accuracy has not delivered the product however cheap it is — and
+    zero for any non-positive headroom, which is every constant policy.
     """
-    w = SCORE_QUALITY_EXPONENT
-    quality = min(max(quality_term(ev.wilson_lcb, acc_best), 0.0), SCORE_QUALITY_CAP)
-    thrift = min(max(ev.thrift, 0.0), SCORE_THRIFT_CAP)
-    if quality <= 0.0 or thrift <= 0.0:
+    lcb = ev.wilson_lcb
+    if lcb <= 0.0:
         return 0.0
-    return (quality ** w) * (thrift ** (1.0 - w)) * burn_in_factor(ev.n_total)
+    if lcb < SCORE_QUALITY_FLOOR * frontier.max_accuracy:
+        return 0.0
+    room = lcb - frontier.accuracy_at(ev.cost_per_question)
+    if room <= 0.0:
+        return 0.0
+    return room * burn_in_factor(ev.n_total) * frontier.confidence
 
 
 def burn_in_factor(n_total: float) -> float:

@@ -21,6 +21,14 @@ python scripts/experiment_pool_memorization.py gap --json results/pool_gap.json
 
 No paid API call happens in any of it.
 
+> **Status 2026-09-08.** Finding 1 below was acted on: the score it measures
+> (`quality^0.9 * thrift^0.1` against the best single model) has been replaced
+> by headroom above the constant-policy frontier (`docs/I3_DECISION.md`,
+> `fugal_subnet/frontier.py`), under which every constant policy scores zero.
+> `scripts/experiment_head_efficacy.py` keeps the old constants inline so the
+> numbers here stay reproducible. The 13-evaluation check this document asked
+> for exists as `tests/test_degenerate_constant_policy.py`.
+
 ---
 
 ## The two answers, first

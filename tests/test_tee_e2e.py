@@ -27,7 +27,7 @@ from fugal_subnet.benchmarks.slicer import (
     epoch_index_for_block,
     select_slice,
 )
-from fugal_subnet.config import HEAD_HIDDEN_DIM
+from fugal_subnet.config import HEAD_HIDDEN_DIM, SCORE_QUALITY_FLOOR
 from fugal_subnet.exploration import expected_exploration
 from fugal_subnet.reference_frame import (
     ReferenceFrame,
@@ -181,16 +181,53 @@ def test_full_epoch_miner_to_weights(stubbed_model_call):
         n_correct=proof.n_correct, n_scored=proof.n_total,
         total_head_cost=proof.scored_cost_usd, total_oracle_cost=ref,
     )
+    from fugal_subnet.frontier import build_frontier
+    frontier = build_frontier(
+        frame, PRICES, sum(r.prompt_tokens for r in scored), len(scored), 300.0,
+    )
     state = update_scores(
         ScoringState(), {1: hs}, {1: proof.weights_hash},
-        acc_best=acc_best, hotkeys={1: "hk1"},
+        frontier=frontier, hotkeys={1: "hk1"},
         n_questions=SLICE, pool_size=len(pool),
     )
     uids, weights = compute_weights(state.records)
 
-    assert state.records[1].composite_score > 0
+    # One epoch of exploration is a nearly COLD frame: a hull model has one or
+    # two trials, so the frontier's confidence is a few percent and whatever
+    # headroom the miner shows is paid at that fraction; the rest burns to UID 0.
+    # That is the design — the subnet pays little until it knows what not
+    # routing can buy — and this asserts it rather than papering over it.
+    rec = state.records[1]
+    assert frontier.confidence < 0.1
+    assert rec.headroom == rec.wilson_lcb - rec.reference_accuracy
+    assert rec.composite_score <= max(0.0, rec.headroom) * frontier.confidence + 1e-12
     assert abs(sum(weights) - 1.0) < 1e-9
-    assert 1 in uids and weights[uids.index(1)] > 0, "miner earned no weight"
+    assert 0 in uids, "unassigned weight must burn to UID 0 while the frontier is cold"
+
+    # With a WARM frontier the same proof earns weight if it has headroom.
+    warm_frame = frame
+    for _ in range(60):
+        warm_frame = accumulate_exploration(warm_frame, [
+            (r.routed_model, r.correct, r.prompt_tokens, r.completion_tokens)
+            for r in proof.exploration_results
+        ])
+    warm = build_frontier(warm_frame, PRICES, sum(r.prompt_tokens for r in scored), len(scored), 300.0)
+    assert warm.confidence > 0
+    state2 = update_scores(
+        ScoringState(), {1: hs}, {1: proof.weights_hash},
+        frontier=warm, hotkeys={1: "hk1"}, n_questions=SLICE, pool_size=len(pool),
+    )
+    uids2, weights2 = compute_weights(state2.records)
+    rec2 = state2.records[1]
+    above_floor = rec2.wilson_lcb >= SCORE_QUALITY_FLOOR * warm.max_accuracy
+    if rec2.headroom > 0 and above_floor:
+        assert 1 in uids2 and weights2[uids2.index(1)] > 0, "a router with headroom earned no weight"
+    else:
+        # Headroom alone is not enough: a router that beats the frontier at its
+        # own price but answers far fewer questions than the best model is not
+        # what the subnet is buying (the quality floor, docs/I3_DECISION.md).
+        assert rec2.composite_score == 0.0
+        assert uids2 == [0], "no headroom over the frontier, or under the floor, must burn"
 
 
 def test_exploration_is_actually_performed(stubbed_model_call):
@@ -275,13 +312,15 @@ def test_a_cheaper_router_of_equal_quality_scores_higher(stubbed_model_call):
     Two miners answer the same questions equally well; one does it for less.
     """
     from fugal_subnet.evidence import Evidence
+    from fugal_subnet.frontier import Frontier
     from fugal_subnet.scoring import composite
 
+    frontier = Frontier(points=((0.0, 0.0), (1e-4, 0.5), (6e-4, 0.85)), least_trials=1e6)
     expensive = Evidence("h1", n_correct=9000.0, n_total=10000.0,
-                         cost_sum=6.0, ref_cost_sum=6.0, pool_size=1e9)
+                         cost_sum=6.0, ref_cost_sum=6.0, pool_size=1e9, n_priced=10000.0)
     frugal = Evidence("h2", n_correct=9000.0, n_total=10000.0,
-                      cost_sum=1.0, ref_cost_sum=6.0, pool_size=1e9)
-    assert composite(frugal, 0.9) > composite(expensive, 0.9)
+                      cost_sum=1.0, ref_cost_sum=6.0, pool_size=1e9, n_priced=10000.0)
+    assert composite(frugal, frontier) > composite(expensive, frontier)
 
 
 def test_neuron_logging_survives_importing_bittensor():

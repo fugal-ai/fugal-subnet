@@ -362,9 +362,12 @@ cost gives N\* = 17, where a 32-miner field loses $31/day.
 **2. Does a trained head beat a random one — YES, and it does not matter.**
 `docs/HEAD_EFFICACY.md`. The premise holds: 1.058 against a random head's
 0.868 and chance's 0.815, genuinely routing across 13 models. But **"always
-gpt-4o-mini" scores 1.183** and beats it by 12%. See INVARIANTS § "I3 — OPEN:
-not routing at all outscores routing". This is the most important open question
-in the project and it is a product decision, not a tuning one.
+gpt-4o-mini" scored 1.183** under the old score and beat it by 12%.
+**Resolved 2026-09-08**: the score is now headroom above the constant-policy
+frontier (`fugal_subnet/frontier.py`, `docs/I3_DECISION.md`), under which every
+constant policy scores zero by construction; `tests/test_degenerate_constant_policy.py`
+pins it. What remains open is the economics re-derivation under the new score
+(item 1).
 
 **3. Pool memorisation — NOT possible at the current pool size.** A linear head
 fits random labels at 100% on 2,000 questions and **16.9%** on 21,717;

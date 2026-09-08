@@ -1,8 +1,10 @@
 """A constant policy — "always route to model k" — is a head that never reads
-the question, and on the shipped constants it OUTSCORES a real router.
+the question. On the previous score it OUTSCORED a real router; on this one it
+scores zero, by construction.
 
 Measured on 5,000 held-out questions with the shipped trainer and the shipped
-routing rule:
+routing rule, under the OLD score (quality^0.9 * thrift^0.1 against the best
+single model):
 
     always gpt-4o-mini      1.183   <- W=0 and a one-hot bias
     trained head (SFT)      1.058
@@ -12,92 +14,85 @@ routing rule:
     random head             0.868
     always cheapest         0.479
 
-The trained head is not the problem: it genuinely routes (13 models used,
-within-source top share 0.45 where a lookup would be 1.00) and beats chance by
-0.24. The problem is that not routing at all beats it by 12%, for free.
+The trained head was not the problem: it genuinely routed and beat chance by
+0.24. The problem was the reference. Comparing against ONE point of the
+price/accuracy curve hands a cheaper point on the same curve a cost advantage
+for free, whatever exponent trades quality for cost; the break-even was a
+property of the constants alone (77.4% of the reference's accuracy at the
+thrift cap). docs/design-decisions.md keeps that derivation as the record.
 
-**scoring.py's stated defence does not cover this case.** It argues the
-geometric mean stops degenerates because "neither axis can rescue the other" —
-and that holds at the ENDS of the price range, which is where it was tested:
-always-cheapest scores 0.479, always-best 0.985. The winner sits in the MIDDLE.
-config.py derives w from "a router that gives up 40% of quality must not
-outscore a quality match"; this one gives up 5% and wins. The constraint was
-applied to the wrong corner of the space.
-
-WHAT THIS FILE DOES, and does not do. It does not assert the incentive is
-correct — it is not, and whether to fix it by exponent, thrift cap, or a
-different reference is an open product decision, not a tuning detail. It pins
-the break-even so that **nobody moves these constants without meeting this
-analysis**, because the exploit is a property of the constants alone and can be
-computed with no accuracy data at all.
+The score is now headroom above the constant-policy frontier
+(fugal_subnet/frontier.py). This file pins the fact that made the change
+necessary — a constant policy must never be the winning strategy — in the form
+that can be asserted without any benchmark data: against a frontier built from
+a model pool, every constant policy on that pool scores zero, and a head that
+routes better than any of them scores more than all of them.
 """
-import pytest
+import random
 
-from fugal_subnet.config import SCORE_QUALITY_EXPONENT, SCORE_THRIFT_CAP
+from fugal_subnet.config import BURN_IN_QUESTIONS
+from fugal_subnet.evidence import Evidence
+from fugal_subnet.frontier import build_frontier
+from fugal_subnet.reference_frame import ReferenceFrame, accumulate_exploration
+from fugal_subnet.scoring import composite
 
-
-def accuracy_ratio_needed_to_beat(target_score: float, thrift: float) -> float:
-    """The accuracy (as a fraction of the reference's) a constant policy needs.
-
-    Inverts `score = quality**w * thrift**(1-w)` for quality. Derived from the
-    shipped constants only — no benchmark, no model, no measurement — which is
-    why the exploit is not an artefact of the dataset it was found on.
-    """
-    return (target_score / thrift ** (1 - SCORE_QUALITY_EXPONENT)) ** (
-        1 / SCORE_QUALITY_EXPONENT
-    )
-
-
-def test_a_capped_thrift_model_needs_far_less_accuracy_than_it_should():
-    """THE FINDING, pinned. At the thrift cap a constant policy beats the
-    reference on 77.4% of its accuracy, and beats a real trained router on
-    82.3%. Both are low enough that ordinary cheap models clear them — the
-    measured ratio for gpt-4o-mini was 95%, thirteen points above what the
-    exploit needs.
-
-    If this test fails, SCORE_QUALITY_EXPONENT or SCORE_THRIFT_CAP moved. That
-    re-scores every miner AND changes how exploitable a constant policy is, so
-    re-derive both before updating the numbers here.
-    """
-    beats_reference = accuracy_ratio_needed_to_beat(1.0, SCORE_THRIFT_CAP)
-    beats_trained = accuracy_ratio_needed_to_beat(1.057, SCORE_THRIFT_CAP)
-
-    assert beats_reference == pytest.approx(0.774, abs=0.001)
-    assert beats_trained == pytest.approx(0.823, abs=0.001)
+# A pool shaped like the one the finding came from: a mid-priced model that is
+# 95% as accurate as the top model at ~1/15 the price. Under the old score this
+# is exactly the model that won.
+PRICES = {
+    "cheapest": (2e-8, 5e-8),
+    "mid":      (1.5e-7, 6e-7),     # the gpt-4o-mini shape
+    "top":      (2.5e-6, 1e-5),
+}
+TRUE_ACC = {"cheapest": 0.26, "mid": 0.698, "top": 0.734}
+N_Q, PROMPT_TOKENS, COMPLETION = 300, 300 * 100, 300.0
 
 
-def test_the_exploit_needs_the_thrift_cap_to_be_reachable():
-    """Why the cap is load-bearing rather than incidental.
-
-    A constant policy's whole advantage is thrift, and thrift is capped at 10.
-    gpt-4o-mini's raw cost ratio is 14.7, so the cap is ALREADY binding and
-    still leaves the exploit profitable — which is why lowering the cap is not
-    an obvious fix, and why this is recorded rather than quietly patched.
-    """
-    # Cheaper does not help past the cap: the score is identical.
-    at_cap = accuracy_ratio_needed_to_beat(1.0, SCORE_THRIFT_CAP)
-    way_past_cap = accuracy_ratio_needed_to_beat(1.0, SCORE_THRIFT_CAP)
-    assert at_cap == way_past_cap
-
-    # And a policy with no cost advantage cannot do it at all: it would need to
-    # match the reference outright, which is what the design intends.
-    no_advantage = accuracy_ratio_needed_to_beat(1.0, 1.0)
-    assert no_advantage == pytest.approx(1.0, abs=1e-9)
+def _frame():
+    rng = random.Random(0)
+    return accumulate_exploration(ReferenceFrame(), [
+        (m, rng.random() < TRUE_ACC[m], 100, 300) for m in PRICES for _ in range(500)
+    ])
 
 
-def test_the_stated_defence_covers_only_the_ends_of_the_price_range():
-    """scoring.py claims a product stops both degenerate strategies. It stops
-    the two it NAMES. Always-cheapest fails because quality collapses; the
-    reference itself scores below 1 only because of the Wilson penalty. Neither
-    is the strategy that wins, and nothing in the argument reaches the middle.
-    """
-    # Always-cheapest: huge thrift, but quality near zero -> loses badly.
-    assert accuracy_ratio_needed_to_beat(1.0, SCORE_THRIFT_CAP) < 1.0
-    # The gap between "what the design constrained" (40% quality loss) and
-    # "what actually wins" (5% quality loss) is the whole defect.
-    design_constrained_at = 0.60
-    exploit_lives_at = accuracy_ratio_needed_to_beat(1.057, SCORE_THRIFT_CAP)
-    assert exploit_lives_at > design_constrained_at, (
-        "the derivation constrained a 40% quality loss; the exploit needs only "
-        f"a {100 * (1 - exploit_lives_at):.0f}% loss, which the derivation "
-        "never covered")
+def _cost(model):
+    p_in, p_out = PRICES[model]
+    return (p_in * PROMPT_TOKENS + p_out * COMPLETION * N_Q) / N_Q
+
+
+def _ev(acc, cpq, n=BURN_IN_QUESTIONS * 4):
+    return Evidence("h", n_correct=acc * n, n_total=float(n), cost_sum=cpq * n,
+                    ref_cost_sum=0.0, pool_size=1e9, n_priced=float(n))
+
+
+def test_the_mid_priced_constant_policy_that_won_now_scores_zero():
+    frame = _frame()
+    f = build_frontier(frame, PRICES, PROMPT_TOKENS, N_Q, COMPLETION)
+    always_mid = _ev(frame.accuracy("mid"), _cost("mid"))
+    always_top = _ev(frame.accuracy("top"), _cost("top"))
+    always_cheapest = _ev(frame.accuracy("cheapest"), _cost("cheapest"))
+    assert composite(always_mid, f) == 0.0
+    assert composite(always_top, f) == 0.0
+    assert composite(always_cheapest, f) == 0.0
+
+
+def test_a_trained_router_outscores_every_constant_policy():
+    """The check HEAD_EFFICACY.md said would have caught the original defect:
+    13 evaluations, assert the router beats all of them. Here the router is the
+    measured one — 0.755 accuracy at roughly mid's price band — and the
+    constant policies are every model in the pool."""
+    frame = _frame()
+    f = build_frontier(frame, PRICES, PROMPT_TOKENS, N_Q, COMPLETION)
+    router = _ev(0.755, _cost("mid") * 1.3)
+    constants = [_ev(frame.accuracy(m), _cost(m)) for m in PRICES]
+    assert composite(router, f) > 0
+    assert all(composite(router, f) > composite(c, f) for c in constants)
+
+
+def test_the_finding_cannot_recur_by_moving_a_constant():
+    """There is no exponent or cap to move: the reference is the whole curve,
+    and any policy on the curve has zero headroom at every point of it."""
+    frame = _frame()
+    f = build_frontier(frame, PRICES, PROMPT_TOKENS, N_Q, COMPLETION)
+    for c, a in f.points:
+        assert composite(_ev(a, c), f) == 0.0

@@ -91,78 +91,47 @@ HEAD_MAX_MODEL_ID_LEN = int(os.getenv("FUGAL_HEAD_MAX_MODEL_ID_LEN", "256"))
 # --- Scoring ---
 WILSON_CONFIDENCE = float(os.getenv("FUGAL_WILSON_CONFIDENCE", "0.95"))
 
-# score = quality^w * thrift^(1-w), both measured against the best single model.
+# score = headroom above the constant-policy frontier, ramped in over burn-in.
 #
-# A weighted GEOMETRIC mean, not a weighted sum. Additive terms substitute: a
-# miner trades accuracy for cost at whatever rate the designer picked, and each
-# degenerate strategy (all-cheapest, all-frontier) collects its own term's
-# weight regardless of the other. Under a product, neither axis can rescue the
-# other and both degenerates score badly.
+# A router is paid for the value of reading the question. Anything a policy can
+# do WITHOUT reading it — always call model k, or flip a coin between two — is
+# free to build, so the subnet must not pay for it. The reference is therefore
+# the whole curve of what constant policies buy at each price (the upper convex
+# hull of the per-model (cost, accuracy) points from the reference frame, plus
+# the origin; see fugal_subnet/frontier.py), and the score is
 #
-# w is DERIVED from the product claim, not chosen. The claim is "match frontier
-# quality at a fraction of the cost", so quality is a near-constraint rather
-# than a freely tradeable axis: a router that gives up 40% of quality has not
-# delivered the product, however cheap, and must not outscore simply matching
-# the best model at the best model's price. That is
+#     headroom = wilson_lcb(miner accuracy) - frontier(miner cost per question)
 #
-#     0.6^w * R^(1-w) < 1      =>      w > ln R / (ln R - ln 0.6)
+# Every constant policy has zero headroom by construction. A router earns
+# exactly the accuracy it adds over the best non-routing alternative at its own
+# price. Cheap-and-smart routing is where the frontier is low and steep, so
+# that is where headroom is largest — which is the product.
 #
-# An unweighted sqrt (w=0.5) fails this at any interesting R.
+# WHY THIS REPLACED quality^0.9 * thrift^0.1 AGAINST THE BEST SINGLE MODEL.
+# Measured (docs/HEAD_EFFICACY.md): a head with W=0 that always called one
+# mid-priced model scored 1.183 against the best trained router's 1.057. Any
+# quality-versus-cost tradeoff scored against ONE point of the frontier hands a
+# cheaper point a cost advantage for free; no exponent fixes that, because the
+# constant policy sits on the curve the exponent is trying to trade along. The
+# derivation of w=0.9 and the break-even analysis are kept in
+# docs/design-decisions.md as the record of why.
 #
-# R IS THE COST RATIO, AND IT IS NOT 6. The original derivation solved this at
-# R=6, the saving the product targets, and got w > 0.778. But R is not bounded
-# by what the product targets — it is bounded by what the scoring function
-# PERMITS, which is SCORE_THRIFT_CAP. Solving the same inequality at the cap:
-#
-#     w > ln 10 / (ln 10 + ln(1/0.6)) = 0.8184
-#
-# w=0.8 fails this. It scores the degraded-but-cheap router 1.0532 against the
-# 1.000 of a full quality match — so the documented claim was already false at
-# the old value, by a margin the 6x derivation hid.
-#
-# Two live runs produced it independently: a 63% router beating a 93% one at
-# 13x cheaper, and a 46% router beating a 62% one. Neither was a corner case.
-#
-# WHY 0.9 AND NOT 0.8184. The claim above compares a miner to a fixed baseline,
-# but weights are set by comparing miners to EACH OTHER, and a pairwise gap
-# spans the whole band rather than half of it: one miner at the cap and another
-# at the floor is a ratio of cap^2 = 100, needing
-#
-#     w > ln 100 / (ln 100 + ln(1/0.6)) = 0.9002
-#
-# 0.9 clears the absolute claim with room (0.795 vs 1.000) and the observed live
-# case with room (that needed 0.8412), but sits 0.00015 BELOW the pairwise
-# bound. It is the knife edge of that bound, not a margin above it — at exactly
-# a 40% quality gap and exactly a 100x cost gap the two tie. Going to 0.91 buys
-# that margin; going to 0.95 (which holds to ~16000x) would make the subnet
-# nearly indifferent to cost and defeat the point of it.
-#
-# The alternative fix is to shrink the thrift band so R can never exceed 6 and
-# the original 0.778 holds. Rejected: it would pay a miner who found a genuinely
-# 10x-cheaper route no more than one who found 2.45x, discarding exactly the
-# signal this subnet exists to find.
-#
-# NOTE ON READING THIS NUMBER. w does not set influence on its own; the
-# exponent times the RANGE does. Quality is a ratio against the best model, so
-# it realistically spans ~3x; thrift spans 100x. That is why w=0.8 read as
-# "quality dominates 4:1" while quality and thrift actually contributed 2.41x
-# and 2.51x of effective range — the cost term had marginally MORE pull than
-# the accuracy term. tests/test_scoring_tradeoff.py pins both claims so this
-# cannot silently regress if either the cap or the exponent moves.
-SCORE_QUALITY_EXPONENT = float(os.getenv("FUGAL_SCORE_QUALITY_EXPONENT", "0.9"))
+# THE QUALITY FLOOR. "Match frontier quality" is the product claim, so a router
+# that gives up too much of the best model's accuracy has not delivered it
+# however much headroom it shows at a low price. Below this fraction of the
+# frontier's maximum accuracy the score is zero. 0.8 is a product constant, not
+# a derived one, and is stated as such.
+SCORE_QUALITY_FLOOR = float(os.getenv("FUGAL_SCORE_QUALITY_FLOOR", "0.8"))
 
-# Caps stop a degenerate running away with an unbounded ratio — a near-free
-# model would otherwise drive thrift toward infinity. The thrift cap is well
-# above the ~6x saving the product targets, so a genuinely frugal router is
-# rewarded for all of its advantage rather than having it truncated; the
-# quality exponent, not the cap, is what keeps cheap-and-wrong from winning.
-#
-# These two constants are coupled and must move together. The exponent is
-# derived from the widest cost ratio the caps permit (see above), so RAISING
-# SCORE_THRIFT_CAP WITHOUT RAISING THE EXPONENT reopens the gap where a
-# cheap-and-wrong router wins.
-SCORE_QUALITY_CAP = float(os.getenv("FUGAL_SCORE_QUALITY_CAP", "2.0"))
-SCORE_THRIFT_CAP = float(os.getenv("FUGAL_SCORE_THRIFT_CAP", "10.0"))
+# How many decayed exploration trials every model on the hull needs before the
+# frontier is trusted at face value. With none, every model sits at the prior,
+# the hull is flat, and a constant policy on any decent model shows "headroom"
+# that is ignorance, not routing. Scores scale with least_trials/this until it
+# is met. At ~2 exploration samples per model per epoch with two miners this is
+# ~25 epochs; more miners fill it faster because exploration pools over the
+# field — that is the one place field size legitimately matters, and it changes
+# how soon the frontier is known, not what it is.
+FRONTIER_MIN_TRIALS = float(os.getenv("FUGAL_FRONTIER_MIN_TRIALS", "50"))
 
 # A fresh artifact's score ramps in over this many scored questions. This is
 # what makes evidence reset symmetric: resetting clears accumulated PENALTIES
@@ -382,8 +351,8 @@ TEE_COLLATERAL_MAX_TIMEOUTS = int(
 # The old rule was `p - lambda*cost`, which mixes a probability with dollars and
 # so implicitly asserts what a correct answer is worth (lambda=2.0 asserted
 # $0.50). The subnet has no business asserting that. It states the objective —
-# quality per dollar against the best single model — and lets each miner's head
-# discover its own tradeoff. Judging the outcome instead of dictating the rule
+# accuracy above the constant-policy frontier at the miner's own price — and
+# lets each miner's head discover its own tradeoff. Judging the outcome instead of dictating the rule
 # removes the last hardcoded exchange rate from consensus.
 #
 # This remains available to miners as a TRAINING hyperparameter: a head still

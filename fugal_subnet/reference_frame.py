@@ -12,16 +12,15 @@ So the frame is accumulated over TIME, not over miners: exploration samples
 from every epoch decay into per-model counts, and any single miner's
 contribution to those counts is negligible.
 
-**The ceiling is the best single model, not a per-question oracle.** Two
-reasons. First, it is the actual product claim — "match frontier quality at a
-fraction of the cost" — so a score of 1.0 means "matched the best model's
-quality per dollar" and >1.0 means "beat it", which is a statement worth
-making. Second, it needs only per-model marginals (~30 numbers) rather than a
-dense question-by-model matrix (~21K x 30 cells), so it is well-estimated
-within a few epochs instead of many hundreds, and it is stable at any field
-size. A per-question oracle is the more precise measure of pure routing skill,
-but it is unreachable in practice and compresses every real router into a
-narrow low band.
+**The reference is per-model marginals, not a per-question oracle.** The
+frame feeds `frontier.py`: each model's pooled accuracy and its pinned price
+are one point, and the upper convex hull of those points is the constant-policy
+frontier a miner has to clear at its own cost. This needs only ~30 numbers
+rather than a dense question-by-model matrix (~21K x 30 cells), so it is
+well-estimated within a few epochs instead of many hundreds, and it is stable
+at any field size. A per-question oracle is the more precise measure of pure
+routing skill, but it is unreachable in practice and compresses every real
+router into a narrow low band.
 
 Cold start is handled by a Beta prior worth K pseudo-observations, not by a
 special case: with no evidence the frame reports the prior, and the prior

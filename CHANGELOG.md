@@ -4,6 +4,26 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — CONSENSUS: the score is headroom above the constant-policy frontier
+
+Re-scores every miner; decided in `docs/I3_DECISION.md` (option 3). The
+reference is no longer the best single model but the upper convex hull of what
+every single model, and every random mixture of models, achieves at each cost
+per question — built from the reference frame's nonce-assigned exploration
+samples and the pinned price table (`fugal_subnet/frontier.py`). The score is
+`max(0, wilson_lcb(accuracy) − frontier(cost per question)) × burn_in ×
+frontier_confidence`, zero below `SCORE_QUALITY_FLOOR` (0.8) of the frontier's
+best accuracy. Every policy that does not read the question scores zero by
+construction; a router earns the accuracy it adds. Measured motivation: under
+the old score a W=0 head that always called one mid-priced model beat the best
+trained router by 12%. While the frontier is cold (`FRONTIER_MIN_TRIALS`
+decayed trials per hull model) scores scale down and unassigned weight burns to
+UID 0 rather than paying constant policies for the frame's ignorance.
+`SCORE_QUALITY_EXPONENT`, `SCORE_QUALITY_CAP` and `SCORE_THRIFT_CAP` are gone;
+`Evidence` gains `n_priced` so a skipped epoch cannot make a miner look cheaper.
+New tests: `tests/test_frontier.py`; `tests/test_degenerate_constant_policy.py`
+rewritten; `tests/test_scoring_tradeoff.py` removed with the exponent it pinned.
+
 ### Fixed — the operator's live-proof check refused every live proof
 
 `scripts/verify_live_miner.py` never passed `expected_hotkey` to

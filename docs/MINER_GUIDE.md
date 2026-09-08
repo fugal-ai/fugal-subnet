@@ -519,40 +519,48 @@ and rankings stable.
 
 ## Scoring
 
-You are scored on **quality per dollar, against the best single model**:
+You are scored on **the accuracy you add over the best non-routing policy at
+your own price**:
 
 ```
-quality = wilson_lcb(your accuracy) / accuracy of the best single model
-thrift  = what the best model would have cost / what you actually spent
-score   = quality^0.9 * thrift^0.1
+frontier(c) = best accuracy any single model, or random mixture of models,
+              achieves at cost-per-question c   (upper convex hull, from the
+              reference frame's exploration samples and the pinned price table)
+headroom    = wilson_lcb(your accuracy) - frontier(your cost per question)
+score       = max(0, headroom) * burn_in * frontier_confidence
+              (0 if wilson_lcb < 0.8 * the frontier's maximum accuracy)
 ```
 
-**A score of 1.0 means you matched the best single model's quality per dollar.
-Above 1.0 means you beat it.** That is the whole product: same answers, less
-money.
+**A constant policy scores zero.** Always calling one model, or flipping a coin
+between two, reads no question and sits on the frontier; it earns nothing, at
+any price. That is the point: the subnet pays for the value of reading the
+question and for nothing else. An earlier score (quality per dollar against the
+best single model) paid a head that always called one mid-priced model 12% more
+than the best trained router; `docs/design-decisions.md` keeps that history.
 
-Two consequences worth internalising:
+Three consequences worth internalising:
 
-- **Neither axis rescues the other.** Routing everything to the cheapest model
-  scores badly (quality collapses). Routing everything to the best model scores
-  badly (thrift collapses). There is no weighting you can exploit — the score is
-  a product, not a sum.
-- **Quality is weighted heavier than cost**, deliberately. Giving up 40% of
-  quality does not pay for itself *at any saving the scoring function will
-  award you* — at `w=0.9` a 40% quality loss scores 0.79 against a full quality
-  match even at the maximum thrift the cap allows. The exponent is derived from
-  that requirement, not picked.
+- **Cheap-and-smart is where the money is.** The frontier is low and steep at
+  low prices, so a router that gets frontier-quality answers out of cheap models
+  has the most headroom. Matching the best model at the best model's price has
+  almost none — a constant policy already does that.
+- **You cannot be scored against other miners.** The frontier is built from
+  the model pool (nonce-assigned exploration pooled over time), never from
+  heads. Nobody joining, leaving or copying changes your reference. Emissions
+  are relative afterwards, through Yuma, as on every subnet.
+- **Quality is still a requirement.** Below 80% of the frontier's best accuracy
+  you earn nothing however cheap you are: "same answers, less money" needs the
+  same answers.
 
-  The binding number is **`SCORE_THRIFT_CAP = 10`**, not the 6x saving the
-  product targets. That distinction is the whole reason the exponent is 0.9 and
-  not 0.8: derived against 6x it comes out 0.778, and at the cap `w=0.8`
-  actually *rewards* the 40% quality loss (1.0532 against 1.000). If you are
-  modelling where the trade-off turns, model it at the cap.
-  `docs/design-decisions.md` carries the full derivation.
+**Your own tradeoff is yours.** How much quality to give up per dollar is your
+training objective (`FUGAL_LAMBDA` is a miner-side hyperparameter); the subnet
+only decides what it pays for.
 
-The reference is the best model's *measured* accuracy, pooled from exploration
-samples across all miners and many epochs. It is a fact about the model pool,
-not about the current field — how many other miners are online does not move it.
+The frontier is built from *measured* per-model accuracy, pooled from
+exploration samples across all miners and many epochs. It is a fact about the
+model pool, not about the current field. While it is still cold (few
+exploration samples per model) scores are scaled down and the unassigned
+weight burns; nobody is paid for the frame's ignorance.
 
 Results are pooled across epochs via **evidence accumulation** (EWMA decay with
 Wilson LCB scoring). Your score stabilizes over time — a few lucky epochs won't

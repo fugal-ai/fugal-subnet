@@ -1,5 +1,11 @@
 # I3 decision memo: what should the score reward?
 
+> **Decided 2026-09-08: option 3, the cost-matched frontier, with a quality
+> floor borrowed from ThirtySpokes' "floors are hard" and continuous (not
+> king-of-the-hill) distribution. Implemented in `fugal_subnet/frontier.py`
+> and `fugal_subnet/scoring.py`; pinned by `tests/test_frontier.py`. The memo
+> below is kept as the record of the choice.**
+
 One page, for a decision. The measurements are in `docs/HEAD_EFFICACY.md` and
 the analysis in INVARIANTS § "I3 — OPEN". This says only what the choice is,
 what each option costs, and which one follows from the product's own claim.

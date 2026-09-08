@@ -47,6 +47,11 @@ class Evidence:
     # Distinct questions available to sample. Caps the effective sample size:
     # see effective_n.
     pool_size: float = 0.0
+    # Questions the cost_sum actually paid for. A missed epoch adds unanswered
+    # questions to n_total but no cost, so cost_sum / n_total would make a
+    # miner look CHEAPER for skipping — and cheaper reads the frontier lower.
+    # Cost per question therefore divides by this, not by n_total.
+    n_priced: float = 0.0
 
     @property
     def effective_n(self) -> float:
@@ -76,6 +81,14 @@ class Evidence:
         if self.n_total < 1e-6:
             return 0.0
         return self.n_correct / self.n_total
+
+    @property
+    def cost_per_question(self) -> float:
+        """Policy cost per answered question — the x-axis of the frontier."""
+        n = self.n_priced if self.n_priced > 1e-9 else self.n_total
+        if n < 1e-9:
+            return 0.0
+        return self.cost_sum / n
 
     @property
     def thrift(self) -> float:
@@ -115,6 +128,7 @@ def accumulate_epoch(
             epochs_accumulated=1,
             epochs_missed=0,
             pool_size=pool_size,
+            n_priced=float(n_total),
         )
 
     return Evidence(
@@ -126,6 +140,7 @@ def accumulate_epoch(
         epochs_accumulated=evidence.epochs_accumulated + 1,
         epochs_missed=0,
         pool_size=pool_size or evidence.pool_size,
+        n_priced=evidence.n_priced * alpha + n_total,
     )
 
 
@@ -150,6 +165,9 @@ def apply_miss(
         epochs_accumulated=evidence.epochs_accumulated,
         epochs_missed=evidence.epochs_missed + 1,
         pool_size=evidence.pool_size,
+        # Decays with the cost it prices, so cost per question is unchanged by
+        # a miss — the questions went unanswered, not cheaper.
+        n_priced=evidence.n_priced * alpha,
     )
 
 

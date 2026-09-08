@@ -214,6 +214,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         write_epoch_log,
     )
     from fugal_subnet.exploration import expected_exploration as expected_exploration_map
+    from fugal_subnet.frontier import build_frontier
     from fugal_subnet.head_eval import HeadScore
     from fugal_subnet.pricing import policy_cost_total, question_input_tokens
     from fugal_subnet.protocol import FugalProofSynapse
@@ -598,8 +599,25 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             ref_model, acc_best = best_model(frame, prices)
             logger.info(
                 "Reference frame: %d samples this epoch, best model %s "
-                "(acc_lcb=%.3f, %.0f trials)",
+                "(acc=%.3f, %.0f trials)",
                 len(samples), ref_model, acc_best, frame.trials.get(ref_model, 0.0),
+            )
+            # The constant-policy frontier for THIS slice: what any single model,
+            # or any random mixture of models, buys at each price. Prompt tokens
+            # come from the pool, so the frontier is identical for every miner
+            # and on every validator. See fugal_subnet/frontier.py.
+            slice_prompt_tokens = sum(
+                question_input_tokens(q.get("prompt", "")) for q in questions
+            )
+            frontier = build_frontier(
+                frame, prices, slice_prompt_tokens, len(questions),
+                FRAME_DEFAULT_COMPLETION_TOKENS,
+            )
+            logger.info(
+                "Frontier: %d hull models %s, max accuracy %.3f, confidence %.2f "
+                "(least-observed hull model has %.0f trials)",
+                len(frontier.models), list(frontier.models), frontier.max_accuracy,
+                frontier.confidence, frontier.least_trials,
             )
 
             # --- SCORE FROM PROOFS ---
@@ -633,9 +651,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 )
                 score = _proof_to_head_score(proof, ref_cost, head_cost)
                 epoch_scores[uid] = score
+                cpq = score.total_head_cost / max(1, score.n_scored)
                 logger.info(
-                    "  UID %d: acc=%.3f cost=$%.4f ref=$%.4f (%d/%d correct)",
-                    uid, score.accuracy, score.total_head_cost, ref_cost,
+                    "  UID %d: acc=%.3f cost=$%.4f ($%.6f/q, frontier %.3f there) "
+                    "ref=$%.4f (%d/%d correct)",
+                    uid, score.accuracy, score.total_head_cost, cpq,
+                    frontier.accuracy_at(cpq), ref_cost,
                     score.n_correct, score.n_scored,
                 )
 
@@ -652,7 +673,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # --- EVIDENCE ACCUMULATION ---
             scoring_state = update_scores(
                 scoring_state, epoch_scores, head_hashes,
-                acc_best=acc_best,
+                frontier=frontier,
                 hotkeys={
                     uid: metagraph.hotkeys[uid]
                     for uid in verified_proofs
@@ -682,6 +703,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     "accuracy": s.accuracy,
                     "quality": scoring_state.records[uid].quality,
                     "thrift": scoring_state.records[uid].thrift,
+                    "headroom": scoring_state.records[uid].headroom,
+                    "reference_accuracy": scoring_state.records[uid].reference_accuracy,
+                    "cost_per_question": scoring_state.records[uid].cost_per_question,
                     "score": scoring_state.records[uid].composite_score,
                 }
                 for uid, s in epoch_scores.items()

@@ -529,3 +529,16 @@ burns to UID 0. `SCORE_QUALITY_EXPONENT` and the thrift/quality caps are gone.
 Pinned by `tests/test_frontier.py` and the rewritten
 `tests/test_degenerate_constant_policy.py`. This re-scores every miner and is
 the consensus change the rehearsal's "not yet" was about.
+
+**16:36–16:41 UTC — both live validators moved to the frontier score
+together.** PR #28 merged as `e373921`. ARM (uid 0) and `fugal-val2` (uid 1)
+fast-forwarded from `e284963`, `uv sync --locked --extra tee` (no dependency
+change), restarted 56 s apart within the same epoch's wait window. Both logged
+the same two approved entries, the same `Consensus environment digest
+1d51078642731d50`, and the same commitment for `e00022116`
+(`af3eea27…`). Both loaded their pre-frontier state files (the new record
+fields default; measured by the epoch running, not by reading the loader).
+Epoch outcome identical: the mock miner's proof rejected on ARM (`quote does
+not parse`), no valid proofs on either, epoch skipped. The TDs are still
+stopped, so the first frontier-scored epoch on real proofs has not happened
+yet; starting a TD is what produces it.

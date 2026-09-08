@@ -196,3 +196,8 @@ jobs:
             --head subnet/tests/fixtures/success_bundle/head.npz \
             --prices subnet/tests/fixtures/success_bundle/prices.json
 
+      - name: Actual backbone wrappers agree across repositories
+        run: |
+          python subnet/scripts/check_success_embeddings.py \
+            --core subnet/tests/core_snapshot \
+            --backbone subnet/tests/core_snapshot/artifacts/Qwen3-0.6B

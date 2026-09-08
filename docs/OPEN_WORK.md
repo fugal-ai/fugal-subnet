@@ -384,12 +384,31 @@ embeddings, where the largest gain was +0.036.
    per-proof bound and the epoch aggregate, I6 widened, and
    `check_external_calls_bounded` added so the next unbounded call added to the
    epoch loop fails CI instead of the subnet.
-2. **Run the rehearsal against merged `main`.** ← *the next action* The accounting from PR #9 makes
-   an outage legible — `n_heads_unverifiable` in the epoch log is the real
-   failure rate, and it is the missing input to how urgently item 3 is needed.
-   It also answers the `Revoked` question for free.
-3. **Choose Route A or Route B** with that number in hand.
-4. **TCB status policy**, once the logs show the real distribution.
+2. ~~**Run the rehearsal against merged `main`.**~~ **DONE 2026-09-07/08** —
+   `docs/REHEARSAL_2026-09-06.md`. `n_heads_unverifiable` was **0** in every
+   live epoch on both validators; every real quote returned `UpToDate`, so the
+   `Revoked` question is still an absent observation. Route A was measured
+   (15 ms vs ~730 ms per proof) and run on one validator for two scored epochs
+   with identical weights to the Phala-side validator.
+3. **Choose Route A or Route B** with that number in hand. ← *the next
+   decision.* Recommendation from the measurements: Route A now (no consensus
+   change, removes the third party from the hot path, ~50x cheaper), Route B
+   as the end state.
+4. **TCB status policy**, once the logs show the real distribution (so far:
+   only `UpToDate`).
+
+### New since the rehearsal (2026-09-08)
+
+- The proof carries no provider-cost field; the metering proxy records one.
+  Surfacing it makes the price-table drift check per-proof instead of
+  account-level.
+- Exploration was ~60% of a cheap head's epoch cost and completions averaged
+  534 tokens (256 assumed) — inputs to `MINER_ECONOMICS.md`.
+- The validator's chain-error loop has no backoff (72 tracebacks in a 1 h 40 m
+  DNS outage); harmless, noisy.
+- `dstack-cloud` has no update-in-place: every image rotation re-pays the
+  embedding pass. A miner-side embedding artifact (hash-pinned, verifiable)
+  would remove that, and is the largest remaining barrier to entry.
 
 ---
 

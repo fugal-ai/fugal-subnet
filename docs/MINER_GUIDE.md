@@ -264,8 +264,10 @@ miner produces nothing for half a day. Three things make that bearable:
 
 - Give the backbone every vCPU: `FUGAL_BACKBONE_THREADS=0` in the compose
   (`deploy/dstack/docker-compose.yaml` does). This is miner-side only —
-  validators never run the backbone — and cuts the pass roughly by the core
-  count.
+  validators never run the backbone. Measured on a `c3-standard-4`: 7 h 39 m
+  at four threads against ~13 h at one — 1.7x, not 4x, because the backbone is
+  memory-bound past a few cores. More vCPUs help less than more memory
+  bandwidth would.
 
 - Cache the embeddings on the encrypted data volume
   (`FUGAL_EMBEDDING_CACHE` on a named volume, as in

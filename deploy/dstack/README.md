@@ -91,9 +91,16 @@ TPM-sealed seed (new instance id) and the embedding cache; `stop`/`start` keep
 all three. There is no update-in-place path in this tool, so an image upgrade
 means re-provisioning and re-paying the backbone pass.
 
+The `fugal-provision` rule admits only the operator's IP. A residential IP
+changes without notice, and the failure looks like a timeout (packets dropped),
+not a refusal — measured 2026-09-06 when the operator's IP changed mid-run and
+both TDs "went silent". Push and pull from a stable egress (a small VM, a jump
+host) or re-check the rule before diagnosing the TD.
+
 Until the push, the miner serves nothing and logs "waiting to be provisioned".
-After it, the miner embeds the pinned pool — about 13 hours at one thread on a
-`c3-standard-4`, once, cached on the encrypted data volume — then serves its
+After it, the miner embeds the pinned pool — about 13 hours on one thread, a
+few hours with `FUGAL_BACKBONE_THREADS=0` on a `c3-standard-4` (this compose
+sets it) — once per instance, cached on the encrypted data volume, then serves its
 axon, commits its head hash and starts producing proofs at the next epoch
 boundary.
 

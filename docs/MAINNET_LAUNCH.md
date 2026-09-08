@@ -64,14 +64,17 @@ Two things make the default loader non-reproducible:
   versions, but loads normally for anyone who has manually placed
   `data/benchmarks/livecode.json`. Two operators, two pools, no error.
 
-Publish a materialised pool file and pin its hash, and point every neuron at it:
+Both are now closed by the pinned manifest (`fugal_subnet/benchmarks/
+pool_manifest.json`): `load_all()` skips the gated and unpinned benchmarks by
+name and refuses to start unless the pool it built matches the manifest's
+content hash. Leave `FUGAL_BENCHMARK_POOL` unset on every neuron; a pool file is
+accepted only if it verifies against the same manifest, and a deliberately
+different pool must declare `FUGAL_POOL_UNPINNED=1` (local rehearsals only).
 
-```bash
-export FUGAL_BENCHMARK_POOL=/opt/fugal/pool.json
-```
-
-Confirm agreement before launch — both neurons log `pool_hash` at startup, and
-they must match.
+Confirm agreement before launch — every neuron logs `pool_hash` and "Pool
+matches the pinned manifest" at startup. Measured 2026-09-06/07: an aarch64
+validator, an x86_64 validator and two TDX miners all loaded
+`1779b4a5218bb2ef…` from their own HuggingFace downloads.
 
 ### 4. Miners must be reachable, and the chain will not tell them otherwise
 
@@ -93,7 +96,7 @@ nc -vz <miner_public_ip> <port>
 Open the port in the *cloud provider's* firewall, not just the guest's — they
 are separate, and the guest one is the one that looks like it worked.
 
-### 5. `--live` needs an approved measurement, and that is not yet solved
+### 5. `--live` needs an approved entry, and here is how one is made
 
 A validator started `--live` with no `FUGAL_TEE_MEASUREMENTS` now refuses to
 start, because the alternative was worse: an empty approved set can never
@@ -124,10 +127,12 @@ republished on every kernel package update. **A fixed, reproducibly-built guest
 image with a pinned kernel and initrd is still a prerequisite for `--live` on
 mainnet.** dstack now supplies exactly that, and provisioning has been proven
 end to end against a live TD (see [OPEN_WORK.md](OPEN_WORK.md) for what the
-rehearsal did and did not demonstrate). Until a measurement from that image is
-published, `--mock` is the only honest mode, and `--mock` accepts unattested
-proofs — which means the security model is not yet enforced. See
-[TDX_VALIDATION.md](TDX_VALIDATION.md).
+rehearsal did and did not demonstrate). Approved entries are
+`<base>:<compose_hash>` pairs; the current ones, and the procedure for
+rotating them when the image or the miner code changes, are in
+[APPROVED_ENTRY_ROTATION.md](APPROVED_ENTRY_ROTATION.md). With an entry
+published, `--live` is the only honest mode; `--mock` accepts unattested
+proofs and is for local rehearsals. See [TDX_VALIDATION.md](TDX_VALIDATION.md).
 
 ### 6. Miner startup cost
 
@@ -223,10 +228,11 @@ Honest list, as of this branch:
 
 | | Status |
 |---|---|
-| Scoring path determinism across x86_64 and aarch64 | **verified** byte-identical |
-| Full pipeline against a real chain, multi-miner, multi-validator | **verified** |
-| Real DCAP verification and measurement matching | **never executed** — needs TDX silicon |
-| A reproducible TDX guest image with a stable measurement | **does not exist** |
-| Real OpenRouter billing vs the pinned price table | **never executed** |
-| A real trained head outscoring a random one | **never executed** |
+| Scoring path determinism across x86_64 and aarch64 | **verified** byte-identical (local, and on netuid 552 with real proofs: three consecutive scored epochs, identical weights on both hosts) |
+| Full pipeline against a real chain, multi-miner, multi-validator | **verified** — local chain, and public testnet with two dstack TDX miners and two validators (`docs/REHEARSAL_2026-09-06.md`) |
+| Real DCAP verification and measurement matching | **verified** on real Intel TDX (GCP `c3`, dstack 0.6.0-rc0): proofs verified `UpToDate`, a genuine proof refused against a retired entry |
+| A reproducible TDX guest image with a stable measurement | **exists**: dstack 0.6.0-rc0 UKI on GCP, base `12a1f2f5…9141` measured across seven deploys and two instance sizes; the compose hash rotates with the image and the rotation procedure is `docs/APPROVED_ENTRY_ROTATION.md` |
+| Real OpenRouter billing vs the pinned price table | **measured once**, account-level: within ~5% over four miner-epochs; completions averaged 534 tokens against the 256 assumed, and exploration was ~60% of a cheap head's epoch cost |
+| A real trained head outscoring a random one | **measured** offline (`docs/HEAD_EFFICACY.md`); on chain only two synthetic heads have been scored |
 | Behaviour under adversarial miners over weeks | **never executed** |
+| Miner startup cost on a TD | **measured**: 7 h 39 m to embed the pool at four threads on a `c3-standard-4`; re-paid on every image rotation because the tool recreates the data disk |

@@ -156,6 +156,12 @@ def main() -> int:
         gold_answers=gold,
         expected_question_ids=set(qids),
         expected_exploration=explore_map,
+        # The hotkey of the uid we queried. verify_proof refuses to run
+        # without it outside mock mode: a proof not bound to a miner can be
+        # relayed by anyone who can read it off that miner's axon. This script
+        # lagged the verifier's contract for a while and refused every live
+        # proof; found on the first real one (2026-09-07).
+        expected_hotkey=metagraph.hotkeys[args.uid],
         expected_proof_hash=getattr(resp, "proof_hash", ""),
         mock=mock,
     )

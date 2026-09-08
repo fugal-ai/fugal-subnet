@@ -4,6 +4,14 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — the operator's live-proof check refused every live proof
+
+`scripts/verify_live_miner.py` never passed `expected_hotkey` to
+`verify_proof`, which the verifier requires outside mock mode (a proof not
+bound to a miner can be relayed by anyone). It fetched and saved a genuine
+315-result attested proof and then refused to verify it. Found on the first
+real proof, 2026-09-07. The validator's own call was correct.
+
 ### Changed — the miner's benchmark calls models concurrently
 
 Measured 2026-09-07 on the first live epoch on real TDX: 315 serial calls to

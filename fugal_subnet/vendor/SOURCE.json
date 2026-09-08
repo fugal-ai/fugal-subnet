@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/fugal-ai/fugal-core",
-  "commit": "2d34e4d6c4ee1b16f864e05fa4e85dfb991bc53e",
+  "commit": "7588c394c38c0e79cceaf7c3d00ae918d13ea710",
   "files": {
     "fugal/success_contract.py": {
       "vendored": "success_contract.py",

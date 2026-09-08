@@ -1,0 +1,14 @@
+{
+  "contract": "fugal-success-v1",
+  "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
+  "provenance": "synthetic-test-only mocked local chain",
+  "deployable": false,
+  "default_lambda": 1.0,
+  "cost_profile_id": "194d89fa73ae49976e6e238de9d9b5f0d139daef596ee3ec733aaaa20db4728b",
+  "files": {
+    "evaluation.json": "000a19455501af892284d207bd1f803e40c8bb2e5714b9cef851db7bd73f71e0",
+    "head.npz": "36a7e15e65dd7c2d05c2e1fd0334fd048094fca69823d9c85fa10b55ee6fad97",
+    "prices.json": "7bc8e332a43833bb4eaccef21e784f57ffde9e49e343275f822f35d9a6d19b27",
+    "tokens.json": "de7fa4f235ef283088d2764fa236ad24bdaefd5fa2a2454801e6ccd41d495cdc"
+  }
+}

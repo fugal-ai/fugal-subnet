@@ -20,12 +20,20 @@ BURN_UID = 0
 def compute_weights(
     records: dict[int, MinerRecord],
     dedup_disqualified: set[int] | None = None,
+    paid_fraction: float = 1.0,
 ) -> tuple[list[int], list[float]]:
     """Compute the weight vector for set_weights().
 
     Args:
         records: {uid: MinerRecord} with accumulated scores.
         dedup_disqualified: UIDs disqualified by behavioral dedup.
+        paid_fraction: share of the emission the miners split this epoch; the
+            rest burns. The validator passes the frontier's confidence here.
+            A factor common to every miner's score cancels when the scores are
+            normalised, so the confidence discount in `composite` could never
+            reach the weight vector on its own — the first live frontier epoch
+            paid a 0.08-confidence frontier out in full (measured, testnet
+            552, e00022118). The burn has to happen here, after normalising.
 
     Returns:
         (uids, weights) — parallel lists for subtensor.set_weights().
@@ -33,6 +41,7 @@ def compute_weights(
     """
     if dedup_disqualified is None:
         dedup_disqualified = set()
+    paid_fraction = min(1.0, max(0.0, float(paid_fraction)))
 
     miners: list[tuple[int, float]] = []
     for uid, rec in records.items():
@@ -52,7 +61,7 @@ def compute_weights(
         total = scores.sum()
         if total > 0:
             for (uid, _), s in zip(miners, scores):
-                weights[uid] = s / total
+                weights[uid] = paid_fraction * s / total
 
     assigned = sum(weights.values())
     burn = 1.0 - assigned

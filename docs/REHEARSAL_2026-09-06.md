@@ -542,3 +542,40 @@ Epoch outcome identical: the mock miner's proof rejected on ARM (`quote does
 not parse`), no valid proofs on either, epoch skipped. The TDs are still
 stopped, so the first frontier-scored epoch on real proofs has not happened
 yet; starting a TD is what produces it.
+
+## 2026-09-08 — first frontier-scored epoch on a real proof (e00022118)
+
+**17:45 UTC** td1 started (`gcloud compute instances start`; new external IP
+34.63.177.161). `--inspect` at 17:46: entry 4, instance id `63636f20…`
+preserved across stop/start; sealed push accepted. Embedding cache hit in 6 s;
+axon re-served at the new IP; head commitment already on chain (block
+7951219). Joined e00022117 late — proof ready 30 s after the validators
+queried — then benchmarked e00022118 in under 6 min. Measured spend:
+$0.1598 (e00022117) and $0.1252 scored + exploration (e00022118), so
+≈$0.16/epoch for a three-cheap-model head, not the $0.10 estimated.
+
+**19:04–19:05 UTC, e00022118 — both validators identical**: DCAP `UpToDate`
+(ARM via Phala, val2 via its local cache), frame 15 samples, best model
+mistral-large-2512 at 0.629 (7 trials), frontier hull `[deepseek-v4-flash,
+gpt-5.4-nano, mistral-large-2512, kimi-k2.6]`, confidence 0.08 (least-observed
+hull model 4 trials). UID 5: 242/300 (0.807), headroom 0.120, composite
+0.00382, weights `{5: 0.792, 6: 0.208}` (UID 6 is the stopped td2 decaying
+under the ±0.3 cap). Weights set and confirmed on both (blocks 7962671,
+7962672). Reveal files differ only in `environment.platform` (aarch64 vs
+x86_64); `consensus_digest` identical.
+
+**Two defects, visible only with a real proof:**
+
+1. **Nothing burned.** Confidence 0.08 should have sent 92% of the miner
+   share to UID 0; the miner got all of it. `composite` multiplies every
+   miner's score by the same factor and `compute_weights` normalises, so the
+   factor cancels. Fixed: `compute_weights(paid_fraction=frontier.confidence)`
+   burns after normalising.
+2. **Migrated evidence priced at 4.4x.** UID 5's record predates `n_priced`;
+   the new epoch decayed a zero `n_priced` and divided three epochs of decayed
+   cost by 300 questions: `$0.00184/q` in the reveal against `$0.000417/q`
+   spent, so the frontier was read at its flat peak (0.629 instead of 0.572)
+   and headroom was 0.120 instead of 0.177. Fixed: `Evidence.priced_n` reads
+   a zero `n_priced` as `n_total` on every path.
+
+Both fixes change the weight vector; both validators moved together (below).

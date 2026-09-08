@@ -227,7 +227,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         rebuild_from_reveals,
         reference_cost,
     )
-    from fugal_subnet.rewards import cap_weight_change, compute_weights
+    from fugal_subnet.rewards import BURN_UID, cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
     from fugal_subnet.tee.attestation import CollateralBudget, verification_order
     from fugal_subnet.tee.proof import BenchmarkProof
@@ -684,9 +684,27 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
 
             # --- WEIGHTS ---
+            for uid in epoch_scores:
+                rec = scoring_state.records.get(uid)
+                if rec is not None:
+                    logger.info(
+                        "  UID %d scored: lcb=%.3f evidence $%.6f/q, frontier %.3f "
+                        "there, headroom %.3f, composite %.5f",
+                        uid, rec.wilson_lcb, rec.cost_per_question,
+                        rec.reference_accuracy, rec.headroom, rec.composite_score,
+                    )
+            # The frontier's confidence is paid out and the rest burns. It is a
+            # factor common to every miner, so it has to be applied AFTER the
+            # scores are normalised — inside composite() it cancels.
             uids, weights = compute_weights(
                 scoring_state.records, dedup_disqualified=dupes,
+                paid_fraction=frontier.confidence,
             )
+            if frontier.confidence < 1.0:
+                logger.info(
+                    "Frontier confidence %.2f: %.0f%% of emission burns to UID %d this epoch",
+                    frontier.confidence, 100.0 * (1.0 - frontier.confidence), BURN_UID,
+                )
 
             weight_capped = False
             if prev_uids:

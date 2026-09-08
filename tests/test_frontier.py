@@ -192,6 +192,44 @@ def test_old_state_without_n_priced_still_loads_and_prices():
     assert Evidence(**d).cost_per_question == pytest.approx(0.1)
 
 
+def test_migrated_evidence_is_not_priced_at_a_history_of_cost_over_one_epoch():
+    """Measured on testnet 552, e00022118: a record written before n_priced
+    existed carried three epochs of decayed cost with n_priced == 0; the first
+    new epoch decayed the zero, added 300, and divided the whole history by
+    300 — 4.4x the miner's real cost per question, a third of its headroom.
+    A pre-n_priced record priced every question it counted."""
+    old = Evidence(weights_hash="h", n_correct=700.0, n_total=900.0, cost_sum=0.90,
+                   ref_cost_sum=0.0, pool_size=1e9)          # 3 epochs at $0.001/q
+    assert old.n_priced == 0.0 and old.cost_per_question == pytest.approx(0.001)
+    new = accumulate_epoch(old, "h", n_correct=240, n_total=300, cost=0.30,
+                           ref_cost=0.0, half_life=200, pool_size=1e9)
+    assert new.cost_per_question == pytest.approx(0.001, rel=1e-6)
+    missed = apply_miss(old, n_expected=300, half_life=200)
+    assert missed.cost_per_question == pytest.approx(0.001, rel=1e-6)
+
+
+def test_the_unconfident_share_of_emission_burns_after_normalisation():
+    """Measured on testnet 552, e00022118: the frontier had confidence 0.08 and
+    the one verified miner received 100% of the miner share, because a factor
+    common to every score cancels when the scores are normalised. The burn is
+    applied in compute_weights, after normalising."""
+    from fugal_subnet.rewards import BURN_UID, compute_weights
+    from fugal_subnet.scoring import MinerRecord
+    recs = {
+        5: MinerRecord(uid=5, hotkey="a", composite_score=0.0038),
+        6: MinerRecord(uid=6, hotkey="b", composite_score=0.0010),
+    }
+    uids, w = compute_weights(recs, paid_fraction=0.08)
+    got = dict(zip(uids, w))
+    assert got[BURN_UID] == pytest.approx(0.92)
+    assert got[5] == pytest.approx(0.08 * 0.0038 / 0.0048)
+    assert got[6] == pytest.approx(0.08 * 0.0010 / 0.0048)
+    assert sum(w) == pytest.approx(1.0)
+    # Full confidence: nothing burns, ranking unchanged.
+    uids, w = compute_weights(recs, paid_fraction=1.0)
+    assert BURN_UID not in uids and dict(zip(uids, w))[5] == pytest.approx(0.0038 / 0.0048)
+
+
 def test_frontier_is_flat_past_the_most_accurate_model():
     f = _frontier()
     top = max(_cost_per_q(m) for m in PRICES)

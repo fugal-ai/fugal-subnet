@@ -83,9 +83,23 @@ class Evidence:
         return self.n_correct / self.n_total
 
     @property
+    def priced_n(self) -> float:
+        """How many questions `cost_sum` covers.
+
+        A record written before `n_priced` existed has it at zero; that record
+        priced every question it counted, so `n_total` is the honest reading.
+        Every path that decays or divides `cost_sum` goes through this — the
+        first live epoch after the field was added decayed a zero `n_priced`
+        and divided a whole history of cost by one epoch of questions, which
+        priced the miner at 4.4x what it spent (measured, testnet 552,
+        e00022118).
+        """
+        return self.n_priced if self.n_priced > 1e-9 else self.n_total
+
+    @property
     def cost_per_question(self) -> float:
         """Policy cost per answered question — the x-axis of the frontier."""
-        n = self.n_priced if self.n_priced > 1e-9 else self.n_total
+        n = self.priced_n
         if n < 1e-9:
             return 0.0
         return self.cost_sum / n
@@ -140,7 +154,7 @@ def accumulate_epoch(
         epochs_accumulated=evidence.epochs_accumulated + 1,
         epochs_missed=0,
         pool_size=pool_size or evidence.pool_size,
-        n_priced=evidence.n_priced * alpha + n_total,
+        n_priced=evidence.priced_n * alpha + n_total,
     )
 
 
@@ -167,7 +181,7 @@ def apply_miss(
         pool_size=evidence.pool_size,
         # Decays with the cost it prices, so cost per question is unchanged by
         # a miss — the questions went unanswered, not cheaper.
-        n_priced=evidence.n_priced * alpha,
+        n_priced=evidence.priced_n * alpha,
     )
 
 

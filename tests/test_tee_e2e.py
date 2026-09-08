@@ -190,7 +190,7 @@ def test_full_epoch_miner_to_weights(stubbed_model_call):
         frontier=frontier, hotkeys={1: "hk1"},
         n_questions=SLICE, pool_size=len(pool),
     )
-    uids, weights = compute_weights(state.records)
+    uids, weights = compute_weights(state.records, paid_fraction=frontier.confidence)
 
     # One epoch of exploration is a nearly COLD frame: a hull model has one or
     # two trials, so the frontier's confidence is a few percent and whatever
@@ -203,6 +203,7 @@ def test_full_epoch_miner_to_weights(stubbed_model_call):
     assert rec.composite_score <= max(0.0, rec.headroom) * frontier.confidence + 1e-12
     assert abs(sum(weights) - 1.0) < 1e-9
     assert 0 in uids, "unassigned weight must burn to UID 0 while the frontier is cold"
+    assert weights[uids.index(0)] >= 1.0 - frontier.confidence - 1e-9
 
     # With a WARM frontier the same proof earns weight if it has headroom.
     warm_frame = frame
@@ -217,7 +218,7 @@ def test_full_epoch_miner_to_weights(stubbed_model_call):
         ScoringState(), {1: hs}, {1: proof.weights_hash},
         frontier=warm, hotkeys={1: "hk1"}, n_questions=SLICE, pool_size=len(pool),
     )
-    uids2, weights2 = compute_weights(state2.records)
+    uids2, weights2 = compute_weights(state2.records, paid_fraction=warm.confidence)
     rec2 = state2.records[1]
     above_floor = rec2.wilson_lcb >= SCORE_QUALITY_FLOOR * warm.max_accuracy
     if rec2.headroom > 0 and above_floor:

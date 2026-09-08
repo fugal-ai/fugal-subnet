@@ -61,6 +61,7 @@ unmoved by other miners; two validators build identical frontiers; a cold
 frame pays nothing; skipping epochs does not make a miner look cheaper) and
 `tests/test_degenerate_constant_policy.py` (the measured finding, pinned in
 the form "constant policies score zero, a trained router beats them all").
+The unconfident share of emission burns in `compute_weights(paid_fraction=frontier.confidence)`, after normalising — inside `composite` the factor cancels (measured on the first live frontier epoch; `test_the_unconfident_share_of_emission_burns_after_normalisation`).
 
 What follows is the analysis as it stood when the defect was open, kept
 because it is the reason the reference is a curve and not a point.

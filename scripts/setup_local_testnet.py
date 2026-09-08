@@ -657,7 +657,8 @@ def run_epoch(validator_wallet, subtensor, netuid, pool, models, proof_cache,
                  if uid < len(metagraph.hotkeys)},
         n_questions=len(questions), pool_size=len(pool),
     )
-    uids, weights = compute_weights(state.records, dedup_disqualified=dupes)
+    uids, weights = compute_weights(state.records, dedup_disqualified=dupes,
+                                    paid_fraction=frontier.confidence)
     for uid, rec in state.records.items():
         print(f"  UID {uid}: quality={rec.quality:.3f} thrift={rec.thrift:.3f} "
               f"score={rec.composite_score:.4f}", flush=True)

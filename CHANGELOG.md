@@ -24,6 +24,15 @@ UID 0 rather than paying constant policies for the frame's ignorance.
 New tests: `tests/test_frontier.py`; `tests/test_degenerate_constant_policy.py`
 rewritten; `tests/test_scoring_tradeoff.py` removed with the exponent it pinned.
 
+Two defects found on the first live frontier epoch (testnet 552, e00022118)
+and fixed the same day: the confidence factor is common to every miner and so
+cancelled when scores were normalised — nothing burned; `compute_weights` now
+takes `paid_fraction` (the frontier's confidence) and burns the rest after
+normalising. And evidence migrated from a pre-`n_priced` state file divided a
+whole history of cost by one epoch of questions (4.4x the real cost per
+question); `Evidence.priced_n` reads a zero `n_priced` as `n_total` on every
+path. Both change the weight vector; both validators moved together.
+
 ### Fixed — the operator's live-proof check refused every live proof
 
 `scripts/verify_live_miner.py` never passed `expected_hotkey` to

@@ -22,6 +22,11 @@ def test_offline_bundle_integrity_and_deployable_guard(tmp_path):
     metadata = export(head, manifest, prices, report, output)
     assert metadata["deployable"] is False
     assert verify(output) == metadata
+    altered = dict(metadata, default_lambda=2)
+    (output / "bundle.json").write_text(json.dumps(altered))
+    with pytest.raises(ValueError, match="metadata disagrees"):
+        verify(output)
+    (output / "bundle.json").write_text(json.dumps(metadata))
     with pytest.raises(ValueError, match="reviewed"):
         export(head, manifest, prices, report, tmp_path / "live", deployable=True)
     report.write_text('{"head_sha256": "different-head"}')

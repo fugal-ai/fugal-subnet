@@ -27,7 +27,7 @@ from fugal_subnet.exploration import expected_exploration
 from fugal_subnet.graders import grade
 from fugal_subnet.grading_task import build_grader_task
 from fugal_subnet.head_eval import HeadArtifact, load_head_from_npz
-from fugal_subnet.routing_protocol import benchmark_costs, identity
+from fugal_subnet.routing_protocol import BENCHMARK_LAMBDA, benchmark_costs, identity
 from fugal_subnet.tee.proof import BenchmarkProof, QuestionResult, compute_questions_hash
 from fugal_subnet.tee.runtime import MeteringProxy
 from fugal_subnet.vendor import success_contract as contract
@@ -176,7 +176,7 @@ def _route_question(head: HeadArtifact, hidden_state: np.ndarray, costs=None) ->
     if costs is None:
         costs = benchmark_costs(head)
     p = contract.predictions(head.W, head.b, hidden_state)
-    return int(contract.rank(p, costs, 1.0)[0])
+    return int(contract.rank(p, costs, BENCHMARK_LAMBDA)[0])
 
 
 # The request id of the model call THIS thread is making, so that _call_model

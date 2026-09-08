@@ -123,9 +123,12 @@ PRs. The transition uses one success protocol, not simultaneous policy support.
    rewards. Do not compare raw old/new state totals as if they shared a namespace.
 
 Rollback stops the new runtime and restores **the old runtime and its matching
-archived state/configuration together**, including matching approved measurements.
-Keep new evidence separately archived. Preserve wallets and registrations in both
-directions. Never feed success-protocol evidence to the old runtime or vice versa.
+archived state/configuration together**, including matching approved measurements
+and archived legacy head files. Recommit
+those legacy heads before the next usable nonce boundary so on-chain commitments
+match the restored runtime. Keep new evidence separately archived. Preserve wallets
+and registrations in both directions. Never feed success-protocol evidence to the
+old runtime or vice versa.
 
 To update the vendor after a reviewed core change:
 

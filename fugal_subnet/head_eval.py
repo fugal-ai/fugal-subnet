@@ -21,6 +21,7 @@ from fugal_subnet.config import (
     HEAD_MAX_MODELS,
     ROUTING_DECISION_QUANTUM,
 )
+from fugal_subnet.routing_protocol import BENCHMARK_LAMBDA
 from fugal_subnet.vendor import success_contract as contract
 
 logger = logging.getLogger(__name__)
@@ -326,7 +327,7 @@ def evaluate_success_head(head, hidden_states, matrix, models_in_matrix, model_c
     indices = [models_in_matrix.index(m) for m in head.models]
     costs = np.array([model_costs[m] for m in head.models])
     p = contract.predictions(head.W, head.b, hidden_states)
-    decisions = contract.rank(p, costs, 1.0)[:, 0]
+    decisions = contract.rank(p, costs, BENCHMARK_LAMBDA)[:, 0]
     labels = matrix[:, indices]
     chosen = labels[np.arange(len(labels)), decisions]
     observed = np.isfinite(chosen) & (chosen >= 0)

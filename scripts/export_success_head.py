@@ -48,7 +48,19 @@ def verify(output):
         if c.file_hash(output / name) != expected:
             raise ValueError(f"bundle hash mismatch: {name}")
     z = c.load((output / "head.npz").read_bytes())
+    expected = {"contract": c.CONTRACT, "profile_id": c.PROFILE_ID,
+                "provenance": c.scalar(z, "provenance"), "default_lambda": float(z["lam"]),
+                "cost_profile_id": c.scalar(z, "cost_profile_id")}
+    if any(metadata.get(key) != value for key, value in expected.items()):
+        raise ValueError("bundle metadata disagrees with head")
+    if not isinstance(metadata.get("deployable"), bool):
+        raise ValueError("invalid deployable flag")
     c.check_manifest(z, json.loads((output / "tokens.json").read_text()), metadata["deployable"])
+    prices = json.loads((output / "prices.json").read_text())
+    c.estimated_cost(z, {r["id"]: (r["in"] / 1e6, r["out"] / 1e6) for r in prices})
+    evaluation = json.loads((output / "evaluation.json").read_text())
+    if evaluation.get("head_sha256") != c.file_hash(output / "head.npz"):
+        raise ValueError("evaluation report does not bind this head")
     return metadata
 
 

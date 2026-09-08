@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import resource
 import sys
 import time
@@ -164,7 +165,12 @@ def main():
             mixtures.append({"left": models[j], "right": models[k], "right_weight": weight,
                              "accuracy": interval(mixture_y, draws), "recorded_cost": interval(mixture_c, draws)})
     report = {"scope": "SPROUT offline mechanism test, not live-subnet calibration; historical assumed prices",
+              "software": {"python": platform.python_version(), "numpy": np.__version__, "torch": torch.__version__},
+              "training": {"epochs": args.epochs, "learning_rate": .01, "seed": 42, "checkpoint": "minimum validation BCE"},
               "sources": sources, "embedding": metrics, "label_conversion": "finite score >= 1 => 1; lower => 0; NaN remains missing",
+              "observed_label_cells": int(np.isfinite(labels).sum()),
+              "all_observed_failed_rows": int(((np.nansum(labels, axis=1) == 0) & np.isfinite(labels).any(axis=1)).sum()),
+              "selected_rows": len(idx), "models": models,
               "token_limitations": "Original importer replaced missing token counts with zero. Positive input only used for manifest. Output zero may be missing. No deployable export.",
               "worker_profile": manifest["worker_profile"], "selected_indices": idx,
               "splits": {name: split.tolist() for name, split in zip(("train", "validation", "test"), splits)},
@@ -179,7 +185,6 @@ def main():
     report["prices"] = price_rows
     for suffix, obj in (("report", report), ("tokens", manifest), ("prices", price_rows)):
         (out / f"{suffix}-{args.max_length}.json").write_text(json.dumps(obj, indent=2, allow_nan=False))
-    np.savez(out / f"head-{args.max_length}.npz", **z)
     print(json.dumps({"length": args.max_length, "epoch": epoch, "brier": report["pooled"]["brier"], "embedding": metrics}), flush=True)
 
 

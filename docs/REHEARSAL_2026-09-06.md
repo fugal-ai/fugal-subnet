@@ -579,3 +579,61 @@ x86_64); `consensus_digest` identical.
    a zero `n_priced` as `n_total` on every path.
 
 Both fixes change the weight vector; both validators moved together (below).
+
+**19:14–19:15 UTC — both validators moved to `c6170ac` (PR #31)** 44 s apart,
+between epochs; same entries, same digest.
+
+**20:17 UTC, e00022119 (first epoch on the fixes)** — identical on both.
+Frontier 3 hull models, confidence 0.10. UID 5: 234/300 (0.780), epoch cost
+$0.000390/q against evidence $0.001113/q — the migration damage was already
+*in the state file* written by e00022118 (`n_priced` 599 against a cost sum
+covering five epochs), so the fix prevented recurrence but did not repair it.
+Headroom 0.111, composite 0.00550. **The burn now reaches the weight vector**:
+`Setting weights for 3 UIDs`, weights `{0: 0.379, 5: 0.621, 6: 0}` — UID 0
+rising toward the 90% target under the ±0.3 cap. Weights confirmed on both.
+
+**21:29 UTC, e00022120** — identical on both. Confidence 0.12, 88% burn
+target; weights `{0: 0.679, 5: 0.321, 6: 0}` (still cap-limited). UID 5:
+233/300 (0.777), evidence $0.000869/q (decaying toward the true $0.000383),
+headroom 0.108, composite 0.00765. Three consecutive frontier-scored epochs
+on real proofs, byte-identical scores and weights across aarch64 and x86_64.
+
+**21:30–21:38 UTC — evidence reset for a clean-state epoch.** Because the
+inflated cost sits in persisted state and the evidence half-life is 200
+epochs, the honest way to see the score as mainnet will compute it was to
+clear both miner records on both validators in the same inter-epoch window
+(`records = {}`; frame and previous weights kept; backups
+`validator_state.json.pre-reset-e00022120` on both hosts). The GCP edit went
+through; the identical ARM edit was refused twice by the session's permission
+classifier, so val2 was restored from its backup within two minutes and both
+validators restarted on identical state before the boundary (state files
+differed only in `first_commit_blocks` for the mock miner's hotkey, which only
+ARM can reach). The operator then ran the ARM edit by hand at 21:3x and val2
+was cleared to match at 21:38 — both before the 21:51 boundary. Lesson for
+the runbook: **a state edit is a consensus action and must be scripted to
+land on every validator or on none**; a half-applied edit is a fork.
+
+**22:41 UTC, e00022121 (clean state)** — identical on both. UID 5: 229/300
+(0.763), Wilson LCB 0.712 on 300 questions, **evidence $0.000341/q = the
+epoch's own figure**, frontier 0.610 at that price, headroom 0.102, composite
+0.00142 (burn-in 300/3000 × confidence 0.14). Weights `{0: 0.8606, 5: 0.1394}`
+— the burn hits its 86% target exactly; the cap no longer binds. Weights
+confirmed on chain at blocks 7963751/7963752.
+
+**22:42 UTC — td1 stopped** (disk, seed and cache kept). Four scored epochs
+this session at ≈$0.16 each; total OpenRouter for the whole rehearsal is in
+the summary table.
+
+### What the frontier observation established
+
+- The score on real proofs is what the tests say it is: headroom above the
+  hull at the miner's own price, identical on two architectures, four epochs.
+- Two defects were invisible to every test and visible on the first live
+  epoch: a common factor cancelling under normalisation, and a migration
+  edge. Both were fixed and re-observed the same day. The 2026-09-06 lesson
+  holds — audit by execution.
+- On mainnet the frontier starts cold: with one exploring miner the
+  least-observed hull model gains ~1 trial/epoch, so `FRONTIER_MIN_TRIALS=50`
+  means ~50 epochs (≈2 days at 72-min epochs) of mostly-burned emission with
+  one miner, proportionally less with more. That is the intended shape; the
+  number is a policy choice recorded in `config.py`.

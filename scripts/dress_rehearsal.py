@@ -176,7 +176,9 @@ def write_head(path: str, seed: int, models=None) -> str:
     W = (rng.randn(len(models), HEAD_HIDDEN_DIM) * 0.02).astype(np.float32)
     b = rng.randn(len(models)).astype(np.float32)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    np.savez(path, W=W, b=b, models=np.array(models, dtype="U100"))
+    from fugal_subnet.routing_protocol import MANIFEST_PATH
+    from fugal_subnet.vendor import success_contract as contract
+    np.savez(path, **contract.make_head(W, b, models, json.loads(MANIFEST_PATH.read_text()), "synthetic-test-only rehearsal"))
     return path
 
 
@@ -190,7 +192,9 @@ def biased_head(path: str, model_index: int) -> str:
     b = np.full(len(MODELS), -10.0, dtype=np.float32)
     b[model_index] = 10.0
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    np.savez(path, W=W, b=b, models=np.array(MODELS, dtype="U100"))
+    from fugal_subnet.routing_protocol import MANIFEST_PATH
+    from fugal_subnet.vendor import success_contract as contract
+    np.savez(path, **contract.make_head(W, b, MODELS, json.loads(MANIFEST_PATH.read_text()), "synthetic-test-only rehearsal"))
     return path
 
 

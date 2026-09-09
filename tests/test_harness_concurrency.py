@@ -17,6 +17,7 @@ import time
 import numpy as np
 import pytest
 
+from fugal_subnet import success_test_fixtures as success_fixtures
 from fugal_subnet.config import HEAD_HIDDEN_DIM
 from fugal_subnet.tee import harness as harness_mod
 from fugal_subnet.tee.runtime import APICallRecord
@@ -35,8 +36,8 @@ def _pool(n):
 def _head(seed=1):
     rng = np.random.RandomState(seed)
     buf = io.BytesIO()
-    np.savez(buf, W=(rng.randn(len(MODELS), HEAD_HIDDEN_DIM) * 0.02).astype(np.float32),
-             b=np.zeros(len(MODELS), np.float32), models=np.array(MODELS, dtype="U100"))
+    np.savez(buf, **success_fixtures.arrays((rng.randn(len(MODELS), HEAD_HIDDEN_DIM) * 0.02).astype(np.float32),
+             np.zeros(len(MODELS), np.float32), MODELS))
     return buf.getvalue()
 
 
@@ -46,6 +47,7 @@ def _run(monkeypatch, stub, n=40, explore=False):
     proxy = _StubProxy(port=0)
     proxy.start()
     proxy.prices = {m: (1e-6 * (i + 1), 2e-6 * (i + 1)) for i, m in enumerate(MODELS)}
+    monkeypatch.setattr(harness_mod, "benchmark_costs", success_fixtures.costs)
     monkeypatch.setattr(harness_mod, "_call_model", stub)
     monkeypatch.setattr(harness_mod, "select_slice", lambda nonce, p, k: p[:k])
     try:

@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import numpy as np
 
+from fugal_subnet import success_test_fixtures as success_fixtures
 from fugal_subnet.tee import harness as harness_mod
 from fugal_subnet.tee.harness import _text_of
 
@@ -71,7 +72,7 @@ def test_run_benchmark_survives_a_none_reply(monkeypatch):
     W = (rng.randn(len(models), HEAD_HIDDEN_DIM) * 0.02).astype(np.float32)
     import io
     buf = io.BytesIO()
-    np.savez(buf, W=W, b=np.zeros(len(models), np.float32), models=np.array(models, dtype="U100"))
+    np.savez(buf, **success_fixtures.arrays(W, np.zeros(len(models), np.float32), models))
     head_bytes = buf.getvalue()
     hidden = rng.randn(len(pool), HEAD_HIDDEN_DIM).astype(np.float32)
 
@@ -85,6 +86,7 @@ def test_run_benchmark_survives_a_none_reply(monkeypatch):
 
     proxy = _StubProxy(port=0)
     proxy.start()
+    monkeypatch.setattr(harness_mod, "benchmark_costs", success_fixtures.costs)
     monkeypatch.setattr(harness_mod, "_call_model", stub)
     monkeypatch.setattr(harness_mod, "select_slice", lambda nonce, pool_, n: pool_[:n])
 

@@ -26,9 +26,11 @@ from fugal_subnet.config import HARNESS_ALLOW_EXEC, HARNESS_CONCURRENCY
 from fugal_subnet.exploration import expected_exploration
 from fugal_subnet.graders import grade
 from fugal_subnet.grading_task import build_grader_task
-from fugal_subnet.head_eval import HeadArtifact, load_head_from_npz, quantize_utility
+from fugal_subnet.head_eval import HeadArtifact, load_head_from_npz
+from fugal_subnet.routing_protocol import BENCHMARK_LAMBDA, benchmark_costs, identity
 from fugal_subnet.tee.proof import BenchmarkProof, QuestionResult, compute_questions_hash
 from fugal_subnet.tee.runtime import MeteringProxy
+from fugal_subnet.vendor import success_contract as contract
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,7 @@ def run_benchmark(
         BenchmarkProof with routing results and attestation.
     """
     head = load_head_from_npz(head_bytes)
+    costs = benchmark_costs(head)
     weights_hash = hashlib.sha256(head_bytes).hexdigest()
 
     nonce_bytes = bytes.fromhex(nonce) if len(nonce) == 64 else nonce.encode()
@@ -93,7 +96,7 @@ def run_benchmark(
         if q_idx is None or q_idx >= hidden_states.shape[0]:
             logger.warning("Question %s not in hidden states, skipping", q["question_id"])
             continue
-        model_id = head.models[_route_question(head, hidden_states[q_idx])]
+        model_id = head.models[_route_question(head, hidden_states[q_idx], costs)]
         scheduled.append((q, model_id, False))
 
     for q, model_id, response_text, cost, prompt_tokens, completion_tokens in _call_all(
@@ -155,6 +158,7 @@ def run_benchmark(
         questions_hash=questions_hash,
         weights_hash=weights_hash,
         source_hash=source_hash,
+        routing_protocol=identity(),
         results=results,
         total_cost_usd=proxy.total_cost,
         per_model_costs=proxy.per_model_costs,
@@ -165,21 +169,14 @@ def run_benchmark(
     return proof
 
 
-def _route_question(head: HeadArtifact, hidden_state: np.ndarray) -> int:
-    """Route a single question through the head — same logic as head_eval.py.
-
-    Must stay bit-identical to head_eval's rule: the validator re-runs this on
-    held-out questions, and a divergence there would look like cheating.
-    """
-    logits = head.W @ hidden_state + head.b
-    p = _softmax(logits)
-    return int(np.argmax(quantize_utility(p)))
-
-
-def _softmax(logits: np.ndarray) -> np.ndarray:
-    shifted = logits - logits.max()
-    exp = np.exp(shifted)
-    return exp / exp.sum()
+def _route_question(head: HeadArtifact, hidden_state: np.ndarray, costs=None) -> int:
+    """Independent success minus estimated dollars; live lambda is always one."""
+    if head.success is None:
+        raise ValueError("success benchmark requires a versioned success head")
+    if costs is None:
+        costs = benchmark_costs(head)
+    p = contract.predictions(head.W, head.b, hidden_state)
+    return int(contract.rank(p, costs, BENCHMARK_LAMBDA)[0])
 
 
 # The request id of the model call THIS thread is making, so that _call_model

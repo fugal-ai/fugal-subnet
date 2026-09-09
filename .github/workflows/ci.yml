@@ -168,3 +168,36 @@ jobs:
         run: |
           docker run --rm fugal-subnet:ci -m neurons.validator --help
           docker run --rm fugal-subnet:ci -m neurons.miner --help
+
+  success-contract:
+    name: Shared success contract conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: subnet
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: python subnet/scripts/check_success_vendor.py --materialize-core
+      - run: pip install numpy
+      - name: Both modules reproduce core fixtures
+        run: python subnet/scripts/check_success_fixtures.py
+      - name: Install CPU embedding dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers huggingface_hub httpx
+      - name: Fetch the pinned reference backbone
+        run: python subnet/tests/core_snapshot/scripts/fetch_backbone.py
+      - name: Exported subnet fixture reproduces core serving
+        run: |
+          python subnet/tests/core_snapshot/verify/verify_success_contract.py --subnet subnet \
+            --backbone subnet/tests/core_snapshot/artifacts/Qwen3-0.6B \
+            --head subnet/tests/fixtures/success_bundle/head.npz \
+            --prices subnet/tests/fixtures/success_bundle/prices.json
+
+      - name: Actual backbone wrappers agree across repositories
+        run: |
+          python subnet/scripts/check_success_embeddings.py \
+            --core subnet/tests/core_snapshot \
+            --backbone subnet/tests/core_snapshot/artifacts/Qwen3-0.6B

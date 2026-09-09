@@ -21,6 +21,8 @@ from fugal_subnet.config import (
     HEAD_MAX_MODELS,
     ROUTING_DECISION_QUANTUM,
 )
+from fugal_subnet.routing_protocol import BENCHMARK_LAMBDA
+from fugal_subnet.vendor import success_contract as contract
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class HeadArtifact:
     b: np.ndarray           # (L,) float32
     models: list[str]       # L model IDs
     commit_hash: str        # SHA256 for dedup seniority
+    success: dict | None = None
 
 
 @dataclass
@@ -80,6 +83,11 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
             f"Head decompresses to {total_decompressed} bytes "
             f"(max {HEAD_MAX_DECOMPRESSED_BYTES})"
         )
+
+    arrays = contract.read_archive(data)
+    if "contract" in arrays:
+        z = contract.validate_head(arrays)
+        return HeadArtifact(z["W"], z["b"], z["models"].tolist(), "", z)
 
     buf = io.BytesIO(data)
     with np.load(buf, allow_pickle=False) as npz:
@@ -185,6 +193,8 @@ def evaluate_head(
     Returns:
         HeadScore with accuracy, cost efficiency, KL divergence, and decisions.
     """
+    if head.success is not None:
+        return evaluate_success_head(head, hidden_states, matrix, models_in_matrix, model_costs)
     N = hidden_states.shape[0]
     M_pool = len(models_in_matrix)
     head_model_to_matrix_idx = {}
@@ -308,3 +318,22 @@ def _kl_divergence(p: np.ndarray, q: np.ndarray, eps: float = 1e-10) -> float:
     p_safe = np.clip(p, eps, None)
     q_safe = np.clip(q, eps, None)
     return float(np.sum(p_safe * np.log(p_safe / q_safe)))
+
+
+def evaluate_success_head(head, hidden_states, matrix, models_in_matrix, model_costs):
+    """Observed failures count; unavailable routed labels stay unscored."""
+    if len(set(models_in_matrix)) != len(models_in_matrix):
+        raise ValueError("duplicate matrix model columns")
+    indices = [models_in_matrix.index(m) for m in head.models]
+    costs = np.array([model_costs[m] for m in head.models])
+    p = contract.predictions(head.W, head.b, hidden_states)
+    decisions = contract.rank(p, costs, BENCHMARK_LAMBDA)[:, 0]
+    labels = matrix[:, indices]
+    chosen = labels[np.arange(len(labels)), decisions]
+    observed = np.isfinite(chosen) & (chosen >= 0)
+    correct = (chosen == 1) & observed
+    n = int(observed.sum())
+    return HeadScore(accuracy=float(correct.sum()/n) if n else 0., cost_efficiency=0.,
+                     kl_score=0., routing_decisions=decisions, correct_mask=correct,
+                     coverage=len(indices)/len(models_in_matrix), n_correct=int(correct.sum()),
+                     n_scored=n, total_head_cost=float(costs[decisions[observed]].sum()))

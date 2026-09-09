@@ -190,8 +190,9 @@ def runtime_identity(source_hash: str, pool_hash: str, grader_hash: str,
     # v2: the version tag is part of the payload, so adding the upstream
     # deliberately changes every identity rather than silently colliding with
     # a v1 value computed without it.
+    from fugal_subnet.routing_protocol import identity
     payload = "|".join(
-        ("fugal-runtime-v2", source_hash, pool_hash, grader_hash, upstream)
+        ("fugal-runtime-success-v1", identity(), source_hash, pool_hash, grader_hash, upstream)
     )
     return hashlib.sha384(payload.encode()).hexdigest()
 

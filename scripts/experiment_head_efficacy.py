@@ -110,7 +110,7 @@ def _load_trainer():
     ships, so the experiment must call that code and not a reimplementation
     of it.
     """
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "train_head.py")
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "legacy_preference_training.py")
     spec = importlib.util.spec_from_file_location("fugal_train_head", path)
     mod = importlib.util.module_from_spec(spec)
     sys.argv = [sys.argv[0]]  # train_head parses argv at import time only in main()

@@ -101,6 +101,7 @@ def environment_fingerprint() -> dict:
 
     return {
         "fugal_version": fugal_subnet.__version__,
+        "routing_protocol": __import__("fugal_subnet.routing_protocol", fromlist=["identity"]).identity(),
         "python": platform.python_version(),
         "platform": f"{platform.system()}-{platform.machine()}",
         "packages": _package_versions(),

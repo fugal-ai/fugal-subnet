@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from fugal_subnet.routing_protocol import identity
 
 
 def compute_questions_hash(question_ids: list[str]) -> str:
@@ -58,6 +60,7 @@ class BenchmarkProof:
     # their own; verification passed, and what stopped it was dedup plus
     # commit-block seniority — statistical, not cryptographic.
     hotkey: str = ""
+    routing_protocol: str = field(default_factory=identity)
 
     @property
     def scored_results(self) -> list[QuestionResult]:
@@ -104,6 +107,7 @@ class BenchmarkProof:
             # the HARDWARE attest whose proof this is. Relay then fails on a
             # signature rather than on a similarity threshold.
             "hotkey": self.hotkey,
+            "routing_protocol": self.routing_protocol,
             "epoch_id": self.epoch_id,
             "nonce": self.nonce,
             "questions_hash": self.questions_hash,
@@ -132,6 +136,7 @@ class BenchmarkProof:
     def to_dict(self) -> dict:
         return {
             "hotkey": self.hotkey,
+            "routing_protocol": self.routing_protocol,
             "epoch_id": self.epoch_id,
             "nonce": self.nonce,
             "questions_hash": self.questions_hash,
@@ -164,6 +169,7 @@ class BenchmarkProof:
             # existed. Either way it fails verification; the distinction only
             # matters for reading old artifacts without an exception.
             hotkey=d.get("hotkey", ""),
+            routing_protocol=d.get("routing_protocol", ""),
             epoch_id=d["epoch_id"],
             nonce=d["nonce"],
             questions_hash=d["questions_hash"],

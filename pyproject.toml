@@ -89,6 +89,7 @@ include = ["fugal_subnet*", "neurons*"]
 # cannot be verified without them, so they have to be in the wheel. An install
 # that silently omits them fails only at the moment a real proof arrives.
 [tool.setuptools.package-data]
+"fugal_subnet" = ["routing_data/*.json", "vendor/SOURCE.json", "vendor/conformance.json", "vendor/LICENSE", "vendor/NOTICE"]
 "fugal_subnet.tee" = ["roots/*.der"]
 # The pinned pool manifest is read by load_all() at startup. Left out of
 # the wheel it does not fail — it goes quiet, and the validator loads an
@@ -99,6 +100,8 @@ include = ["fugal_subnet*", "neurons*"]
 testpaths = ["tests"]
 
 [tool.ruff]
+# Immutable test-only core projection, checked against Git objects in CI.
+extend-exclude = ["tests/core_snapshot"]
 target-version = "py310"
 line-length = 100
 

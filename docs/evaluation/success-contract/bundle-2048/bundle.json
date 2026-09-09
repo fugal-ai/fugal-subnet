@@ -1,0 +1,14 @@
+{
+  "contract": "fugal-success-v1",
+  "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
+  "provenance": "{\"sources\": {\"sprout_matrix.npz\": \"85f5e1dd864de2b4af01801bbee54379cd10464f9ca383fbe615c62c82af20cf\", \"sprout_prompts.json\": \"f2e54bf8fca58610026f4aa47f908b0ae5cf15902220f80584876f0e347b0ab9\", \"sprout_embed_index.json\": \"06716cc881a3dc209281c6eb9c0ab32354a95e3a90f926630326187d615eee19\"}, \"selected_epoch\": 200, \"profile_id\": \"1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565\", \"experiment\": \"offline mechanism only\"}",
+  "deployable": false,
+  "default_lambda": 1.0,
+  "cost_profile_id": "2e5665c48bd158115c041c8f9135da7638ebd5b044f4e33b25e787d654dc0c5e",
+  "files": {
+    "evaluation.json": "14df7463398231114033488894a81de0cf494e49767b551b8724aee6798dc8df",
+    "head.npz": "fe59347f8d99c5d22e81869ca323bf90bb6af1827b6a4420c07d71ed843354d0",
+    "prices.json": "f7ece63fc5f9882ee266fa28b5798a8341d6858b42d27de0a2a2f0629d0dc8a1",
+    "tokens.json": "12752026a75de6c2e719749dd34e7a489d87e11e99d10fa370258181e97184dc"
+  }
+}

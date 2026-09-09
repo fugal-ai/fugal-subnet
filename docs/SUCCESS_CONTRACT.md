@@ -65,7 +65,8 @@ Mocked benchmarks can exercise the candidate. Synthetic fixtures are test-only.
 
 ## Offline export
 
-The completed SPROUT comparison is recorded in
+The completed 2048-token SPROUT evaluation and explicitly deferred 512-token
+comparison are recorded in
 [the offline mechanism report](evaluation/success-contract/REPORT.md), with
 machine-readable results, evaluated snapshots, and a nondeployable 2048-token
 bundle. Its historical model roster differs from the live subnet roster.

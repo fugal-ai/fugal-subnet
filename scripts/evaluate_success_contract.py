@@ -103,6 +103,8 @@ def main():
     if cache.exists():
         hidden = c.load_cache(cache, questions, profile_id)
         metrics = json.loads(metric_file.read_text())
+        if metrics["profile_id"] != profile_id or metrics["n"] != len(questions):
+            raise ValueError("embedding metrics profile/input mismatch")
     else:
         from transformers import AutoModel, AutoTokenizer
         c.check_backbone(args.backbone)
@@ -130,8 +132,12 @@ def main():
                    "truncated": sum(n > args.max_length for n in lengths), "n": len(questions),
                    "batch_size": args.batch_size, "threads": args.threads,
                    "device": "cpu", "dtype": "float32", "profile_id": profile_id}
-        c.save_cache(cache, questions, hidden, profile_id)
+        # Publish the complete cache last. An interrupted final write leaves
+        # only temporary data, so the next run resumes its last checkpoint.
+        temporary = cache.with_suffix(".complete.tmp.npz")
+        c.save_cache(temporary, questions, hidden, profile_id)
         metric_file.write_text(json.dumps(metrics, indent=2))
+        temporary.replace(cache)
         del model
     W, b, epoch, history = fit(hidden, labels, train, val, epochs=args.epochs)
     probs = c.predictions(W, b, hidden[test])

@@ -1,0 +1,12 @@
+{
+  "seconds": 8466.710744678014,
+  "seconds_per_question": 0.8466710744678013,
+  "peak_rss_kib": 4773008,
+  "truncated": 0,
+  "n": 10000,
+  "batch_size": 2,
+  "threads": 8,
+  "device": "cpu",
+  "dtype": "float32",
+  "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565"
+}

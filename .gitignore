@@ -32,5 +32,6 @@ results/
 .DS_Store
 Thumbs.db
 data/rehearsal/pool_*.json
+data/rehearsal/head_cheap_*.npz
 data/embeddings/
 .claude/settings.local.json

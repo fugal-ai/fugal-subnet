@@ -4,6 +4,9 @@ Read [AGENTS.md](AGENTS.md) for the full project architecture, file map, SDK
 details, and common gotchas. Everything below is a summary of the most critical
 rules.
 
+> **Workspace note.** This repo is one of four under `../../CLAUDE.md` — read that map first.
+> It is the only **public** Fugal repo: assume anything written here is world-readable.
+
 ## Critical Constraints
 
 1. **NO `from __future__ import annotations`** in `neurons/miner.py` or

@@ -1,6 +1,9 @@
 version: 2
 updates:
-  - package-ecosystem: pip
+  # `uv`, not `pip`: the pip ecosystem edits pyproject.toml and leaves uv.lock
+  # alone, and every CI job installs with `uv sync --locked` — so each pip PR
+  # arrived red by construction and could never be merged as opened.
+  - package-ecosystem: uv
     directory: "/"
     schedule:
       interval: weekly
@@ -24,3 +27,8 @@ updates:
       timezone: America/New_York
     open-pull-requests-limit: 5
     labels: [dependencies, github-actions]
+    groups:
+      # init and analyze must be the same release; CodeQL refuses to run on a
+      # mismatch. Bumped one per PR, both PRs are red and neither can land.
+      codeql-action:
+        patterns: ["github/codeql-action/*"]

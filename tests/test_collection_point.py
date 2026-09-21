@@ -140,3 +140,41 @@ def test_reveal_without_exploration_still_verifies():
 
     sig = inspect.signature(reveal_epoch)
     assert sig.parameters["exploration"].default is None
+
+
+class _FakeChain:
+    """A chain and a clock that only advance when the validator sleeps."""
+
+    def __init__(self, s_per_block, start):
+        self.s_per_block = s_per_block
+        self.start = start
+        self.now = 0.0
+
+    def get_current_block(self):
+        return self.start + int(self.now / self.s_per_block)
+
+    def sleep(self, seconds):
+        assert seconds > 0
+        self.now += seconds
+
+
+def _overshoot(monkeypatch, s_per_block, remaining):
+    from neurons import validator
+
+    chain = _FakeChain(s_per_block, start=1000)
+    monkeypatch.setattr(validator.time, "sleep", chain.sleep)
+    monkeypatch.setattr(validator.time, "monotonic", lambda: chain.now)
+    validator.wait_for_block(chain, 1000 + remaining)
+    return chain.get_current_block() - (1000 + remaining)
+
+
+def test_the_wait_does_not_sleep_through_a_fast_chains_epoch(monkeypatch):
+    """The wait is on block height, but the sleep between reads was sized from
+    the nominal 12 s block. On a devnet producing five blocks a second an
+    11-block wait slept a minute, woke in the next epoch, and every miner
+    refused the query — the nightly rehearsal's 'no valid proofs'."""
+    assert _overshoot(monkeypatch, s_per_block=0.2, remaining=11) <= 10
+
+
+def test_the_wait_still_lands_on_a_nominal_chain(monkeypatch):
+    assert _overshoot(monkeypatch, s_per_block=12.0, remaining=150) <= 1

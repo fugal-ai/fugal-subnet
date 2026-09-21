@@ -482,6 +482,26 @@ def _launch_sequential(procs, netuid, pool_path, specs, timeout=300):
     return started
 
 
+def _headroom(scores: dict, uid) -> float:
+    return float((scores.get(str(uid)) or {}).get("headroom", float("-inf")))
+
+
+def _run_validators_together(netuid: int, specs) -> list[dict]:
+    """One real validator epoch each, started at the same moment."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(spec):
+        coldkey, name = spec
+        state = os.path.join(RESULTS, name)
+        os.makedirs(state, exist_ok=True)
+        return run_validator_once(coldkey, netuid,
+                                  os.path.join(state, "state.json"),
+                                  os.path.join(RESULTS, f"{name}.log"))
+
+    with ThreadPoolExecutor(max_workers=len(specs)) as pool:
+        return list(pool.map(one, specs))
+
+
 def scenario_a(report, subtensor, netuid, wallets, pool_path, procs):
     print("\n[Scenario A] one miner, one validator, one epoch", flush=True)
     head = write_head(os.path.join(RESULTS, "head_a.npz"), seed=1)
@@ -558,18 +578,27 @@ def scenario_b(report, subtensor, netuid, wallets, pool_path, procs):
     report.check("b", "the disqualified copy earns no weight",
                  all(weights.get(str(u), 0.0) == 0.0 for u in dq),
                  f"weights={weights}")
+    # Compared on headroom, not weight. This validator starts with no frame, so
+    # the frontier's confidence is zero and the whole emission burns to UID 0 —
+    # by design since the frontier score, and asserted below. Weight therefore
+    # cannot rank anyone in a first epoch; headroom above the frontier is the
+    # quantity the score is built from, and it is what has to order them.
+    scores = entry.get("scores") or {}
     survivor = ({honest_uid, copier_uid} - dq)
-    surv = max((weights.get(str(u), 0.0) for u in survivor), default=0.0)
-    report.check("b", "a real router outranks the always-cheapest router",
-                 surv > weights.get(str(cheap_uid), 0.0),
-                 f"router={surv:.4f} cheap-only={weights.get(str(cheap_uid), 0.0):.4f}")
+    surv = max((_headroom(scores, u) for u in survivor), default=float("-inf"))
+    cheap_h = _headroom(scores, cheap_uid)
+    report.check("b", "a real router has more headroom than the always-cheapest router",
+                 surv > cheap_h, f"router={surv:.4f} cheap-only={cheap_h:.4f}")
+    paid = {u: w for u, w in weights.items() if u != "0" and w > 0}
+    report.check("b", "a cold frontier pays no miner; the emission burns to UID 0",
+                 not paid and weights.get("0", 0.0) == 1.0, f"weights={weights}")
 
 
 def scenario_c(report, subtensor, netuid, wallets, pool_path, procs):
     print("\n[Scenario C] two validators, same proofs", flush=True)
-    # Three miners with genuinely different routing, so the weight vector both
-    # validators must agree on is non-trivial. With one miner it is {uid: 1.0},
-    # which two validators would match by construction rather than by agreeing.
+    # Three miners with genuinely different routing, so what both validators
+    # must agree on is non-trivial. With one miner they would match by
+    # construction rather than by agreeing.
     _launch_sequential(procs, netuid, pool_path, [
         ("dr_m1", write_head(os.path.join(RESULTS, "head_c1.npz"), seed=5),
          8121, "c1"),
@@ -582,32 +611,43 @@ def scenario_c(report, subtensor, netuid, wallets, pool_path, procs):
         report.check("c", "miners produced proofs for the current epoch", False)
         return
 
-    entries = []
-    for name in ("val_c1", "val_c2"):
-        state = os.path.join(RESULTS, name)
-        os.makedirs(state, exist_ok=True)
-        entries.append(run_validator_once(
-            "dr_val1" if name.endswith("1") else "dr_val2", netuid,
-            os.path.join(state, "state.json"),
-            os.path.join(RESULTS, f"{name}.log"),
-        ))
+    # Concurrently, and re-run if they still straddle a boundary. Run one after
+    # the other, the second validator starts an epoch later than the first —
+    # a run takes most of a rehearsal epoch — and the comparison below is then
+    # between two different epochs, which differ for honest reasons and prove
+    # nothing about determinism either way.
+    for attempt in range(1, 4):
+        a, b = _run_validators_together(netuid, [
+            ("dr_val1", f"val_c1_{attempt}"), ("dr_val2", f"val_c2_{attempt}"),
+        ])
+        if a.get("epoch_id") and a.get("epoch_id") == b.get("epoch_id"):
+            break
+        print(f"    attempt {attempt}: validators scored different epochs "
+              f"({a.get('epoch_id')} vs {b.get('epoch_id')}); retrying", flush=True)
+        if not wait_for_epoch(procs[-3:], subtensor, after=current_epoch_id(subtensor)):
+            break
+    report.check("c", "both validators scored the same epoch",
+                 bool(a.get("epoch_id")) and a.get("epoch_id") == b.get("epoch_id"),
+                 f"{a.get('epoch_id')} vs {b.get('epoch_id')}")
 
-    a, b = entries
     report.check("c", "both validators verified the same proofs",
                  a.get("n_heads_valid") == b.get("n_heads_valid") >= 2,
                  f"{a.get('n_heads_valid')} vs {b.get('n_heads_valid')}")
+    # Non-trivial on scores, not weights: from a cold frame both validators
+    # burn everything to UID 0, and {0: 1.0} == {0: 1.0} by construction.
+    scores_a = a.get("scores") or {}
+    distinct = {round(_headroom(scores_a, u), 9) for u in scores_a}
+    report.check("c", "the scores compared are non-trivial (miners genuinely differ)",
+                 len(distinct) >= 2, f"headroom={sorted(distinct)}")
     weights_a = a.get("weights") or {}
-    report.check("c", "the weight vector is non-trivial (a real comparison)",
-                 len([w for w in weights_a.values() if w > 0]) >= 2,
-                 f"weights={weights_a}")
     report.check("c", "both computed identical weight vectors (I1)",
-                 weights_a == b.get("weights"),
+                 bool(weights_a) and weights_a == b.get("weights"),
                  f"{weights_a} vs {b.get('weights')}")
     report.check("c", "both computed identical scores",
-                 a.get("scores") == b.get("scores"))
+                 bool(scores_a) and scores_a == b.get("scores"))
 
     frames = []
-    for name in ("val_c1", "val_c2"):
+    for name in (f"val_c1_{attempt}", f"val_c2_{attempt}"):
         sp = os.path.join(RESULTS, name, "state.json")
         try:
             with open(sp, encoding="utf-8") as f:

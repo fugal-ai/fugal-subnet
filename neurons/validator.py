@@ -956,9 +956,18 @@ def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
     what makes the collection point deterministic, so it is not shortened on
     the grounds that a miner "looks ready" — that would reintroduce exactly the
     wall-clock dependence the fixed point exists to remove.
+
+    How long to sleep between reads is sized from the block rate this chain is
+    measured to have, never the nominal one. Sized from the nominal 12 s, an
+    11-block wait on a devnet producing five blocks a second slept a minute,
+    woke 240 blocks late in the *next* epoch, and asked every miner for a proof
+    they had already replaced — logged as "no valid proofs", as though the
+    miners were at fault.
     """
     announced = False
     last_log = 0.0
+    seen: tuple[float, int] | None = None  # first (monotonic time, height) read
+    s_per_block: float | None = None
     while True:
         try:
             current = subtensor.get_current_block()
@@ -969,6 +978,10 @@ def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
         if current >= target_block:
             return
         remaining = target_block - current
+        if seen is None:
+            seen = (time.monotonic(), current)
+        elif current > seen[1]:
+            s_per_block = (time.monotonic() - seen[0]) / (current - seen[1])
         # Say it once, then rarely. A line every minute for half an epoch is
         # noise an operator learns to scroll past, and the next thing they
         # scroll past is the one that mattered.
@@ -978,7 +991,12 @@ def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
                         target_block, remaining, remaining * _BLOCK_TIME_S / 60)
             announced = True
             last_log = now
-        time.sleep(min(poll_s * max(1, remaining), 60))
+        if s_per_block is None:
+            # No rate yet: a short first sleep costs one extra read on a slow
+            # chain and is the only safe guess on a fast one.
+            time.sleep(1.0)
+        else:
+            time.sleep(min(max(s_per_block * remaining, 0.2), 60))
 
 
 def metagraph_at(subtensor, netuid: int, block: int, fallback):

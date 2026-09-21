@@ -17,7 +17,9 @@ from fugal_subnet.graders import grader_hash
 
 logger = logging.getLogger(__name__)
 
-EPOCH_DIR = os.getenv("FUGAL_EPOCH_DIR", "results/epochs")
+from fugal_subnet.routing_protocol import identity  # noqa: E402
+
+EPOCH_DIR = os.getenv("FUGAL_EPOCH_DIR", "results/success-v1/epochs")
 
 
 @dataclass
@@ -34,7 +36,7 @@ def canonical_json(obj: object) -> bytes:
 
 
 def compute_commit_hash(questions: list[dict], grader_hash: str) -> str:
-    payload = canonical_json(questions) + b"|" + grader_hash.encode("utf-8")
+    payload = canonical_json(questions) + b"|" + grader_hash.encode("utf-8") + b"|" + identity().encode()
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -103,6 +105,7 @@ def reveal_epoch(
     matrix_rows = matrix.tolist() if hasattr(matrix, "tolist") else matrix
 
     reveal = {
+        "routing_protocol": identity(),
         "epoch_id": epoch_id,
         "commit_hash": expected,
         "grader_hash": committed_grader_hash,

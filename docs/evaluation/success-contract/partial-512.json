@@ -1,0 +1,21 @@
+{
+  "status": "stopped at user request; no 512 head trained or evaluated",
+  "sources": {
+    "sprout_matrix.npz": "85f5e1dd864de2b4af01801bbee54379cd10464f9ca383fbe615c62c82af20cf",
+    "sprout_prompts.json": "f2e54bf8fca58610026f4aa47f908b0ae5cf15902220f80584876f0e347b0ab9",
+    "sprout_embed_index.json": "06716cc881a3dc209281c6eb9c0ab32354a95e3a90f926630326187d615eee19"
+  },
+  "profile_id": "12c4c4fa96a0ef79c423f80623ecfde87a9318963e7540a41958f3c77a3ab5f0",
+  "total_questions": 10000,
+  "completed_questions": 6400,
+  "completed_embedding_seconds": 2363.4959861449897,
+  "partial_peak_rss_kib": 4318596,
+  "order": "ascending untruncated token length; not a random subset",
+  "completed_max_input_tokens": 199,
+  "would_truncate_at_512": 1410,
+  "would_truncate_at_2048": 0,
+  "completed_inputs_exceeding_512": 0,
+  "untruncated_embedding_comparisons": 6400,
+  "untruncated_max_abs_difference": 0.0,
+  "conclusion": "Compatible 2048 routing is established. No conclusion about relative 512/2048 held-out quality or full-pass performance is supported by this partial run."
+}

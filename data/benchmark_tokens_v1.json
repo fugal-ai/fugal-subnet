@@ -1,0 +1,114 @@
+{
+  "version": "fugal-token-statistics-v1",
+  "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
+  "status": "candidate",
+  "sources": {
+    "benchmark_tokens_v1.jsonl": "7cf0a1e0b07c65f02a55cbf1462e1fe49d45298fdaefc16aa20a2ebc69ff8428"
+  },
+  "worker_profile": "Historical testnet harness metered OpenRouter calls, source runtimes and original proof-bundle hashes recorded per observation. Router-selected routes plus sparse nonce-assigned exploration. Exact generation limits follow harness grader profiles at each recorded source_runtime. These pre-transition proofs supply cost observations only, never success-protocol validator evidence.",
+  "omitted_missing_or_zero_input": 1,
+  "models": [
+    {
+      "id": "openai/gpt-5.5",
+      "samples": 3,
+      "mean_in_tokens": 58.333333333333336,
+      "mean_out_tokens": 1334.3333333333333
+    },
+    {
+      "id": "anthropic/claude-opus-4.8",
+      "samples": 3,
+      "mean_in_tokens": 101.66666666666667,
+      "mean_out_tokens": 275.6666666666667
+    },
+    {
+      "id": "google/gemini-3.1-pro-preview",
+      "samples": 3,
+      "mean_in_tokens": 75.33333333333333,
+      "mean_out_tokens": 620.6666666666666
+    },
+    {
+      "id": "anthropic/claude-sonnet-5",
+      "samples": 3,
+      "mean_in_tokens": 151.66666666666666,
+      "mean_out_tokens": 230.33333333333334
+    },
+    {
+      "id": "google/gemini-3.5-flash",
+      "samples": 3,
+      "mean_in_tokens": 93.0,
+      "mean_out_tokens": 910.0
+    },
+    {
+      "id": "qwen/qwen3.7-max",
+      "samples": 3,
+      "mean_in_tokens": 59.0,
+      "mean_out_tokens": 957.6666666666666
+    },
+    {
+      "id": "openai/gpt-5.4-mini",
+      "samples": 3,
+      "mean_in_tokens": 75.0,
+      "mean_out_tokens": 262.6666666666667
+    },
+    {
+      "id": "anthropic/claude-haiku-4.5",
+      "samples": 1,
+      "mean_in_tokens": 64.0,
+      "mean_out_tokens": 1374.0
+    },
+    {
+      "id": "z-ai/glm-5.2",
+      "samples": 2,
+      "mean_in_tokens": 179.0,
+      "mean_out_tokens": 343.0
+    },
+    {
+      "id": "moonshotai/kimi-k2.6",
+      "samples": 3,
+      "mean_in_tokens": 75.33333333333333,
+      "mean_out_tokens": 3711.3333333333335
+    },
+    {
+      "id": "mistralai/mistral-large-2512",
+      "samples": 3,
+      "mean_in_tokens": 91.33333333333333,
+      "mean_out_tokens": 841.3333333333334
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "samples": 3,
+      "mean_in_tokens": 61.333333333333336,
+      "mean_out_tokens": 760.0
+    },
+    {
+      "id": "qwen/qwen3.7-plus",
+      "samples": 3,
+      "mean_in_tokens": 112.33333333333333,
+      "mean_out_tokens": 1277.0
+    },
+    {
+      "id": "minimax/minimax-m3",
+      "samples": 3,
+      "mean_in_tokens": 305.3333333333333,
+      "mean_out_tokens": 1853.3333333333333
+    },
+    {
+      "id": "openai/gpt-5.4-nano",
+      "samples": 317,
+      "mean_in_tokens": 83.24921135646687,
+      "mean_out_tokens": 367.7129337539432
+    },
+    {
+      "id": "meta-llama/llama-4-maverick",
+      "samples": 315,
+      "mean_in_tokens": 95.22539682539683,
+      "mean_out_tokens": 569.1111111111111
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "samples": 273,
+      "mean_in_tokens": 95.76556776556777,
+      "mean_out_tokens": 744.2967032967033
+    }
+  ]
+}

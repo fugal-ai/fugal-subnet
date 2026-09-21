@@ -38,7 +38,7 @@ import numpy as np  # noqa: E402
 
 logger = logging.getLogger("fugal.validator")
 
-STATE_PATH = os.getenv("FUGAL_STATE_PATH", "results/validator_state.json")
+STATE_PATH = os.getenv("FUGAL_STATE_PATH", "results/success-v1/validator_state.json")
 
 
 def load_state(records_cls) -> dict:
@@ -48,6 +48,8 @@ def load_state(records_cls) -> dict:
     try:
         with open(STATE_PATH) as f:
             raw = json.load(f)
+        from fugal_subnet.routing_protocol import require_identity
+        require_identity(raw.get("routing_protocol"))
         records = {}
         for uid, rec in raw.get("records", {}).items():
             ev_data = rec.pop("evidence", None)
@@ -69,8 +71,7 @@ def load_state(records_cls) -> dict:
     except FileNotFoundError:
         return _empty_state()
     except Exception as e:
-        logger.warning("Could not load state from %s: %s — starting fresh", STATE_PATH, e)
-        return _empty_state()
+        raise ValueError(f"Cannot resume validator state {STATE_PATH}: {e}") from e
 
 
 def _empty_state() -> dict:
@@ -83,7 +84,9 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
                frame=None):
     """Persist validator state."""
     os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
+    from fugal_subnet.routing_protocol import identity
     payload = {
+        "routing_protocol": identity(),
         "records": {str(uid): dataclasses.asdict(rec) for uid, rec in records.items()},
         "prev_uids": prev_uids,
         "prev_weights": prev_weights,
@@ -180,6 +183,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
 
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
+    if not mock:
+        from fugal_subnet.routing_protocol import MANIFEST_PATH
+        from fugal_subnet.vendor import success_contract as contract
+        contract.validate_manifest(json.loads(MANIFEST_PATH.read_text()), deployable=True)
     assert_environment(strict=live)
     logger.info("Consensus environment digest: %s", consensus_digest())
 

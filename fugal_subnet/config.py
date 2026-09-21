@@ -346,31 +346,23 @@ TEE_COLLATERAL_MAX_TIMEOUTS = int(
 )
 
 # --- Routing ---
-# The routing rule is argmax(softmax(W@h + b)) — no cost term, no exchange rate.
-#
-# The old rule was `p - lambda*cost`, which mixes a probability with dollars and
-# so implicitly asserts what a correct answer is worth (lambda=2.0 asserted
-# $0.50). The subnet has no business asserting that. It states the objective —
-# accuracy above the constant-policy frontier at the miner's own price — and
-# lets each miner's head discover its own tradeoff. Judging the outcome instead of dictating the rule
-# removes the last hardcoded exchange rate from consensus.
-#
-# This remains available to miners as a TRAINING hyperparameter: a head still
-# has to learn cost-awareness, it just is not handed the tradeoff.
+# New benchmark routing uses the shared success contract at lambda=1. The
+# constant below is retained ONLY for historical preference-head experiments;
+# no live success path reads it. See routing_protocol.BENCHMARK_LAMBDA.
 TRAINING_COST_LAMBDA = float(os.getenv("FUGAL_LAMBDA", "2.0"))
 
 # Routing utilities are quantized to this step before argmax picks a model.
 # Deliberately NOT env-overridable: it is consensus-critical, and two validators
 # using different quanta would disagree on every near-tie.
 #
-# Why it exists: the routing decision is argmax(softmax(W@h + b) - lam*costs),
+# Why it exists: the routing decision is argmax(sigmoid(W@h + b) - lam*costs),
 # a discontinuity with no tolerance. Any float difference between two validators
 # — a different BLAS kernel, CPU generation, or library build — flips the
 # decision whenever two models' utilities are close, and across 300 questions
-# and 30 models near-ties are certain. Quantizing turns "every validator must
-# produce identical bits" into "every validator must agree to within 1e-4",
-# which survives library and hardware changes. Exact ties then resolve by
-# lowest index (numpy argmax), which is deterministic everywhere.
+# and 30 models near-ties are possible. Quantizing reduces sensitivity to small
+# numerical differences; it does not guarantee agreement at every rounding
+# boundary. Conformance fixtures check selections explicitly. Exact ties retain
+# artifact row order.
 ROUTING_DECISION_QUANTUM = 1e-4
 
 # --- API ---
@@ -380,11 +372,10 @@ API_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 
 # --- Backbone ---
 BACKBONE_MODEL = os.getenv("FUGAL_BACKBONE", "Qwen/Qwen3-0.6B")
-# Consensus-critical: tokenizer padding is per-batch, so hidden states depend on
-# how prompts are grouped. Two hosts using different batch sizes can produce
-# different embeddings for the same question, which flips near-tie routing
-# decisions. Pin it here rather than leaving it a call-site default.
-BACKBONE_BATCH_SIZE = int(os.getenv("FUGAL_BACKBONE_BATCH_SIZE", "8"))
+# Two questions bound memory for the 2048-token CPU profile. Mask-aware pooling
+# removes padding from the mean; numerical batch/single conformance is checked
+# separately. Larger batches require more memory and conformance verification.
+BACKBONE_BATCH_SIZE = int(os.getenv("FUGAL_BACKBONE_BATCH_SIZE", "2"))
 # torch intra-op threads for the backbone. Miner-side only: validators never
 # run the backbone, and embeddings shape only the miner's own routing choices,
 # so this is a throughput knob and not consensus state (see

@@ -1,0 +1,67 @@
+[
+  {
+    "id": "aws-claude-3-5-sonnet-v1",
+    "in": 3.0,
+    "out": 15.0
+  },
+  {
+    "id": "aws-titan-text-premier-v1",
+    "in": 0.5,
+    "out": 1.5
+  },
+  {
+    "id": "openai-gpt-4o",
+    "in": 2.5,
+    "out": 10.0
+  },
+  {
+    "id": "openai-gpt-4o-mini",
+    "in": 0.15,
+    "out": 0.6
+  },
+  {
+    "id": "wxai-granite-3-2b-instruct-8k-max-tokens",
+    "in": 0.1,
+    "out": 0.1
+  },
+  {
+    "id": "wxai-granite-3-8b-instruct-8k-max-tokens",
+    "in": 0.2,
+    "out": 0.2
+  },
+  {
+    "id": "wxai-llama-3-1-70b-instruct",
+    "in": 0.6,
+    "out": 0.6
+  },
+  {
+    "id": "wxai-llama-3-1-8b-instruct",
+    "in": 0.06,
+    "out": 0.06
+  },
+  {
+    "id": "wxai-llama-3-2-1b-instruct",
+    "in": 0.02,
+    "out": 0.02
+  },
+  {
+    "id": "wxai-llama-3-2-3b-instruct",
+    "in": 0.03,
+    "out": 0.03
+  },
+  {
+    "id": "wxai-llama-3-3-70b-instruct",
+    "in": 0.6,
+    "out": 0.6
+  },
+  {
+    "id": "wxai-llama-3-405b-instruct",
+    "in": 3.5,
+    "out": 3.5
+  },
+  {
+    "id": "wxai-mixtral-8x7b-instruct-v01",
+    "in": 0.3,
+    "out": 0.3
+  }
+]

@@ -76,45 +76,38 @@ btcli subnet register \
 python scripts/train_head.py \
   --synthetic --n-questions 300 \
   --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
-  --output data/my_head.npz
+  --output data/synthetic_head_test.npz
 ```
 
-### Competitive training (with matrix data)
+Synthetic output is for training tests; use observed data and the benchmark
+manifest for the miner commands below.
 
-Once the subnet is running, download published epoch artifacts and train:
+### Success-head training (observed binary labels)
 
 ```bash
 python scripts/train_head.py \
   --matrix data/matrix.npz \
+  --manifest data/benchmark_tokens_v1.json \
   --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
-  --output data/my_head.npz \
-  --device cuda \
-  --use-backbone \
-  --sft-epochs 100 \
-  --cma-generations 50
+  --output data/my_head.npz --epochs 100
 ```
 
-`--use-backbone` is required. Without it, the trainer falls back to random
-hidden states and produces a head that scores near zero.
+The matrix contains aligned `models`, `questions`, and `matrix` arrays. Labels
+are 0 or 1; NaN means unobserved. The trainer retains observed all-failure rows,
+uses masked binary cross-entropy, and selects a checkpoint by validation BCE.
+Exact duplicate prompts stay together in deterministic 60/20/20 splits. The
+held-out test split is reported only after checkpoint selection.
 
-### Head format
+Embeddings are computed with the pinned CPU float32 2048-token profile. An
+optional `--hidden-states` argument accepts a profile-tagged NPZ cache. There is
+no implicit random fallback. Synthetic training is explicitly test-only.
 
-The `.npz` file must contain:
-
-| Array | Shape | Description |
-|-------|-------|-------------|
-| `W` | `(L, 1024)` | Weight matrix, float32. L = number of models |
-| `b` | `(L,)` | Bias vector, float32 |
-| `models` | `(L,)` | Model ID strings (e.g. `openai/gpt-5.4-mini`) |
-
-Max file size: **1 MB** (`HEAD_MAX_BYTES`). Hidden dimension must be 1024
-(Qwen3-0.6B).
-
-There is a **second limit that is easy to trip and was previously undocumented**:
-the arrays must not exceed **8 MB decompressed** (`HEAD_MAX_DECOMPRESSED_BYTES`).
-`.npz` is compressed, so a file comfortably under 1 MB on disk can still be
-rejected on load. Both limits are bounds on untrusted input, so neither is
-negotiable per miner.
+Heads require the versioned success contract, not just W/b/models. See
+[the contract and transition guide](SUCCESS_CONTRACT.md) for metadata, archive
+limits, export, and the required fresh evidence namespace. The checked-in token
+manifest is a review candidate derived from historical recorded calls. Live
+startup and deployable export reject it until it is reviewed; mocked rehearsals
+can exercise the candidate without publishing or spending on inference.
 
 ## Step 4: Run the Miner
 
@@ -246,7 +239,7 @@ download and 7.5 is uploading ~825 MB to GCS — on a residential connection tha
 upload dominates. **Redeploys are about 4 minutes** once the GCP image exists,
 so the cost is paid once.
 
-### The first boot embeds the whole pool, and that takes half a day
+### The first boot embeds the whole pool
 
 Do **not** set `FUGAL_BENCHMARK_POOL` in a production compose. The pool is
 consensus state: the miner loads the same manifest-pinned pool the validators
@@ -257,17 +250,15 @@ depend on a 12 MB file. (Earlier versions of this guide said the opposite,
 because at the time the override skipped the manifest check and a tiny pool
 was the only way to get a miner up quickly. That bypass is closed.)
 
-What the earlier warning was really about is **time**: embedding the ~21,500
-questions takes **about 13 hours on one thread** before the miner answers
-anything, with no error — the process is running, the logs look busy, and the
-miner produces nothing for half a day. Three things make that bearable:
+Embedding a full pool can take hours. Historical measurements with the previous
+profile were about 13 hours on one thread and 7 h 39 m on four threads for
+~21,500 questions. Those are **not measurements of the new 2048-token profile**.
+Use the [offline mechanism report](evaluation/success-contract/REPORT.md) and
+measure your actual pool before budgeting startup time.
 
-- Give the backbone every vCPU: `FUGAL_BACKBONE_THREADS=0` in the compose
-  (`deploy/dstack/docker-compose.yaml` does). This is miner-side only —
-  validators never run the backbone. Measured on a `c3-standard-4`: 7 h 39 m
-  at four threads against ~13 h at one — 1.7x, not 4x, because the backbone is
-  memory-bound past a few cores. More vCPUs help less than more memory
-  bandwidth would.
+- `FUGAL_BACKBONE_THREADS=0` uses all available vCPUs. This is miner-side only;
+  validators never run the backbone. More threads do not imply proportional
+  speedups, so measure throughput on the intended host.
 
 - Cache the embeddings on the encrypted data volume
   (`FUGAL_EMBEDDING_CACHE` on a named volume, as in
@@ -282,38 +273,21 @@ miner produces nothing for half a day. Three things make that bearable:
 For a local rehearsal that is not talking to anyone else's neurons, a small
 pool is still fine — declare it with `FUGAL_POOL_UNPINNED=1`.
 
-### A slow embedding job is usually VRAM, not a small card
+### The success profile requires CPU float32 and memory headroom
 
-Same shape as the `FUGAL_BENCHMARK_POOL` trap above — healthy-looking, silent,
-and hours wrong — so it is here rather than left to be rediscovered. Both were
-hit on this project's own hardware.
+The success contract rejects CUDA and float16. Earlier GPU tuning advice applied
+to the legacy preference profile and does not apply to these heads.
 
-**Symptom:** embedding the pool crawls, well under 1 prompt/s, with no error and
-no OOM. The job looks busy and the card looks fine.
+The default embedding batch is **two questions**. An eight-question batch of
+long 2048-token inputs exceeded memory on the 8 GiB development host. Keep the
+default on constrained machines; larger batches require enough memory and a
+successful batch/single conformance check. `FUGAL_BACKBONE_BATCH_SIZE` controls
+the miner batch, while the offline evaluation has `--batch-size`.
 
-**Cause:** VRAM headroom, not VRAM size. Measured on a 6,144 MiB consumer card:
-at batch 32 the job sat at 5,864 MiB — about 95% — and past roughly that point
-the driver spills to host memory and throughput collapses. At batch 8 the same
-work used 3,428 MiB and ran ~29 prompts/s. **30x faster on the same card for the
-same job**, purely from leaving headroom.
-
-**The second half, which runs the other way from intuition:**
-`backbone.get_backbone` defaults to **float16** on CUDA. That is right for the
-datacentre cards a serious miner would rent. On a consumer card *without tensor
-cores* it is backwards — measured fp32 at 2.66 TFLOPS against fp16's 0.60, so
-**fp32 was 4.4x faster** — and the batch size that fits differs by about 4x
-between the two dtypes, so sizing a box from the default gets both speed and
-memory wrong.
-
-**What to do before concluding your machine is too small:** check VRAM headroom
-and drop the batch size until you are well under ~90% occupancy, then try
-float32. Only then buy a bigger card.
-
-Dtype is a miner-side performance choice and touches nothing in consensus —
-scoring reads routing decisions out of your proof, never your embeddings — so
-you may pick whichever is faster on your hardware. See
-`fugal_subnet/backbone.py` for the full measurements and why the default stays
-as it is.
+The offline evaluator checkpoints every 200 questions and verifies profile and
+question identity before resuming. The miner's full-pool cache is written only
+after its embedding pass completes, so provision enough memory for that pass.
+Cache files from the legacy profile are rejected.
 
 ### You may choose any instance size
 
@@ -323,8 +297,10 @@ and `c3-standard-8`, two different applications — the value is byte-identical:
 
     12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
 
-So pick the instance size that suits your workload and your budget. You do not
-need to match a reference shape, and doing so buys you nothing.
+Choose an instance with enough memory for the new embedding profile. These
+historical measurements do not approve the success runtime; follow the
+[fresh-state runbook](SUCCESS_CONTRACT.md#fresh-testnet-evidence-runbook--execute-only-after-review)
+and obtain the actual measurements for the reviewed build.
 
 ### Building the image on a fresh GCP project fails twice first
 

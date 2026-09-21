@@ -26,6 +26,7 @@ import time
 
 import numpy as np
 
+from fugal_subnet import success_test_fixtures as success_fixtures
 from fugal_subnet.benchmarks.slicer import (
     BLOCK_TIME_S,
     derive_nonce,
@@ -85,11 +86,12 @@ def _pool(n: int) -> list[dict]:
 
 
 def _head(models: list[str], seed: int = 0) -> bytes:
+    from fugal_subnet import success_test_fixtures as success_fixtures
     rng = np.random.RandomState(seed)
     W = (rng.randn(len(models), HEAD_HIDDEN_DIM) * 0.01).astype(np.float32)
     b = rng.randn(len(models)).astype(np.float32)
     buf = io.BytesIO()
-    np.savez(buf, W=W, b=b, models=np.array(models, dtype="U100"))
+    np.savez(buf, **success_fixtures.arrays(W, b, models))
     return buf.getvalue()
 
 
@@ -115,6 +117,7 @@ def _stub_call(proxy, model_id, question):
 
 def build_field(n_miners: int, slice_size: int, pool_size: int):
     """Build `n_miners` real proofs, as the validator would receive them."""
+    harness_mod.benchmark_costs = success_fixtures.costs
     harness_mod._call_model = _stub_call  # noqa: SLF001 - no network, no spend
 
     pool = _pool(pool_size)

@@ -224,6 +224,9 @@ def verify_proof(
         VerifyResult with pass/fail and reason.
     """
     warnings: list[str] = []
+    from fugal_subnet.routing_protocol import identity
+    if proof.routing_protocol != identity():
+        return VerifyResult(False, "Incompatible routing protocol evidence namespace")
 
     # 1. DCAP attestation — proves the quote is genuine Intel-signed hardware.
     #    It does NOT prove the code was unmodified; check 3 does that.
@@ -487,6 +490,16 @@ def verify_proof(
                 f"Bundled head does not match the attested weights_hash: "
                 f"head is {actual[:16]}..., proof claims {proof.weights_hash[:16]}...",
             )
+
+    if not mock:
+        from fugal_subnet.head_eval import load_head_from_npz
+        from fugal_subnet.routing_protocol import benchmark_costs
+        try:
+            if head_bytes is None:
+                raise ValueError("missing success head bytes")
+            benchmark_costs(load_head_from_npz(head_bytes))
+        except (ValueError, KeyError, TypeError) as e:
+            return VerifyResult(False, f"Incompatible success head: {e}")
 
     # 8. The bundle we downloaded must be the one the miner advertised.
     if expected_proof_hash and content_hash != expected_proof_hash:

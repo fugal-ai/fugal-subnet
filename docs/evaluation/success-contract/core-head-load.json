@@ -1,0 +1,27 @@
+{
+  "core_commit": "7588c394c38c0e79cceaf7c3d00ae918d13ea710",
+  "subnet_commit": "67b9beb3f49a7062faba28f0bc19337e438966fe",
+  "head_sha256": "fe59347f8d99c5d22e81869ca323bf90bb6af1827b6a4420c07d71ed843354d0",
+  "FUGAL_HEAD_loaded": true,
+  "head_format": "fugal-success-v1",
+  "lambda": 1.0,
+  "held_out_rows": 2003,
+  "all_held_out_selections_match": true,
+  "selection_counts_match": true,
+  "selected_counts": {
+    "aws-claude-3-5-sonnet-v1": 316,
+    "aws-titan-text-premier-v1": 0,
+    "openai-gpt-4o": 861,
+    "openai-gpt-4o-mini": 368,
+    "wxai-granite-3-2b-instruct-8k-max-tokens": 0,
+    "wxai-granite-3-8b-instruct-8k-max-tokens": 18,
+    "wxai-llama-3-1-70b-instruct": 29,
+    "wxai-llama-3-1-8b-instruct": 4,
+    "wxai-llama-3-2-1b-instruct": 0,
+    "wxai-llama-3-2-3b-instruct": 0,
+    "wxai-llama-3-3-70b-instruct": 306,
+    "wxai-llama-3-405b-instruct": 100,
+    "wxai-mixtral-8x7b-instruct-v01": 1
+  },
+  "embedding_source": "completed CPU float32 profile cache; no worker calls"
+}

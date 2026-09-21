@@ -1,0 +1,24 @@
+{
+  "repository": "https://github.com/fugal-ai/fugal-core",
+  "commit": "7588c394c38c0e79cceaf7c3d00ae918d13ea710",
+  "files": {
+    "fugal/success_contract.py": {
+      "vendored": "success_contract.py",
+      "sha256": "352148606c848852e4a47f63f70066c1bd7fa4264a096d7c48621a4c7758b5be"
+    },
+    "data/success_conformance.json": {
+      "vendored": "conformance.json",
+      "sha256": "bb5d00b60711bea749f997115d1a72d203747fe6789d14a60b7a42ef17d33529"
+    }
+  },
+  "test_snapshot": {
+    "fugal/__init__.py": "b8ee597b7734157ce303e1392cc2f3de54f35e6560c414fae71d9a4379da8154",
+    "fugal/router.py": "f58b649094ecf3325720a43964f5606b0cb0fcaeb08f8a21d31d4c5a217240bd",
+    "fugal/success_contract.py": "352148606c848852e4a47f63f70066c1bd7fa4264a096d7c48621a4c7758b5be",
+    "data/success_conformance.json": "bb5d00b60711bea749f997115d1a72d203747fe6789d14a60b7a42ef17d33529",
+    "verify/verify_success_contract.py": "78f648a0e2604e83c40c4a8f2cb2d039f84cb91dd1fa392165c504fd25b7a0eb",
+    "scripts/fetch_backbone.py": "5fd4e85da0bebec39dbdff1af793335d155ed3b67ed37ad29f8d38f04f7b8c58",
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "NOTICE": "709b5c97aa5cae53e7f89970ec2969a68f4e0b6d388bfc2be7f6465c24316263"
+  }
+}

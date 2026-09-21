@@ -1,0 +1,44 @@
+{
+  "mode": "mocked local-chain mechanism rehearsal; no paid inference or real chain writes",
+  "routing_protocol": "a4eff5243a93c7de6420e23ed2c176a38407b536b74acea73172bcde3d2fc6a8",
+  "head_sha256": "36a7e15e65dd7c2d05c2e1fd0334fd048094fca69823d9c85fa10b55ee6fad97",
+  "selected_epoch": 5,
+  "history": [
+    {
+      "epoch": 1,
+      "train_bce": 0.6931471824645996,
+      "validation_bce": 0.6928684115409851
+    },
+    {
+      "epoch": 2,
+      "train_bce": 0.6765812635421753,
+      "validation_bce": 0.6928656101226807
+    },
+    {
+      "epoch": 3,
+      "train_bce": 0.6603502035140991,
+      "validation_bce": 0.6924383640289307
+    },
+    {
+      "epoch": 4,
+      "train_bce": 0.6444514393806458,
+      "validation_bce": 0.6921100616455078
+    },
+    {
+      "epoch": 5,
+      "train_bce": 0.6288899183273315,
+      "validation_bce": 0.6920165419578552
+    }
+  ],
+  "test_rows": 20,
+  "scored_calls": 20,
+  "exploration_calls": 3,
+  "proof_valid": true,
+  "old_proof_rejected": true,
+  "frame_restart_equal": true,
+  "weight_writes": [
+    {
+      "0": 1.0
+    }
+  ]
+}

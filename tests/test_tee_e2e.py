@@ -21,6 +21,7 @@ import io
 import numpy as np
 import pytest
 
+from fugal_subnet import success_test_fixtures as success_fixtures
 from fugal_subnet.benchmarks.slicer import (
     derive_nonce,
     epoch_id_for_block,
@@ -70,7 +71,7 @@ def _head(models, seed=0):
     W = (rng.randn(len(models), HEAD_HIDDEN_DIM) * 0.01).astype(np.float32)
     b = rng.randn(len(models)).astype(np.float32)
     buf = io.BytesIO()
-    np.savez(buf, W=W, b=b, models=np.array(models, dtype="U100"))
+    np.savez(buf, **success_fixtures.arrays(W, b, models))
     return buf.getvalue()
 
 
@@ -99,6 +100,7 @@ def _stub_call(proxy, model_id, question):
 
 @pytest.fixture
 def stubbed_model_call(monkeypatch):
+    monkeypatch.setattr(harness_mod, "benchmark_costs", success_fixtures.costs)
     monkeypatch.setattr(harness_mod, "_call_model", _stub_call)
 
 

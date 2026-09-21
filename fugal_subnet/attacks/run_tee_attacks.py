@@ -18,9 +18,14 @@ it is blocked by a binding, not by a signature.
 from __future__ import annotations
 
 import hashlib
+import io
+import json
 import struct
 import time
 
+import numpy as np
+
+from fugal_subnet.routing_protocol import MANIFEST_PATH
 from fugal_subnet.tee import verify as verify_mod
 from fugal_subnet.tee.attestation import measurement_id, parse_quote
 from fugal_subnet.tee.proof import (
@@ -28,12 +33,18 @@ from fugal_subnet.tee.proof import (
     QuestionResult,
     compute_questions_hash,
 )
+from fugal_subnet.vendor import success_contract as contract
 
 HONEST_MRTD = bytes.fromhex("11" * 48)
 ATTACKER_MRTD = bytes.fromhex("de" * 48)
 SLICE = [f"q{i}" for i in range(10)]
 POOL_GOLD = {f"q{i}": {"question_id": f"q{i}"} for i in range(1000)}
-HEAD = b"the head that was committed on chain"
+# An honest control must pass actual success-head admission, not just a byte hash.
+
+_head_buffer = io.BytesIO()
+np.savez(_head_buffer, **contract.make_head(np.zeros((1, 1024)), np.zeros(1),
+    ["deepseek/deepseek-v4-flash"], json.loads(MANIFEST_PATH.read_text()), "synthetic-test-only attack control"))
+HEAD = _head_buffer.getvalue()
 HEAD_HASH = hashlib.sha256(HEAD).hexdigest()
 
 
@@ -50,7 +61,7 @@ def _quote(report_data: bytes, mrtd: bytes, rtmr3: bytes = b"\x00" * 48) -> byte
 APPROVED = {measurement_id(parse_quote(_quote(b"\x00" * 64, HONEST_MRTD)))}
 
 
-def _qr(qid, model="cheap", correct=True, cost=0.001, explore=False):
+def _qr(qid, model="deepseek/deepseek-v4-flash", correct=True, cost=0.001, explore=False):
     return QuestionResult(
         qid, model, correct, cost, hashlib.sha256(qid.encode()).hexdigest(),
         prompt_tokens=500, completion_tokens=300, is_exploration=explore,
@@ -72,7 +83,7 @@ def _proof(results, mrtd=HONEST_MRTD, weights_hash=HEAD_HASH,
         questions_hash=qhash if qhash is not None else compute_questions_hash(SLICE),
         weights_hash=weights_hash, source_hash="a" * 64, results=results,
         total_cost_usd=total if total is not None else sum(r.cost_usd for r in results),
-        per_model_costs=per_model if total is None else {"cheap": total},
+        per_model_costs=per_model if total is None else {"deepseek/deepseek-v4-flash": total},
         attestation_quote=b"", timestamp=1.0, hotkey=hotkey,
     )
     p.attestation_quote = _quote(bytes.fromhex(p.content_hash()), mrtd, rtmr3)
@@ -176,7 +187,7 @@ def a_replayed_proof():
 
 def a_skipped_exploration():
     """Omit the exploration quota to save ~5% of inference cost."""
-    explore = {"q900": "cheap", "q901": "cheap"}
+    explore = {"q900": "deepseek/deepseek-v4-flash", "q901": "deepseek/deepseek-v4-flash"}
     gold = {k: POOL_GOLD[k] for k in SLICE}
     gold.update({"q900": {}, "q901": {}})
     return _verify(_proof([_qr(q) for q in SLICE]),

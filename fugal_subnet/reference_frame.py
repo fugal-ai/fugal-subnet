@@ -41,6 +41,7 @@ from fugal_subnet.config import (
     FRAME_PRIOR_STRENGTH,
     WILSON_CONFIDENCE,
 )
+from fugal_subnet.routing_protocol import identity, require_identity
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class ReferenceFrame:
 
     def to_dict(self) -> dict:
         return {
+            "routing_protocol": identity(),
             "successes": self.successes,
             "trials": self.trials,
             "prompt_tokens": self.prompt_tokens,
@@ -68,6 +70,7 @@ class ReferenceFrame:
 
     @classmethod
     def from_dict(cls, d: dict) -> ReferenceFrame:
+        require_identity(d.get("routing_protocol"))
         return cls(
             successes=dict(d.get("successes") or {}),
             trials=dict(d.get("trials") or {}),
@@ -154,6 +157,7 @@ def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
         except Exception as e:  # noqa: BLE001 - one bad file must not lose the rest
             logger.warning("Skipping unreadable reveal %s: %s", path, e)
             continue
+        require_identity(reveal.get("routing_protocol"))
         epoch_id = str(reveal.get("epoch_id", ""))
         if not epoch_id:
             logger.warning("Skipping reveal with no epoch_id: %s", path)

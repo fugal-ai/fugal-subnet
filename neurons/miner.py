@@ -125,6 +125,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         raise click.ClickException(
             "--head-path is required unless --await-provisioning is set"
         )
+    from fugal_subnet.head_eval import load_head_from_npz
+    from fugal_subnet.routing_protocol import benchmark_costs
+    benchmark_costs(load_head_from_npz(head_data), require_reviewed=not mock)
     weights_hash = hashlib.sha256(head_data).hexdigest()
 
     # The pool is consensus state: the slice is drawn from it, so the miner and
@@ -679,11 +682,12 @@ def _embedding_cache_path(pool) -> str:
     key = hashlib.sha256("|".join([
         pool_hash(pool),
         BACKBONE_MODEL,
+        __import__("fugal_subnet.vendor.success_contract", fromlist=["PROFILE_ID"]).PROFILE_ID,
         str(BACKBONE_BATCH_SIZE),
         platform.machine(),
     ]).encode("utf-8")).hexdigest()[:32]
     root = os.getenv("FUGAL_EMBEDDING_CACHE", os.path.join("data", "embeddings"))
-    return os.path.join(root, f"hidden-{key}.npy")
+    return os.path.join(root, f"hidden-{key}.npz")
 
 
 def _compute_hidden_states(pool):
@@ -721,28 +725,19 @@ def _compute_hidden_states(pool):
     The backbone is released afterwards: it is ~2.4GB resident and is not
     needed again once the embeddings exist.
     """
-    import numpy as np
-
     from fugal_subnet.backbone import compute_hidden_states, release_backbone
     from fugal_subnet.config import BACKBONE_BATCH_SIZE
-
-    cache_path = _embedding_cache_path(pool)
-    if os.path.exists(cache_path):
-        try:
-            cached = np.load(cache_path, allow_pickle=False)
-            if cached.shape[0] == len(pool):
-                logger.info("Embeddings loaded from cache: %s", cache_path)
-                return cached
-            logger.warning("Cached embeddings have %d rows for a %d-question "
-                           "pool — recomputing", cached.shape[0], len(pool))
-        except Exception as e:  # noqa: BLE001 - a bad cache must never be fatal
-            logger.warning("Could not read embedding cache %s (%s) — recomputing",
-                           cache_path, e)
+    from fugal_subnet.vendor import success_contract as contract
 
     questions = [q["prompt"] for q in pool]
-    # batch_size is pinned in config, not left to the call site: padding is
-    # batch-composition dependent, so two hosts using different batch sizes are
-    # a latent cross-validator divergence.
+    cache_path = _embedding_cache_path(pool)
+    if os.path.exists(cache_path):
+        hidden = contract.load_cache(cache_path, questions)
+        logger.info("Embeddings loaded from cache: %s", cache_path)
+        return hidden
+
+    # Use the configured memory bound for the 2048-token CPU profile. The shared
+    # implementation excludes padding from pooling and has batch/single checks.
     try:
         hidden = compute_hidden_states(questions, batch_size=BACKBONE_BATCH_SIZE)
     finally:
@@ -755,8 +750,8 @@ def _compute_hidden_states(pool):
         # np.save appends ".npy" unless the name already ends in it, so the
         # temp name carries the suffix or the rename below looks for a file
         # that was never written.
-        tmp = f"{cache_path}.{os.getpid()}.tmp.npy"
-        np.save(tmp, hidden, allow_pickle=False)
+        tmp = f"{cache_path}.{os.getpid()}.tmp.npz"
+        contract.save_cache(tmp, questions, hidden)
         os.replace(tmp, cache_path)
         logger.info("Embeddings cached to %s", cache_path)
     except Exception as e:  # noqa: BLE001 - caching is an optimisation

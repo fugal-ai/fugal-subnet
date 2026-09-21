@@ -17,6 +17,7 @@ from fugal_subnet.reference_frame import (
     best_model,
     rebuild_from_reveals,
 )
+from fugal_subnet.routing_protocol import identity
 
 
 def _write_reveal(root, epoch_id, samples):
@@ -24,6 +25,7 @@ def _write_reveal(root, epoch_id, samples):
     d.mkdir(parents=True, exist_ok=True)
     (d / "reveal.json").write_text(json.dumps({
         "epoch_id": epoch_id,
+        "routing_protocol": identity(),
         "exploration": [
             {"question_id": f"q{i}", "model": m, "correct": c,
              "prompt_tokens": 100, "completion_tokens": 50}

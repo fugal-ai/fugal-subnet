@@ -14,8 +14,11 @@ rules.
 2. **All `np.load()` calls MUST use `allow_pickle=False`** — untrusted miner
    data; pickle = RCE.
 3. **Synapse `deserialize()` MUST return `self`**, not a dict.
-4. **NO paid API calls without explicit user approval.** `--mock` is always the
-   default. Tag costs as `[PAID ~$X]`.
+4. **NO paid API calls without explicit user approval.** The miner, and every
+   script that can call a model, defaults to `--mock`. (The validator defaults
+   to `--live` since 2026-10-14: it spends nothing, and mock accepts
+   unattested proofs. Both neurons refuse `--mock` on finney.) Tag costs as
+   `[PAID ~$X]`.
 5. **NEVER log any part of `OPENROUTER_API_KEY`.**
 6. **`fugal_subnet/graders.py` is immutable.** It is hash-pinned
    (SHA256 checked in CI). Any byte change breaks consensus. It is excluded from

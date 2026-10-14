@@ -287,3 +287,45 @@ def assert_environment(strict: bool = True) -> None:
     import logging
 
     logging.getLogger(__name__).warning(message)
+
+
+def chain_genesis_hash(subtensor) -> str | None:
+    """The connected chain's genesis block hash, or None if it cannot be read."""
+    for getter in (
+        lambda: subtensor.substrate.get_block_hash(0),
+        lambda: subtensor.get_block_hash(0),
+    ):
+        try:
+            value = getter()
+        except Exception:  # noqa: BLE001 - any failure means "unknown", handled by the caller
+            continue
+        if value:
+            return str(value)
+    return None
+
+
+def assert_mock_allowed(genesis_hash: str | None, mock: bool) -> None:
+    """Refuse --mock on mainnet.
+
+    Mock accepts unattested proofs: it is the mode for local testnets and the
+    dress rehearsal, and on finney it is a validator that pays whatever any
+    miner claims (diligence 2026-10, finding A3). The chain is identified by
+    its genesis hash, which a --network URL cannot disguise. An unreadable
+    genesis is not a pass: in mock the caller is told to use --live, which
+    needs no such check.
+    """
+    if not mock:
+        return
+    from fugal_subnet.config import FINNEY_GENESIS_HASH
+
+    if genesis_hash is None:
+        raise RuntimeError(
+            "--mock refused: the chain's genesis hash could not be read, so this "
+            "cannot be shown not to be finney. Use --live, or point --network at a "
+            "local or test chain that answers."
+        )
+    if str(genesis_hash).lower() == FINNEY_GENESIS_HASH.lower():
+        raise RuntimeError(
+            "--mock refused on finney (mainnet): mock accepts unattested proofs. "
+            "Run with --live."
+        )

@@ -211,6 +211,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     subtensor = bt.Subtensor(network=network)
+    # The miner keeps --mock as its default because --live spends real money
+    # on inference; what it must never do is run mock on mainnet.
+    from fugal_subnet.fingerprint import assert_mock_allowed, chain_genesis_hash
+    try:
+        assert_mock_allowed(chain_genesis_hash(subtensor), mock)
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
     metagraph = subtensor.metagraph(netuid)
 
     my_hotkey = wallet.hotkey.ss58_address

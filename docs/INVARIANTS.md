@@ -1901,6 +1901,29 @@ with the routing-protocol identity (which covers the price table), and
 live validator refuses to start. Inputs — the epoch length, the approved
 entries — are set per deployment on purpose and are recorded, not refused.
 
+### I8 — the validator is live by default, and nothing runs mock on finney (fixed 2026-10-14)
+
+Diligence 2026-10, additional finding A3. `--live/--mock` defaulted to mock
+on the validator, so the mode that accepts unattested proofs was the one a
+missing flag produced. The validator makes no model calls and spends nothing,
+so there was no reason for it to share the miner's mock default; it is live
+by default now. Both neurons read the chain's genesis block hash after
+connecting and refuse `--mock` when it is finney's
+(`config.FINNEY_GENESIS_HASH`, `fingerprint.assert_mock_allowed`); an
+unreadable genesis is refused too, since it cannot be shown not to be
+mainnet. The miner keeps `--mock` as its default because `--live` spends
+real money.
+
+### I7 — the burn UID is read from chain (fixed 2026-10-14)
+
+Diligence 2026-10, additional finding A5. Unassigned weight burned to a
+hard-coded UID 0, which is the owner's UID by convention only. The validator
+now resolves `get_subnet_owner_hotkey(netuid, block=boundary_block)` each
+epoch and maps it through the pinned metagraph (`resolve_burn_uid`);
+`compute_weights` takes `burn_uid` as a required keyword. Live refuses to
+guess on a failed lookup, because burning to the wrong UID pays someone;
+mock falls back to 0 for local chains without an owner query.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

@@ -90,7 +90,7 @@ python neurons/validator.py \
   --once
 ```
 
-The default is `--mock`, which accepts unattested proofs (no real TDX
+`--mock` accepts unattested proofs (no real TDX
 verification). `--live` requires real TDX attestation from miners.
 `--once` exits after a single epoch.
 
@@ -158,7 +158,7 @@ All settings are configurable via environment variables (see `fugal_subnet/confi
 | `--coldkey` | `default` | Wallet coldkey name |
 | `--hotkey` | `default` | Hotkey name |
 | `--once` | off | Run one epoch and exit |
-| `--live/--mock` | `--mock` | Mock (default, accepts unattested proofs) or live (requires real TDX) |
+| `--live/--mock` | `--live` | Live (default, requires real TDX) or mock (accepts unattested proofs; refused on finney) |
 | `--wallet-path` | SDK default | Bittensor wallet root directory |
 | `--log-level` | `INFO` | Logging level |
 

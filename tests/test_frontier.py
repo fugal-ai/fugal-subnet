@@ -244,20 +244,21 @@ def test_the_unconfident_share_of_emission_burns_after_normalisation():
     the one verified miner received 100% of the miner share, because a factor
     common to every score cancels when the scores are normalised. The burn is
     applied in compute_weights, after normalising."""
-    from fugal_subnet.rewards import BURN_UID, compute_weights
+    from fugal_subnet.rewards import compute_weights
     from fugal_subnet.scoring import MinerRecord
+    BURN_UID = 0
     recs = {
         5: MinerRecord(uid=5, hotkey="a", composite_score=0.0038),
         6: MinerRecord(uid=6, hotkey="b", composite_score=0.0010),
     }
-    uids, w = compute_weights(recs, paid_fraction=0.08)
+    uids, w = compute_weights(recs, paid_fraction=0.08, burn_uid=BURN_UID)
     got = dict(zip(uids, w))
     assert got[BURN_UID] == pytest.approx(0.92)
     assert got[5] == pytest.approx(0.08 * 0.0038 / 0.0048)
     assert got[6] == pytest.approx(0.08 * 0.0010 / 0.0048)
     assert sum(w) == pytest.approx(1.0)
     # Full confidence: nothing burns, ranking unchanged.
-    uids, w = compute_weights(recs, paid_fraction=1.0)
+    uids, w = compute_weights(recs, paid_fraction=1.0, burn_uid=BURN_UID)
     assert BURN_UID not in uids and dict(zip(uids, w))[5] == pytest.approx(0.0038 / 0.0048)
 
 

@@ -481,6 +481,15 @@ MIN_VALIDATOR_STAKE = float(os.getenv("FUGAL_MIN_VALIDATOR_STAKE", "1000"))
 # environment.
 
 
+# --- Chain identity ---
+# Genesis block hash of Bittensor mainnet (finney). Not configurable: it is the
+# one fact about the chain a --network URL cannot disguise, and it is what
+# both neurons compare against to refuse --mock on mainnet (diligence 2026-10,
+# finding A3). Verify on a finney node with
+# `subtensor.substrate.get_block_hash(0)` before launch; a wrong value here
+# makes the guard inert, never wrongly blocking.
+FINNEY_GENESIS_HASH = "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c78"
+
 # --- Every FUGAL_ environment variable this module reads, classified ---
 #
 # Diligence 2026-10, additional finding A2: scoring constants could be changed

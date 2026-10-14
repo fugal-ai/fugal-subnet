@@ -34,7 +34,9 @@ These are non-negotiable. Violating any of them breaks the subnet:
 4. **NO API credit spend without explicit user approval.**
    Any code path that calls OpenRouter costs real money. Tag costs in comments
    as `[PAID ~$X]`. Never auto-run real API calls in tests or scripts without
-   `--mock` being the default.
+   `--mock` being the default. The validator is the exception: it makes no
+   model calls and defaults to `--live` (mock accepts unattested proofs); both
+   neurons refuse `--mock` when the chain's genesis hash is finney's.
 
 5. **NEVER print or log any part of `OPENROUTER_API_KEY`.**
    Not even the last 4 characters. Log "Key is set" or "Key not set", nothing more.

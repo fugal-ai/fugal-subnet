@@ -119,7 +119,8 @@ def main():
                       n_scored=20, total_head_cost=proof.scored_cost_usd)
     state = update_scores(ScoringState(), {1: score}, {1: proof.weights_hash}, frontier=frontier,
                           hotkeys={1: "mock-hotkey"}, n_questions=20, pool_size=100)
-    chain.set_weights(*compute_weights(state.records, paid_fraction=frontier.confidence))
+    chain.set_weights(*compute_weights(state.records, paid_fraction=frontier.confidence,
+                                       burn_uid=0))
     assert ReferenceFrame.from_dict(frame.to_dict()).to_dict() == frame.to_dict()
     report = {"mode": "mocked local-chain mechanism rehearsal; no paid inference or real chain writes",
               "routing_protocol": identity(), "head_sha256": c.file_hash(out / "head.npz"),

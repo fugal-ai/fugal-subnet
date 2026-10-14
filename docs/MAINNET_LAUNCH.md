@@ -51,6 +51,14 @@ epoch must also be at least `weights_rate_limit` blocks (100 by default, a
 
 ### 3. Every neuron must load the identical benchmark pool
 
+The short version since 2026-10-14: build the pool once with
+`python scripts/export_pool.py` on a machine that can reach Hugging Face,
+copy `data/benchmarks/pool.json.gz` to every neuron (or point
+`FUGAL_POOL_FILE` at it), and leave `FUGAL_BENCHMARK_POOL` unset. The loader
+prefers the file, verifies it against the pinned manifest at startup, and
+never touches Hugging Face. Do not publish the file: the datasets carry their
+own licences.
+
 The pool is consensus state: the slice is drawn from it, so a validator and a
 miner with different pools disagree on every question and every proof fails on
 `questions_hash` — an error that names the symptom and never the cause.

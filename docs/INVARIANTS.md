@@ -1977,8 +1977,14 @@ returns a *larger* pool for one with it. LiveCodeBench loads zero questions on
 current `datasets` versions but loads normally for anyone who has manually
 placed `data/benchmarks/livecode.json`. Either divergence produces proofs that
 fail on `questions_hash`, an error that names the symptom and never the cause.
-Until the pool is published as a hash-pinned artifact and every neuron is
-pointed at it with `FUGAL_BENCHMARK_POOL`, the loader is a consensus hazard.
+The pinned manifest (`benchmarks/pool_manifest.json`) catches either
+divergence at startup. What remains (diligence 2026-10, finding 8) is the
+build itself: `scripts/export_pool.py` materialises the pool once as
+`data/benchmarks/pool.json.gz`, which `load_all()` prefers when present and
+verifies against the manifest like any override, so a neuron needs Hugging
+Face to build the pool and never to start. The file is not a release asset —
+the datasets carry their own licences — so operators build it and copy it;
+the residual is that a removed upstream revision stops NEW builds.
 
 **The override path was the unguarded one (fixed 2026-09-06).** `load_all`
 returned a `FUGAL_BENCHMARK_POOL` file before either the manifest check or the

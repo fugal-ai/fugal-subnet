@@ -18,7 +18,7 @@ validator:
 6. Verifies each proof against every binding (see "TEE Proof Verification")
 7. Pools the verified exploration samples into the **reference frame**
 8. Scores each miner as accuracy headroom above the constant-policy frontier (what any single model or random mixture buys at the miner's own cost)
-9. Deduplicates copied routing behavior (earliest on-chain commitment wins)
+9. Deduplicates copied heads: by routing behavior, by weight distance, and by the epsilon rule (a near-copy must beat the senior head); the senior head, by registration block then commitment block, wins
 10. Computes weights, sets weights on-chain
 11. Publishes the epoch reveal artifact
 
@@ -247,7 +247,7 @@ The validator automatically flags:
 - **Weight capping** — weights change at most ±0.3 per UID per epoch
 - **Commit-reveal** — questions committed before miner queries
 - **State persistence** — scoring state survives restarts
-- **Dedup seniority** — earliest on-chain commitment wins duplicate clusters
+- **Dedup seniority** — the earliest-registered hotkey, then the earliest commitment, wins duplicate clusters; read from chain at the epoch boundary
 
 ## Troubleshooting
 

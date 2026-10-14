@@ -169,7 +169,27 @@ EXPLORE_DISAGREE_MIN_SAMPLES = int(os.getenv("FUGAL_EXPLORE_DISAGREE_MIN_SAMPLES
 EXPLORE_DISAGREE_MIN_VOTERS = int(os.getenv("FUGAL_EXPLORE_DISAGREE_MIN_VOTERS", "3"))
 
 # --- Dedup ---
+# Behavioural clause: two heads whose routing decisions agree on this share of
+# the slice are one head. A copier can pass it by nudging a bias term until a
+# handful of decisions change (diligence 2026-10, finding 5), which is why the
+# two clauses below exist alongside it.
 DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("FUGAL_DEDUP_THRESHOLD", "0.99"))
+# Parameter clause: two heads whose weights sit closer than this relative
+# Frobenius distance (fugal_subnet/head_distance.py) are one head whatever
+# their decisions say. Measured 2026-10-14 by
+# scripts/experiment_head_similarity.py on the cached SPROUT data: eight heads
+# each trained on its own 60% of the questions sit 0.42-0.61 from each other
+# (and agree on only 85-92% of decisions); copies of one head with 10%
+# multiplicative weight noise sit at 0.10 and change 0-15 of 300 decisions,
+# which the behavioural clause alone misses. 0.2 is the geometric midpoint of
+# that gap (docs/HEAD_EFFICACY.md, "Experiment 3").
+DEDUP_PARAM_DISTANCE = float(os.getenv("FUGAL_DEDUP_PARAM_DISTANCE", "0.2"))
+# Epsilon clause (Subnet 9's rule): a head that agrees with a SENIOR head on
+# at least DEDUP_EPSILON_AGREEMENT of decisions must beat its composite score
+# by DEDUP_EPSILON (relative) or it is disqualified. Copy-and-tweak then has to
+# be copy-and-improve, which is the thing the subnet pays for anyway.
+DEDUP_EPSILON_AGREEMENT = float(os.getenv("FUGAL_DEDUP_EPSILON_AGREEMENT", "0.95"))
+DEDUP_EPSILON = float(os.getenv("FUGAL_DEDUP_EPSILON", "0.005"))
 
 # --- Evidence accumulation ---
 EVIDENCE_HALF_LIFE = int(os.getenv("FUGAL_EVIDENCE_HALF_LIFE", "200"))
@@ -432,9 +452,13 @@ MAX_WEIGHT_DELTA = float(os.getenv("FUGAL_MAX_WEIGHT_DELTA", "0.3"))
 REQUIRE_COMMITMENT = os.getenv("FUGAL_REQUIRE_COMMITMENT", "1") not in ("0", "false", "False")
 
 # --- Miner axon access control ---
-# Minimum stake (TAO) a querying hotkey needs when it lacks a validator permit.
-# 0 admits any registered hotkey (safe default for testnets); raise on finney.
-MIN_VALIDATOR_STAKE = float(os.getenv("FUGAL_MIN_VALIDATOR_STAKE", "0"))
+# Minimum stake (TAO) a querying hotkey needs when it lacks a validator permit,
+# in --live. The axon answers with the miner's FULL head, so an open axon is a
+# free download of the leader's router for anyone with a registration
+# (diligence 2026-10, finding 5). Mock ignores this and admits any registered
+# hotkey, for local testnets and the dress rehearsal; a live miner refuses to
+# start with it at 0 (neurons/miner.py, caller_allowed).
+MIN_VALIDATOR_STAKE = float(os.getenv("FUGAL_MIN_VALIDATOR_STAKE", "1000"))
 
 # Grader execution limits live in graders.py itself (EXEC_TIMEOUT_SECS and the
 # output cap): that file is hash-pinned consensus code and cannot read an

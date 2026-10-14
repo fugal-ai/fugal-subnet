@@ -71,7 +71,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 10. `evidence.py` → EWMA-decayed evidence accumulation with Wilson LCB, effective-n capped by pool size
 11. `frontier.py` + `scoring.py` → headroom above the constant-policy frontier (upper convex hull of per-model cost/accuracy from the frame), quality floor, burn-in ramp, frontier confidence
 12. `rewards.py` → weight computation (single pool, weight capping ±0.3/epoch)
-13. `dedup.py` → behavioural dedup (cosine similarity on routing decisions, GLOBAL model index space)
+13. `dedup.py` → dedup: behavioural (cosine on routing decisions, GLOBAL model index space), parametric (`head_distance.py`, relative weight distance), and the epsilon rule (a near-copy must beat its senior); seniority is `commitments.seniority_key` (registration block, then commitment block)
 14. `commit_reveal.py` → commit-reveal integrity + publish epoch artifacts
 
 ### Orchestrators

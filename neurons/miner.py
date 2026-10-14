@@ -28,11 +28,52 @@ import click
 
 # isort: off
 import fugal_subnet.determinism  # noqa: F401, E402 — must precede numpy
+from fugal_subnet.config import MIN_VALIDATOR_STAKE  # noqa: E402
 # isort: on
 
 logger = logging.getLogger("fugal.miner")
 
 METAGRAPH_REFRESH_S = 300
+
+
+
+def caller_allowed(metagraph, caller, *, live: bool, min_stake: float | None = None):
+    """May `caller` query this axon? Returns (allowed, reason).
+
+    Live: a registered hotkey with a validator permit, or with stake at or
+    above `min_stake` (default MIN_VALIDATOR_STAKE), may query. The axon
+    answers with the full head, so anyone else is a copier with a download
+    link (diligence 2026-10, finding 5). Mock: any registered hotkey, for local
+    testnets where nothing has a permit. Factored out of the axon closure so
+    the rule can be tested without a chain.
+    """
+    if not caller:
+        return False, "no caller hotkey"
+    hotkeys = list(getattr(metagraph, "hotkeys", []) or [])
+    if caller not in hotkeys:
+        return False, f"unregistered hotkey {caller[:8]}..."
+    if not live:
+        return True, "ok (mock admits any registered hotkey)"
+    threshold = MIN_VALIDATOR_STAKE if min_stake is None else float(min_stake)
+    uid = hotkeys.index(caller)
+    permit = False
+    try:
+        permit = bool(metagraph.validator_permit[uid])
+    except (AttributeError, IndexError, TypeError):
+        pass
+    if permit:
+        return True, "ok (validator permit)"
+    stake = 0.0
+    try:
+        stake = float(metagraph.S[uid])
+    except (AttributeError, IndexError, TypeError):
+        pass
+    if stake >= threshold:
+        return True, f"ok (stake {stake:.0f} >= {threshold:.0f})"
+    return False, (
+        f"caller {caller[:8]}... has no validator permit and stake {stake:.0f} "
+        f"below {threshold:.0f}"
+    )
 
 
 @click.command()
@@ -218,6 +259,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                 "in this TD's measurement registers binds the code that will "
                 "produce its proofs.", identity[:16],
             )
+    # A live axon serves the full head to whoever may query it, and the
+    # default admits only validators (permit or stake). Zero would admit any
+    # registered hotkey, which is a free download of this router (diligence
+    # 2026-10, finding 5), so it is refused rather than warned about.
+    if not mock and MIN_VALIDATOR_STAKE <= 0:
+        raise click.ClickException(
+            "--live with FUGAL_MIN_VALIDATOR_STAKE=0 would serve this miner's head "
+            "to any registered hotkey. Leave it at the default or set a positive "
+            "threshold; validators with a permit always pass."
+        )
+
     current_proof = {
         "proof": None, "proof_json": "", "epoch_id": "", "lock": threading.Lock(),
     }
@@ -227,27 +279,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     def blacklist(synapse: FugalProofSynapse) -> Tuple[bool, str]:
         caller = getattr(synapse.dendrite, "hotkey", None)
-        if not caller:
-            return True, "no caller hotkey"
         with mg_lock:
             mg = mg_state["metagraph"]
-        if caller not in mg.hotkeys:
-            return True, f"unregistered hotkey {caller[:8]}..."
-        if MIN_VALIDATOR_STAKE > 0:
-            uid = mg.hotkeys.index(caller)
-            permit = False
-            try:
-                permit = bool(mg.validator_permit[uid])
-            except (AttributeError, IndexError):
-                pass
-            stake = 0.0
-            try:
-                stake = float(mg.S[uid])
-            except (AttributeError, IndexError, TypeError):
-                pass
-            if not permit and stake < MIN_VALIDATOR_STAKE:
-                return True, f"caller {caller[:8]}... lacks validator permit/stake"
-        return False, "ok"
+        allowed, reason = caller_allowed(mg, caller, live=not mock)
+        return (not allowed), reason
 
     head_b64 = base64.b64encode(head_data).decode("ascii")
 

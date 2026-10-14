@@ -259,6 +259,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         )
     my_uid = metagraph.hotkeys.index(my_hotkey)
     logger.info("Validator UID %d on %s netuid %d", my_uid, network, netuid)
+
+    # Reveal publishing: the bucket is operational configuration; the hold is
+    # the chain's commit-reveal period unless overridden.
+    from fugal_subnet.config import REVEAL_BUCKET, REVEAL_DELAY_EPOCHS
+    from fugal_subnet.reveal_publisher import GcsUploader, delay_epochs_for
+    reveal_uploader = GcsUploader(REVEAL_BUCKET) if REVEAL_BUCKET else None
+    reveal_delay = REVEAL_DELAY_EPOCHS or delay_epochs_for(subtensor, netuid)
+    if reveal_uploader is None:
+        (logger.warning if live else logger.info)(
+            "FUGAL_REVEAL_BUCKET is unset: epoch reveals stay on local disk and are "
+            "not published. Set it to a public-read GCS bucket (docs/VALIDATOR_GUIDE.md)."
+        )
+    else:
+        logger.info("Reveals publish to gs://%s after %d epoch(s)", REVEAL_BUCKET, reveal_delay)
     try:
         if not bool(metagraph.validator_permit[my_uid]):
             logger.warning("This hotkey has NO validator permit — set_weights will "
@@ -889,6 +903,22 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 logger.warning("Weight-setting failed: %s", msg)
 
             timer.end_phase()
+
+            # --- PUBLISH REVEALS ---
+            # Reveals old enough to be past the weight commit-reveal window go
+            # to the public store, newest hash on chain. Operational: a failure
+            # here is logged and retried, never an epoch lost.
+            if reveal_uploader is not None:
+                from fugal_subnet.commit_reveal import EPOCH_DIR
+                from fugal_subnet.reveal_publisher import publish_due_reveals
+                try:
+                    publish_due_reveals(
+                        EPOCH_DIR, epoch_index, reveal_delay, netuid, reveal_uploader,
+                        commit=lambda data: subtensor.set_commitment(wallet, netuid, data)[0],
+                    )
+                except Exception as e:  # noqa: BLE001 - publishing never takes the epoch down
+                    logger.warning("Reveal publishing failed this epoch: %s", e)
+
             anomalies = detect_anomalies(
                 epoch_score_dicts, epoch_weight_map,
                 n_neurons, len(verified_proofs),

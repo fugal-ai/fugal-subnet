@@ -18,7 +18,6 @@ import pytest
 XF = dict(strict=True, raises=(AssertionError, TypeError, AttributeError, ImportError))
 
 
-@pytest.mark.xfail(reason="A1: no reveal publisher exists", **XF)
 def test_reveal_publisher_exists_and_hashes_what_it_uploads():
     from fugal_subnet.reveal_publisher import reveal_digest
 

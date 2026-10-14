@@ -1924,6 +1924,22 @@ epoch and maps it through the pinned metagraph (`resolve_burn_uid`);
 guess on a failed lookup, because burning to the wrong UID pays someone;
 mock falls back to 0 for local chains without an owner query.
 
+### I7 — reveals are published, hash on chain (fixed 2026-10-14)
+
+Diligence 2026-10, additional finding A1. The reveal — ground truth,
+exploration observations, routing decisions, scores and weights — is the
+subnet's stated product and was written to the validator's local disk and
+never left it. `fugal_subnet/reveal_publisher.py` uploads each epoch's
+`reveal.json` to a public-read GCS bucket (`FUGAL_REVEAL_BUCKET`) once the
+validator is past the weight commit-reveal window (the hold is read from the
+subnet's hyperparameters, so a reveal never leaks weights the chain is still
+hiding), and commits `reveal:<epoch_id>:<sha256>` on chain with the validator
+hotkey. Anyone can fetch the file and check it against the chain; two
+validators' commitments for the same epoch should carry the same hash (I1).
+A `.published` marker is written only after the upload, so failures are
+retried and nothing is marked that was not sent. Operational, not consensus:
+an unset bucket skips with a warning. `tests/test_reveal_publisher.py`.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

@@ -98,8 +98,10 @@ def run_pipeline(seed: int) -> dict:
     from fugal_subnet.exploration import expected_exploration
     from fugal_subnet.head_eval import HeadScore
     from fugal_subnet.reference_frame import (
+        Observation,
         ReferenceFrame,
         accumulate_exploration,
+        aggregate_observations,
         best_model,
         reference_cost,
     )
@@ -216,14 +218,21 @@ def run_pipeline(seed: int) -> dict:
         routing[uid] = [r.routed_model for r in proof.scored_results]
         head_hashes[uid] = proof.weights_hash
 
-    # The frame pools every verified proof's exploration samples. Iterated in
-    # sorted uid order so the accumulation is order-independent by construction
-    # as well as by arithmetic.
-    frame = accumulate_exploration(ReferenceFrame(), [
-        (r.routed_model, r.correct, r.prompt_tokens, r.completion_tokens)
+    # The frame pools every verified proof's exploration samples, one vote per
+    # coldkey and one sample per (question, model), exactly as the validator
+    # does. Every synthetic miner answers the same exploration questions, so
+    # this stage exercises the aggregation and not just the sums. Iterated in
+    # sorted uid order so order-independence holds by construction as well as
+    # by arithmetic.
+    frame = accumulate_exploration(ReferenceFrame(), aggregate_observations([
+        Observation(
+            question_id=r.question_id, model=r.routed_model, correct=r.correct,
+            prompt_tokens=r.prompt_tokens, completion_tokens=r.completion_tokens,
+            failed=r.failed, coldkey=f"coldkey-{uid}",
+        )
         for uid in sorted(proof_objs)
         for r in proof_objs[uid].exploration_results
-    ])
+    ]))
     ref_model, acc_best = best_model(frame, prices)
     from fugal_subnet.frontier import build_frontier
     from fugal_subnet.pricing import question_input_tokens

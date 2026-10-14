@@ -31,13 +31,14 @@ from tests.frame_fixtures import (
     frontier_of,
 )
 
-pytestmark = pytest.mark.xfail(
+_PRIOR_BIAS = pytest.mark.xfail(
     strict=True,
     reason="diligence 2026-10 finding 3: a neutral prior lets constant policies score",
     raises=(AssertionError, TypeError, AttributeError, ImportError),
 )
 
 
+@_PRIOR_BIAS
 @pytest.mark.parametrize("samples_per_model", [50, 200, 650])
 def test_constant_policies_score_zero_at_true_accuracy(samples_per_model):
     """Whatever the frame has seen, a head that never reads the question earns 0.

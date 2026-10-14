@@ -1693,6 +1693,64 @@ victim therefore still holds earlier seniority. This is far weaker than the
 copy-and-outrank bug it replaced — it requires predicting the victim well in
 advance — but it is not zero.
 
+### I9 — the frame is a vote of operators, not a sum of answers (fixed 2026-10-14)
+
+The 2026-10-14 diligence review rated this critical, and reproduced it with the
+repo's own code: every miner answers the same exploration questions, each copy
+was added to the frame as a fresh trial, and a failed model call was graded as
+a wrong answer. A coalition that dropped its own network during exploration —
+which ran as a separate pass after the scored questions, so it was a separate
+thing to block — pulled every model's measured accuracy down by exactly its
+share of the field. At 10% of miners, 9 of 17 always-one-model policies became
+profitable; at a third, 15 of 17.
+
+| colluding share | frontier peak | constant policies paid |
+|---|---|---|
+| 0% | 0.898 | 0 of 17 |
+| 10% | 0.809 | 9 of 17 |
+| 20% | 0.719 | 12 of 17 |
+| 33% | 0.603 | 15 of 17 |
+
+Four changes, which ship together because they share the sample schema:
+
+1. **A failed call is attested as failed.** `QuestionResult.failed` is set by
+   the harness when the call did not complete (None from `_call_model`, as
+   distinct from "" for a reply with no text), is hash-bound, and is held to
+   its meaning by `verify_proof`: a failed result cannot be correct and cannot
+   carry a reply. `failed` enters `content_hash` only when True, so a proof
+   with no failures hashes as it did before the field existed.
+2. **Failing exploration is not free.** `verify_proof` rejects a proof whose
+   exploration failure rate exceeds its scored failure rate by more than
+   `EXPLORE_FAIL_MARGIN` (0.34, six of fifteen slots). It is the difference
+   that is judged, so an outage that takes both down is a bad epoch and not a
+   rejection.
+3. **Exploration is interleaved with scored calls** in nonce order, so the
+   network sees one stream. This removes the cheap form of the attack; TLS
+   record sizes could still in principle single out a request, which is why
+   it is 1 and 2 that close it and this is defence in depth.
+4. **One sample per (question, model) per epoch**, via
+   `reference_frame.aggregate_observations`: failed answers dropped, one vote
+   per coldkey (hotkeys under one coldkey are one operator), the median across
+   coldkeys. `frame.trials` therefore counts what has been measured — thirty
+   identical answers are one observation, which is also what finding 3 (the
+   prior's confidence filling on duplicates) needed. Reveals carry `coldkey`
+   and `failed` per exploration entry so `rebuild_from_reveals` regroups the
+   same way; entries written before those fields existed are each their own
+   voter, which is what they were.
+
+**The assumption, stated plainly.** The frame is robust while honest coldkeys
+are a majority of those answering each question. Sybils are not a lever — the
+coldkey is the unit — and each coldkey costs a registration and a TDX VM that
+runs the whole benchmark. Below a majority a coalition cannot move a single
+observation; above it the frame is theirs, and the two-sided detector
+(finding 4) is what makes that attributable.
+
+Enforced by `tests/test_finding2_frame_manipulation.py`,
+`tests/test_proof_failed_flag.py`, the `run_tee_attacks.py` cases "block the
+network during exploration only" and "a failed call that is also correct", and
+the `frame` stage of `check_determinism.py`, whose synthetic miners share
+exploration questions so the aggregation is what is hashed.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

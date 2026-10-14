@@ -12,6 +12,7 @@ ROUTING_DECISION_QUANTUM to ensure bit-identical routing decisions.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import threading
@@ -99,9 +100,46 @@ def run_benchmark(
         model_id = head.models[_route_question(head, hidden_states[q_idx], costs)]
         scheduled.append((q, model_id, False))
 
-    for q, model_id, response_text, cost, prompt_tokens, completion_tokens in _call_all(
-        proxy, scheduled, epoch_id,
-    ):
+    # --- Exploration, scheduled WITH the scored questions ---
+    # Extra questions routed to models the nonce picks, not the head. They are
+    # the only unbiased observation of the model pool anyone gets, and because
+    # the assignment is deterministic and attested, skipping them is a rejected
+    # proof rather than a saving. See fugal_subnet/exploration.py.
+    #
+    # They used to run as a second pass AFTER the scored questions. A miner
+    # controls its own VM's network, so a distinct phase was a distinct thing
+    # to block: drop connections for the last 5% of calls and every
+    # exploration answer grades wrong, pulling the shared reference frame down
+    # (diligence 2026-10, finding 2). Interleaving in nonce order means the
+    # network sees one undifferentiated stream. Failed calls are also recorded
+    # as failed and excluded from the frame, which is what actually closes the
+    # attack; the interleave removes the cheap version of it.
+    if explore_models and explore_size > 0:
+        pool_by_id = {q["question_id"]: q for q in benchmark_pool}
+        explore_map = expected_exploration(
+            nonce_bytes, benchmark_pool, set(question_ids), explore_models, explore_size,
+        )
+        scheduled += [
+            (pool_by_id[qid], explore_map[qid], True)
+            for qid in sorted(explore_map) if qid in pool_by_id
+        ]
+
+    # The CALLS go out in nonce order; the RESULTS are recorded in slice order
+    # with exploration after, as they always were. What the network sees is
+    # the call order; what the proof lays out is a stable, inspectable list.
+    call_order = sorted(scheduled, key=lambda item: hmac.new(
+        nonce_bytes, f"order:{item[0]['question_id']}".encode("utf-8"), hashlib.sha256,
+    ).digest())
+    outcomes = {
+        (q["question_id"], is_explore): (response_text, failed, cost, p_tok, c_tok)
+        for q, _model, is_explore, response_text, failed, cost, p_tok, c_tok
+        in _call_all(proxy, call_order, epoch_id)
+    }
+
+    for q, model_id, is_explore in scheduled:
+        response_text, failed, cost, prompt_tokens, completion_tokens = outcomes[
+            (q["question_id"], is_explore)
+        ]
         # grade() needs a grader task dict, not a raw loader question: it reads
         # task["checker"]["id"] / task["domain"], neither of which the loader
         # schema has. Passing the raw dict raises KeyError inside grade(), which
@@ -109,8 +147,11 @@ def run_benchmark(
         # Execution policy is one constant, read by the harness AND by the
         # loader that decides what is in the pool — see config.HARNESS_ALLOW_EXEC.
         # They drifted apart once and a sixth of every slice scored zero.
-        correct = bool(grade(build_grader_task(q), response_text,
-                             allow_exec=HARNESS_ALLOW_EXEC))
+        # A failed call is graded as what it is -- no answer -- and recorded
+        # as failed; the grade of "" is wrong by construction, so `correct`
+        # stays False and the proof says why.
+        correct = (not failed) and bool(grade(build_grader_task(q), response_text,
+                                              allow_exec=HARNESS_ALLOW_EXEC))
         results.append(QuestionResult(
             question_id=q["question_id"],
             routed_model=model_id,
@@ -119,37 +160,9 @@ def run_benchmark(
             response_hash=hashlib.sha256(response_text.encode()).hexdigest(),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            is_exploration=is_explore,
+            failed=failed,
         ))
-
-    # --- Exploration pass ---
-    # Extra questions routed to models the nonce picks, not the head. They are
-    # the only unbiased observation of the model pool anyone gets, and because
-    # the assignment is deterministic and attested, skipping them is a rejected
-    # proof rather than a saving. See fugal_subnet/exploration.py.
-    if explore_models and explore_size > 0:
-        pool_by_id = {q["question_id"]: q for q in benchmark_pool}
-        explore_map = expected_exploration(
-            nonce_bytes, benchmark_pool, set(question_ids), explore_models, explore_size,
-        )
-        explore_sched = [
-            (pool_by_id[qid], explore_map[qid], True)
-            for qid in sorted(explore_map) if qid in pool_by_id
-        ]
-        for q, model_id, response_text, cost, prompt_tokens, completion_tokens in _call_all(
-            proxy, explore_sched, epoch_id,
-        ):
-            correct = bool(grade(build_grader_task(q), response_text,
-                                 allow_exec=HARNESS_ALLOW_EXEC))
-            results.append(QuestionResult(
-                question_id=q["question_id"],
-                routed_model=model_id,
-                correct=correct,
-                cost_usd=cost,
-                response_hash=hashlib.sha256(response_text.encode()).hexdigest(),
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                is_exploration=True,
-            ))
 
     proof = BenchmarkProof(
         hotkey=hotkey,
@@ -193,31 +206,35 @@ def current_request_id() -> str:
 
 def _call_all(proxy, scheduled, epoch_id):
     """Make every scheduled model call, HARNESS_CONCURRENCY at a time, and yield
-    (question, model_id, text, cost, prompt_tokens, completion_tokens) in the
-    ORDER SCHEDULED — never completion order. Cost is attributed by request id,
-    so interleaved calls cannot bill one question for another's tokens, and a
-    failed call that appended no record costs nothing (as before).
+    (question, model_id, is_exploration, text, failed, cost, prompt_tokens,
+    completion_tokens) in the ORDER SCHEDULED — never completion order. Cost is
+    attributed by request id, so interleaved calls cannot bill one question for
+    another's tokens, and a failed call that appended no record costs nothing.
+
+    `failed` is True when `_call_model` returned None: the call did not
+    complete. A reply that completed but was not text is "" and NOT failed --
+    that is a wrong answer, and it is billed.
     """
     def one(item):
         q, model_id, _explore = item
         rid = f"{epoch_id}:{q['question_id']}:{model_id}"
         _request_ctx.request_id = rid
         try:
-            # `or ""`: a reply that is not text is a wrong answer, never an
-            # abort. One aborted question used to take the whole proof.
-            text = _call_model(proxy, model_id, q) or ""
+            text = _call_model(proxy, model_id, q)
         finally:
             _request_ctx.request_id = ""
-        return rid, text
+        # A reply that is not text is a wrong answer, never an abort. One
+        # aborted question used to take the whole proof.
+        return rid, (text is None), ("" if text is None else text)
 
     if not scheduled:
         return
     with ThreadPoolExecutor(max_workers=HARNESS_CONCURRENCY) as pool:
         outcomes = list(pool.map(one, scheduled))
-    for (q, model_id, _explore), (rid, text) in zip(scheduled, outcomes):
+    for (q, model_id, explore), (rid, failed, text) in zip(scheduled, outcomes):
         mine = [r for r in proxy.records if r.request_id == rid]
         yield (
-            q, model_id, text,
+            q, model_id, explore, text, failed,
             sum(r.cost_usd for r in mine),
             sum(r.prompt_tokens for r in mine),
             sum(r.completion_tokens for r in mine),
@@ -228,8 +245,14 @@ def _call_model(
     proxy: MeteringProxy,
     model_id: str,
     question: dict,
-) -> str:
-    """Call a model via the MeteringProxy."""
+) -> str | None:
+    """Call a model via the MeteringProxy.
+
+    Returns the reply text, "" for a reply that completed but carried no
+    text, and None when the call did not complete at all. The distinction is
+    attested downstream (`QuestionResult.failed`): "" is a wrong answer that
+    measures the model, None measures the network.
+    """
     prompt = question["prompt"]
     payload = json.dumps({
         "model": model_id,
@@ -255,7 +278,7 @@ def _call_model(
         return _text_of(data)
     except Exception:
         logger.exception("Model call failed for %s", model_id)
-        return ""
+        return None
 
 
 def _text_of(data) -> str:

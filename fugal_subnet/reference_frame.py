@@ -34,6 +34,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass, field
+from statistics import median
 
 from fugal_subnet.config import (
     FRAME_HALF_LIFE,
@@ -113,6 +114,77 @@ def decay_factor(half_life: int) -> float:
     return 2.0 ** (-1.0 / max(1, half_life))
 
 
+@dataclass(frozen=True)
+class Observation:
+    """One miner's answer to one exploration question on one nonce-chosen model.
+
+    `coldkey` is the voter: hotkeys under one coldkey are one operator and get
+    one vote between them. `failed` means the model call did not complete --
+    the attested proof says so -- and is distinct from a wrong answer: it tells
+    the frame nothing about the model and is dropped before aggregation.
+    """
+
+    question_id: str
+    model: str
+    correct: bool
+    prompt_tokens: int
+    completion_tokens: int
+    failed: bool = False
+    coldkey: str = ""
+
+
+def aggregate_observations(
+    observations: list[Observation],
+    exclude_coldkeys: set[str] | frozenset[str] | None = None,
+) -> list[tuple[str, float, float, float]]:
+    """Collapse an epoch's shared exploration answers into ONE sample per
+    (question, model), robust to a minority of dishonest operators.
+
+    WHY. Every miner answers the same exploration questions, and the frame used
+    to add each miner's copy as a fresh trial. That had two consequences the
+    2026-10-14 diligence review rated critical and high. A coalition could pull
+    a model's measured accuracy down by exactly its share of the field, by
+    blocking its own network during exploration (a failed call graded as a
+    wrong answer) -- 10% of miners made 9 of 17 constant policies profitable.
+    And thirty identical answers counted as thirty samples, so the frontier's
+    confidence filled in a couple of epochs on two distinct questions per
+    model, long before the prior had washed out (finding 3).
+
+    WHAT. Per (question_id, model):
+      1. drop `failed` observations -- a call that did not happen says nothing;
+      2. drop excluded coldkeys (the anomaly detector's flags, finding 4);
+      3. one vote per coldkey: average that operator's hotkeys;
+      4. the MEDIAN across coldkeys is the observation's `correct` fraction,
+         and likewise for token counts.
+    The result is one trial per distinct (question, model), so `frame.trials`
+    counts what the subnet has actually measured, and a coalition below half
+    the voting coldkeys on a question cannot move its outcome at all.
+
+    THE ASSUMPTION, stated plainly: the frame is robust while honest coldkeys
+    are a majority of those answering each question. Sybils do not help -- a
+    coldkey is the unit -- and each coldkey costs a registration and a TDX VM
+    running the full benchmark.
+
+    Deterministic: output is sorted by (model, question_id) and every step is
+    order-independent, so validators seeing proofs in any order agree (I1, I9).
+    """
+    excluded = set(exclude_coldkeys or ())
+    by_key: dict[tuple[str, str], dict[str, list[Observation]]] = {}
+    for o in observations:
+        if o.failed or o.coldkey in excluded:
+            continue
+        by_key.setdefault((o.model, o.question_id), {}).setdefault(o.coldkey, []).append(o)
+
+    out: list[tuple[str, float, float, float]] = []
+    for (model, _qid), by_coldkey in sorted(by_key.items()):
+        votes = sorted(by_coldkey.items())
+        correct = median(sum(float(o.correct) for o in obs) / len(obs) for _, obs in votes)
+        p_tok = median(sum(o.prompt_tokens for o in obs) / len(obs) for _, obs in votes)
+        c_tok = median(sum(o.completion_tokens for o in obs) / len(obs) for _, obs in votes)
+        out.append((model, float(correct), float(p_tok), float(c_tok)))
+    return out
+
+
 def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
     """Rebuild a reference frame by replaying published epoch reveals.
 
@@ -162,13 +234,24 @@ def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
         if not epoch_id:
             logger.warning("Skipping reveal with no epoch_id: %s", path)
             continue
-        samples = [
-            (str(e.get("model", "")), bool(e.get("correct")),
-             int(e.get("prompt_tokens", 0)), int(e.get("completion_tokens", 0)))
-            for e in reveal.get("exploration", [])
+        # One observation per entry, aggregated per (question, model) exactly
+        # as the live validator does. Reveals written before `coldkey` and
+        # `failed` existed treat every entry as its own voter, which is what
+        # they were: one entry per miner, no sybil grouping possible.
+        observations = [
+            Observation(
+                question_id=str(e.get("question_id", "")),
+                model=str(e.get("model", "")),
+                correct=bool(e.get("correct")),
+                prompt_tokens=int(e.get("prompt_tokens", 0)),
+                completion_tokens=int(e.get("completion_tokens", 0)),
+                failed=bool(e.get("failed", False)),
+                coldkey=str(e.get("coldkey") or f"entry-{i}"),
+            )
+            for i, e in enumerate(reveal.get("exploration", []))
             if e.get("model")
         ]
-        epochs.append((epoch_id, samples))
+        epochs.append((epoch_id, aggregate_observations(observations)))
 
     frame = None
     replayed = 0
@@ -247,15 +330,17 @@ def implausible_exploration(
 
 def accumulate_exploration(
     frame: ReferenceFrame | None,
-    samples: list[tuple[str, bool, int, int]],
+    samples: list[tuple[str, float, float, float]],
     half_life: int = FRAME_HALF_LIFE,
 ) -> ReferenceFrame:
     """Fold one epoch's exploration samples into the frame.
 
-    `samples` are (model_id, correct, prompt_tokens, completion_tokens) tuples
-    pooled from every verified proof in the epoch. Sample order does not affect
-    the result — all terms are sums — so validators processing proofs in any
-    order reach identical frames.
+    `samples` are (model_id, correct, prompt_tokens, completion_tokens) tuples:
+    on the live path the output of `aggregate_observations`, one per distinct
+    (question, model) with `correct` a fraction in [0, 1]; a plain bool is
+    accepted too, which is what tests and single-voter replays supply. Sample
+    order does not affect the result — all terms are sums — so validators
+    processing proofs in any order reach identical frames.
     """
     alpha = decay_factor(half_life)
     prev = frame or ReferenceFrame()
@@ -269,7 +354,7 @@ def accumulate_exploration(
     )
     for model, correct, p_tok, c_tok in samples:
         out.trials[model] = out.trials.get(model, 0.0) + 1.0
-        out.successes[model] = out.successes.get(model, 0.0) + (1.0 if correct else 0.0)
+        out.successes[model] = out.successes.get(model, 0.0) + float(correct)
         out.prompt_tokens[model] = out.prompt_tokens.get(model, 0.0) + float(p_tok)
         out.completion_tokens[model] = out.completion_tokens.get(model, 0.0) + float(c_tok)
     return out

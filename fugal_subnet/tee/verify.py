@@ -34,6 +34,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 
+from fugal_subnet.config import EXPLORE_FAIL_MARGIN
 from fugal_subnet.tee.attestation import (
     CollateralUnavailable,
     expected_rtmr3,
@@ -479,6 +480,12 @@ def verify_proof(
     #     inputs, so this never relies on the miner's account of it.
     if expected_exploration is not None:
         explored = {r.question_id: r.routed_model for r in proof.exploration_results}
+        if len(proof.exploration_results) != len(explored):
+            return VerifyResult(
+                False,
+                f"Duplicate exploration results: {len(proof.exploration_results)} "
+                f"entries for {len(explored)} questions",
+            )
         if set(explored) != set(expected_exploration):
             return VerifyResult(
                 False,
@@ -543,6 +550,44 @@ def verify_proof(
             f"{len(unknown)} results reference questions with no gold answer "
             f"(e.g. {unknown[:3]})",
         )
+
+    # 9b. A failed call is a wrong answer and nothing more. The harness
+    #     records `failed` for a call that did not complete, and the frame
+    #     drops such results rather than reading them as the model being
+    #     wrong (diligence 2026-10, finding 2). That makes the flag worth
+    #     lying about in both directions, so it is held to its meaning: a
+    #     failed result cannot be correct and cannot carry a reply.
+    empty_reply = hashlib.sha256(b"").hexdigest()
+    bad_failed = [
+        r.question_id for r in proof.results
+        if r.failed and (r.correct or r.response_hash != empty_reply)
+    ]
+    if bad_failed:
+        return VerifyResult(
+            False,
+            f"{len(bad_failed)} results are marked failed but carry a grade or "
+            f"a reply (e.g. {bad_failed[:3]})",
+        )
+
+    # 9c. Failed calls are free of consequence for the frame, so failing
+    #     exploration must not be free for the miner. A miner controls its
+    #     own network and exploration is 5% of its bill; a proof whose
+    #     exploration failed far more often than its scored pass is the
+    #     signature of blocking that phase, and it is rejected whole. An
+    #     outage that takes both down equally passes this -- it is the
+    #     DIFFERENCE that is judged -- and is then merely a bad epoch.
+    n_explore = len(proof.exploration_results)
+    n_scored = len(proof.scored_results)
+    if n_explore and n_scored:
+        explore_fail = sum(1 for r in proof.exploration_results if r.failed) / n_explore
+        scored_fail = sum(1 for r in proof.scored_results if r.failed) / n_scored
+        if explore_fail - scored_fail > EXPLORE_FAIL_MARGIN:
+            return VerifyResult(
+                False,
+                f"Exploration failure rate {explore_fail:.0%} exceeds the scored "
+                f"failure rate {scored_fail:.0%} by more than "
+                f"{EXPLORE_FAIL_MARGIN:.0%}: exploration was blocked, not run",
+            )
 
     # 10. Costs must be internally consistent. Under real attestation this can
     #     never legitimately fail — the metering proxy produced every figure

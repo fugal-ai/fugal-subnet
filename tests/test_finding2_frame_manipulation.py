@@ -22,7 +22,8 @@ The required behaviour, pinned here and delivered by PR 2:
     one vote per coldkey and a median across coldkeys, so a minority coalition
     cannot move it.
 
-Expected to fail until PR 2; strict xfail so the marker leaves with the fix.
+Delivered by `reference_frame.aggregate_observations`, `QuestionResult.failed`
+and the 9b/9c checks in `verify_proof`; see docs/INVARIANTS.md § I9.
 """
 from __future__ import annotations
 
@@ -32,12 +33,6 @@ import pytest
 
 from fugal_subnet.tee.proof import QuestionResult
 from tests.frame_fixtures import MODELS, TOP, TRUE_ACC, frame_from_truth, frontier_of
-
-pytestmark = pytest.mark.xfail(
-    strict=True,
-    reason="diligence 2026-10 finding 2: shared exploration samples are pooled naively",
-    raises=(AssertionError, TypeError, AttributeError, ImportError),
-)
 
 
 def _obs(qid, model, correct, coldkey, failed=False):

@@ -22,7 +22,7 @@ import pytest
 
 from fugal_subnet.reference_frame import ReferenceFrame, implausible_exploration
 
-pytestmark = pytest.mark.xfail(
+_DETECTOR = pytest.mark.xfail(
     strict=True,
     reason="diligence 2026-10 finding 4: detector is upward-only and advisory",
     raises=(AssertionError, TypeError, AttributeError, ImportError),
@@ -36,6 +36,7 @@ def _frame(acc=0.5, trials=200.0):
     return frame
 
 
+@_DETECTOR
 def test_too_low_is_flagged_like_too_high():
     frame = _frame(acc=0.5)
     honest = [("cheap", i % 2 == 0) for i in range(10)]      # 50%, as expected
@@ -45,6 +46,7 @@ def test_too_low_is_flagged_like_too_high():
     assert 1 not in flagged
 
 
+@_DETECTOR
 def test_disagreement_with_the_cross_miner_majority_is_flagged():
     from fugal_subnet.reference_frame import disagreeing_exploration
 
@@ -58,6 +60,7 @@ def test_disagreement_with_the_cross_miner_majority_is_flagged():
     assert not any(uid in flagged for uid in range(6))
 
 
+@_DETECTOR
 def test_disagreement_needs_enough_voters_and_samples():
     from fugal_subnet.reference_frame import disagreeing_exploration
 

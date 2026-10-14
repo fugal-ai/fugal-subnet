@@ -132,7 +132,8 @@ def reveal_epoch(
         # router cannot learn from.
         "exploration": sorted(
             exploration or [],
-            key=lambda e: (e.get("question_id", ""), e.get("model", "")),
+            key=lambda e: (e.get("question_id", ""), e.get("model", ""),
+                           e.get("coldkey", "")),
         ),
         "scores": {str(k): v for k, v in scores.items()},
         "weights": {str(k): v for k, v in weights.items()},

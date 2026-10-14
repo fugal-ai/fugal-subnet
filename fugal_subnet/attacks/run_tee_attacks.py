@@ -217,6 +217,34 @@ def a_redirected_exploration():
     return _verify(_proof(results), expected_exploration=explore, gold_answers=gold)
 
 
+def a_blocked_exploration():
+    """Drop the network during exploration only: every exploration call fails,
+    the scored pass is untouched. Failed calls no longer count against the
+    model in the reference frame, so this would otherwise be 5% of the
+    inference bill saved for free (diligence 2026-10, finding 2)."""
+    explore = {f"q{i}": "deepseek/deepseek-v4-flash" for i in range(900, 915)}
+    results = [_qr(q) for q in SLICE]
+    results += [
+        QuestionResult(q, m, False, 0.0, hashlib.sha256(b"").hexdigest(),
+                       prompt_tokens=0, completion_tokens=0, is_exploration=True,
+                       failed=True)
+        for q, m in explore.items()
+    ]
+    gold = {k: POOL_GOLD[k] for k in SLICE}
+    gold.update({q: {} for q in explore})
+    return _verify(_proof(results), expected_exploration=explore, gold_answers=gold)
+
+
+def a_failed_but_correct():
+    """Mark a scored answer failed AND correct: graded, but invisible to any
+    failure accounting. The flag must mean one thing."""
+    results = [_qr(q) for q in SLICE]
+    results[0] = QuestionResult(SLICE[0], "deepseek/deepseek-v4-flash", True, 0.001,
+                                hashlib.sha256(SLICE[0].encode()).hexdigest(),
+                                prompt_tokens=500, completion_tokens=300, failed=True)
+    return _verify(_proof(results))
+
+
 def a_duplicate_results():
     """Pad the result list to inflate the scored count."""
     return _verify(_proof([_qr(q) for q in SLICE] + [_qr(SLICE[0])]))
@@ -353,6 +381,8 @@ ATTACKS = [
     ("skip the exploration quota", "I3", a_skipped_exploration),
     ("redirect exploration to a chosen model", "I3", a_redirected_exploration),
     ("pad the result list with duplicates", "I3", a_duplicate_results),
+    ("block the network during exploration only", "I9", a_blocked_exploration),
+    ("a failed call that is also correct", "I9", a_failed_but_correct),
     ("forge an event log for an approved app", "I8", a_forged_event_log),
     ("reorder the event log to hit a target", "I8", a_reordered_event_log),
     ("truncate the event log", "I8", a_truncated_event_log),

@@ -457,6 +457,58 @@ never touches them: it applies only to the band where copies live.
 Independence here is the *weakest* honest case — 60% subsets of one dataset.
 Miners with their own model observations sit further apart.
 
+## Experiment 4 — which questions a memoriser would buy, and how many slots they fill
+
+Added 2026-10-14 for diligence finding 6. Experiment 2 established that a
+linear head memorises about 2,000 questions outright and saturates near
+2,500 (`results/pool_capacity.json`: 2,000 → 95%, 4,000 → 2,283 memorised,
+6,000 → 2,478). The slicer gave each of five benchmarks an equal 60 of 300
+slots, so AIME (933), GSM8K (1,319) and IFEval (259) — 2,511 questions —
+filled 60% of every score. The reviewer inferred from the capacity table that
+this set is memorisable and said so; two measurements settle it.
+
+**The small benchmarks, as a set.** `experiment_pool_memorization.py capacity
+--benchmarks aime,gsm8k,ifeval` on the 689 embedded questions from those
+three benchmarks, random labels over 17 models:
+
+| N (small-benchmark questions) | train accuracy on random labels | chance |
+|---|---|---|
+| 250 | 1.000 | 0.059 |
+| 500 | 1.000 | 0.059 |
+| 689 | 1.000 | 0.059 |
+
+Total memorisation, as inferred. The full 2,511 sit within the measured
+capacity.
+
+**What a memoriser buys, per slice shape.** A slot from a benchmark of N_b
+questions with quota q_b is worth q_b / N_b per memorised question, so a
+C-question lookup table fills benchmarks in that order.
+`scripts/experiment_slice_memorization.py --capacity 2500` (closed form, the
+slicer's own quotas):
+
+| `SLICE_SHARE_FACTOR` | quotas (aime, gsm8k, ifeval, math, mmlu) | small three | MMLU | memoriser's share |
+|---|---|---|---|---|
+| equal quotas (before) | 60, 60, 60, 60, 60 | 60% | 20% | **59.8%** |
+| 3 | 38, 55, 10, 99, 98 | 34% | 33% | 34.2% |
+| 2 | 25, 36, 7, 116, 116 | 23% | 39% | 22.6% |
+| **1.5 (shipped)** | 19, 27, 5, 104, 145 | 17% | 48% | **17.3%** |
+| 1.25 | 16, 22, 4, 86, 172 | 14% | 57% | 14.3% |
+| 1 (proportional) | 13, 19, 4, 69, 195 | 12% | 65% | 11.9% |
+
+At capacity 2,000 the shipped factor gives 13.9%. The factor is a trade
+between two dominations: small benchmarks dominating the *score* (the
+memoriser's lever) and MMLU dominating the *routing signal* (what
+stratification existed to prevent). 1.5 keeps MMLU under half the slice and
+the memoriser under a fifth of the score. The constant is in the fingerprint's
+epoch block because two neurons with different values select different
+questions.
+
+What this does not close: a memoriser still buys 17% of every score for one
+inference pass over 2,511 questions. That residual is accepted (the
+alternative, a private held-out set, contradicts the public pool the data
+flywheel is built on) and is recorded in INVARIANTS.md under "Pool
+memorization".
+
 ## Two method notes, both earned the hard way in this session
 
 **A falsification that passes is a contradiction in terms.** A regex plant that

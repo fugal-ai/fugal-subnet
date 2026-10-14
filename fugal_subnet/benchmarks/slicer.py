@@ -2,22 +2,29 @@
 
 Deterministically selects a subset of questions from the benchmark pool.
 Same nonce + same pool always produces the identical slice; different nonces
-produce different slices. Selection is stratified by benchmark: each benchmark
-gets an (as equal as possible) share of the slice, so large pools (MMLU is 14k
-of ~21k questions) cannot dominate the routing signal. Within each benchmark,
-questions are ranked by HMAC-SHA256 keyed on the nonce — unpredictable without
-knowing the nonce.
+produce different slices. Selection is stratified by benchmark: slots are
+filled round-robin across benchmarks so large pools (MMLU is 14k of ~21k
+questions) cannot dominate the routing signal -- but a benchmark's share is
+CAPPED at SLICE_SHARE_FACTOR times its share of the pool, so small pools
+cannot dominate the score either. Equal quotas used to give three benchmarks
+totalling 2,511 questions 60% of every slice, and 2,511 questions is about
+what a linear head memorises outright (diligence 2026-10, finding 6). Within
+each benchmark, questions are ranked by HMAC-SHA256 keyed on the nonce --
+unpredictable without knowing the nonce.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
 
+from fugal_subnet.config import SLICE_SHARE_FACTOR
+
 
 def select_slice(
     nonce: bytes,
     pool: list[dict],
     size: int = 300,
+    share_factor: float = SLICE_SHARE_FACTOR,
 ) -> list[dict]:
     """Select a deterministic, nonce-dependent, benchmark-stratified slice.
 
@@ -26,11 +33,15 @@ def select_slice(
         pool: Full benchmark pool — list of question dicts with 'question_id'
               and 'benchmark'.
         size: Number of questions to select. Clamped to len(pool).
+        share_factor: A benchmark's quota is capped at
+              share_factor * size * (its pool share), at least 1.
 
     Returns:
         List of question dicts, grouped by benchmark (sorted), HMAC-ranked
-        within each benchmark. Quotas are filled round-robin so a small
-        benchmark that runs out cedes its remaining slots to the others.
+        within each benchmark. Quotas are filled round-robin under the caps,
+        so a small benchmark that runs out, or hits its cap, cedes its
+        remaining slots to the others. If every benchmark is capped before
+        the slice is full (rounding), a second pass fills it ignoring caps.
     """
     if not pool:
         return []
@@ -53,19 +64,24 @@ def select_slice(
         )
         ranked[bench] = [item for _, item in scored]
 
+    caps = {
+        bench: max(1, int(share_factor * size * len(ranked[bench]) / len(pool)))
+        for bench in benches
+    }
     quotas = {bench: 0 for bench in benches}
     remaining = size
-    while remaining > 0:
-        progressed = False
-        for bench in benches:
-            if remaining == 0:
+    for limit in (caps, {bench: len(ranked[bench]) for bench in benches}):
+        while remaining > 0:
+            progressed = False
+            for bench in benches:
+                if remaining == 0:
+                    break
+                if quotas[bench] < min(limit[bench], len(ranked[bench])):
+                    quotas[bench] += 1
+                    remaining -= 1
+                    progressed = True
+            if not progressed:
                 break
-            if quotas[bench] < len(ranked[bench]):
-                quotas[bench] += 1
-                remaining -= 1
-                progressed = True
-        if not progressed:
-            break
 
     out: list[dict] = []
     for bench in benches:

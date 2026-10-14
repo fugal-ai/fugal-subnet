@@ -12,6 +12,19 @@ _log = logging.getLogger(__name__)
 # --- Epoch ---
 EPOCH_INTERVAL = int(os.getenv("FUGAL_EPOCH_INTERVAL", "3600"))
 SLICE_SIZE = int(os.getenv("FUGAL_SLICE_SIZE", "300"))
+# A benchmark's share of the slice may not exceed this factor times its share
+# of the pool. Equal per-benchmark quotas gave AIME, GSM8K and IFEval -- 2,511
+# questions, about what a linear head can memorise outright (measured,
+# docs/HEAD_EFFICACY.md) -- 180 of 300 slots, so 60% of every score was a
+# lookup table away (diligence 2026-10, finding 6). Pure proportional draw
+# (factor 1) hands MMLU 65% of the slice and lets it dominate the routing
+# signal, which is what stratification existed to prevent. At 1.5 the three
+# small benchmarks hold 17% of the slice, MMLU 48%, and a 2,500-question
+# memoriser captures about 21% of a score instead of 64%; the table for other
+# factors is in docs/HEAD_EFFICACY.md, experiment 4. Consensus-critical (two
+# neurons with different values select different questions), so it is in the
+# fingerprint's epoch block.
+SLICE_SHARE_FACTOR = float(os.getenv("FUGAL_SLICE_SHARE_FACTOR", "1.5"))
 # How far into the epoch validators collect proofs, as a fraction of it.
 #
 # A miner cannot begin benchmarking until the boundary block exists — the block
@@ -317,7 +330,9 @@ TEE_PCCS_URL = os.getenv("FUGAL_PCCS_URL", "https://pccs.phala.network").strip()
 #
 # Slicing and nonce-derived exploration do NOT defend this. They hide WHICH
 # questions are asked; they cannot hide the pool, because they draw from it.
-# Head capacity against pool size is the only real defence.
+# Head capacity against pool size is the real defence -- and the slice SHAPE
+# decides how much of a score that capacity can buy: equal per-benchmark
+# quotas let 2,511 questions fill 60% of every slice (SLICE_SHARE_FACTOR).
 BENCHMARK_POOL_MIN_SIZE = int(os.getenv("FUGAL_POOL_MIN_SIZE", "12000"))
 
 TEE_COLLATERAL_TIMEOUT = float(os.getenv("FUGAL_COLLATERAL_TIMEOUT", "10"))

@@ -221,6 +221,15 @@ def capacity(args) -> dict:
         hidden = np.load(POOL_HIDDEN, allow_pickle=False)
         with open(POOL_META) as fh:
             meta = json.load(fh)
+        if getattr(args, "benchmarks", ""):
+            # Restrict to the named benchmarks: the diligence question was
+            # whether the three small ones (2,511 questions, 60% of every
+            # slice under equal quotas) are memorisable as a SET, not whether
+            # the pool as a whole is.
+            keep = set(args.benchmarks.split(","))
+            idx = [i for i, b in enumerate(meta.get("benchmarks", [])) if b in keep]
+            hidden = hidden[idx]
+            meta = dict(meta, pool=f"{meta.get('pool')} restricted to {sorted(keep)}")
         n_total, d = hidden.shape
         assert d == HEAD_HIDDEN_DIM
         logger.info("pool embeddings: %d x %d", n_total, d)
@@ -377,6 +386,8 @@ def main() -> None:
     c.add_argument("--rows", type=int, nargs="+", default=[16, 32, 64],
                    help="head rows > models, i.e. duplicate model names; "
                         "HEAD_MAX_MODELS caps this at 64")
+    c.add_argument("--benchmarks", type=str, default="",
+                   help="comma-separated benchmark names to restrict the embedded pool to")
     c.add_argument("--gaussian", action="store_true",
                    help="run against isotropic gaussian vectors instead of the "
                         "pool -- the upper bound on what any embedding allows")

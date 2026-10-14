@@ -1904,10 +1904,21 @@ silently alter the question pool.
 
 ## Known gaps
 
-**Pool memorization (open).** The question pool is public and finite (~21K).
-A miner willing to pay once to evaluate every model on every question could
-publish a head that encodes the resulting lookup rather than a routing policy.
-It would score well here and generalize to nothing.
+**Pool memorization (open, bounded 2026-10-14).** The question pool is public
+and finite (~21K). A miner willing to pay once to evaluate every model on
+every question could publish a head that encodes the resulting lookup rather
+than a routing policy. It would score well here and generalize to nothing.
+
+What bounds it is head capacity: a linear head memorises about 2,000–2,500
+questions (`docs/HEAD_EFFICACY.md`, experiment 2). What the 2026-10-14
+diligence review found (finding 6) is that the slicer undid that bound: equal
+per-benchmark quotas gave AIME, GSM8K and IFEval — 2,511 questions, confirmed
+memorisable as a set (experiment 4) — 180 of 300 slots, so a lookup table the
+size of the head's capacity bought 60% of every score. `SLICE_SHARE_FACTOR`
+(1.5) now caps a benchmark's share of the slice at 1.5× its share of the pool:
+the small three hold 17% of the slice, MMLU 48%, and a 2,500-question
+memoriser buys 17% of a score. That is the accepted residual; closing it
+needs questions that are not in the public pool, which the design rejects.
 
 The intended defence is held-out evaluation: the validator runs the head on
 questions the miner has not been scored on and checks it still routes sensibly.

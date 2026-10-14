@@ -65,7 +65,7 @@ tee = [
     # Pinned exactly, like the runtime deps: DCAP verification is a consensus
     # rule for --live validators, so a behaviour change in it is a consensus
     # change and should arrive through a deliberate bump.
-    "dcap-qvl==0.6.3",
+    "dcap-qvl==0.6.6",
     # Verifying dstack's GCP attestation means checking a TPM quote as well as
     # the TDX one: an ECDSA P-256 signature over TPMS_ATTEST, and the
     # attestation key certificate chained to Google's CA. Both are consensus

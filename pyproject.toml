@@ -23,7 +23,7 @@ classifiers = [
 dependencies = [
     "bittensor==10.5.0",
     "pydantic==2.13.5",
-    "torch==2.14.0",
+    "torch==2.14.1",
     "transformers==5.17.0",
     "numpy==2.2.6",
     "httpx==0.28.1",

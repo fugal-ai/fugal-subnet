@@ -10,6 +10,7 @@ build/
 
 # Data caches
 data/benchmarks/*.json
+data/benchmarks/pool.json.gz
 data/benchmarks/*.parquet
 data/*.npz
 # Derived experiment caches: embeddings and fetched datasets, ~79MB and

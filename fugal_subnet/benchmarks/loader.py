@@ -115,9 +115,19 @@ def load_all(strict: bool = True) -> list[dict]:
     than its peers and diverge on every epoch. Fail loudly instead.
     """
     override = os.getenv("FUGAL_BENCHMARK_POOL", "").strip()
+    if not override:
+        # The materialised pinned pool, if the operator has placed it. One
+        # file, built by scripts/export_pool.py from the pinned revisions and
+        # verified against the manifest exactly like an explicit override, so
+        # a neuron needs Hugging Face only to BUILD the pool, never to start
+        # (diligence 2026-10, finding 8). Not published in the repository: the
+        # datasets carry their own licences and this repo does not redistribute
+        # them; operators build it once and copy it to their neurons.
+        default_file = os.getenv("FUGAL_POOL_FILE", DEFAULT_POOL_FILE)
+        if os.path.exists(default_file):
+            override = default_file
     if override:
-        with open(override, encoding="utf-8") as f:
-            pool = json.load(f)
+        pool = _read_pool_file(override)
         pool = _drop_unscoreable(pool)
         logger.info(
             "Benchmark pool loaded from FUGAL_BENCHMARK_POOL=%s "
@@ -185,6 +195,21 @@ def load_all(strict: bool = True) -> list[dict]:
                 len(pool), pool_hash(pool)[:16])
     _verify_against_manifest(pool, skip, strict)
     _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict)
+    return pool
+
+
+DEFAULT_POOL_FILE = os.path.join("data", "benchmarks", "pool.json.gz")
+
+
+def _read_pool_file(path: str) -> list[dict]:
+    """Read a pool from JSON, gzipped when the name ends in .gz."""
+    import gzip
+
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
+        pool = json.load(f)
+    if not isinstance(pool, list):
+        raise RuntimeError(f"{path}: a pool file is a JSON list of questions")
     return pool
 
 

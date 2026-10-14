@@ -2256,23 +2256,34 @@ every `set_weights` failed while the neurons reported success.
    `scripts/fetch_approved_entries.py` verifies the signed tag). What remains
    is the first signed release: a signing key in `deploy/keys/allowed_signers`
    and a tag.
-4. Decide I3 (`docs/I3_DECISION.md`) before launch — the incentive currently
-   rewards a constant policy over a router.
+4. ~~Decide I3 (`docs/I3_DECISION.md`) before launch~~ — **decided
+   2026-09-08** (frontier scoring) and **re-fixed 2026-10-14** (raw-mean
+   valuation, distinct-trial confidence; I3 subsections above).
 5. Second independent validator operator; coldkeys encrypted and off every
    neuron host; monitoring with an alert channel.
-4. ~~Recalibrate the reference-frame prior from real testnet data.~~ The prior
+6. ~~Recalibrate the reference-frame prior from real testnet data.~~ The prior
    no longer values the frontier (I3, 2026-10-14). What remains is to ship
    `data/reference_frame.json` built from the val2 testnet reveals with
    `scripts/build_bootstrap_frame.py`, and pin it; until then a live
    validator refuses to start cold.
-5. Close or consciously accept the pool-memorization gap above.
-6. Validate real TDX attestation on a confidential VM —
+7. ~~Close or consciously accept the pool-memorization gap above.~~ Bounded
+   2026-10-14 (`SLICE_SHARE_FACTOR`; a memoriser buys ~17% of a score) and
+   the residual is accepted — see "Pool memorization" under Known gaps.
+8. Validate real TDX attestation on a confidential VM —
    `docs/TDX_VALIDATION.md`. DCAP signature verification and `measurement_id`
    matching are the only checks no local run can make; a consumer CPU cannot
    produce a genuine quote. Mock mode is their absence, not a weaker form.
-7. Validate the cost path against real OpenRouter —
+9. Validate the cost path against real OpenRouter —
    `docs/LIVE_API_VALIDATION.md`. The pinned price table is deterministic, not
    necessarily correct; only a live comparison distinguishes the two.
+10. First signed approved-entry release (`docs/APPROVED_ENTRY_ROTATION.md`,
+    "Publishing"): a signing key in `deploy/keys/allowed_signers` and an
+    `image-v<date>` tag. Validators then carry only `<base>:<compose_hash>`
+    entries; a bare base is refused.
+11. A public-read reveal bucket (`FUGAL_REVEAL_BUCKET`) on every validator.
+12. Confirm `config.FINNEY_GENESIS_HASH` against a finney node
+    (`subtensor.substrate.get_block_hash(0)`); a wrong value makes the
+    mock-on-finney guard inert.
 
 ## Success protocol transition
 

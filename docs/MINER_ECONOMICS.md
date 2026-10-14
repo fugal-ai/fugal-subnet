@@ -17,6 +17,17 @@ earning miners** — still more than any subnet on the network currently carries
 > figures now reported separately. The **§ Does the scoring function keep
 > miners solvent?** section was also re-derived and its conclusion reversed.
 
+> **Not yet re-derived for the 2026-10-14 scoring changes.** Since the
+> diligence review the frontier is valued at the raw sample mean
+> (`ReferenceFrame.frontier_accuracy`), full payout needs 300 *distinct*
+> exploration observations per hull model (`FRONTIER_MIN_TRIALS`) or the
+> shipped bootstrap frame, and the slice draws benchmarks under
+> `SLICE_SHARE_FACTOR`. The cost side below is unchanged; the revenue side's
+> ramp (how many epochs until a new subnet pays in full) and the constant
+> policies' zero are now different facts. Re-run
+> `scripts/model_miner_economics.py --sweep` against those constants before
+> quoting the numbers below to a prospective miner.
+
 Reproduce every number here:
 
 ```bash

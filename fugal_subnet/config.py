@@ -123,15 +123,17 @@ WILSON_CONFIDENCE = float(os.getenv("FUGAL_WILSON_CONFIDENCE", "0.95"))
 # a derived one, and is stated as such.
 SCORE_QUALITY_FLOOR = float(os.getenv("FUGAL_SCORE_QUALITY_FLOOR", "0.8"))
 
-# How many decayed exploration trials every model on the hull needs before the
-# frontier is trusted at face value. With none, every model sits at the prior,
-# the hull is flat, and a constant policy on any decent model shows "headroom"
-# that is ignorance, not routing. Scores scale with least_trials/this until it
-# is met. At ~2 exploration samples per model per epoch with two miners this is
-# ~25 epochs; more miners fill it faster because exploration pools over the
-# field — that is the one place field size legitimately matters, and it changes
-# how soon the frontier is known, not what it is.
-FRONTIER_MIN_TRIALS = float(os.getenv("FUGAL_FRONTIER_MIN_TRIALS", "50"))
+# How many DISTINCT decayed exploration observations every model on the hull
+# needs before the frontier is trusted at face value. Scores scale with
+# least_trials/this until it is met. A trial is one (question, model) per
+# epoch however many miners answered it (reference_frame.aggregate_observations),
+# so this is a count of what has been measured and does not fill faster in a
+# bigger field. It was 50, and thirty miners' duplicate answers reached that in
+# a couple of epochs on two distinct questions per model, before the prior had
+# washed out (diligence 2026-10, finding 3). At fifteen exploration slots over
+# seventeen models a cold frame reaches 300 in roughly 340 epochs; the shipped
+# bootstrap frame (data/reference_frame.json) is what makes epoch 1 pay.
+FRONTIER_MIN_TRIALS = float(os.getenv("FUGAL_FRONTIER_MIN_TRIALS", "300"))
 
 # A fresh artifact's score ramps in over this many scored questions. This is
 # what makes evidence reset symmetric: resetting clears accumulated PENALTIES

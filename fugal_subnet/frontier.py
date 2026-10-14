@@ -27,12 +27,17 @@ table applied to this epoch's slice and the frame's measured verbosity. Two
 validators with the same frame and the same slice build the same frontier;
 no miner's head enters it.
 
-Valuation uses the frame's posterior mean, as `reference_frame.best_model`
-does and for the same reason: a lower bound shrinks with sample count and so
-would make the frontier a function of how many miners are online. The frame's
-own warmth is instead expressed as a confidence factor on the score — see
-`Frontier.confidence` — so that a frontier built from the prior alone pays
-nobody much until it has been measured.
+Valuation uses each model's RAW sample mean from the frame
+(`ReferenceFrame.frontier_accuracy`), with no prior. The miner is judged on
+its lower bound, so a constant policy at its true accuracy sits on the
+frontier and its lower bound below it: zero headroom at every sample count.
+Valued at the posterior mean, a neutral prior read a 90% model as 78.6% after
+50 samples and paid an always-that-model head the difference (diligence
+2026-10, finding 3). An unmeasured model is valued at 1.0, so a cold frame
+pays nobody; the confidence factor (`Frontier.confidence`) then ramps payout
+in as distinct observations arrive. The frame counts one observation per
+(question, model) however many miners answered, so the value does not move
+with field size (I4).
 """
 from __future__ import annotations
 
@@ -113,7 +118,7 @@ def build_frontier(
         cost = reference_cost(
             frame, prices, model, prompt_tokens_total, n, default_completion_tokens,
         ) / n
-        raw.append((max(0.0, cost), float(frame.accuracy(model)), model))
+        raw.append((max(0.0, cost), float(frame.frontier_accuracy(model)), model))
     return _hull(raw, frame)
 
 

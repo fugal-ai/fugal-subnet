@@ -71,14 +71,28 @@ def test_hull_is_concave_starts_at_origin_and_skips_dominated_models():
     assert f.max_accuracy == pytest.approx(f.accuracy_at(1e9))
 
 
-def test_every_constant_policy_scores_zero():
-    """One model, always: the whole reason for this scoring."""
-    frame = _warm_frame()
+# TRUE_ACC values are multiples of 0.05, so multiples of 20 trials make every
+# acc * n an integer and the frame's raw mean equal to the truth exactly.
+@pytest.mark.parametrize("trials_per_model", [20, 100, 400, 4000])
+def test_every_constant_policy_scores_zero(trials_per_model):
+    """One model, always: the whole reason for this scoring.
+
+    Scored at the policy's TRUE accuracy, not at the frame's estimate of it.
+    The old form used `frame.accuracy(m)` as the policy's accuracy, which is
+    zero by construction against a frontier valued at `frame.accuracy(m)` and
+    so could not see the prior bias the 2026-10 diligence review measured.
+    Exact-count samples, so this is a fact about valuation and not noise.
+    """
+    frame = ReferenceFrame()
+    frame = accumulate_exploration(frame, [
+        (m, i < round(TRUE_ACC[m] * trials_per_model), 100, int(COMPLETION))
+        for m in PRICES for i in range(trials_per_model)
+    ])
     f = _frontier(frame)
     for m in PRICES:
-        ev = _evidence(frame.accuracy(m), _cost_per_q(m))
+        ev = _evidence(TRUE_ACC[m], _cost_per_q(m))
         # Its lower bound sits below the hull at its own cost — headroom <= 0.
-        assert headroom(ev.wilson_lcb, ev.cost_per_question, f) <= 1e-9
+        assert headroom(ev.wilson_lcb, ev.cost_per_question, f) <= 1e-9, (m, trials_per_model)
         assert composite(ev, f) == 0.0
 
 
@@ -141,12 +155,28 @@ def test_no_miner_moves_another_miners_reference():
     # sybil's all-wrong samples on top of a well-measured frame.
     rng = random.Random(1)
     field = [(m, rng.random() < TRUE_ACC[m], 100, 300) for m in PRICES for _ in range(30)]
-    sybil = [(m, False, 100, 300) for m in PRICES for _ in range(15)]
     f_field = _frontier(accumulate_exploration(frame, field))
-    f_sybil = _frontier(accumulate_exploration(frame, sybil))
     probe = _cost_per_q("m/1")
     assert abs(f_field.accuracy_at(probe) - f_alone.accuracy_at(probe)) < 0.02
-    assert abs(f_sybil.accuracy_at(probe) - f_alone.accuracy_at(probe)) < 0.02
+
+    # A sybil answers the same nonce-chosen questions as everyone else, and the
+    # frame takes one vote per coldkey and the median across them. Honest
+    # operators asked the same model the same question agree with each other
+    # (one answer per question, below), so with three of them on every
+    # question the sybil's fifteen wrong answers per model change nothing at
+    # all, not merely little. (A single vote CAN flip a tie, which is why the
+    # guarantee is stated for an honest majority, not an honest plurality.)
+    from fugal_subnet.reference_frame import Observation, aggregate_observations
+    answer = {(m, i): rng.random() < TRUE_ACC[m] for m in PRICES for i in range(15)}
+    honest = [
+        Observation(f"q{i}", m, answer[(m, i)], 100, 300, False, f"honest{k}")
+        for m in PRICES for i in range(15) for k in range(3)
+    ]
+    sybil = [Observation(f"q{i}", m, False, 100, 300, False, "sybil")
+             for m in PRICES for i in range(15)]
+    f_honest = _frontier(accumulate_exploration(frame, aggregate_observations(honest)))
+    f_sybil = _frontier(accumulate_exploration(frame, aggregate_observations(honest + sybil)))
+    assert f_sybil == f_honest
 
 
 def test_two_validators_build_identical_frontiers():
@@ -161,10 +191,11 @@ def test_two_validators_build_identical_frontiers():
 def test_cold_frame_pays_little_and_a_measured_one_pays_in_full():
     cold = build_frontier(ReferenceFrame(), PRICES, PROMPT_TOKENS, N_Q, COMPLETION)
     assert cold.confidence == 0.0
-    # With no evidence every model is the prior, so "headroom" over it is not
-    # routing — and it is paid nothing.
+    # With no evidence every model is valued at 1.0 — nothing is known, so
+    # nothing is paid above it — and the confidence factor is zero besides.
     ev = _evidence(0.9, _cost_per_q("m/1"))
-    assert headroom(ev.wilson_lcb, ev.cost_per_question, cold) > 0
+    assert cold.max_accuracy == 1.0
+    assert headroom(ev.wilson_lcb, ev.cost_per_question, cold) < 0
     assert composite(ev, cold) == 0.0
     warm = _frontier(_warm_frame(trials_per_model=int(FRONTIER_MIN_TRIALS) + 10))
     assert warm.confidence == 1.0

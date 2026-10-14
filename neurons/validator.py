@@ -308,9 +308,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         # validator joining, diverges the subnet.
         frame = rebuild_from_reveals(os.environ["FUGAL_FRAME_BOOTSTRAP"])
     else:
-        frame = load_bootstrap()
+        # Live requires the shipped frame: every validator must value the
+        # frontier from the same evidence, and "start cold" is a different
+        # frontier from everyone else's (I1). Mock may start empty.
+        try:
+            frame = load_bootstrap(require=live)
+        except FileNotFoundError as e:
+            raise click.ClickException(str(e)) from e
         logger.warning(
-            "Starting from the bootstrap prior with no accumulated frame. If "
+            "Starting from the bootstrap frame with no accumulated history. If "
             "other validators have history, this one will score the field "
             "differently until it catches up. Set FUGAL_FRAME_BOOTSTRAP to a "
             "directory of published reveals to rebuild instead."

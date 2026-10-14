@@ -481,6 +481,16 @@ MIN_VALIDATOR_STAKE = float(os.getenv("FUGAL_MIN_VALIDATOR_STAKE", "1000"))
 # environment.
 
 
+# --- Reveal publishing (operational; nothing here reads back into a score) ---
+# Public-read GCS bucket each epoch's reveal.json is uploaded to, delayed past
+# the weight commit-reveal window, with its sha256 committed on chain by the
+# validator hotkey (fugal_subnet/reveal_publisher.py). Unset: publishing is
+# skipped with one warning. Diligence 2026-10, finding A1.
+REVEAL_BUCKET = os.getenv("FUGAL_REVEAL_BUCKET", "").strip()
+# Override the hold (epochs) read from the chain's commit-reveal period. 0 =
+# read it from the chain.
+REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
+
 # --- Chain identity ---
 # Genesis block hash of Bittensor mainnet (finney). Not configurable: it is the
 # one fact about the chain a --network URL cannot disguise, and it is what
@@ -565,4 +575,6 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_BACKBONE",
     "FUGAL_BACKBONE_BATCH_SIZE",
     "FUGAL_MIN_VALIDATOR_STAKE",
+    "FUGAL_REVEAL_BUCKET",
+    "FUGAL_REVEAL_DELAY_EPOCHS",
 )

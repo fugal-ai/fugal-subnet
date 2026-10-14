@@ -137,6 +137,8 @@ All settings are configurable via environment variables (see `fugal_subnet/confi
 | `FUGAL_COLLATERAL_TIMEOUT` | `10` | Seconds one collateral fetch may take before the proof is recorded `unverifiable` |
 | `FUGAL_COLLATERAL_EPOCH_BUDGET` | `600` | Seconds the whole verification phase may spend fetching collateral (I6) |
 | `FUGAL_BENCHMARK_POOL` | — | Leave unset. A materialised pool file is accepted only if it matches the pinned manifest and the size floor; a non-pinned pool must declare `FUGAL_POOL_UNPINNED=1` and is for local rehearsals only |
+| `FUGAL_REVEAL_BUCKET` | — | Public-read GCS bucket each epoch's `reveal.json` is published to, after the weight commit-reveal window, with its sha256 committed on chain by this hotkey (`reveal:<epoch_id>:<sha256>`). Unset: reveals stay on local disk |
+| `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
 | `FUGAL_REQUIRE_COMMITMENT` | `1` | Require on-chain commitment before scoring |
 | `FUGAL_EVIDENCE_HALF_LIFE` | `200` | EWMA decay half-life for evidence accumulation |
 | `FUGAL_LAMBDA` | `2.0` | Miner-side TRAINING hyperparameter only. The routing rule has no cost term — see `TRAINING_COST_LAMBDA` in config.py |

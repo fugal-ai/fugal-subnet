@@ -413,6 +413,32 @@ embeddings, where the largest gain was +0.036.
   embedding pass. A miner-side embedding artifact (hash-pinned, verifiable)
   would remove that, and is the largest remaining barrier to entry.
 
+### New since the diligence review (2026-10-14)
+
+All eight findings and the six additional items have code, tests and
+INVARIANTS entries (`tests/test_finding*.py`, `tests/test_additional_findings.py`
+all pass). Four things need an operator rather than code:
+
+- **Bootstrap frame.** `data/reference_frame.json` from the val2 testnet
+  reveals: start the VM, copy `results/success-v1/epochs`, run
+  `scripts/build_bootstrap_frame.py`, pin the digest in
+  `check_safety_invariants.py`. A live validator refuses to start cold until
+  then (or set `FUGAL_FRAME_BOOTSTRAP`).
+- **First signed approved-entry release.** A signing key in
+  `deploy/keys/allowed_signers`, an `image-v<date>` tag, the published
+  digest; then validators drop any bare base entry.
+- **Reveal bucket.** A public-read GCS bucket and `FUGAL_REVEAL_BUCKET` on
+  every validator.
+- **Finney genesis hash.** Confirm `config.FINNEY_GENESIS_HASH` on a finney
+  node.
+
+And one consequence worth a decision: the shipped trainer is deterministic
+from a zero start, so two miners who train it on the same public data
+produce one head and are deduped as one (`docs/HEAD_EFFICACY.md`,
+experiment 3). That is the intended incentive — independence is data — but
+it should be said in MINER_GUIDE, and `docs/MINER_ECONOMICS.md` needs
+re-deriving for the new ramp.
+
 ---
 
 ## A method note, earned the hard way

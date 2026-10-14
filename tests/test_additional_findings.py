@@ -65,7 +65,6 @@ def test_mock_is_refused_on_finney():
     assert_mock_allowed(genesis_hash="0x" + "00" * 32, mock=True)
 
 
-@pytest.mark.xfail(reason="A4: commitments read at chain head", **XF)
 def test_commitments_are_read_at_the_requested_block():
     from fugal_subnet.commitments import get_commitments_with_blocks
 

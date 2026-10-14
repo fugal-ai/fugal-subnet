@@ -62,10 +62,9 @@ def load_state(records_cls) -> dict:
             "prev_uids": [int(u) for u in raw.get("prev_uids", [])],
             "prev_weights": [float(w) for w in raw.get("prev_weights", [])],
             "last_epoch_index": int(raw.get("last_epoch_index", -1)),
-            "first_commit_blocks": {
-                str(hk): int(blk)
-                for hk, blk in (raw.get("first_commit_blocks") or {}).items()
-            },
+            # "first_commit_blocks" was persisted here until 2026-10-14. It is
+            # ignored on load: seniority is now derived from chain state at
+            # the boundary block (commitments.seniority_key), not remembered.
             "frame": raw.get("frame"),
         }
     except FileNotFoundError:
@@ -76,12 +75,11 @@ def load_state(records_cls) -> dict:
 
 def _empty_state() -> dict:
     return {"records": {}, "prev_uids": [], "prev_weights": [],
-            "last_epoch_index": -1, "first_commit_blocks": {}, "frame": None}
+            "last_epoch_index": -1, "frame": None}
 
 
 def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
-               last_epoch_index: int, first_commit_blocks: dict[str, int],
-               frame=None):
+               last_epoch_index: int, frame=None):
     """Persist validator state."""
     os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
     from fugal_subnet.routing_protocol import identity
@@ -91,7 +89,6 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
         "prev_uids": prev_uids,
         "prev_weights": prev_weights,
         "last_epoch_index": last_epoch_index,
-        "first_commit_blocks": first_commit_blocks or {},
         "frame": frame.to_dict() if frame is not None else None,
     }
     tmp = STATE_PATH + ".tmp"
@@ -212,7 +209,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         select_slice,
     )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
-    from fugal_subnet.commitments import get_commitments_with_blocks
+    from fugal_subnet.commitments import get_commitments_with_blocks, seniority_key
     from fugal_subnet.config import TEE_COLLATERAL_EPOCH_BUDGET
     from fugal_subnet.dedup import find_duplicates
     from fugal_subnet.epoch_logger import (
@@ -291,7 +288,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     prev_uids: list[int] = state["prev_uids"]
     prev_weights: list[float] = state["prev_weights"]
     last_epoch_index: int = state["last_epoch_index"]
-    first_commit_blocks: dict[str, int] = state["first_commit_blocks"]
 
     # The reference frame is subnet-level state accumulated over TIME, not over
     # the miner field — a miner's score must not move because other miners came
@@ -411,8 +407,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             timer.start_phase("commitments")
             chain_commitments: dict[str, tuple[str, int]] = {}
             try:
-                chain_commitments = get_commitments_with_blocks(subtensor, netuid)
-                logger.info("On-chain commitments: %d hotkeys", len(chain_commitments))
+                # Pinned to the boundary block: every validator reads the same
+                # commitments whatever moment in the epoch it runs this.
+                chain_commitments = get_commitments_with_blocks(
+                    subtensor, netuid, block=boundary_block,
+                )
+                logger.info("On-chain commitments at block %d: %d hotkeys",
+                            boundary_block, len(chain_commitments))
             except Exception as e:
                 logger.warning("Could not read on-chain commitments: %s", e)
 
@@ -462,10 +463,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     and 0 < committed[1] <= boundary_block
                 )
                 if has_valid_commitment:
-                    hotkey_first = first_commit_blocks.get(hotkey_ss58)
-                    if hotkey_first is None or committed[1] < hotkey_first:
-                        first_commit_blocks[hotkey_ss58] = int(committed[1])
-                    commit_blocks[uid] = first_commit_blocks[hotkey_ss58]
+                    # Seniority from chain state at the boundary: the hotkey's
+                    # registration block first, its commitment block second.
+                    # A retrained author keeps rank over whoever copied its
+                    # previous head, and every validator derives the same
+                    # order (commitments.seniority_key).
+                    commit_blocks[uid] = seniority_key(
+                        registration_block_of(metagraph, uid), committed[1],
+                    )
                 elif REQUIRE_COMMITMENT:
                     n_invalid += 1
                     logger.warning(
@@ -576,7 +581,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 write_epoch_log(epoch_log)
                 last_epoch_index = epoch_index
                 save_state(scoring_state.records, prev_uids, prev_weights,
-                           last_epoch_index, first_commit_blocks, frame)
+                           last_epoch_index, frame)
                 if once:
                     break
                 time.sleep(60)
@@ -913,7 +918,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
             last_epoch_index = epoch_index
             save_state(scoring_state.records, prev_uids, prev_weights,
-                       last_epoch_index, first_commit_blocks, frame)
+                       last_epoch_index, frame)
 
         except KeyboardInterrupt:
             logger.info("Validator stopped by user")
@@ -1047,6 +1052,20 @@ def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
             time.sleep(1.0)
         else:
             time.sleep(min(max(s_per_block * remaining, 0.2), 60))
+
+
+def registration_block_of(metagraph, uid: int) -> int:
+    """The block this uid's hotkey registered at, from the pinned metagraph.
+
+    0 when the metagraph does not carry it (a mock), which makes the
+    commitment block the whole key -- the pre-2026-10 behaviour, and still
+    deterministic for every validator reading the same chain.
+    """
+    blocks = getattr(metagraph, "block_at_registration", None)
+    try:
+        return int(blocks[uid]) if blocks is not None and uid < len(blocks) else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def metagraph_at(subtensor, netuid: int, block: int, fallback):

@@ -15,7 +15,9 @@ Required behaviour, delivered by PR 5:
   * a later head that is a near-duplicate of an earlier one in routing terms
     must beat it by a fixed margin or is disqualified (the epsilon rule).
 
-Expected to fail until PR 5; strict xfail so the marker leaves with the fix.
+Delivered by `head_distance.relative_distance`, the parameter and epsilon
+clauses in `dedup.py`, and `miner.caller_allowed`. Thresholds are measured by
+scripts/experiment_head_similarity.py and recorded in docs/HEAD_EFFICACY.md.
 """
 from __future__ import annotations
 
@@ -23,12 +25,6 @@ import numpy as np
 import pytest
 
 from fugal_subnet.dedup import find_duplicates
-
-pytestmark = pytest.mark.xfail(
-    strict=True,
-    reason="diligence 2026-10 finding 5: copies pass at 3 nudged decisions; heads are free",
-    raises=(AssertionError, TypeError, AttributeError, ImportError),
-)
 
 MODELS = [f"m/{i}" for i in range(17)]
 
@@ -103,6 +99,24 @@ def test_live_miners_do_not_serve_heads_to_unstaked_callers():
     allowed, _ = caller_allowed(MG(), "5validator", live=True)
     blocked, reason = caller_allowed(MG(), "5miner", live=True)
     assert allowed
-    assert not blocked and "stake" in reason.lower() or "permit" in reason.lower()
+    assert not blocked
+    assert "stake" in reason.lower() and "permit" in reason.lower()
     # Mock keeps the open default for local testnets and the dress rehearsal.
     assert caller_allowed(MG(), "5miner", live=False)[0]
+
+
+def test_renaming_model_rows_does_not_dodge_the_parameter_clause():
+    """Rows are aligned by model id. A copier that renames a row loses the
+    alignment on that row only; renaming enough rows to fall under the overlap
+    floor makes the heads 'unrelated' for the parameter clause, but then the
+    renamed ids are not in the price table and the head is rejected at load
+    (routing_protocol.benchmark_costs), never reaching dedup."""
+    from fugal_subnet.head_distance import relative_distance
+
+    leader = _head(0)
+    renamed_one = _head(1, W_base=leader["W"], nudge=1e-4)
+    renamed_one["models"][3] = "x/renamed"
+    assert relative_distance(leader, renamed_one) < 0.05, "16 of 17 rows still align"
+    renamed_many = _head(1, W_base=leader["W"], nudge=1e-4)
+    renamed_many["models"] = [f"x/{i}" for i in range(17)]
+    assert relative_distance(leader, renamed_many) == float("inf")

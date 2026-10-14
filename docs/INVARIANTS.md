@@ -1858,6 +1858,33 @@ an anomaly entry. The 2026-10-14 diligence review rated this high. Now:
 
 Enforced by `tests/test_finding4_two_sided_detector.py`.
 
+### I3 — copy-and-tweak (fixed 2026-10-14)
+
+Any registered hotkey could pull a miner's full head off its axon, because the
+stake needed to query defaulted to zero; dedup compared routing decisions at
+cosine ≥ 0.99, and a copy that rerouted 3 of 300 questions passed (measured
+with `find_duplicates`); weight was proportional to score, so N near-copies
+collected close to N shares for one TDX VM each. Diligence 2026-10, finding 5.
+
+1. **Access.** In `--live` the miner's axon admits a validator permit or stake
+   ≥ `MIN_VALIDATOR_STAKE` (default 1000 TAO), and refuses to start with the
+   threshold at zero (`neurons/miner.py`, `caller_allowed`). Mock stays open.
+2. **Parameter clause.** `head_distance.relative_distance`, rows aligned by
+   model id; below `DEDUP_PARAM_DISTANCE` (0.2) two heads are one. Measured
+   (`docs/HEAD_EFFICACY.md`, experiment 3): independent heads sit at 0.42+,
+   a copy nudged until 15 decisions change sits at 0.10. Renaming rows to
+   dodge alignment fails at load, because every model id must be priced.
+3. **Epsilon rule.** `dedup.epsilon_disqualified`: a head agreeing with a
+   senior one on ≥ `DEDUP_EPSILON_AGREEMENT` (0.95) of decisions must beat
+   its composite by `DEDUP_EPSILON` (0.5%) or is disqualified. Independent
+   heads agree on at most 92%, so the rule lives only where copies live.
+
+A consequence worth knowing: the shipped trainer is deterministic from a zero
+start, so two honest miners training it on the same public data produce one
+head and are deduped as one. Independence is data.
+
+Enforced by `tests/test_finding5_near_copy_dedup.py`.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

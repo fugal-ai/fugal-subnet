@@ -618,10 +618,17 @@ about your head.
   communicate with the local MeteringProxy. No data exfiltration.
 - **On-chain commitment** — your head hash is committed before benchmarks run.
   Prevents mid-epoch head swaps.
-- **Behavioral dedup** — identical or near-identical routing behavior is
-  clustered; earliest on-chain commitment wins. Copies are disqualified.
-  Routing decisions are compared in a global model index space, so perturbing
-  one question to renumber your own model list does not evade it.
+- **Dedup, three clauses** — heads are one head if their routing decisions
+  agree on 99% of the slice, OR their weights sit within a small relative
+  distance of each other (rows aligned by model id), OR they agree on 95% of
+  decisions and the junior one does not beat the senior's score by 0.5%. The
+  senior head — registration block, then commitment block — survives; the
+  rest are disqualified. Routing decisions are compared in a global model
+  index space, so renumbering your model list does not evade it, and nudging
+  a bias term until a few decisions change does not either.
+- **Axon access** — in `--live` only hotkeys with a validator permit or at
+  least `FUGAL_MIN_VALIDATOR_STAKE` TAO can query you. Your head is served in
+  full to whoever can.
 - **Evidence accumulation** — miss=0 prevents selective publication.
 
 ## Costs

@@ -211,7 +211,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
     from fugal_subnet.commitments import get_commitments_with_blocks, seniority_key
     from fugal_subnet.config import TEE_COLLATERAL_EPOCH_BUDGET
-    from fugal_subnet.dedup import find_duplicates
+    from fugal_subnet.dedup import epsilon_disqualified, find_duplicates
     from fugal_subnet.epoch_logger import (
         EpochLog,
         EpochTimer,
@@ -220,7 +220,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.exploration import expected_exploration as expected_exploration_map
     from fugal_subnet.frontier import build_frontier
-    from fugal_subnet.head_eval import HeadScore
+    from fugal_subnet.head_eval import HeadScore, load_head_from_npz
     from fugal_subnet.pricing import policy_cost_total, question_input_tokens
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.reference_frame import (
@@ -717,7 +717,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 uid: _extract_routing_decisions(proof, model_index)
                 for uid, proof in verified_proofs.items()
             }
-            dupes = find_duplicates(routing_decisions, commit_blocks)
+            # The parameter clause needs the heads themselves; they were
+            # validated in verify_proof and are loaded here only for distance.
+            head_params = {}
+            for uid, head_bytes in verified_heads.items():
+                try:
+                    head_params[uid] = load_head_from_npz(head_bytes)
+                except (ValueError, KeyError, TypeError):
+                    continue
+            dupes = find_duplicates(routing_decisions, commit_blocks, head_params=head_params)
             if dupes:
                 logger.info("Dedup disqualified: %s", dupes)
 
@@ -744,6 +752,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         uid, rec.wilson_lcb, rec.cost_per_question,
                         rec.reference_accuracy, rec.headroom, rec.composite_score,
                     )
+            # Epsilon rule, now that this epoch's composite scores exist: a
+            # head that routes like a senior one must beat it or it is a copy.
+            near_copies = epsilon_disqualified(
+                routing_decisions, commit_blocks,
+                {uid: scoring_state.records[uid].composite_score
+                 for uid in routing_decisions if uid in scoring_state.records},
+            )
+            if near_copies:
+                logger.info("Epsilon rule disqualified: %s", sorted(near_copies))
+                dupes = set(dupes) | near_copies
             # The frontier's confidence is paid out and the rest burns. It is a
             # factor common to every miner, so it has to be applied AFTER the
             # scores are normalised — inside composite() it cancels.

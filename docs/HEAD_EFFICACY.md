@@ -415,6 +415,48 @@ prioritised above it.
 
 ---
 
+## Experiment 3 — how far apart are honest heads, and how close is a copy?
+
+Added 2026-10-14 for diligence finding 5. Dedup compared routing decisions at
+cosine ≥ 0.99, and a copier passed by nudging a bias term until three of 300
+decisions changed (measured with `find_duplicates`: 0–2 changed caught, 3+
+not). The fix adds a parameter clause, `head_distance.relative_distance`:
+the Frobenius distance between the two `[W | b]` matrices, rows aligned by
+model id, over the larger norm. `DEDUP_PARAM_DISTANCE` had to come from a
+measurement. `scripts/experiment_head_similarity.py` is the measurement,
+fully offline on the cached SPROUT data.
+
+### The first run measured the trainer, not the heads
+
+Eight heads trained with eight seeds on the same data came out byte-identical:
+distance 0.000, agreement 1.000 on every pair. `success_training.fit` starts
+`W` and `b` at zero and runs deterministic full-batch descent, so the seed
+changes nothing. That is a fact about the subnet worth stating on its own:
+**two honest miners who train the shipped trainer on the same public data
+produce one head**, and dedup will treat them as one head, the senior
+surviving. Independence between honest miners comes from data — each miner's
+own observations of which model answers what — and from training choices.
+That is also what the subnet pays for.
+
+### The second run: eight heads, each on its own 60% of the questions
+
+| | distance (relative Frobenius) | routing agreement on 300 held-out |
+|---|---|---|
+| independent heads, 28 pairs | min 0.418, median 0.463, max 0.609 | 0.850 – 0.920 |
+| copy, 0.001 weight noise | 0.001 | 1.000 (0 decisions changed) |
+| copy, 0.01 weight noise | 0.010 | 0.997 – 1.000 (0–1 changed) |
+| copy, 0.1 weight noise | 0.100 – 0.101 | 0.950 – 1.000 (0–15 changed) |
+
+Two things follow. A copy nudged until 8–15 decisions change — comfortably
+past the 0.99 behavioural clause — sits at distance 0.10, a quarter of the way
+to the nearest independent head; `DEDUP_PARAM_DISTANCE = 0.2` is the
+geometric midpoint of the gap. And independent heads agree on at most 92% of
+decisions, so the epsilon rule's 95% agreement gate (`DEDUP_EPSILON_AGREEMENT`)
+never touches them: it applies only to the band where copies live.
+
+Independence here is the *weakest* honest case — 60% subsets of one dataset.
+Miners with their own model observations sit further apart.
+
 ## Two method notes, both earned the hard way in this session
 
 **A falsification that passes is a contradiction in terms.** A regex plant that

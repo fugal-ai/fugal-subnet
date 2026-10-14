@@ -639,8 +639,9 @@ is now `a_relayed_proof` in the TEE suite:
     B relays A's proof verbatim.
     verify_proof PASSED.
 
-What stopped it was `dedup.find_duplicates` plus commit-block seniority: B's
-routing vector is identical and its commit block is later, so B is disqualified.
+What stopped it was `dedup.find_duplicates` plus seniority (registration
+block, then commit block): B's routing vector is identical and B is junior, so
+B is disqualified.
 That defence is real and still stands as defence in depth — but it is a cosine
 threshold and a block ordering, which is a **statistical** answer to a question
 with a **cryptographic** one.
@@ -1744,11 +1745,31 @@ handful of honest operators per question loses the median's protection (I9).
 
 ### I4 — seniority squatting (residual, accepted)
 
-Dedup seniority tracks the earliest block at which a hotkey was ever seen
-committing a valid head. A squatter who registered and committed *before* its
-victim therefore still holds earlier seniority. This is far weaker than the
-copy-and-outrank bug it replaced — it requires predicting the victim well in
-advance — but it is not zero.
+Dedup seniority is `commitments.seniority_key(registration block, commitment
+block)`, both read from chain state at the epoch boundary. A squatter who
+registered *before* its victim therefore still holds earlier seniority. This is
+far weaker than the copy-and-outrank bug it replaced — it requires predicting
+the victim well in advance — but it is not zero.
+
+### I1 — commitments and seniority come from the boundary block (fixed 2026-10-14)
+
+Two things the 2026-10-14 diligence review found under "additional findings".
+On-chain commitments were read at the chain head, at whatever moment in the
+epoch a validator reached that phase, so two validators could see different
+commitment sets for the same epoch. And seniority was the earliest commitment
+block each validator had ever *seen* for a hotkey, persisted in its own state
+file: deterministic for one validator and different for each, so two
+validators could disqualify different members of the same dedup cluster. Both
+are I1 breaks with no bug behind them.
+
+`get_commitments_with_blocks(subtensor, netuid, block=boundary_block)` pins
+the read. Seniority is `seniority_key(registration block, commitment block)`,
+the registration block from the metagraph pinned at the collection block and
+the commitment block from the pinned read; the per-validator
+`first_commit_blocks` map is gone from the state file. Registration comes
+first so a retrained author keeps rank over whoever copied its previous head
+(`tests/test_seniority.py`, and the original guard in
+`tests/test_non_interference.py`).
 
 ### I9 — the frame is a vote of operators, not a sum of answers (fixed 2026-10-14)
 

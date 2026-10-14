@@ -117,8 +117,9 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
               help="Logging level")
 @click.option(
     "--live/--mock",
-    default=False,
-    help="Live mode requires real TDX attestation; mock accepts unattested proofs",
+    default=True,
+    help="Live (default) requires real TDX attestation; --mock accepts unattested "
+         "proofs and is refused on finney",
 )
 def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     logging.basicConfig(
@@ -235,7 +236,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         rebuild_from_reveals,
         reference_cost,
     )
-    from fugal_subnet.rewards import BURN_UID, cap_weight_change, compute_weights
+    from fugal_subnet.rewards import cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
     from fugal_subnet.tee.attestation import CollateralBudget, verification_order
     from fugal_subnet.tee.proof import BenchmarkProof
@@ -243,6 +244,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     subtensor = bt.Subtensor(network=network)
+    from fugal_subnet.fingerprint import assert_mock_allowed, chain_genesis_hash
+    try:
+        assert_mock_allowed(chain_genesis_hash(subtensor), mock)
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
     metagraph = subtensor.metagraph(netuid)
     dendrite = bt.Dendrite(wallet=wallet)
 
@@ -765,14 +771,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # The frontier's confidence is paid out and the rest burns. It is a
             # factor common to every miner, so it has to be applied AFTER the
             # scores are normalised — inside composite() it cancels.
+            burn_uid = resolve_burn_uid(subtensor, netuid, boundary_block, metagraph, live)
             uids, weights = compute_weights(
                 scoring_state.records, dedup_disqualified=dupes,
-                paid_fraction=frontier.confidence,
+                paid_fraction=frontier.confidence, burn_uid=burn_uid,
             )
             if frontier.confidence < 1.0:
                 logger.info(
                     "Frontier confidence %.2f: %.0f%% of emission burns to UID %d this epoch",
-                    frontier.confidence, 100.0 * (1.0 - frontier.confidence), BURN_UID,
+                    frontier.confidence, 100.0 * (1.0 - frontier.confidence), burn_uid,
                 )
 
             weight_capped = False
@@ -1070,6 +1077,34 @@ def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
             time.sleep(1.0)
         else:
             time.sleep(min(max(s_per_block * remaining, 0.2), 60))
+
+
+def resolve_burn_uid(subtensor, netuid: int, block: int, metagraph, live: bool) -> int:
+    """The subnet owner's UID at `block`, where unassigned weight burns.
+
+    Read from chain each epoch (`get_subnet_owner_hotkey`, pinned to the
+    boundary block so every validator resolves the same UID) and mapped
+    through the pinned metagraph. It used to be a hard-coded 0 (diligence
+    2026-10, finding A5). Live refuses to guess: a failed lookup raises,
+    because burning to the wrong UID pays someone. Mock falls back to 0 for
+    local chains whose mock subtensor has no owner query.
+    """
+    owner = None
+    try:
+        owner = subtensor.get_subnet_owner_hotkey(netuid, block=block)
+    except Exception as e:  # noqa: BLE001 - reported below, never swallowed
+        if live:
+            raise RuntimeError(f"Could not read the subnet owner hotkey at block {block}: {e}") from e
+        logger.warning("Could not read the subnet owner hotkey (%s); mock burns to UID 0", e)
+    hotkeys = list(getattr(metagraph, "hotkeys", []) or [])
+    if owner and owner in hotkeys:
+        return hotkeys.index(owner)
+    if live:
+        raise RuntimeError(
+            f"Subnet owner hotkey {owner!r} is not registered on netuid {netuid} at block "
+            f"{block}; refusing to burn to a guessed UID"
+        )
+    return 0
 
 
 def registration_block_of(metagraph, uid: int) -> int:

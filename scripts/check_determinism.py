@@ -262,7 +262,9 @@ def run_pipeline(seed: int) -> dict:
         hotkeys={uid: f"hk{uid}" for uid in epoch_scores},
         n_questions=len(questions), pool_size=len(pool),
     )
-    uids, weight_values = compute_weights(state.records, paid_fraction=frontier.confidence)
+    uids, weight_values = compute_weights(
+        state.records, paid_fraction=frontier.confidence, burn_uid=0,
+    )
 
     scores_out = {
         uid: {

@@ -44,7 +44,6 @@ def test_every_score_affecting_constant_is_classified_as_consensus():
         assert name in CONSENSUS_ENV_VARS, name
 
 
-@pytest.mark.xfail(reason="A3: validator defaults to --mock", **XF)
 def test_validator_defaults_to_live():
     from neurons.validator import main
 
@@ -52,7 +51,6 @@ def test_validator_defaults_to_live():
     assert live.default is True
 
 
-@pytest.mark.xfail(reason="A3: nothing refuses mock on finney", **XF)
 def test_mock_is_refused_on_finney():
     from fugal_subnet.config import FINNEY_GENESIS_HASH
     from fugal_subnet.fingerprint import assert_mock_allowed
@@ -77,15 +75,17 @@ def test_commitments_are_read_at_the_requested_block():
     assert seen["block"] == 12345
 
 
-@pytest.mark.xfail(reason="A5: BURN_UID is a hard-coded constant", **XF)
 def test_burn_goes_to_the_uid_the_caller_resolved():
     from fugal_subnet import rewards
     from fugal_subnet.scoring import MinerRecord
 
     assert not hasattr(rewards, "BURN_UID")
-    records = {3: MinerRecord(uid=3)}
+    records = {3: MinerRecord(uid=3, composite_score=0.1)}
     uids, weights = rewards.compute_weights(records, burn_uid=9, paid_fraction=0.5)
-    assert dict(zip(uids, weights)).get(9) == pytest.approx(0.5)
+    assert dict(zip(uids, weights)) == {3: pytest.approx(0.5), 9: pytest.approx(0.5)}
+    # A field that earns nothing burns everything, to the resolved UID.
+    uids, weights = rewards.compute_weights({3: MinerRecord(uid=3)}, burn_uid=9)
+    assert dict(zip(uids, weights)) == {9: pytest.approx(1.0)}
 
 
 def test_a_live_validator_refuses_an_overridden_consensus_constant(monkeypatch):
@@ -96,3 +96,16 @@ def test_a_live_validator_refuses_an_overridden_consensus_constant(monkeypatch):
     monkeypatch.setenv("FUGAL_SCORE_QUALITY_FLOOR", "0.5")
     after = [p for p in check_environment() if "FUGAL_SCORE_QUALITY_FLOOR" in p]
     assert not before and after and "cannot be overridden" in after[0]
+
+
+def test_an_unreadable_genesis_does_not_pass_mock():
+    from fugal_subnet.fingerprint import assert_mock_allowed, chain_genesis_hash
+
+    class Dead:
+        def get_block_hash(self, n):
+            raise ConnectionError("no chain")
+
+    assert chain_genesis_hash(Dead()) is None
+    with pytest.raises(RuntimeError, match="could not be read"):
+        assert_mock_allowed(None, mock=True)
+    assert_mock_allowed(None, mock=False)

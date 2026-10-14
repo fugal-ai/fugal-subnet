@@ -25,7 +25,7 @@ actually bills?**
 ## Running one live epoch
 
 This spends real money. Nothing in the default path can — there is no API key
-in any test or script, and `--mock` is the default everywhere.
+in any test or script, and `--mock` is the default for the miner and every script that can call a model (the validator, which calls none, defaults to `--live`).
 
 ```bash
 export OPENROUTER_API_KEY=<key>          # the only place this is ever needed

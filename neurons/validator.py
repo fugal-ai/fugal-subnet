@@ -232,6 +232,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         accumulate_exploration,
         aggregate_observations,
         best_model,
+        disagreeing_exploration,
         implausible_exploration,
         load_bootstrap,
         rebuild_from_reveals,
@@ -606,23 +607,39 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 for uid, proof in verified_proofs.items()
                 for r in proof.exploration_results
             ]
-            samples = aggregate_observations(observations)
-            # Detection only, BEFORE folding this epoch's samples in, so a
-            # miner is compared against history rather than against a frame it
-            # has just contributed to. Never touches a score: I4 says a miner's
-            # score cannot depend on other miners, and the frame is built from
-            # everyone. This makes the upstream-substitution attack visible and
-            # attributable; only measuring the upstream closes it.
+            # Detection BEFORE folding this epoch's samples in, so a miner is
+            # compared against history rather than against a frame it has
+            # just contributed to. Two detectors: accuracy implausible for the
+            # nonce-chosen models in either direction, and disagreement with
+            # the other operators on the same questions. The only consequence
+            # is that a flagged operator's samples stay OUT of the frame this
+            # epoch. Never a score: I4 says a miner's score cannot depend on
+            # other miners, and the frame is the one thing built from everyone
+            # — keeping a flagged miner's samples out of it protects every
+            # other miner's reference rather than moving anyone's score
+            # (diligence 2026-10, finding 4).
+            coldkey_of = {
+                uid: str(coldkeys[uid]) if uid < len(coldkeys) else f"uid-{uid}"
+                for uid in verified_proofs
+            }
             suspicious = implausible_exploration(frame, {
                 uid: [(r.routed_model, r.correct) for r in proof.exploration_results]
                 for uid, proof in verified_proofs.items()
             })
-            for uid, why in suspicious.items():
+            suspicious.update(disagreeing_exploration({
+                uid: [(r.question_id, r.routed_model, r.correct)
+                      for r in proof.exploration_results if not r.failed]
+                for uid, proof in verified_proofs.items()
+            }, coldkey_of))
+            for uid, why in sorted(suspicious.items()):
                 logger.warning(
-                    "UID %d exploration is implausible: %s. Not penalised — this "
-                    "is advisory. See docs/INVARIANTS.md, 'The model upstream is "
-                    "miner-controlled'.", uid, why,
+                    "UID %d exploration excluded from the reference frame this "
+                    "epoch: %s. Its score is untouched (I4).", uid, why,
                 )
+            samples = aggregate_observations(
+                observations,
+                exclude_coldkeys={coldkey_of[uid] for uid in suspicious},
+            )
 
             frame = accumulate_exploration(frame, samples)
             ref_model, acc_best = best_model(frame, prices)
@@ -852,7 +869,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # In the published epoch log so it is attributable after the
                 # fact by anyone, not just whoever was reading the validator's
                 # console at the time.
-                anomalies.append(f"implausible_exploration: uid {uid}: {why}")
+                anomalies.append(f"exploration_excluded_from_frame: uid {uid}: {why}")
 
             # Surfaced as an anomaly, not just a number, because this is the
             # signal that the field looks bad for reasons that are ours rather

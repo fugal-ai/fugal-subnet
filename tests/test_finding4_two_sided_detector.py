@@ -14,19 +14,16 @@ Required behaviour, delivered by PR 4:
   * flagged miners' samples are excluded from the frame for that epoch. Scores
     are never touched (I4): the frame is already built from everyone.
 
-Expected to fail until PR 4; strict xfail so the marker leaves with the fix.
+Delivered by `implausible_exploration` (two-sided), `disagreeing_exploration`
+and the `exclude_coldkeys` argument of `aggregate_observations`; the validator
+wires them so a flagged operator's samples stay out of the frame for the epoch
+and its score is untouched. See docs/INVARIANTS.md § I4.
 """
 from __future__ import annotations
 
 import pytest
 
 from fugal_subnet.reference_frame import ReferenceFrame, implausible_exploration
-
-_DETECTOR = pytest.mark.xfail(
-    strict=True,
-    reason="diligence 2026-10 finding 4: detector is upward-only and advisory",
-    raises=(AssertionError, TypeError, AttributeError, ImportError),
-)
 
 
 def _frame(acc=0.5, trials=200.0):
@@ -36,7 +33,6 @@ def _frame(acc=0.5, trials=200.0):
     return frame
 
 
-@_DETECTOR
 def test_too_low_is_flagged_like_too_high():
     frame = _frame(acc=0.5)
     honest = [("cheap", i % 2 == 0) for i in range(10)]      # 50%, as expected
@@ -46,7 +42,6 @@ def test_too_low_is_flagged_like_too_high():
     assert 1 not in flagged
 
 
-@_DETECTOR
 def test_disagreement_with_the_cross_miner_majority_is_flagged():
     from fugal_subnet.reference_frame import disagreeing_exploration
 
@@ -60,7 +55,6 @@ def test_disagreement_with_the_cross_miner_majority_is_flagged():
     assert not any(uid in flagged for uid in range(6))
 
 
-@_DETECTOR
 def test_disagreement_needs_enough_voters_and_samples():
     from fugal_subnet.reference_frame import disagreeing_exploration
 

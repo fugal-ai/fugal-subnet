@@ -1808,6 +1808,35 @@ network during exploration only" and "a failed call that is also correct", and
 the `frame` stage of `check_determinism.py`, whose synthetic miners share
 exploration questions so the aggregation is what is hashed.
 
+### I4 — the detector is two-sided, baseline-free, and enforces for the frame (fixed 2026-10-14)
+
+`implausible_exploration` flagged a miner only when its exploration accuracy
+beat the frame's expectation by more than 35 points, compared against the
+frame the attack of finding 2 was moving, and changed nothing: a log line and
+an anomaly entry. The 2026-10-14 diligence review rated this high. Now:
+
+1. **Both directions.** `|observed - expected| > margin`, against the frame
+   as it stood before the epoch's samples are folded in (the call order in
+   `neurons/validator.py`). A miner serving itself gold and a miner dropping
+   its network during exploration are the same distance from plausible.
+2. **Cross-miner agreement, with no baseline.** `disagreeing_exploration`:
+   while exploration is shared, every coldkey asks the same model the same
+   question; per (question, model) with at least `EXPLORE_DISAGREE_MIN_VOTERS`
+   coldkeys the majority of per-coldkey votes is the consensus, and a miner
+   that disagrees with it on more than `EXPLORE_DISAGREE_MAX` of at least
+   `EXPLORE_DISAGREE_MIN_SAMPLES` answers is flagged. Nothing the attacker can
+   move is the reference here; the threshold is loose because OpenRouter
+   serves one model id from several providers.
+3. **The consequence is exclusion from the frame, never a score.** A flagged
+   operator's observations are passed to `aggregate_observations` as
+   `exclude_coldkeys` for that epoch. I4 says a miner's score may not depend
+   on other miners; the frame is built from everyone and is the one place that
+   is already true of, so keeping a flagged miner's samples out of it protects
+   every other miner's reference and moves nobody's score. The flag is in the
+   published epoch log as `exploration_excluded_from_frame`.
+
+Enforced by `tests/test_finding4_two_sided_detector.py`.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

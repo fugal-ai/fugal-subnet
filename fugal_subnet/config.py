@@ -155,6 +155,18 @@ SOFT_TARGET_TAU = float(os.getenv("FUGAL_TAU", "1.0"))
 # percent reaches it with probability well under one in a million. Diligence
 # 2026-10, finding 2.
 EXPLORE_FAIL_MARGIN = float(os.getenv("FUGAL_EXPLORE_FAIL_MARGIN", "0.34"))
+# Cross-miner agreement. Every miner answers the same exploration question on
+# the same nonce-chosen model, so honest answers mostly agree; a miner that
+# disagrees with the majority of coldkeys on more than this share of its
+# answers (over at least EXPLORE_DISAGREE_MIN_SAMPLES of them, on questions
+# with at least EXPLORE_DISAGREE_MIN_VOTERS coldkeys) is flagged and its
+# samples are left out of the reference frame for the epoch. Loose on purpose:
+# OpenRouter routes one model id to several providers, so temperature 0 is
+# not identical output and some honest disagreement is normal. Diligence
+# 2026-10, finding 4.
+EXPLORE_DISAGREE_MAX = float(os.getenv("FUGAL_EXPLORE_DISAGREE_MAX", "0.4"))
+EXPLORE_DISAGREE_MIN_SAMPLES = int(os.getenv("FUGAL_EXPLORE_DISAGREE_MIN_SAMPLES", "8"))
+EXPLORE_DISAGREE_MIN_VOTERS = int(os.getenv("FUGAL_EXPLORE_DISAGREE_MIN_VOTERS", "3"))
 
 # --- Dedup ---
 DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("FUGAL_DEDUP_THRESHOLD", "0.99"))

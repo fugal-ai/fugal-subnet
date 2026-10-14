@@ -37,6 +37,9 @@ from dataclasses import dataclass, field
 from statistics import median
 
 from fugal_subnet.config import (
+    EXPLORE_DISAGREE_MAX,
+    EXPLORE_DISAGREE_MIN_SAMPLES,
+    EXPLORE_DISAGREE_MIN_VOTERS,
     FRAME_HALF_LIFE,
     FRAME_PRIOR_ACCURACY,
     FRAME_PRIOR_STRENGTH,
@@ -299,29 +302,35 @@ def implausible_exploration(
     min_samples: int = 8,
     margin: float = 0.35,
 ) -> dict[int, str]:
-    """Miners whose exploration answers are too good for the models they used.
+    """Miners whose exploration accuracy is implausible for the models they used,
+    in EITHER direction.
 
-    DETECTION ONLY. It returns descriptions, never a score adjustment, and the
-    caller must not let it move weights — see I4. A miner's score may not depend
-    on other miners, and while this compares against the FRAME (accumulated over
-    time) rather than against this epoch's field, the frame is still built from
-    everyone. Making it advisory keeps I4 intact and still turns an invisible
-    attack into an attributable one.
+    NEVER A SCORE ADJUSTMENT. It returns descriptions; the caller excludes a
+    flagged miner's samples from the reference frame for the epoch and logs
+    the flag, and nothing else. I4 says a miner's score may not depend on
+    other miners; the frame is built from everyone and is already the one
+    place that is true of, so protecting the frame from a flagged miner's
+    samples does not let one miner move another's score — it stops one.
 
-    WHAT IT CATCHES. The model upstream is read from an environment variable
-    inside the miner's own TD, and that TD holds every question's gold answer,
-    so a miner can serve itself gold and report perfect accuracy at near-zero
-    cost with every hash binding intact. Nothing prevents that today. But
-    exploration questions are answered with a model the NONCE chooses, not the
-    miner, and the frame already knows roughly how good each model is. A miner
-    returning gold for everything reports ~100% on models the frame has measured
-    at 50-70%, on every model, every epoch. Honest miners cannot do that.
+    WHAT IT CATCHES. Exploration questions are answered with a model the
+    NONCE chooses, and the frame knows roughly how good each model is. A miner
+    that serves itself gold reports ~100% on models measured at 50-70%, on
+    every model, every epoch. A miner that drops its own network during
+    exploration, or returns deliberate nonsense, reports ~0% on the same
+    models. The first was always flagged; the second was not (diligence
+    2026-10, finding 4), and it is the one a coalition uses to drag the frame
+    down. `margin` applies both ways.
 
-    It is a heuristic and it is stated as one: a genuinely lucky epoch on few
+    The comparison is against the frame as it stood BEFORE this epoch's
+    samples were folded in — the caller's responsibility, and the call order
+    in neurons/validator.py — so a miner is measured against history, not
+    against a frame it has just helped move.
+
+    It is a heuristic and it is stated as one: a lucky or unlucky epoch on few
     samples looks the same, which is why `min_samples` exists, and a miner who
-    fakes only plausible accuracy evades it entirely. It raises the cost of the
-    attack from free and invisible to visible and attributable. It does not
-    close the hole; only measuring the upstream does.
+    fakes only plausible accuracy evades it. `disagreeing_exploration` is the
+    other half, and catches that miner when the other operators do not agree
+    with it.
     """
     if frame is None:
         return {}
@@ -347,11 +356,70 @@ def implausible_exploration(
         if measured < min_samples:
             continue
         exp_rate, obs_rate = expected / measured, observed / measured
-        if obs_rate - exp_rate > margin:
+        if abs(obs_rate - exp_rate) > margin:
+            direction = "above" if obs_rate > exp_rate else "below"
             flagged[uid] = (
-                f"exploration accuracy {obs_rate:.0%} against a reference-frame "
-                f"expectation of {exp_rate:.0%} over {measured} samples on "
-                f"{len(by_model)} nonce-chosen models"
+                f"exploration accuracy {obs_rate:.0%} is {direction} the reference-"
+                f"frame expectation of {exp_rate:.0%} by more than {margin:.0%} over "
+                f"{measured} samples on {len(by_model)} nonce-chosen models"
+            )
+    return flagged
+
+
+def disagreeing_exploration(
+    per_miner: dict[int, list[tuple[str, str, bool]]],
+    coldkeys: dict[int, str],
+    min_voters: int = EXPLORE_DISAGREE_MIN_VOTERS,
+    min_samples: int = EXPLORE_DISAGREE_MIN_SAMPLES,
+    max_disagreement: float = EXPLORE_DISAGREE_MAX,
+) -> dict[int, str]:
+    """Miners whose exploration answers disagree with the other operators'.
+
+    While exploration is shared, every coldkey asks the same model the same
+    question, and at temperature 0 honest answers mostly agree. That gives a
+    detector that needs no baseline at all — not the frame, which an attacker
+    may be moving, and not the prior. Per (question, model) with at least
+    `min_voters` coldkeys, the majority of per-coldkey votes is the consensus
+    (an exact tie has none and is skipped); a miner that disagrees with the
+    consensus on more than `max_disagreement` of at least `min_samples` such
+    answers is flagged. As with `implausible_exploration`, the only
+    consequence is that its samples stay out of the frame for the epoch.
+
+    `per_miner` is {uid: [(question_id, model, correct)]}; `coldkeys` maps a
+    uid to its operator so hotkeys under one coldkey are one vote. Loose by
+    design: OpenRouter serves one model id from several providers, so some
+    honest disagreement is normal (the threshold is in config.py with that
+    reason next to it). Deterministic: no ordering of `per_miner` changes the
+    result.
+    """
+    votes: dict[tuple[str, str], dict[str, list[float]]] = {}
+    for uid, answers in per_miner.items():
+        ck = coldkeys.get(uid, f"uid-{uid}")
+        for qid, model, correct in answers:
+            votes.setdefault((qid, model), {}).setdefault(ck, []).append(float(correct))
+    consensus: dict[tuple[str, str], bool] = {}
+    for key, by_ck in votes.items():
+        if len(by_ck) < min_voters:
+            continue
+        mean = sum(sum(v) / len(v) for v in by_ck.values()) / len(by_ck)
+        if abs(mean - 0.5) < 1e-9:
+            continue
+        consensus[key] = mean > 0.5
+
+    flagged: dict[int, str] = {}
+    for uid in sorted(per_miner):
+        judged = [(qid, model, correct) for qid, model, correct in per_miner[uid]
+                  if (qid, model) in consensus]
+        if len(judged) < min_samples:
+            continue
+        disagree = sum(1 for qid, model, correct in judged
+                       if bool(correct) != consensus[(qid, model)])
+        rate = disagree / len(judged)
+        if rate > max_disagreement:
+            flagged[uid] = (
+                f"disagrees with the cross-miner majority on {disagree} of "
+                f"{len(judged)} exploration answers ({rate:.0%}, limit "
+                f"{max_disagreement:.0%})"
             )
     return flagged
 

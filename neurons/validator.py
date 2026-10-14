@@ -227,8 +227,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.pricing import policy_cost_total, question_input_tokens
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.reference_frame import (
+        Observation,
         ReferenceFrame,
         accumulate_exploration,
+        aggregate_observations,
         best_model,
         implausible_exploration,
         load_bootstrap,
@@ -581,11 +583,24 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # contribution to a long-running estimate, so the reference a miner
             # is measured against does not lurch when the field size changes.
             timer.start_phase("frame")
-            samples = [
-                (r.routed_model, r.correct, r.prompt_tokens, r.completion_tokens)
-                for proof in verified_proofs.values()
+            # One Observation per answer, voted by COLDKEY and collapsed to one
+            # sample per (question, model) by aggregate_observations: failed
+            # calls dropped, one vote per operator, median across operators.
+            # Every miner answers the same questions, so without this each
+            # copy was a fresh trial and a coalition moved the frame by its
+            # share of the field (diligence 2026-10, finding 2).
+            coldkeys = getattr(metagraph, "coldkeys", None) or []
+            observations = [
+                Observation(
+                    question_id=r.question_id, model=r.routed_model,
+                    correct=bool(r.correct), prompt_tokens=int(r.prompt_tokens),
+                    completion_tokens=int(r.completion_tokens), failed=bool(r.failed),
+                    coldkey=str(coldkeys[uid]) if uid < len(coldkeys) else f"uid-{uid}",
+                )
+                for uid, proof in verified_proofs.items()
                 for r in proof.exploration_results
             ]
+            samples = aggregate_observations(observations)
             # Detection only, BEFORE folding this epoch's samples in, so a
             # miner is compared against history rather than against a frame it
             # has just contributed to. Never touches a score: I4 says a miner's
@@ -764,14 +779,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # in reveal_epoch so every validator publishes the identical list.
             exploration_for_reveal = [
                 {
-                    "question_id": r.question_id,
-                    "model": r.routed_model,
-                    "correct": bool(r.correct),
-                    "prompt_tokens": int(r.prompt_tokens),
-                    "completion_tokens": int(r.completion_tokens),
+                    "question_id": o.question_id,
+                    "model": o.model,
+                    "correct": o.correct,
+                    "prompt_tokens": o.prompt_tokens,
+                    "completion_tokens": o.completion_tokens,
+                    # The voter and the failure flag, so rebuild_from_reveals
+                    # aggregates exactly as this epoch did. Coldkeys are public
+                    # on chain; publishing them here reveals nothing new.
+                    "coldkey": o.coldkey,
+                    "failed": o.failed,
                 }
-                for proof in verified_proofs.values()
-                for r in proof.exploration_results
+                for o in observations
             ]
 
             routing_for_reveal = {

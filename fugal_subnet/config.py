@@ -143,6 +143,17 @@ BURN_IN_QUESTIONS = int(os.getenv("FUGAL_BURN_IN_QUESTIONS", "3000"))
 # --- Soft targets ---
 SOFT_TARGET_TAU = float(os.getenv("FUGAL_TAU", "1.0"))
 
+# --- Exploration integrity ---
+# A proof whose exploration calls fail more often than its scored calls, by
+# more than this margin, is rejected. Failed calls are excluded from the
+# reference frame (they measure the network, not the model), so without this a
+# miner could skip exploration -- 5% of its inference bill -- by blocking its
+# own network during that phase and pay nothing for it. 0.34 is six of the
+# fifteen default exploration slots; an honest per-call failure rate of a few
+# percent reaches it with probability well under one in a million. Diligence
+# 2026-10, finding 2.
+EXPLORE_FAIL_MARGIN = float(os.getenv("FUGAL_EXPLORE_FAIL_MARGIN", "0.34"))
+
 # --- Dedup ---
 DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("FUGAL_DEDUP_THRESHOLD", "0.99"))
 

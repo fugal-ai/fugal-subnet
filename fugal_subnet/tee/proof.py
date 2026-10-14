@@ -36,6 +36,57 @@ class QuestionResult:
     # miner's own score — being made to route randomly must not be a penalty —
     # they exist only to sample the model pool for the reference frame.
     is_exploration: bool = False
+    # True when the model call did not complete (timeout, connection drop,
+    # non-2xx from the proxy). Recorded as its own fact, in the attested proof,
+    # because "graded wrong" and "never answered" mean different things to the
+    # reference frame: a wrong answer measures the model, a failed call
+    # measures the network, and a miner controls its own network. Before this
+    # field existed a coalition could lower every model's measured accuracy by
+    # dropping connections during exploration only (diligence 2026-10, finding
+    # 2). A failed result is always `correct=False` and `verify_proof` holds
+    # it to that.
+    failed: bool = False
+
+    def hash_payload(self) -> dict:
+        """The fields `content_hash` covers for this result.
+
+        `failed` is included ONLY when True. A proof with no failed calls then
+        hashes exactly as it did before the field existed, so a miner and a
+        validator on either side of this change agree on every honest proof;
+        only a proof that actually records a failure needs both sides to know
+        the field. Deterministic either way: the same object always yields the
+        same payload.
+        """
+        payload = {
+            "question_id": self.question_id,
+            "routed_model": self.routed_model,
+            "correct": self.correct,
+            "cost_usd": self.cost_usd,
+            "response_hash": self.response_hash,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "is_exploration": self.is_exploration,
+        }
+        if self.failed:
+            payload["failed"] = True
+        return payload
+
+    def to_dict(self) -> dict:
+        return {**self.hash_payload(), "failed": self.failed}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> QuestionResult:
+        return cls(
+            question_id=d["question_id"],
+            routed_model=d["routed_model"],
+            correct=bool(d["correct"]),
+            cost_usd=float(d["cost_usd"]),
+            response_hash=d["response_hash"],
+            prompt_tokens=int(d.get("prompt_tokens", 0)),
+            completion_tokens=int(d.get("completion_tokens", 0)),
+            is_exploration=bool(d.get("is_exploration", False)),
+            failed=bool(d.get("failed", False)),
+        )
 
 
 @dataclass
@@ -113,19 +164,7 @@ class BenchmarkProof:
             "questions_hash": self.questions_hash,
             "weights_hash": self.weights_hash,
             "source_hash": self.source_hash,
-            "results": [
-                {
-                    "question_id": r.question_id,
-                    "routed_model": r.routed_model,
-                    "correct": r.correct,
-                    "cost_usd": r.cost_usd,
-                    "response_hash": r.response_hash,
-                    "prompt_tokens": r.prompt_tokens,
-                    "completion_tokens": r.completion_tokens,
-                    "is_exploration": r.is_exploration,
-                }
-                for r in self.results
-            ],
+            "results": [r.hash_payload() for r in self.results],
             "total_cost_usd": self.total_cost_usd,
             "per_model_costs": self.per_model_costs,
             "timestamp": self.timestamp,
@@ -142,19 +181,7 @@ class BenchmarkProof:
             "questions_hash": self.questions_hash,
             "weights_hash": self.weights_hash,
             "source_hash": self.source_hash,
-            "results": [
-                {
-                    "question_id": r.question_id,
-                    "routed_model": r.routed_model,
-                    "correct": r.correct,
-                    "cost_usd": r.cost_usd,
-                    "response_hash": r.response_hash,
-                    "prompt_tokens": r.prompt_tokens,
-                    "completion_tokens": r.completion_tokens,
-                    "is_exploration": r.is_exploration,
-                }
-                for r in self.results
-            ],
+            "results": [r.to_dict() for r in self.results],
             "total_cost_usd": self.total_cost_usd,
             "per_model_costs": self.per_model_costs,
             "attestation_quote": self.attestation_quote.hex(),
@@ -163,7 +190,7 @@ class BenchmarkProof:
 
     @classmethod
     def from_dict(cls, d: dict) -> BenchmarkProof:
-        results = [QuestionResult(**r) for r in d["results"]]
+        results = [QuestionResult.from_dict(r) for r in d["results"]]
         return cls(
             # Absent rather than empty for a proof written before this field
             # existed. Either way it fails verification; the distinction only

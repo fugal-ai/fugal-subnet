@@ -33,7 +33,7 @@ here, and a check that enforces it.**
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior **and no external dependency** can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. Every call that leaves the process on the epoch path is bounded. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py`, `tests/test_collateral_timeout.py`, `check_safety_invariants.check_external_calls_bounded` |
 | **I7** | **Auditability.** Any divergence between two validators is diagnosable after the fact from published artifacts. | `fugal_subnet/fingerprint.py`, `environment` block in every `reveal.json` |
-| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (11 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
+| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (23 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
 | **I9** | **Reference-frame agreement.** Every validator derives the same reference frame from the same published exploration samples, and no single miner can materially move it. | `fugal_subnet/reference_frame.py` (order-independent accumulation), `check_determinism.py` `frame` stage, `tests/test_non_interference.py` |
 
 ## How TEE resolves prior gaps
@@ -1793,11 +1793,38 @@ again, in either direction. Putting them back is
 [CODE_BENCHMARK_PLAN.md](CODE_BENCHMARK_PLAN.md), and its final phase needs the
 measurement rotation procedure that does not exist yet.
 
-**The model upstream is miner-controlled (OPEN, EXPLOITABLE TODAY, breaks I3).**
+**The model upstream is miner-controlled (fixed 2026-10-14; was OPEN, breaks I3).**
+
+*Status.* Closed by making the application binding mandatory. The upstream is
+fixed by the dstack compose (the frozen `app-compose.json` has `allowed_envs:
+[]` and does not set `FUGAL_OPENROUTER_BASE`, so the default in `runtime.py`
+is the only value a measured TD can have); the compose hash is replayed out of
+the RTMR3 event log in `verify_proof` and compared against the
+`<base>:<compose_hash>` entry. What was missing, and what the 2026-10-14
+diligence review called critical, was that a bare `<base>` entry skipped that
+check entirely and a live validator only *warned* about one. Now:
+
+- `parse_approved(..., require_app=True)` refuses a bare base, and the live
+  validator calls it that way at startup (`scripts/check_safety_invariants.py`
+  `check_live_requires_app_identity` reads the AST for the keyword);
+- `verify_proof` refuses a bare-base match outside mock whatever the caller
+  configured, so scripts that verify directly get the same answer;
+- `check_upstream_is_inside_the_measurement` fails CI if any frozen compose
+  allows an env, references an image by tag, or sets the upstream, and if the
+  proxy ever stops validating the upstream certificate;
+- `run_tee_attacks.py` carries the case ("bare base entry, miner-chosen
+  application"), and `tests/test_finding1_upstream_binding.py` pins both halves.
+
+Mock mode still accepts a bare base: a local testnet binds no application, and
+dress rehearsal depends on it. The § "I8 — verified on hardware: the upstream
+binding" section above describes the single-extend `runtime_identity`, which
+remains advisory on an unlocked image; the compose-hash path is the enforced
+one. The analysis below is kept as the record of the gap.
+
 `fugal_subnet/tee/runtime.py` reads the endpoint the metering proxy calls from
 `FUGAL_OPENROUTER_BASE`, an environment variable, inside the miner's own TD. The
-pool the TD loads carries `gold` for every question. Nothing in `proof.py` or
-`verify.py` binds the upstream — grep them for it and there is nothing.
+pool the TD loads carries `gold` for every question. Before 2026-10-14 nothing
+in `proof.py` or `verify.py` bound the upstream unless the operator chose to.
 
 So a miner points that variable at a server they run, which answers every
 question with its own gold answer and reports two tokens of usage. The result is
@@ -1818,9 +1845,11 @@ makes it a requirement on the measured image and not merely a bug behind it:
 - TLS validation must remain intact, or a miner who controls the VM's network
   reaches the same outcome by pointing DNS at themselves
 
-Nothing in the repository prevents this today. The only thing resembling a
-control is a line in `docs/LIVE_API_VALIDATION.md` asking the operator not to
-set the variable — a request addressed to the adversary.
+Until 2026-10-14 nothing in the repository prevented this. The only thing
+resembling a control was a line in `docs/LIVE_API_VALIDATION.md` asking the
+operator not to set the variable — a request addressed to the adversary — and
+a validator-side warning when a bare base entry was active, which is the same
+request in a different log.
 
 **Why it went unnoticed for so long is the instructive part.**
 `scripts/stub_upstream.py` *is* this attack. It was written as a no-spend

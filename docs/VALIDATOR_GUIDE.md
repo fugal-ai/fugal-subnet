@@ -132,7 +132,7 @@ All settings are configurable via environment variables (see `fugal_subnet/confi
 | `FUGAL_NETUID` | `1` | Subnet netuid |
 | `FUGAL_EPOCH_INTERVAL` | `3600` | Seconds between epochs |
 | `FUGAL_SLICE_SIZE` | `300` | Questions per epoch |
-| `FUGAL_TEE_MEASUREMENTS` | — | Comma-separated approved entries, each `<base_measurement>:<compose_hash>`. Required for `--live`; a bare base accepts any application on that image (see `deploy/dstack/README.md`) |
+| `FUGAL_TEE_MEASUREMENTS` | — | Comma-separated approved entries, each `<base_measurement>:<compose_hash>`. Required for `--live`, which refuses a bare base: one would accept any application on that image, and the application fixes the model upstream (see `deploy/dstack/README.md`) |
 | `FUGAL_PCCS_URL` | `https://pccs.phala.network` | Where DCAP collateral is fetched. Not a trust root; point at a local caching proxy to remove the third party from the epoch path |
 | `FUGAL_COLLATERAL_TIMEOUT` | `10` | Seconds one collateral fetch may take before the proof is recorded `unverifiable` |
 | `FUGAL_COLLATERAL_EPOCH_BUDGET` | `600` | Seconds the whole verification phase may spend fetching collateral (I6) |

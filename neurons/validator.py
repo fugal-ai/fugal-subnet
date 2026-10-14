@@ -164,10 +164,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # each host. Parsed here too, before any chain connection, so a malformed
     # entry (a bare trailing colon would silently accept any application)
     # fails at startup rather than at the first proof.
+    # A bare base entry is REFUSED in live mode, not warned about. The
+    # application is what fixes the model upstream; a bare base approves a TD
+    # whose upstream the miner chose, which is perfect accuracy at near-zero
+    # attested cost with every signature intact (diligence 2026-10, finding
+    # 1). It used to be a warning, and a warning is a request addressed to the
+    # operator about something the adversary controls.
     if TEE_APPROVED_MEASUREMENTS:
         from fugal_subnet.tee.verify import parse_approved
         try:
-            parsed_entries = parse_approved(TEE_APPROVED_MEASUREMENTS)
+            parsed_entries = parse_approved(TEE_APPROVED_MEASUREMENTS, require_app=live)
         except ValueError as e:
             raise click.ClickException(f"FUGAL_TEE_MEASUREMENTS: {e}") from e
         described = [
@@ -176,11 +182,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             for app in (sorted(apps) or [""])
         ]
         logger.info("Approved entries: %d — %s", len(described), "; ".join(described))
-        if live and any(not apps for apps in parsed_entries.values()):
-            logger.warning(
-                "A bare base entry is active: any application on that image is "
-                "approved. Production entries should be <base>:<compose_hash>."
-            )
 
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
     if not mock:

@@ -27,6 +27,12 @@ PINNED_PRICE_TABLE_SHA256 = (
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM
 # quote means trusting this CA in addition to Intel's — see docs/INVARIANTS.md.
+# data/reference_frame.json is the bootstrap reference frame: decayed
+# exploration counts every live validator starts from, so the frontier every
+# miner is scored against is valued from it. Consensus state like models.json.
+# None means the file must not exist yet; once scripts/build_bootstrap_frame.py
+# produces it, pin the digest it prints here in the same commit and say why.
+PINNED_BOOTSTRAP_FRAME_SHA256: str | None = None
 PINNED_TPM_ROOT_SHA256 = (
     "594759594b9b61524f6c8ef668f7177f7b9066bc0674f2f49fe9e052be78beb2"
 )
@@ -784,6 +790,39 @@ def check_live_requires_app_identity(errors: list[str]) -> None:
         )
 
 
+def check_bootstrap_frame_pinned(errors: list[str]) -> None:
+    """The shipped bootstrap reference frame is consensus state and is pinned.
+
+    Diligence 2026-10, finding 3. The frame decides what the constant-policy
+    frontier is valued at, and every live validator starts from the shipped
+    file, so an unreviewed edit to it re-scores every miner on every
+    validator at once -- the same hazard as data/models.json, and pinned the
+    same way. A file with no pin, or a pin with no file, both fail: the first
+    is an unreviewed frame, the second is a live validator that cannot start.
+    """
+    path = ROOT / "data" / "reference_frame.json"
+    if PINNED_BOOTSTRAP_FRAME_SHA256 is None:
+        if path.exists():
+            errors.append(
+                "data/reference_frame.json exists but PINNED_BOOTSTRAP_FRAME_SHA256 is "
+                "None; pin it in the same commit (I1)"
+            )
+        return
+    if not path.exists():
+        errors.append(
+            "data/reference_frame.json is pinned but missing; a live validator "
+            "cannot start without it (I1)"
+        )
+        return
+    digest = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    if digest != PINNED_BOOTSTRAP_FRAME_SHA256:
+        errors.append(
+            f"data/reference_frame.json: sha256 {digest[:16]}... does not match the "
+            "pin; rebuild with scripts/build_bootstrap_frame.py and update the pin "
+            "in the same commit, saying why (I1)"
+        )
+
+
 def main() -> None:
     errors: list[str] = []
     check_np_load_calls(errors)
@@ -802,6 +841,7 @@ def main() -> None:
     check_tee_safety(errors)
     check_upstream_is_inside_the_measurement(errors)
     check_live_requires_app_identity(errors)
+    check_bootstrap_frame_pinned(errors)
     check_documented_flags(errors)
     if errors:
         raise SystemExit("Safety invariant check failed:\n- " + "\n- ".join(errors))

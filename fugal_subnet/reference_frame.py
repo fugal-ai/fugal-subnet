@@ -97,6 +97,34 @@ class ReferenceFrame:
             return 0.0
         return _wilson_lcb(s / n, n, WILSON_CONFIDENCE)
 
+    def frontier_accuracy(self, model: str) -> float:
+        """The accuracy the constant-policy frontier values this model at: the
+        RAW sample mean, with no prior.
+
+        The posterior mean carried the prior's pull, and the prior is a guess:
+        a neutral 0.5 worth 20 samples read a 90% model as 78.6% after 50
+        samples, exactly where the frontier's confidence reached 1.0, and an
+        always-that-model head collected the difference (diligence 2026-10,
+        finding 3). The raw mean is unbiased, so a constant policy scored at
+        its true accuracy sits ON the frontier, and its lower bound (what a
+        miner is scored on) sits below it: zero headroom at every sample
+        count, by construction rather than in the limit. An upper bound was
+        tried first and rejected: its width (four points at 500 samples) was a
+        tax on every honest router, paid for a certainty the miner-side lower
+        bound already provides.
+
+        An unmeasured model is 1.0: nothing is known, so nothing is paid above
+        it. The confidence factor (`Frontier.confidence`) ramps payout in as
+        distinct observations arrive; the frame counts one per (question,
+        model) however many miners answered, so neither this value nor the
+        ramp depends on field size (I4). The prior still serves `accuracy`
+        and `best_model`, which are selection and reporting, not valuation.
+        """
+        n = self.trials.get(model, 0.0)
+        if n < 1e-9:
+            return 1.0
+        return min(1.0, max(0.0, self.successes.get(model, 0.0) / n))
+
     def avg_completion_tokens(self, model: str, default: float) -> float:
         n = self.trials.get(model, 0.0)
         if n < 1e-9:
@@ -417,22 +445,39 @@ def reference_cost(
     return p_in * prompt_tokens + p_out * c_tok * max(n_questions, 0)
 
 
-def load_bootstrap(path: str | None = None) -> ReferenceFrame:
+BOOTSTRAP_FRAME_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "reference_frame.json",
+)
+
+
+def load_bootstrap(path: str | None = None, require: bool = False) -> ReferenceFrame:
     """Load the shipped bootstrap frame, or an empty one if absent.
 
-    The bootstrap only shifts where the prior sits; it is worth
-    FRAME_PRIOR_STRENGTH pseudo-observations and is outweighed by real evidence
-    within a few epochs.
+    The bootstrap is real measured evidence (built by
+    scripts/build_bootstrap_frame.py from testnet reveals and hash-pinned),
+    not a prior: it is decayed exploration counts, so the frontier is valued
+    from it exactly as from live samples and pays from epoch 1 instead of
+    after FRONTIER_MIN_TRIALS distinct observations per model.
+
+    `require=True` is the live validator: a missing file there is not "start
+    cold", it is one validator scoring the field against a different frame
+    from every other validator (I1), so it raises instead of returning empty.
     """
     if path is None:
-        path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "reference_frame.json",
-        )
+        path = BOOTSTRAP_FRAME_PATH
     try:
         with open(path, encoding="utf-8") as f:
             return ReferenceFrame.from_dict(json.load(f))
     except FileNotFoundError:
+        if require:
+            raise FileNotFoundError(
+                f"No bootstrap reference frame at {path}. A live validator with no "
+                "accumulated frame must start from the shipped one, or it scores the "
+                "field against a different frontier from every other validator. Build "
+                "it with scripts/build_bootstrap_frame.py, or set FUGAL_FRAME_BOOTSTRAP "
+                "to a directory of published reveals."
+            ) from None
         logger.info("No bootstrap reference frame at %s — starting from the prior", path)
         return ReferenceFrame()
 

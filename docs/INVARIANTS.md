@@ -63,6 +63,60 @@ frame pays nothing; skipping epochs does not make a miner look cheaper) and
 the form "constant policies score zero, a trained router beats them all").
 The unconfident share of emission burns in `compute_weights(paid_fraction=frontier.confidence)`, after normalising — inside `composite` the factor cancels (measured on the first live frontier epoch; `test_the_unconfident_share_of_emission_burns_after_normalisation`).
 
+### I3 — the frontier is valued at the raw mean, not the prior (fixed 2026-10-14)
+
+The 2026-10-14 diligence review found the frontier paying constant policies
+at launch, and the repo's own code reproduces it. The frame valued every model
+at its posterior mean under a neutral 0.5 prior worth 20 samples; after 50
+real samples a 90% model read as 78.6%, which was exactly where
+`FRONTIER_MIN_TRIALS` (then 50) let the frontier pay headroom in full. A head
+that always calls that model was scored at its true 90% against a frontier
+that believed 78.6% was the best constant policy, and collected the
+difference. Duplicate exploration answers counted as fresh samples, so thirty
+miners reached full payout in a few epochs on two distinct questions per
+model. And `test_every_constant_policy_scores_zero` scored each policy at the
+frame's *own* estimate of its accuracy, which is zero against a frontier built
+from that estimate whatever the estimate is — a test that could not fail.
+
+| samples per model | top model, frame estimate | best constant-policy score |
+|---|---|---|
+| 50 | 0.786 | 0.109 |
+| 200 | 0.864 | 0.031 |
+| 650 | 0.888 | 0.006 |
+| 2000 | 0.896 | 0.000 |
+
+Three changes:
+
+1. **Valuation uses the raw sample mean**, `ReferenceFrame.frontier_accuracy`,
+   with no prior. The miner is judged on its lower bound, so a constant policy
+   at its true accuracy sits on the frontier and its lower bound below it:
+   zero headroom at every sample count, by construction. An unmeasured model
+   is valued at 1.0 — nothing is known, nothing is paid above it. An upper
+   confidence bound was tried first and rejected: its width (four points at
+   500 samples) taxed every honest router for a certainty the miner-side
+   lower bound already provides. The prior still serves `accuracy` and
+   `best_model`, which select and report; it no longer values.
+2. **`FRONTIER_MIN_TRIALS` is 300 distinct observations**, where a trial is
+   one (question, model) per epoch however many miners answered (I9). The
+   ramp is a count of what has been measured and cannot be filled by
+   duplicates.
+3. **A live validator starts from the shipped bootstrap frame**,
+   `data/reference_frame.json`, built by `scripts/build_bootstrap_frame.py`
+   from testnet reveals and hash-pinned in `check_safety_invariants.py`
+   (`check_bootstrap_frame_pinned`). It is measured evidence, not a prior:
+   decayed exploration counts, valued exactly as live samples are. Without it
+   epoch 1 pays nobody and full payout arrives after roughly 340 epochs at
+   fifteen exploration slots over seventeen models. `load_bootstrap(require=
+   True)` makes a missing file a startup error in live, because one validator
+   starting cold is one validator scoring the field against a different
+   frontier (I1). Pending: the file itself, which needs the val2 testnet
+   reveals.
+
+Enforced by `tests/test_finding3_prior_bias.py` and the rewritten
+`test_every_constant_policy_scores_zero`, both of which score constant policies
+at their TRUE accuracy against frames built from exact-count samples at
+several sizes.
+
 What follows is the analysis as it stood when the defect was open, kept
 because it is the reason the reference is a curve and not a point.
 
@@ -1671,19 +1725,22 @@ and that estimate is built from miners' exploration samples. If it tracked the
 miner population, every miner would move every other miner's score and the
 same head would be worth more in a thin epoch than a busy one.
 
-Two things keep it from doing so. The frame accumulates over *time*, not over
-miners, so one epoch's samples are a single decayed contribution to a
-long-running estimate. And every frontier point is valued at the posterior
-*mean* rather than a lower confidence bound — an LCB's pessimism shrinks as
-evidence accumulates, which made the old ceiling a function of sample count and
-therefore of field size (measured: 0.14 of score between a 3-miner and a
-50-miner field). A thin frame is discounted once, through the frontier's
-confidence factor (`FRONTIER_MIN_TRIALS`), which is the same for every miner in
-the epoch and so cannot reorder them.
+Three things keep it from doing so. The frame accumulates over *time*, not
+over miners, so one epoch's samples are a single decayed contribution to a
+long-running estimate. Since 2026-10-14 an epoch contributes one observation
+per (question, model) however many miners answered it (I9), so the number of
+trials — and with it the frontier's confidence — no longer depends on field
+size at all. And every frontier point is valued at the raw sample *mean*
+rather than a confidence bound (either direction): a bound's width shrinks as
+evidence accumulates, which made the old ceiling a function of sample count
+(measured, when sample count tracked field size: 0.14 of score between a
+3-miner and a 50-miner field). A thin frame is discounted once, through the
+frontier's confidence factor (`FRONTIER_MIN_TRIALS`), which is the same for
+every miner in the epoch and so cannot reorder them.
 
-Residual: convergence speed still depends on field size. A small subnet reaches
-a stable frame more slowly. The prior strength was calibrated against this
-directly (see `FRAME_PRIOR_STRENGTH`) rather than chosen.
+Residual: a small subnet gathers distinct observations no more slowly than a
+large one now — exploration slots per epoch are fixed — but a field below a
+handful of honest operators per question loses the median's protection (I9).
 
 ### I4 — seniority squatting (residual, accepted)
 
@@ -2050,10 +2107,11 @@ every `set_weights` failed while the neurons reported success.
    rewards a constant policy over a router.
 5. Second independent validator operator; coldkeys encrypted and off every
    neuron host; monitoring with an alert channel.
-4. Recalibrate the reference-frame prior from real testnet data. It currently
-   sits at a deliberately neutral 0.5 for every model, which is honest (the
-   subnet has measured nothing yet) but is wrong for real models and biases the
-   ceiling low until real evidence outweighs it.
+4. ~~Recalibrate the reference-frame prior from real testnet data.~~ The prior
+   no longer values the frontier (I3, 2026-10-14). What remains is to ship
+   `data/reference_frame.json` built from the val2 testnet reveals with
+   `scripts/build_bootstrap_frame.py`, and pin it; until then a live
+   validator refuses to start cold.
 5. Close or consciously accept the pool-memorization gap above.
 6. Validate real TDX attestation on a confidential VM —
    `docs/TDX_VALIDATION.md`. DCAP signature verification and `measurement_id`

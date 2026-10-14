@@ -307,11 +307,12 @@ and obtain the actual measurements for the reviewed build.
 Validators approve `<base>:<compose_hash>` pairs and refuse bare bases, and the
 compose hash covers the image digest. An image you build yourself has a
 different digest, so a different compose hash, so no validator will accept its
-proofs. Deploy the frozen `deploy/dstack/app-compose.frozen-<date>.json` that
-matches the entry the validators publish. Building your own image is for
-development against a local testnet in `--mock`, where no application is
-bound. (The published-image workflow and the signed entry channel are tracked
-under the 2026-10-14 diligence finding 7.)
+proofs. Deploy the published image — `ghcr.io/<org>/fugal-miner@sha256:…`,
+the digest named in the signed `image-v<date>` release — with the frozen
+`deploy/dstack/app-compose.frozen-<date>.json` that matches the entry the
+validators carry (`docs/APPROVED_ENTRY_ROTATION.md`, "Publishing"). Building
+your own image is for development against a local testnet in `--mock`, where
+no application is bound.
 
 ### Building the image on a fresh GCP project fails twice first
 

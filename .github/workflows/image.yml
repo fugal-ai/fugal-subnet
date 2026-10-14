@@ -1,0 +1,66 @@
+name: Miner image
+
+# Builds the miner image from a tag, pushes it to the public GitHub registry
+# BY DIGEST, and attaches the digest and the frozen compose to the release so
+# an approved entry can be traced from a validator's environment back to a
+# commit (diligence 2026-10, finding 7). Validators approve
+# <base>:<compose_hash>, the compose hash covers the image digest, and a bare
+# base is refused — so a miner can only run THIS image, and this image must be
+# one anyone can pull and anyone can reproduce.
+#
+# No third-party actions beyond checkout: docker login with the workflow's
+# own token, docker build and push. The pushed digest is what matters, and
+# it is printed, uploaded, and written into the release notes.
+
+on:
+  push:
+    tags: ["image-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-push:
+    name: Build and push by digest
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/fugal-miner
+          echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+          docker build --tag "${IMAGE,,}:${GITHUB_REF_NAME}" .
+
+      - name: Push and record the digest
+        run: |
+          docker push "$IMAGE:$GITHUB_REF_NAME"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:$GITHUB_REF_NAME")
+          echo "DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          echo "pushed $DIGEST"
+
+      - name: Freeze the compose for this digest
+        run: |
+          mkdir -p out
+          sed "s#image: .*#image: $DIGEST#" deploy/dstack/docker-compose.yaml > out/docker-compose.yaml
+          printf '%s\n' "$DIGEST" > out/IMAGE_DIGEST
+          sha256sum out/docker-compose.yaml out/IMAGE_DIGEST > out/SHA256SUMS
+          cat out/SHA256SUMS
+
+      - name: Release notes skeleton
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          python scripts/publish_approved_entry.py --digest "$DIGEST" --commit "$GITHUB_SHA" \
+            --compose out/docker-compose.yaml --tag "$GITHUB_REF_NAME" > out/RELEASE_NOTES.md
+          cat out/RELEASE_NOTES.md
+          gh release create "$GITHUB_REF_NAME" --draft --title "Miner image $GITHUB_REF_NAME" \
+            --notes-file out/RELEASE_NOTES.md out/docker-compose.yaml out/IMAGE_DIGEST out/SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

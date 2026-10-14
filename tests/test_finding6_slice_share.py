@@ -7,25 +7,13 @@ AIME (933), GSM8K (1,319) and IFEval (259) -- 2,511 questions, a set the
 team's own table says a linear head memorises completely -- fill 180 of 300
 slots, 60% of every score. Exploration uses the same slicer.
 
-Required behaviour, delivered by PR 6 after re-running
-scripts/experiment_pool_memorization.py on the slice-weighted subset: a
-benchmark's share of the slice is capped relative to its share of the pool.
-The 0.40 bound below is a placeholder ceiling; PR 6 replaces it with the
-measured constant.
-
-Expected to fail until PR 6; strict xfail so the marker leaves with the fix.
+Delivered by `SLICE_SHARE_FACTOR` in `select_slice`: a benchmark's quota is
+capped at the factor times its share of the pool. The numbers behind the
+factor are in docs/HEAD_EFFICACY.md, experiment 4.
 """
 from __future__ import annotations
 
-import pytest
-
 from fugal_subnet.benchmarks.slicer import select_slice
-
-pytestmark = pytest.mark.xfail(
-    strict=True,
-    reason="diligence 2026-10 finding 6: equal per-benchmark quotas",
-    raises=(AssertionError, ImportError, AttributeError),
-)
 
 # benchmarks/pool_manifest.json per_benchmark, at the pinned pool.
 POOL_SIZES = {"aime": 933, "gsm8k": 1319, "ifeval": 259, "math": 5000, "mmlu": 14042}

@@ -96,6 +96,7 @@ def environment_fingerprint() -> dict:
         EPOCH_INTERVAL,
         EXPLORE_FRACTION,
         ROUTING_DECISION_QUANTUM,
+        SLICE_SHARE_FACTOR,
         SLICE_SIZE,
     )
 
@@ -124,6 +125,7 @@ def environment_fingerprint() -> dict:
         # mismatch".
         "epoch": {
             "slice_size": SLICE_SIZE,
+            "slice_share_factor": SLICE_SHARE_FACTOR,
             "epoch_interval_s": EPOCH_INTERVAL,
             "explore_fraction": EXPLORE_FRACTION,
             "collect_fraction": EPOCH_COLLECT_FRACTION,

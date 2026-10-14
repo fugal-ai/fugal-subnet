@@ -9,21 +9,15 @@ environment) is replayed from the RTMR3 event log and compared against
 MANDATORY. A bare `<base>` entry skips the application check entirely, and a
 live validator merely logs a warning when one is configured.
 
-These tests pin the required behaviour. They are expected to fail until PR 1
-lands; `xfail(strict=True)` turns an early pass into a CI failure so the marker
-is removed in the same PR as the fix.
+These tests pin the required behaviour: `parse_approved(require_app=True)`
+refuses a bare base, the live validator passes it at startup, and
+`verify_proof` refuses a bare-base match outside mock whatever the caller did.
 """
 from __future__ import annotations
 
 import pytest
 
 from fugal_subnet.tee import verify as verify_mod
-
-pytestmark = pytest.mark.xfail(
-    strict=True,
-    reason="diligence 2026-10 finding 1: bare base entries are still accepted in live mode",
-    raises=(AssertionError, TypeError, ValueError),
-)
 
 
 def test_parse_approved_can_demand_an_application_identity():

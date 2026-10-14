@@ -302,10 +302,21 @@ historical measurements do not approve the success runtime; follow the
 [fresh-state runbook](SUCCESS_CONTRACT.md#fresh-testnet-evidence-runbook--execute-only-after-review)
 and obtain the actual measurements for the reviewed build.
 
+### Only the published image digest is approved
+
+Validators approve `<base>:<compose_hash>` pairs and refuse bare bases, and the
+compose hash covers the image digest. An image you build yourself has a
+different digest, so a different compose hash, so no validator will accept its
+proofs. Deploy the frozen `deploy/dstack/app-compose.frozen-<date>.json` that
+matches the entry the validators publish. Building your own image is for
+development against a local testnet in `--mock`, where no application is
+bound. (The published-image workflow and the signed entry channel are tracked
+under the 2026-10-14 diligence finding 7.)
+
 ### Building the image on a fresh GCP project fails twice first
 
-Not a Fugal problem, but everyone building their own image hits it, so it is
-here rather than left to be rediscovered. On a **new** GCP project the default
+Not a Fugal problem, but everyone building their own image for a local testnet
+hits it, so it is here rather than left to be rediscovered. On a **new** GCP project the default
 compute service account has no permissions, so `gcloud builds submit` fails with
 `PERMISSION_DENIED`, and then fails again with a confusing 403 **on its own
 staging bucket**. Grant these by hand first:

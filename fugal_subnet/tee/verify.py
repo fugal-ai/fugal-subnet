@@ -71,7 +71,7 @@ class VerifyResult:
     unverifiable: bool = False
 
 
-def parse_approved(entries) -> dict[str, set[str]]:
+def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
     """Turn the approved list into {base_measurement: {app_identity, ...}}.
 
     An entry is either
@@ -88,10 +88,14 @@ def parse_approved(entries) -> dict[str, set[str]]:
     repo, so it is reviewable in a pull request instead of requiring someone to
     hold a quote.
 
-    A bare base is the pre-existing behaviour and stays valid: on an unlocked
-    image an RTMR3 match proves nothing anyway, since an attacker running
-    modified code extends whatever value is expected. Requiring it becomes
-    meaningful when the extend is performed from a measured initrd.
+    A bare base is the pre-existing behaviour and stays PARSEABLE, for mock
+    runs and local testnets where no application is being bound. It is never a
+    live configuration: the model upstream is fixed only by the compose that
+    the app identity measures, so a bare base approves a TD whose upstream the
+    miner chose -- the exploit `scripts/stub_upstream.py` demonstrates
+    (diligence 2026-10, finding 1). `require_app=True` makes a bare base a
+    loud ValueError; the live validator passes it at startup, and
+    `verify_proof` refuses a bare-base match outside mock regardless.
 
     THE APP IDENTITY IS NEVER AN RTMR3 VALUE, and storing one here would be a
     subtle, expensive mistake. A measured image extends RTMR3 several times
@@ -128,6 +132,13 @@ def parse_approved(entries) -> dict[str, set[str]]:
             )
         if not base:
             raise ValueError(f"Approved measurement {entry!r} has no base measurement")
+        if require_app and not app:
+            raise ValueError(
+                f"Approved measurement {entry!r} is a bare base with no app "
+                "identity. A bare base approves ANY application on that image, "
+                "including one whose model upstream the miner chose. Live entries "
+                "must be '<base>:<compose_hash>' (docs/APPROVED_ENTRY_ROTATION.md)."
+            )
         out.setdefault(base, set())
         if app:
             out[base].add(app)
@@ -348,6 +359,20 @@ def verify_proof(
         #     safe to read later: a log that does not reproduce the quote's
         #     register is discarded before any field of it is believed.
         required_apps = approved[measured]
+        if not required_apps:
+            # A bare base says nothing about the application, and the
+            # application is what fixes the model upstream. Outside mock that
+            # is the upstream-substitution exploit with every signature intact
+            # (diligence 2026-10, finding 1), so it is a rejection and not a
+            # warning. The live validator already refuses to START with such an
+            # entry; this is the same rule at the point of use, for scripts
+            # that call verify_proof directly.
+            return VerifyResult(
+                False,
+                f"Approved entry for image {measured[:16]}... is a bare base: no "
+                "app identity, so the application (and its model upstream) is "
+                "unchecked. Live verification requires <base>:<compose_hash>.",
+            )
         if required_apps:
             if event_log:
                 # A measured image extends RTMR3 several times during boot, so

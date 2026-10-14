@@ -688,6 +688,102 @@ def check_tee_safety(errors: list[str]) -> None:
                 )
 
 
+def check_upstream_is_inside_the_measurement(errors: list[str]) -> None:
+    """The model upstream must be fixed by what the TD measures, and nothing else.
+
+    Diligence 2026-10, finding 1. The metering proxy reads its upstream from
+    FUGAL_OPENROUTER_BASE inside the miner's own TD, and the TD holds every
+    gold answer. The only thing that binds the upstream is the dstack compose
+    hash: the compose fixes the container environment, the hash is replayed
+    out of the RTMR3 event log, and the approved entry names it. That chain
+    has three links an edit can silently break, and each is checked here:
+
+    1. every frozen app-compose must have `allowed_envs: []` -- a listed env
+       is delivered through dstack's encrypted channel AFTER attestation and is
+       unmeasured by design, so a compose that allowed FUGAL_OPENROUTER_BASE
+       would hand the miner the upstream with the hash unchanged;
+    2. the compose must reference its image by digest, never by tag, or the
+       hash stays stable while the code beneath it changes;
+    3. the compose must not set FUGAL_OPENROUTER_BASE itself (the default in
+       runtime.py is the real endpoint, and a compose that sets it to
+       anything else is approving a different upstream under the same name).
+
+    The live validator refuses a bare base entry (one with no app identity),
+    which is the fourth link; that one is checked by
+    `check_live_requires_app_identity` below.
+    """
+    import json
+
+    frozen = sorted((ROOT / "deploy" / "dstack").glob("app-compose*.json"))
+    if not frozen:
+        errors.append("deploy/dstack: no app-compose*.json to check the upstream binding on")
+    for path in frozen:
+        rel = path.relative_to(ROOT)
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as e:
+            errors.append(f"{rel}: not JSON ({e})")
+            continue
+        if doc.get("allowed_envs"):
+            errors.append(
+                f"{rel}: allowed_envs is {doc['allowed_envs']!r}; an allowed env "
+                "arrives after attestation, unmeasured, so this must be [] (I8)"
+            )
+        compose = doc.get("docker_compose_file", "")
+        for line in compose.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("image:") and "@sha256:" not in stripped:
+                errors.append(f"{rel}: image referenced by tag, not digest: {stripped} (I8)")
+            if stripped.startswith("#"):
+                continue
+            if "FUGAL_OPENROUTER_BASE" in stripped and "=" in stripped:
+                errors.append(
+                    f"{rel}: compose sets FUGAL_OPENROUTER_BASE -- the upstream is "
+                    "fixed by runtime.py's default and must not be overridden (I8)"
+                )
+
+    # TLS inside the proxy is the other half: a miner who controls the VM's
+    # network reaches the same outcome by pointing DNS at themselves if the
+    # proxy ever stops validating certificates.
+    runtime = ROOT / "fugal_subnet" / "tee" / "runtime.py"
+    text = runtime.read_text(encoding="utf-8")
+    for needle in ("_create_unverified_context", "CERT_NONE", "check_hostname = False"):
+        if needle in text:
+            errors.append(
+                f"fugal_subnet/tee/runtime.py: contains {needle!r}; the metering "
+                "proxy must validate the upstream certificate (I8)"
+            )
+
+
+def check_live_requires_app_identity(errors: list[str]) -> None:
+    """A live validator must refuse a bare base approved entry at startup.
+
+    Diligence 2026-10, finding 1. The refusal is `parse_approved(...,
+    require_app=live)` in neurons/validator.py; it was a logger.warning before,
+    and a warning about something the adversary controls is not a control.
+    This check reads the AST so the call cannot quietly lose its keyword.
+    """
+    path = ROOT / "neurons" / "validator.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found = False
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "parse_approved"):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "require_app":
+                continue
+            v = kw.value
+            if (isinstance(v, ast.Name) and v.id == "live") or (
+                isinstance(v, ast.Constant) and v.value is True
+            ):
+                found = True
+    if not found:
+        errors.append(
+            "neurons/validator.py: parse_approved is not called with "
+            "require_app=live; a bare base entry would be accepted in live mode (I8)"
+        )
+
+
 def main() -> None:
     errors: list[str] = []
     check_np_load_calls(errors)
@@ -704,6 +800,8 @@ def main() -> None:
     check_epoch_id_single_source(errors)
     check_paid_call_guards(errors)
     check_tee_safety(errors)
+    check_upstream_is_inside_the_measurement(errors)
+    check_live_requires_app_identity(errors)
     check_documented_flags(errors)
     if errors:
         raise SystemExit("Safety invariant check failed:\n- " + "\n- ".join(errors))

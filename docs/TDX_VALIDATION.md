@@ -168,11 +168,20 @@ approve. Quote generation needs write access to configfs, so run it as root:
 sudo -E $(which uv) run python scripts/tdx_measurement.py
 ```
 
-Add the value it prints to the validator's environment:
+That is the `base` half. The `app_identity` half is the compose hash of the
+frozen `app-compose.json` the miner image was deployed with
+(`scripts/compute_app_identity.py --compose deploy/dstack/app-compose.frozen-<date>.json
+--base <base>` prints the full entry). Add the PAIR to the validator's
+environment:
 
 ```bash
-export FUGAL_TEE_MEASUREMENTS=<measurement_id>
+export FUGAL_TEE_MEASUREMENTS=<base>:<compose_hash>
 ```
+
+A bare `<base>` is refused by `--live` at startup, and `verify_proof` rejects a
+proof that matches only a bare base. A bare base approves any application on
+the image, and the application is what fixes the model upstream — see
+`docs/INVARIANTS.md`, "The model upstream is miner-controlled".
 
 Publish it for other validators the same way any consensus parameter is
 published — a change to this list is a change to what code the subnet accepts.
@@ -214,7 +223,7 @@ az group delete --name fugal-tdx-rg --yes --no-wait
 python neurons/miner.py --netuid <N> --head-path head.npz --live
 
 # Validator (does not need TDX — it verifies, it does not attest)
-FUGAL_TEE_MEASUREMENTS=<id> python neurons/validator.py --netuid <N> --live
+FUGAL_TEE_MEASUREMENTS=<base>:<compose_hash> python neurons/validator.py --netuid <N> --live
 ```
 
 Validators do not need confidential hardware. Only miners do.

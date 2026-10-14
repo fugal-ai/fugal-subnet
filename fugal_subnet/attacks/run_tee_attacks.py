@@ -27,7 +27,12 @@ import numpy as np
 
 from fugal_subnet.routing_protocol import MANIFEST_PATH
 from fugal_subnet.tee import verify as verify_mod
-from fugal_subnet.tee.attestation import measurement_id, parse_quote
+from fugal_subnet.tee.attestation import (
+    expected_rtmr3,
+    measurement_id,
+    parse_quote,
+    runtime_identity,
+)
 from fugal_subnet.tee.proof import (
     BenchmarkProof,
     QuestionResult,
@@ -58,7 +63,14 @@ def _quote(report_data: bytes, mrtd: bytes, rtmr3: bytes = b"\x00" * 48) -> byte
     return bytes(q)
 
 
-APPROVED = {measurement_id(parse_quote(_quote(b"\x00" * 64, HONEST_MRTD)))}
+BASE = measurement_id(parse_quote(_quote(b"\x00" * 64, HONEST_MRTD)))
+# The honest application identity and the register a fresh TD reaches after
+# extending it once. The approved entry is the PAIR: a bare base is no longer a
+# live configuration (diligence 2026-10, finding 1), so the control must carry
+# an app identity or the suite would be testing a rejected setup.
+APP_ID = runtime_identity("src", "pool", "grader", "https://openrouter.ai/api/v1")
+HONEST_RTMR3 = bytes.fromhex(expected_rtmr3(APP_ID))
+APPROVED = {f"{BASE}:{APP_ID}"}
 
 
 def _qr(qid, model="deepseek/deepseek-v4-flash", correct=True, cost=0.001, explore=False):
@@ -73,7 +85,7 @@ ATTACKER_HOTKEY = "5AttackerHotkeyBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 
 
 def _proof(results, mrtd=HONEST_MRTD, weights_hash=HEAD_HASH,
-           nonce="n" * 64, qhash=None, total=None, rtmr3=b"\x00" * 48,
+           nonce="n" * 64, qhash=None, total=None, rtmr3=HONEST_RTMR3,
            hotkey=HONEST_HOTKEY):
     per_model: dict[str, float] = {}
     for r in results:
@@ -221,10 +233,8 @@ def a_duplicate_results():
 from fugal_subnet.tee.attestation import (  # noqa: E402
     dstack_event_digest,
     replay_event_log,
-    runtime_identity,
 )
 
-APP_ID = runtime_identity("src", "pool", "grader", "https://openrouter.ai/api/v1")
 _HONEST_LOG = [
     {"imr": 3, "event": "compose-hash", "event_payload": "abcd",
      "digest": dstack_event_digest("compose-hash", bytes.fromhex("abcd"))},
@@ -232,7 +242,6 @@ _HONEST_LOG = [
      "digest": dstack_event_digest("instance-id", bytes.fromhex("beef"))},
 ]
 _HONEST_RTMR3 = bytes.fromhex(replay_event_log(_HONEST_LOG)[0])
-BASE = next(iter(APPROVED))
 APPROVED_APP = {f"{BASE}:abcd"}
 
 
@@ -317,6 +326,19 @@ def a_single_extend_identity_mismatch():
     return _verify(proof, approved_measurements={f"{BASE}:{APP_ID}"}, event_log=None)
 
 
+def a_bare_base_approves_any_app():
+    """Run any application on an approved image under a bare base entry.
+
+    The application is what fixes the model upstream, so a bare base lets the
+    miner choose it: perfect accuracy at two tokens of attested cost with the
+    DCAP signature, the image measurement, the question hash, the nonce and
+    the head hash all intact (diligence 2026-10, finding 1). This case
+    VERIFIED until bare bases were refused outside mock.
+    """
+    proof = _proof([_qr(q) for q in SLICE], rtmr3=b"\xde" * 48)
+    return _verify(proof, approved_measurements={BASE}, event_log=None)
+
+
 ATTACKS = [
     ("modified harness in a real TDX VM", "I8", a_modified_image),
     ("answer easy questions, claim the slice", "I3", a_substituted_questions),
@@ -341,6 +363,7 @@ ATTACKS = [
      a_smuggled_colon_in_the_approved_entry),
     ("20k-entry event log", "I2", a_oversized_event_log),
     ("single-extend identity mismatch", "I8", a_single_extend_identity_mismatch),
+    ("bare base entry, miner-chosen application", "I8", a_bare_base_approves_any_app),
 ]
 
 

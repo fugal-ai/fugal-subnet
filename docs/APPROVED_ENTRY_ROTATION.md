@@ -49,6 +49,34 @@ note naming the commit, the image digest, the compose hash and the base, plus
 a row in the table below. A validator operator who cannot trace an entry back
 to a commit and a digest should not approve it.
 
+The channel, built 2026-10-14 (diligence finding 7):
+
+1. **Image.** Push a tag `image-v<date>`; `.github/workflows/image.yml` builds
+   the image, pushes it to `ghcr.io/<org>/fugal-miner` **by digest** (public,
+   so any validator can pull what it approves), writes the digest into a copy
+   of `deploy/dstack/docker-compose.yaml`, and drafts a release carrying both.
+   Miners deploy the published digest; an image anyone builds themselves has a
+   different digest, hence a different compose hash, and is refused.
+2. **Compose.** Run `dstack-cloud prepare` with that compose (README in
+   `deploy/dstack/`), commit the frozen `app-compose.json`, and have a second
+   person recompute its hash from the committed bytes.
+3. **Note.** `python scripts/publish_approved_entry.py --digest <digest>
+   --commit <sha> --compose deploy/dstack/app-compose.frozen-<date>.json
+   --base <base> --tag image-v<date>` prints the note with the completed entry.
+4. **Sign.** `git tag -s image-v<date>` with a key listed in
+   `deploy/keys/allowed_signers` (SSH signing; the file is the trust root and
+   is added to by reviewed pull request), push the tag, and
+   `gh release create image-v<date> --notes-file notes.md --verify-tag`.
+5. **Validators.** `python scripts/fetch_approved_entries.py --tag
+   image-v<date>` verifies the tag signature against the committed signers and
+   prints the `FUGAL_TEE_MEASUREMENTS` line. It never edits the environment;
+   adding the entry alongside the current one, restarting, and retiring the
+   old one after the window below is the operator's act.
+
+A validator does not check GitHub at startup. Its environment is
+authoritative, on purpose: a validator that cannot start because GitHub is
+down is a worse failure than one that needs an operator to run step 5.
+
 | Entry (base:compose) | Image digest | Commit | Approved | Retired |
 |---|---|---|---|---|
 | `12a1f2f5…9141:cf31a1a4…69d2` | `3430da97…541f` | `e284963` | 2026-09-06 | 2026-09-07 (no instance ever verified on it; both TDs recreated) |

@@ -2234,8 +2234,12 @@ every `set_weights` failed while the neurons reported success.
    end-to-end~~ — **done**, GCP `c3-standard-4` under dstack 0.6.0-rc0.
 3. Publish approved entries and their rotation — the procedure is
    `docs/APPROVED_ENTRY_ROTATION.md` (entries are `<base>:<compose_hash>`;
-   the base is sha256 over MRTD and RTMR1-2, RTMR0 excluded). What remains is
-   the publication channel: a signed release note per entry.
+   the base is sha256 over MRTD and RTMR1-2, RTMR0 excluded). The channel is
+   built (2026-10-14: `.github/workflows/image.yml` publishes the image by
+   digest, `scripts/publish_approved_entry.py` writes the note,
+   `scripts/fetch_approved_entries.py` verifies the signed tag). What remains
+   is the first signed release: a signing key in `deploy/keys/allowed_signers`
+   and a tag.
 4. Decide I3 (`docs/I3_DECISION.md`) before launch — the incentive currently
    rewards a constant policy over a router.
 5. Second independent validator operator; coldkeys encrypted and off every

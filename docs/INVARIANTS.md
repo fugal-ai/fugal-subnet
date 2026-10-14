@@ -1885,6 +1885,22 @@ head and are deduped as one. Independence is data.
 
 Enforced by `tests/test_finding5_near_copy_dedup.py`.
 
+### I1 — every scoring constant is in the digest, and none can be overridden live (fixed 2026-10-14)
+
+Diligence 2026-10, additional finding A2. `config.py` reads its constants from
+the environment, and the consensus digest covered five of them. A validator
+with `FUGAL_SCORE_QUALITY_FLOOR=0.5` exported scored the field by its own
+rules, and the digest two validators compare to explain a divergence said
+nothing. Now every `FUGAL_` variable `config.py` reads is in exactly one of
+three lists (`CONSENSUS_ENV_VARS`, `CONSENSUS_ENV_INPUTS`,
+`OPERATIONAL_ENV_VARS`; `check_every_env_constant_classified` fails CI on an
+unclassified one), the fingerprint carries a `scoring` block with every
+consensus constant's value as in effect, `consensus_digest` hashes it along
+with the routing-protocol identity (which covers the price table), and
+`check_environment` reports any consensus constant set in the environment so a
+live validator refuses to start. Inputs — the epoch length, the approved
+entries — are set per deployment on purpose and are recorded, not refused.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

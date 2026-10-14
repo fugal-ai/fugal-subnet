@@ -91,6 +91,7 @@ def grader_hash() -> str:
 
 def environment_fingerprint() -> dict:
     """A JSON-serializable record of everything that can change a score."""
+    from fugal_subnet import config
     from fugal_subnet.config import (
         EPOCH_COLLECT_FRACTION,
         EPOCH_INTERVAL,
@@ -130,7 +131,32 @@ def environment_fingerprint() -> dict:
             "explore_fraction": EXPLORE_FRACTION,
             "collect_fraction": EPOCH_COLLECT_FRACTION,
         },
+        # Every constant that decides a score or which proofs verify, as in
+        # effect right now (read off the module, so an override is recorded
+        # as the value it produced). Diligence 2026-10, finding A2: these were
+        # env-overridable and absent from the digest, so a validator with one
+        # exported scored the field differently and nothing said why.
+        "scoring": {
+            name: getattr(config, name)
+            for name in _SCORING_CONSTANTS
+        },
+        "approved_entries": sorted(config.TEE_APPROVED_MEASUREMENTS),
     }
+
+
+# Module attribute names, in a fixed order, so the digest is stable.
+_SCORING_CONSTANTS = (
+    "WILSON_CONFIDENCE", "SCORE_QUALITY_FLOOR", "FRONTIER_MIN_TRIALS",
+    "BURN_IN_QUESTIONS", "EXPLORE_FAIL_MARGIN", "EXPLORE_DISAGREE_MAX",
+    "EXPLORE_DISAGREE_MIN_SAMPLES", "EXPLORE_DISAGREE_MIN_VOTERS",
+    "DEDUP_SIMILARITY_THRESHOLD", "DEDUP_PARAM_DISTANCE",
+    "DEDUP_EPSILON_AGREEMENT", "DEDUP_EPSILON", "EVIDENCE_HALF_LIFE",
+    "LIVENESS_MAX_MISSED_EVIDENCE", "FRAME_HALF_LIFE", "FRAME_PRIOR_STRENGTH",
+    "FRAME_PRIOR_ACCURACY", "FRAME_DEFAULT_COMPLETION_TOKENS",
+    "BENCHMARK_POOL_MIN_SIZE", "MAX_WEIGHT_DELTA", "REQUIRE_COMMITMENT",
+    "HARNESS_ALLOW_EXEC", "HEAD_HIDDEN_DIM", "HEAD_MAX_MODELS", "HEAD_MAX_BYTES",
+    "HEAD_MAX_DECOMPRESSED_BYTES", "HEAD_MAX_MODEL_ID_LEN",
+)
 
 
 def consensus_digest(fingerprint: dict | None = None) -> str:
@@ -145,6 +171,11 @@ def consensus_digest(fingerprint: dict | None = None) -> str:
     fp = fingerprint if fingerprint is not None else environment_fingerprint()
     material = {
         "epoch": fp["epoch"],
+        "scoring": fp.get("scoring", {}),
+        # The contract, profile, lambda, token manifest and price table in one
+        # id; a validator pointed at a different price file via
+        # FUGAL_MODEL_PRICES diverges here.
+        "routing_protocol": fp.get("routing_protocol", ""),
         "packages": fp["packages"],
         "numpy_blas": fp["numpy_blas"],
         "cpu_dispatch": fp["cpu_dispatch"],
@@ -215,6 +246,19 @@ def check_environment() -> list[str]:
                 )
         except Exception:
             pass
+
+    # A consensus constant set in the environment is a validator that scores
+    # the field by its own rules (diligence 2026-10, finding A2). The value is
+    # in the digest either way; refusing at startup is what keeps the digest
+    # from being the only place the divergence shows up.
+    from fugal_subnet.config import CONSENSUS_ENV_VARS
+    for name in CONSENSUS_ENV_VARS:
+        if name in os.environ:
+            problems.append(
+                f"{name} is set in the environment; consensus constants cannot be "
+                "overridden on a live validator (unset it, or change config.py "
+                "through review)"
+            )
 
     return problems
 

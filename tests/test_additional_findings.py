@@ -25,7 +25,6 @@ def test_reveal_publisher_exists_and_hashes_what_it_uploads():
     assert len(reveal_digest(b'{"epoch_id": "e1"}')) == 64
 
 
-@pytest.mark.xfail(reason="A2: scoring constants are outside consensus_digest", **XF)
 def test_scoring_constants_change_the_consensus_digest(monkeypatch):
     from fugal_subnet import config
     from fugal_subnet.fingerprint import consensus_digest
@@ -35,7 +34,6 @@ def test_scoring_constants_change_the_consensus_digest(monkeypatch):
     assert consensus_digest() != before, "SCORE_QUALITY_FLOOR moved and the digest did not"
 
 
-@pytest.mark.xfail(reason="A2: no classification of FUGAL_ env constants", **XF)
 def test_every_score_affecting_constant_is_classified_as_consensus():
     from fugal_subnet.config import CONSENSUS_ENV_VARS
 
@@ -88,3 +86,13 @@ def test_burn_goes_to_the_uid_the_caller_resolved():
     records = {3: MinerRecord(uid=3)}
     uids, weights = rewards.compute_weights(records, burn_uid=9, paid_fraction=0.5)
     assert dict(zip(uids, weights)).get(9) == pytest.approx(0.5)
+
+
+def test_a_live_validator_refuses_an_overridden_consensus_constant(monkeypatch):
+    from fugal_subnet.fingerprint import check_environment
+
+    monkeypatch.delenv("FUGAL_SCORE_QUALITY_FLOOR", raising=False)
+    before = [p for p in check_environment() if "FUGAL_SCORE_QUALITY_FLOOR" in p]
+    monkeypatch.setenv("FUGAL_SCORE_QUALITY_FLOOR", "0.5")
+    after = [p for p in check_environment() if "FUGAL_SCORE_QUALITY_FLOOR" in p]
+    assert not before and after and "cannot be overridden" in after[0]

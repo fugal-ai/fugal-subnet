@@ -823,6 +823,63 @@ def check_bootstrap_frame_pinned(errors: list[str]) -> None:
         )
 
 
+def check_every_env_constant_classified(errors: list[str]) -> None:
+    """Every FUGAL_ variable config.py reads is consensus, input, or operational.
+
+    Diligence 2026-10, finding A2. The consensus digest only covers what
+    someone remembered to add to it; this check makes forgetting impossible.
+    A FUGAL_ name read by config.py must appear in exactly one of
+    CONSENSUS_ENV_VARS, CONSENSUS_ENV_INPUTS or OPERATIONAL_ENV_VARS, and
+    every CONSENSUS_ENV_VARS constant must be in the fingerprint's scoring
+    block or epoch block, so the classification and the digest cannot drift.
+    """
+    import re
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from fugal_subnet import config, fingerprint
+
+    source = (ROOT / "fugal_subnet" / "config.py").read_text(encoding="utf-8")
+    read = set(re.findall(r'os\.getenv\(\s*"(FUGAL_[A-Z0-9_]+)"', source))
+    lists = {
+        "CONSENSUS_ENV_VARS": set(config.CONSENSUS_ENV_VARS),
+        "CONSENSUS_ENV_INPUTS": set(config.CONSENSUS_ENV_INPUTS),
+        "OPERATIONAL_ENV_VARS": set(config.OPERATIONAL_ENV_VARS),
+    }
+    for name in sorted(read):
+        where = [k for k, v in lists.items() if name in v]
+        if len(where) != 1:
+            errors.append(
+                f"fugal_subnet/config.py: {name} is read but listed in "
+                f"{where or 'no classification list'}; it must be in exactly one "
+                "of CONSENSUS_ENV_VARS, CONSENSUS_ENV_INPUTS, OPERATIONAL_ENV_VARS (I1)"
+            )
+    for k, v in lists.items():
+        for name in sorted(v - read):
+            errors.append(f"fugal_subnet/config.py: {k} lists {name}, which nothing reads")
+
+    fp = fingerprint.environment_fingerprint()
+    covered = set(fp["scoring"]) | {
+        "SLICE_SIZE", "SLICE_SHARE_FACTOR", "EPOCH_INTERVAL", "EXPLORE_FRACTION",
+        "EPOCH_COLLECT_FRACTION", "TEE_MODEL_PRICES_PATH",  # via routing_protocol
+    }
+    for env_name in sorted(config.CONSENSUS_ENV_VARS):
+        attr = re.search(
+            rf'^([A-Z_]+)\s*=[^\n]*?os\.getenv\(\s*"{env_name}"', source, re.M | re.S,
+        )
+        if attr is None:
+            # multi-line definitions: find the assignment line above the getenv
+            idx = source.index(f'"{env_name}"')
+            attr_name = re.findall(r"^([A-Z_]+)\s*=", source[:idx], re.M)[-1]
+        else:
+            attr_name = attr.group(1)
+        if attr_name not in covered:
+            errors.append(
+                f"fugal_subnet/config.py: {attr_name} ({env_name}) is a consensus "
+                "constant but is not in fingerprint.environment_fingerprint (I1)"
+            )
+
+
 def main() -> None:
     errors: list[str] = []
     check_np_load_calls(errors)
@@ -842,6 +899,7 @@ def main() -> None:
     check_upstream_is_inside_the_measurement(errors)
     check_live_requires_app_identity(errors)
     check_bootstrap_frame_pinned(errors)
+    check_every_env_constant_classified(errors)
     check_documented_flags(errors)
     if errors:
         raise SystemExit("Safety invariant check failed:\n- " + "\n- ".join(errors))

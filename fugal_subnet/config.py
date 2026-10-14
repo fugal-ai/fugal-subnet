@@ -479,3 +479,81 @@ MIN_VALIDATOR_STAKE = float(os.getenv("FUGAL_MIN_VALIDATOR_STAKE", "1000"))
 # output cap): that file is hash-pinned consensus code and cannot read an
 # env-overridable value without making every validator's grades depend on its
 # environment.
+
+
+# --- Every FUGAL_ environment variable this module reads, classified ---
+#
+# Diligence 2026-10, additional finding A2: scoring constants could be changed
+# by environment variable and were not in the consensus digest, so a validator
+# with FUGAL_SCORE_QUALITY_FLOOR=0.5 exported scored the field differently
+# from every other validator and nothing recorded why. Three classes:
+#
+# CONSENSUS_ENV_VARS   decide a score or which proofs verify. Their VALUES are
+#                      in `fingerprint.consensus_digest`, and a live validator
+#                      refuses to start with any of them set in its
+#                      environment (`fingerprint.check_environment`). Mock
+#                      warns, so local testnets and the dress rehearsal can
+#                      shrink slices.
+# CONSENSUS_ENV_INPUTS must agree across neurons and are SUPPOSED to be set
+#                      per deployment (the epoch length is the chain's tempo;
+#                      the approved entries are the published list). In the
+#                      fingerprint so a divergence is attributable.
+# OPERATIONAL_ENV_VARS change timing, ports, paths or a miner's own costs,
+#                      never a validator's scores.
+#
+# scripts/check_safety_invariants.py fails if a FUGAL_ variable is read here
+# and listed in none of the three, so a new constant cannot be added
+# unclassified.
+CONSENSUS_ENV_VARS = (
+    "FUGAL_SLICE_SIZE",
+    "FUGAL_SLICE_SHARE_FACTOR",
+    "FUGAL_COLLECT_FRACTION",
+    "FUGAL_EXPLORE_FRACTION",
+    "FUGAL_HARNESS_ALLOW_EXEC",
+    "FUGAL_WILSON_CONFIDENCE",
+    "FUGAL_SCORE_QUALITY_FLOOR",
+    "FUGAL_FRONTIER_MIN_TRIALS",
+    "FUGAL_BURN_IN_QUESTIONS",
+    "FUGAL_EXPLORE_FAIL_MARGIN",
+    "FUGAL_EXPLORE_DISAGREE_MAX",
+    "FUGAL_EXPLORE_DISAGREE_MIN_SAMPLES",
+    "FUGAL_EXPLORE_DISAGREE_MIN_VOTERS",
+    "FUGAL_DEDUP_THRESHOLD",
+    "FUGAL_DEDUP_PARAM_DISTANCE",
+    "FUGAL_DEDUP_EPSILON_AGREEMENT",
+    "FUGAL_DEDUP_EPSILON",
+    "FUGAL_EVIDENCE_HALF_LIFE",
+    "FUGAL_MAX_MISSED_EVIDENCE",
+    "FUGAL_FRAME_HALF_LIFE",
+    "FUGAL_FRAME_PRIOR_STRENGTH",
+    "FUGAL_FRAME_PRIOR_ACCURACY",
+    "FUGAL_FRAME_DEFAULT_COMPLETION_TOKENS",
+    "FUGAL_POOL_MIN_SIZE",
+    "FUGAL_MAX_WEIGHT_DELTA",
+    "FUGAL_REQUIRE_COMMITMENT",
+    "FUGAL_HEAD_HIDDEN_DIM",
+    "FUGAL_HEAD_MAX_MODELS",
+    "FUGAL_HEAD_MAX_BYTES",
+    "FUGAL_HEAD_MAX_DECOMPRESSED",
+    "FUGAL_HEAD_MAX_MODEL_ID_LEN",
+    "FUGAL_MODEL_PRICES",
+)
+CONSENSUS_ENV_INPUTS = (
+    "FUGAL_EPOCH_INTERVAL",
+    "FUGAL_TEE_MEASUREMENTS",
+)
+OPERATIONAL_ENV_VARS = (
+    "FUGAL_HARNESS_CONCURRENCY",
+    "FUGAL_TAU",
+    "FUGAL_LAMBDA",
+    "FUGAL_TEE_PROXY_PORT",
+    "FUGAL_PCCS_URL",
+    "FUGAL_COLLATERAL_TIMEOUT",
+    "FUGAL_COLLATERAL_EPOCH_BUDGET",
+    "FUGAL_COLLATERAL_MAX_TIMEOUTS",
+    "FUGAL_API_TIMEOUT",
+    "FUGAL_API_RETRIES",
+    "FUGAL_BACKBONE",
+    "FUGAL_BACKBONE_BATCH_SIZE",
+    "FUGAL_MIN_VALIDATOR_STAKE",
+)

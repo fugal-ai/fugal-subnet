@@ -438,6 +438,45 @@ produce one head and are deduped as one (`docs/HEAD_EFFICACY.md`,
 experiment 3). That is the intended incentive — independence is data — but
 it should be said in MINER_GUIDE, and `docs/MINER_ECONOMICS.md` needs
 re-deriving for the new ramp.
+### Response text is hashed, not kept — and why that is not a distillation corpus (2026-10-09)
+
+**Decided, by construction.** Inside the TEE harness every completion is graded,
+reduced to a SHA-256 `response_hash` (`fugal_subnet/tee/harness.py:119`,
+`tee/proof.py:28`), and discarded. The published reveal holds question ids, the
+correctness matrix, routing decisions, exploration observations, token counts,
+costs, scores and weights. No completion text leaves the enclave. Recorded here
+because the question "could the subnet's multi-model responses be used for
+distillation?" will come up again, and the answer costs a session to re-derive.
+
+**Why keeping the text would not give a usable training set, even if we wanted
+one:**
+
+- *Contamination.* Every question is a pinned public benchmark, because grading
+  needs gold answers. Completions on them are test-set data. GPQA is gated for
+  exactly this reason; training on it would also breach its terms.
+- *Licensing.* The highest-value columns are closed models (GPT, Claude, Gemini)
+  whose terms forbid using outputs to train competing models. Only the
+  open-weight columns are clean, and Llama's licence has its own limits.
+- *Scale.* `matrix` collapsed to 2 of 17 models observed; exploration adds ~2
+  forced samples per model per epoch, paid for by miners. Distillation subnets
+  (SN97 Albedo) run the teacher locally over hundreds of billions of tokens.
+  This mechanism is three to four orders of magnitude short and is not meant
+  to close that gap.
+
+**What the published data IS good for** (no design change needed): training
+and auditing any router head, not only ours; a hardware-attested per-domain
+price-vs-accuracy scoreboard; per-question difficulty from solve counts
+(item-response style), useful for pruning saturated benchmarks and building
+hard sets; per-domain teacher selection for distillers; a dated record of the
+price-quality frontier.
+
+**The one change that would produce verified training data** — recorded as an
+option, not a plan: keep completion text for open-weight models only, on a
+*non-benchmark* task source with programmatic graders (generated or
+rolling-fresh code tasks). Correct completions on verifiable tasks are
+rejection-sampled SFT/RL data with no contamination or terms problem. It needs
+a new task source, storage outside the proof, and a licensing filter in the
+harness. Not before mainnet.
 
 ---
 

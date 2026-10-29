@@ -417,7 +417,7 @@ embeddings, where the largest gain was +0.036.
 
 All eight findings and the six additional items have code, tests and
 INVARIANTS entries (`tests/test_finding*.py`, `tests/test_additional_findings.py`
-all pass). Four things need an operator rather than code:
+all pass). Four things need an operator rather than code (one done since):
 
 - **Bootstrap frame.** `data/reference_frame.json` from the val2 testnet
   reveals: start the VM, copy `results/success-v1/epochs`, run
@@ -429,8 +429,9 @@ all pass). Four things need an operator rather than code:
   digest; then validators drop any bare base entry.
 - **Reveal bucket.** A public-read GCS bucket and `FUGAL_REVEAL_BUCKET` on
   every validator.
-- **Finney genesis hash.** Confirm `config.FINNEY_GENESIS_HASH` on a finney
-  node.
+- ~~**Finney genesis hash.**~~ Done 2026-10-29: the shipped value was wrong in
+  its last two bytes (`...36c78`), which left the mock-on-finney guard inert.
+  Corrected to `...36c03`, read from two independent finney endpoints.
 
 And one consequence worth a decision: the shipped trainer is deterministic
 from a zero start, so two miners who train it on the same public data

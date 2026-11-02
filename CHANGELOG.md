@@ -4,6 +4,21 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — the provisioning receiver takes one push, bounds every connection, and refuses oversized bodies
+
+The TD-side receiver (`fugal_subnet/tee/provision.py`) accepted any number of
+pushes for the life of the miner, and each replaced the session key, so anyone
+who reached port 8092 after provisioning could lock the operator out of the
+TD's logs; the attest endpoint stayed open as a quote oracle; the server was
+single-threaded with no socket timeout, so one half-open connection stalled
+provisioning for good; and `Content-Length` was unbounded (security read
+2026-11-02, finding 7). Now: one push per process (`409 already provisioned`
+on both `/provision` and `/provision/attest` afterwards; re-provisioning is a
+stop/start of the instance, which the miner guide says), a 3 MB body cap
+refused before a byte is read, a per-connection timeout, and a threaded
+server. `/provision/logs` is unchanged. Three new tests in
+`tests/test_provision_transport.py`.
+
 ### Changed — CONSENSUS: the success contract (2026-09-21, PR #32)
 
 Recorded here on 2026-11-02; it shipped without a changelog entry, which

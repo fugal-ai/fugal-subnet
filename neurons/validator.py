@@ -210,7 +210,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         select_slice,
     )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
-    from fugal_subnet.commitments import get_commitments_with_blocks, seniority_key
+    from fugal_subnet.commitments import seniority_key
     from fugal_subnet.config import TEE_COLLATERAL_EPOCH_BUDGET
     from fugal_subnet.dedup import epsilon_disqualified, find_duplicates
     from fugal_subnet.epoch_logger import (
@@ -361,6 +361,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             logger.info("=== Epoch %s (boundary block %d, hash %s) ===",
                         epoch_id, boundary_block, block_hash[:16])
 
+            # --- COMMITMENTS, pinned to the boundary block ---
+            # Read NOW, while the boundary block is seconds old, not after the
+            # collection wait and the 120 s query: a non-archive node serves
+            # roughly the last 300 blocks, and at ~boundary+250 the pinned read
+            # started failing with 50 blocks to spare. The pin makes the answer
+            # identical whenever it is read, so reading early costs nothing.
+            # In live a failed read is the epoch's failure (retried by the
+            # outer loop), never an empty map: with REQUIRE_COMMITMENT an empty
+            # map rejects every proof, and the epoch was then marked processed
+            # while peers that read in time set weights — a fork with nothing
+            # in the reveal to explain it (found 2026-11-02).
+            timer.start_phase("commitments")
+            chain_commitments = read_commitments_or_fail(
+                subtensor, netuid, boundary_block,
+                required=live and REQUIRE_COMMITMENT,
+            )
+
             # --- SLICE ---
             timer.start_phase("slice")
             nonce = derive_nonce(epoch_id, block_hash)
@@ -423,21 +440,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 timeout=120,
             )
 
-            # --- CHECK COMMITMENTS ---
-            timer.start_phase("commitments")
-            chain_commitments: dict[str, tuple[str, int]] = {}
-            try:
-                # Pinned to the boundary block: every validator reads the same
-                # commitments whatever moment in the epoch it runs this.
-                chain_commitments = get_commitments_with_blocks(
-                    subtensor, netuid, block=boundary_block,
-                )
-                logger.info("On-chain commitments at block %d: %d hotkeys",
-                            boundary_block, len(chain_commitments))
-            except Exception as e:
-                logger.warning("Could not read on-chain commitments: %s", e)
-
-            # --- VERIFY PROOFS ---
+            # --- VERIFY PROOFS ---  (commitments were read at the boundary, above)
             timer.start_phase("verify_proofs")
             verified_proofs: dict[int, BenchmarkProof] = {}
             verified_heads: dict[int, bytes] = {}
@@ -666,12 +669,21 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 exclude_coldkeys={coldkey_of[uid] for uid in suspicious},
             )
 
-            frame = accumulate_exploration(frame, samples)
-            ref_model, acc_best = best_model(frame, prices)
+            # EPOCH-LOCAL from here to save_state. `frame`, `scoring_state`,
+            # `prev_uids` and `prev_weights` are the validator's durable state
+            # and are rebound only once the epoch is written. Anything that
+            # raised between scoring and save_state used to land in the outer
+            # handler with the loop-level names already advanced, so the retry
+            # of the SAME epoch accumulated every miner's evidence twice,
+            # applied every miss twice and decayed the frame twice — and then
+            # persisted it (found 2026-11-02). tests/test_epoch_atomicity.py
+            # holds this shape.
+            epoch_frame = accumulate_exploration(frame, samples)
+            ref_model, acc_best = best_model(epoch_frame, prices)
             logger.info(
                 "Reference frame: %d samples this epoch, best model %s "
                 "(acc=%.3f, %.0f trials)",
-                len(samples), ref_model, acc_best, frame.trials.get(ref_model, 0.0),
+                len(samples), ref_model, acc_best, epoch_frame.trials.get(ref_model, 0.0),
             )
             # The constant-policy frontier for THIS slice: what any single model,
             # or any random mixture of models, buys at each price. Prompt tokens
@@ -681,7 +693,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 question_input_tokens(q.get("prompt", "")) for q in questions
             )
             frontier = build_frontier(
-                frame, prices, slice_prompt_tokens, len(questions),
+                epoch_frame, prices, slice_prompt_tokens, len(questions),
                 FRAME_DEFAULT_COMPLETION_TOKENS,
             )
             logger.info(
@@ -711,14 +723,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     for r in scored if r.question_id in slice_gold
                 )
                 ref_cost = reference_cost(
-                    frame, prices, ref_model,
+                    epoch_frame, prices, ref_model,
                     prompt_tokens=pool_prompt_tokens,
                     n_questions=len(scored),
                     default_completion_tokens=FRAME_DEFAULT_COMPLETION_TOKENS,
                 )
                 head_cost = policy_cost_total(
                     [(r.question_id, r.routed_model) for r in scored],
-                    slice_gold, prices, frame, FRAME_DEFAULT_COMPLETION_TOKENS,
+                    slice_gold, prices, epoch_frame, FRAME_DEFAULT_COMPLETION_TOKENS,
                 )
                 score = _proof_to_head_score(proof, ref_cost, head_cost)
                 epoch_scores[uid] = score
@@ -750,7 +762,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 logger.info("Dedup disqualified: %s", dupes)
 
             # --- EVIDENCE ACCUMULATION ---
-            scoring_state = update_scores(
+            epoch_state = update_scores(
                 scoring_state, epoch_scores, head_hashes,
                 frontier=frontier,
                 hotkeys={
@@ -764,7 +776,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
             # --- WEIGHTS ---
             for uid in epoch_scores:
-                rec = scoring_state.records.get(uid)
+                rec = epoch_state.records.get(uid)
                 if rec is not None:
                     logger.info(
                         "  UID %d scored: lcb=%.3f evidence $%.6f/q, frontier %.3f "
@@ -776,8 +788,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # head that routes like a senior one must beat it or it is a copy.
             near_copies = epsilon_disqualified(
                 routing_decisions, commit_blocks,
-                {uid: scoring_state.records[uid].composite_score
-                 for uid in routing_decisions if uid in scoring_state.records},
+                {uid: epoch_state.records[uid].composite_score
+                 for uid in routing_decisions if uid in epoch_state.records},
             )
             if near_copies:
                 logger.info("Epsilon rule disqualified: %s", sorted(near_copies))
@@ -787,7 +799,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # scores are normalised — inside composite() it cancels.
             burn_uid = resolve_burn_uid(subtensor, netuid, boundary_block, metagraph, live)
             uids, weights = compute_weights(
-                scoring_state.records, dedup_disqualified=dupes,
+                epoch_state.records, dedup_disqualified=dupes,
                 paid_fraction=frontier.confidence, burn_uid=burn_uid,
             )
             if frontier.confidence < 1.0:
@@ -809,15 +821,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             epoch_score_dicts = {
                 uid: {
                     "accuracy": s.accuracy,
-                    "quality": scoring_state.records[uid].quality,
-                    "thrift": scoring_state.records[uid].thrift,
-                    "headroom": scoring_state.records[uid].headroom,
-                    "reference_accuracy": scoring_state.records[uid].reference_accuracy,
-                    "cost_per_question": scoring_state.records[uid].cost_per_question,
-                    "score": scoring_state.records[uid].composite_score,
+                    "quality": epoch_state.records[uid].quality,
+                    "thrift": epoch_state.records[uid].thrift,
+                    "headroom": epoch_state.records[uid].headroom,
+                    "reference_accuracy": epoch_state.records[uid].reference_accuracy,
+                    "cost_per_question": epoch_state.records[uid].cost_per_question,
+                    "score": epoch_state.records[uid].composite_score,
                 }
                 for uid, s in epoch_scores.items()
-                if uid in scoring_state.records
+                if uid in epoch_state.records
             }
             epoch_weight_map = dict(zip(uids, weights))
 
@@ -884,10 +896,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             success, msg = response
             weights_confirmed = False
             confirm_detail = "not attempted"
+            next_prev_uids, next_prev_weights = prev_uids, prev_weights
             if success:
                 logger.info("Weights set successfully")
-                prev_uids = uids
-                prev_weights = weights
+                next_prev_uids, next_prev_weights = uids, weights
                 weights_confirmed, confirm_detail = confirm_weights_on_chain(
                     subtensor, netuid, my_uid, uids, weights,
                 )
@@ -971,6 +983,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
             write_epoch_log(epoch_log)
 
+            # COMMIT. The epoch is complete; only now does it become the state
+            # the next epoch (or a retry of this one) starts from.
+            scoring_state, frame = epoch_state, epoch_frame
+            prev_uids, prev_weights = next_prev_uids, next_prev_weights
             last_epoch_index = epoch_index
             save_state(scoring_state.records, prev_uids, prev_weights,
                        last_epoch_index, frame)
@@ -1057,6 +1073,38 @@ def _get_bundle_for_uid(uid, resp):
 # defined here, and the nominal block time is only used to render a human
 # estimate — the wait itself is on block height, never on wall clock.
 from fugal_subnet.benchmarks.slicer import BLOCK_TIME_S as _BLOCK_TIME_S  # noqa: E402
+
+
+def read_commitments_or_fail(subtensor, netuid: int, block: int, *, required: bool):
+    """The epoch's on-chain commitments, pinned to `block`.
+
+    `required` is `live and REQUIRE_COMMITMENT`: then a failed read raises,
+    because an empty map under REQUIRE_COMMITMENT rejects every proof and the
+    epoch would be marked processed with no weights set while peers that read
+    in time set theirs (I1, I6). Raising hands the epoch to the outer loop's
+    retry instead. When commitments are not required (mock, local chains whose
+    node has no Commitments pallet), the old behaviour stands: warn and go on.
+
+    The commonest cause of a failure here is a non-archive endpoint asked for a
+    block more than ~300 behind the head, so the message says so.
+    """
+    from fugal_subnet.commitments import get_commitments_with_blocks
+
+    try:
+        commitments = get_commitments_with_blocks(subtensor, netuid, block=block)
+    except Exception as e:  # noqa: BLE001 - chain/SDK errors of every shape
+        if required:
+            raise RuntimeError(
+                f"Could not read on-chain commitments at block {block}: {e}. "
+                "Commitments are required, so this epoch cannot be scored "
+                "without them; retrying rather than scoring every miner as "
+                "uncommitted. If the block is far behind the head, the "
+                "endpoint is not an archive node."
+            ) from e
+        logger.warning("Could not read on-chain commitments at block %d: %s", block, e)
+        return {}
+    logger.info("On-chain commitments at block %d: %d hotkeys", block, len(commitments))
+    return commitments
 
 
 def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:

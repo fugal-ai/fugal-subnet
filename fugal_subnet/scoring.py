@@ -105,6 +105,14 @@ def update_scores(
         hotkeys: {uid: hotkey} so a recycled UID drops the old occupant's record.
         pool_size: Distinct questions available, capping the effective sample size.
     """
+    # Copy-on-write. The caller's state is untouched until it chooses to adopt
+    # the result: the validator holds the result in an epoch-local name and
+    # commits it only after the epoch is durable, so an exception between
+    # scoring and save_state cannot leave half an epoch applied for the retry
+    # to apply again (neurons/validator.py, tests/test_epoch_atomicity.py).
+    # A few hundred small records; the copy costs microseconds.
+    import copy
+    state = copy.deepcopy(state)
     state.epoch_count += 1
     n_expected = n_questions or SLICE_SIZE
     hotkeys = hotkeys or {}

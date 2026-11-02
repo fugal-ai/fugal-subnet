@@ -204,7 +204,17 @@ def miner_env(extra=None):
     env = os.environ.copy()
     env["FUGAL_EPOCH_INTERVAL"] = EPOCH_INTERVAL_S
     env["FUGAL_SLICE_SIZE"] = "40"
-    env["FUGAL_EXPLORE_FRACTION"] = "0.10"
+    # Half the slice explores. Exploration targets are drawn over the WHOLE
+    # pinned price table (17 models), and the frontier values any unmeasured
+    # model at 1.0, so until every model priced at or below a head's cost per
+    # question has been explored that head's headroom is negative by
+    # construction. At 0.10 that was 4 samples an epoch and scenario B's
+    # frontier was still unmeasured at both heads' prices after five epochs
+    # (run 41513035321); at 0.50 it is 20, and the 17 models are covered in a
+    # few epochs. Stubbed calls, so this costs nothing but seconds. Mock
+    # neurons accept the consensus override with a warning, as they do for
+    # the slice size above.
+    env["FUGAL_EXPLORE_FRACTION"] = "0.50"
     env["FUGAL_REQUIRE_COMMITMENT"] = "0"
     # NOT 127.0.0.1: the chain rejects loopback for serve_axon at pool
     # validation, so the axon would never register and no validator could
@@ -489,7 +499,7 @@ def _launch_sequential(procs, netuid, pool_path, specs, timeout=300):
 # Scenario B judges headroom only once the frontier has measured every model
 # the rehearsal heads route to; three cheap models and three exploration
 # slots per epoch make that likely within a few epochs, never certain.
-B_MAX_EPOCHS = 5
+B_MAX_EPOCHS = 6
 
 
 def frontier_measured(scores: dict, uids) -> bool:

@@ -1,7 +1,7 @@
 # Fugal Subnet
 
 [![CI](https://github.com/fugal-ai/fugal-subnet/actions/workflows/ci.yml/badge.svg)](https://github.com/fugal-ai/fugal-subnet/actions/workflows/ci.yml)
-[![Python 3.10–3.12](https://img.shields.io/badge/python-3.10%E2%80%933.12-blue)](https://www.python.org/)
+[![Python 3.11–3.12](https://img.shields.io/badge/python-3.11%E2%80%933.12-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/fugal-ai/fugal-subnet)](https://github.com/fugal-ai/fugal-subnet/releases)
 
@@ -22,7 +22,7 @@ Question → Qwen3-0.6B (frozen) → hidden state → independent sigmoid succes
 ## Quick Start
 
 ```bash
-# Clone and install (Linux/WSL2, Python 3.10-3.12)
+# Clone and install (Linux/WSL2, Python 3.11-3.12)
 git clone https://github.com/fugal-ai/fugal-subnet.git
 cd fugal-subnet
 python3 -m venv .venv
@@ -79,7 +79,7 @@ OpenRouter key delivered over the attested provisioning channel; see the
 
 ### Requirements
 
-- Linux or WSL2 and Python 3.10–3.12
+- Linux or WSL2 and Python 3.11–3.12
 - Docker for the full local-chain testnet
 - CPU float32 for the shared embedding profile and reference trainer
 

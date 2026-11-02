@@ -9,13 +9,12 @@ description = "Bittensor subnet for continuous LLM router optimization"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 keywords = ["bittensor", "decentralized-ai", "llm-routing", "pytorch"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -102,7 +101,7 @@ testpaths = ["tests"]
 [tool.ruff]
 # Immutable test-only core projection, checked against Git objects in CI.
 extend-exclude = ["tests/core_snapshot"]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]

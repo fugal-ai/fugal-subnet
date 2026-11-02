@@ -29,7 +29,7 @@ exact token counts and costs. Validators verify proofs — they never call model
   produces a different base that no validator approves. Required for `--live`;
   `--mock` works anywhere
 - Linux (Ubuntu 22.04+ recommended)
-- Python 3.10-3.12
+- Python 3.11-3.12
 - GPU recommended for training heads (CPU works but slower). If a GPU job runs
   far slower than the card should manage, read *A slow embedding job is usually
   VRAM, not a small card* below before sizing up — the failure is silent

@@ -4,6 +4,22 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — `scripts/export_pool.py` could not run
+
+The documented way of building the consensus pool for every neuron
+(MAINNET_LAUNCH §3) failed on every Linux host and nothing ran it. It set
+`FUGAL_POOL_FILE=os.devnull` to mean "no file"; the loader tested the path
+with `os.path.exists`, true for `/dev/null`, and fed a device node to the JSON
+parser. Behind that, `gzip.open(..., mtime=0)` raised `TypeError` (only
+`GzipFile` takes `mtime`), and the gzip header carried the output file name,
+so the "file sha256" operators are told to compare differed by path alone.
+The loader now ignores anything that is not a regular file; the script uses a
+sentinel that can never be one and writes a header free of time and name.
+Verified against the pinned revisions: 21,553 questions, `pool_hash` and
+`content_hash` equal to the manifest, and the file reloads as the pinned pool.
+Three tests in `tests/test_pool_file.py`, one of which runs the script's
+`main()`.
+
 ### Changed — CONSENSUS: the score is headroom above the constant-policy frontier
 
 Re-scores every miner; decided in `docs/I3_DECISION.md` (option 3). The

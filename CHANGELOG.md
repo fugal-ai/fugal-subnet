@@ -74,6 +74,35 @@ miners; `docs/INVARIANTS.md` has the analysis per finding.
   `load_all()` (finding 8); **miner image published by digest and approved
   entries as signed releases** (finding 7; `deploy/keys/allowed_signers`
   pending).
+### Fixed — CONSENSUS: the TPM half of a dstack attestation must be bound to its TDX quote
+
+On GCP a proof carries two signatures: Intel's over the TDX quote and
+Google's over a vTPM quote. `unwrap_attestation` verified the TPM quote's
+signature and certificate chain but never checked that it was *this* TDX
+quote's TPM quote. dstack puts `sha256(tdx_quote)` in `TPMS_ATTEST.extra_data`
+(measured on both real fixtures), so a genuine TPM quote from any Confidential
+VM could have been stapled onto any TDX quote and the second trust root proved
+only that some GCP vTPM existed. The binding is now checked and a mismatch is
+a rejection (I8). Every honest dstack blob already satisfies it; a validator
+without this change accepts envelopes one with it rejects, so all validators
+take it together. `tests/test_tpm.py` holds both the fact and the refusal.
+### Fixed — an epoch is applied once, or not at all
+
+`update_scores` mutated the validator's records in place and the reference
+frame was rebound as soon as it was computed, before the epoch was durable.
+Any exception between scoring and `save_state` — a dropped websocket in
+`set_weights`, a failed owner-hotkey read, a disk error on the reveal — left
+the loop with the state already advanced, and the retry of the same epoch
+accumulated every miner's evidence twice, applied every miss twice and decayed
+the frame twice, then persisted it (I1, I3). `update_scores` is now
+copy-on-write and the loop holds the epoch's state in epoch-local names until
+the commit point just before `save_state`. The on-chain commitments are read
+at the boundary block the moment the epoch starts, not after the collection
+wait and the 120 s query, and a failed read in live raises (the outer loop
+retries) instead of degrading to an empty map that rejected every proof and
+marked the epoch processed with no weights (I6). `tests/test_epoch_atomicity.py`
+holds the shape of both fixes and was checked to fail against the previous
+loop.
 ### Changed — `provision_subnet.py` no longer needs the owner coldkey to check or register
 
 `--status` loads no wallet, so the read-only activation and tempo check from

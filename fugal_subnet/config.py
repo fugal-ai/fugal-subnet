@@ -495,10 +495,11 @@ REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
 # Genesis block hash of Bittensor mainnet (finney). Not configurable: it is the
 # one fact about the chain a --network URL cannot disguise, and it is what
 # both neurons compare against to refuse --mock on mainnet (diligence 2026-10,
-# finding A3). Verify on a finney node with
+# finding A3). Verified 2026-10-29 at finney block ~9,391,998 on two independent
+# endpoints (lite.sub.latent.to, bittensor-finney.api.onfinality.io). Re-verify with
 # `subtensor.substrate.get_block_hash(0)` before launch; a wrong value here
 # makes the guard inert, never wrongly blocking.
-FINNEY_GENESIS_HASH = "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c78"
+FINNEY_GENESIS_HASH = "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c03"
 
 # --- Every FUGAL_ environment variable this module reads, classified ---
 #

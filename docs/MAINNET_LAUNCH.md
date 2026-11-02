@@ -23,11 +23,12 @@ September. Its miner served an axon, its validator ran epochs, and not one
 weight ever reached the chain.
 
 ```bash
-python scripts/provision_subnet.py --network finney --netuid <N> \
-  --owner-wallet <owner> --status
+python scripts/provision_subnet.py --network finney --netuid <N> --status
 ```
 
-`active` must be `True`. If it is not, nothing below matters.
+`active` must be `True`. If it is not, nothing below matters. `--status` loads
+no wallet, so it runs on a validator host that holds only a hotkey — which is
+every validator host, since the coldkey never goes on one (below).
 
 ### 2. Epoch length must equal the subnet tempo
 
@@ -185,16 +186,31 @@ miners on one machine pay it once between them.
 
 ## Launch sequence
 
+The script has two halves. Identity, `start_call` and hyperparameters are
+signed by the subnet **owner** coldkey; registration and staking are signed by
+the wallets being registered. When the slot is held by a different party, or
+by a multisig that is not on the machine running this, the owner runs their
+half from wherever that key lives (`--owner-wallet <owner>`, no `--validators`
+or `--miners`), and the operator runs the second half **without**
+`--owner-wallet`: the script then checks that the subnet is active and
+tempo-aligned and refuses to register into one that is not, because without
+`start_call` staking fails, no permit is granted and every `set_weights` is
+refused while the neurons log success.
+
 ```bash
-# 1. Provision. Idempotent — safe to re-run after any partial failure.
+# 1a. Owner half (whoever holds the owner coldkey): identity, start_call,
+#     hyperparameters. Idempotent — safe to re-run after any partial failure.
 python scripts/provision_subnet.py --network finney --netuid <N> \
-  --owner-wallet <owner> \
+  --owner-wallet <owner> --epoch-interval 4320 --yes
+
+# 1b. Operator half (hotkey hosts; no owner coldkey anywhere near them):
+#     register and stake. Refuses if the subnet is inactive or misaligned.
+python scripts/provision_subnet.py --network finney --netuid <N> \
   --validators <w>/val1,<w>/val2 --miners <w>/m1 \
   --stake <TAO> --epoch-interval 4320 --yes
 
-# 2. Confirm before starting neurons.
-python scripts/provision_subnet.py --network finney --netuid <N> \
-  --owner-wallet <owner> --status
+# 2. Confirm before starting neurons. No wallet needed.
+python scripts/provision_subnet.py --network finney --netuid <N> --status
 
 # 3. Start neurons with the aligned interval and the pinned pool.
 export FUGAL_EPOCH_INTERVAL=4320

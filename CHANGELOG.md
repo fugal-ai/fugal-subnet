@@ -16,6 +16,32 @@ only that some GCP vTPM existed. The binding is now checked and a mismatch is
 a rejection (I8). Every honest dstack blob already satisfies it; a validator
 without this change accepts envelopes one with it rejects, so all validators
 take it together. `tests/test_tpm.py` holds both the fact and the refusal.
+### Changed — `provision_subnet.py` no longer needs the owner coldkey to check or register
+
+`--status` loads no wallet, so the read-only activation and tempo check from
+MAINNET_LAUNCH §1-2 runs on a validator host, which holds a hotkey and never
+the owner coldkey. `--owner-wallet` is optional: without it the owner steps
+(identity, `start_call`, hyperparameters) are skipped and the script refuses
+to register or stake into a subnet that is inactive or whose tempo does not
+equal the epoch length, the two failures that have each silently cost epochs
+before. `--create` still needs the owner. MAINNET_LAUNCH shows the owner half
+and the operator half. `tests/test_provision_subnet_cli.py` drives `main()`
+against a stubbed chain with wallet loading replaced by an assertion.
+### Fixed — `scripts/export_pool.py` could not run
+
+The documented way of building the consensus pool for every neuron
+(MAINNET_LAUNCH §3) failed on every Linux host and nothing ran it. It set
+`FUGAL_POOL_FILE=os.devnull` to mean "no file"; the loader tested the path
+with `os.path.exists`, true for `/dev/null`, and fed a device node to the JSON
+parser. Behind that, `gzip.open(..., mtime=0)` raised `TypeError` (only
+`GzipFile` takes `mtime`), and the gzip header carried the output file name,
+so the "file sha256" operators are told to compare differed by path alone.
+The loader now ignores anything that is not a regular file; the script uses a
+sentinel that can never be one and writes a header free of time and name.
+Verified against the pinned revisions: 21,553 questions, `pool_hash` and
+`content_hash` equal to the manifest, and the file reloads as the pinned pool.
+Three tests in `tests/test_pool_file.py`, one of which runs the script's
+`main()`.
 
 ### Changed — CONSENSUS: the score is headroom above the constant-policy frontier
 

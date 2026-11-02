@@ -32,6 +32,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# A path that can never be a regular file: a child of the null device.
+NO_POOL_FILE = os.path.join(os.devnull, "no-pool-file")
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -43,7 +46,12 @@ def main() -> int:
     # is to produce the file, and reading one back would only copy it.
     for var in ("FUGAL_BENCHMARK_POOL", "FUGAL_POOL_FILE", "FUGAL_POOL_UNPINNED"):
         os.environ.pop(var, None)
-    os.environ["FUGAL_POOL_FILE"] = os.devnull  # never exists as a pool file
+    # A path that cannot name a file, so the loader falls through to the pinned
+    # revisions. This used to be os.devnull, which EXISTS: the loader handed
+    # /dev/null to the JSON parser and this script failed on every Linux host
+    # with "Expecting value: line 1 column 1" (found 2026-11-02). The loader
+    # now also ignores anything that is not a regular file.
+    os.environ["FUGAL_POOL_FILE"] = NO_POOL_FILE
 
     from fugal_subnet.benchmarks.loader import content_hash, load_all, pool_hash
 
@@ -51,7 +59,14 @@ def main() -> int:
     pool = sorted(pool, key=lambda q: q["question_id"])
     payload = json.dumps(pool, sort_keys=True, separators=(",", ":")).encode("utf-8")
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    with gzip.open(args.out, "wb", mtime=0) as f:   # mtime=0: byte-reproducible
+    # GzipFile, not gzip.open: only the class takes mtime (gzip.open raised
+    # TypeError here, so the script had never completed; found 2026-11-02).
+    # mtime=0 and filename="" keep the header free of the build time and the
+    # output path, so two operators building the same pool get the same bytes
+    # and the sha256 printed below is comparable between them.
+    with open(args.out, "wb") as raw, gzip.GzipFile(
+        filename="", fileobj=raw, mode="wb", mtime=0,
+    ) as f:
         f.write(payload)
     with open(args.out, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()

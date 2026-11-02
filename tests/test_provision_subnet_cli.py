@@ -1,0 +1,125 @@
+"""scripts/provision_subnet.py must work on a host that holds no owner coldkey.
+
+On mainnet the subnet slot can be held by a different party than the one
+running the validators (and, before the wallet transfer, by someone who is
+not on this machine at all). The validator host holds a hotkey. It must still
+be able to ask the chain whether the subnet is active and tempo-aligned
+(MAINNET_LAUNCH §1-2), and to register and stake its own wallets. Until
+2026-11-02 --owner-wallet was required for everything, including --status,
+and the script loaded the owner wallet before doing anything, so a host
+without it could not even run the read-only report.
+
+The chain is stubbed; nothing here talks to a network or spends.
+"""
+from __future__ import annotations
+
+import importlib.util
+import pathlib
+import sys
+import types
+
+import pytest
+
+SRC = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "provision_subnet.py"
+
+
+class _HP:
+    tempo = 360
+    commit_reveal_weights_enabled = True
+    commit_reveal_period = 1
+    weights_rate_limit = 100
+    serving_rate_limit = 50
+    activity_cutoff = 5000
+    registration_allowed = True
+
+
+class _MG:
+    n = 0
+    axons: list = []
+    S: list = []
+    validator_permit: list = []
+    hotkeys: list = []
+
+
+class _Subtensor:
+    """The subset of bt.Subtensor the script touches, recording what it saw."""
+
+    def __init__(self, network="test", active=True):
+        self.network = network
+        self._active = active
+
+    def get_current_block(self):
+        return 1_000_000
+
+    def is_subnet_active(self, netuid):
+        return self._active
+
+    def get_subnet_hyperparameters(self, netuid):
+        return _HP()
+
+    def metagraph(self, netuid):
+        return _MG()
+
+    def recycle(self, netuid):
+        return "τ0.5"
+
+
+def _load(monkeypatch, subtensor):
+    """Import the script with `bt` replaced by a stub that refuses to make wallets."""
+    def no_wallet(*a, **k):
+        raise AssertionError("a wallet was loaded; --status and owner-less runs must not")
+
+    bt_stub = types.SimpleNamespace(
+        Subtensor=lambda network="test": subtensor,
+        Wallet=no_wallet,
+        Balance=types.SimpleNamespace(from_rao=lambda r: r, from_tao=lambda t: t),
+    )
+    monkeypatch.setitem(sys.modules, "bittensor", bt_stub)
+    spec = importlib.util.spec_from_file_location("provision_subnet_under_test", SRC)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_status_needs_no_owner_wallet(monkeypatch, capsys):
+    mod = _load(monkeypatch, _Subtensor())
+    monkeypatch.setattr(sys, "argv", ["provision_subnet.py", "--network", "finney",
+                                      "--netuid", "7", "--status",
+                                      "--epoch-interval", "4320"])
+    assert mod.main() == 0
+    out = capsys.readouterr().out
+    assert "SUBNET 7" in out and "ALIGNED" in out and "MISALIGNED" not in out
+
+
+def test_without_owner_an_inactive_subnet_is_refused(monkeypatch):
+    mod = _load(monkeypatch, _Subtensor(active=False))
+    monkeypatch.setattr(sys, "argv", ["provision_subnet.py", "--netuid", "7",
+                                      "--epoch-interval", "4320"])
+    assert mod.main() == 1
+
+
+def test_without_owner_a_misaligned_epoch_is_refused(monkeypatch):
+    mod = _load(monkeypatch, _Subtensor(active=True))
+    monkeypatch.setattr(sys, "argv", ["provision_subnet.py", "--netuid", "7",
+                                      "--epoch-interval", "3600"])   # 300 blocks vs tempo 360
+    assert mod.main() == 1
+
+
+def test_without_owner_an_active_aligned_subnet_proceeds_to_the_report(monkeypatch, capsys):
+    mod = _load(monkeypatch, _Subtensor(active=True))
+    monkeypatch.setattr(sys, "argv", ["provision_subnet.py", "--netuid", "7",
+                                      "--epoch-interval", "4320"])
+    assert mod.main() == 0
+    assert "SUBNET 7" in capsys.readouterr().out
+
+
+def test_create_still_requires_the_owner(monkeypatch):
+    mod = _load(monkeypatch, _Subtensor())
+    monkeypatch.setattr(sys, "argv", ["provision_subnet.py", "--create"])
+    assert mod.main() == 2
+
+
+@pytest.mark.parametrize("flag", ["--owner-wallet"])
+def test_the_flag_is_documented_as_optional(flag):
+    text = SRC.read_text(encoding="utf-8")
+    assert f'"{flag}", default=None' in text

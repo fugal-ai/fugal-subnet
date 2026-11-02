@@ -18,6 +18,37 @@ stop/start of the instance, which the miner guide says), a 3 MB body cap
 refused before a byte is read, a per-connection timeout, and a threaded
 server. `/provision/logs` is unchanged. Three new tests in
 `tests/test_provision_transport.py`.
+### Changed — verification runs every free check before the collateral fetch
+
+`verify_proof` ran DCAP (a network fetch against the per-epoch collateral
+budget every miner shares, whose FMSPC target is unsigned at parse time) and
+the measurement match FIRST, then the free local bindings. A replayed or
+stale proof — wrong nonce, wrong report_data, wrong advertised hash, wrong
+slice, relayed from another hotkey — cost every validator a fetch that a
+comparison would have refused (I4, I6; security read 2026-11-02, finding 5).
+The order is now: hotkey, unwrap (TPM half), report_data, nonce, questions
+hash, slice, exploration, head commitment and bytes, head compatibility,
+advertised hash, gold, failed flags, exploration failure rate, cost
+consistency, and only then DCAP and the approved image/application. No
+rule changed; `tests/test_verify_order.py` counts the fetches. A leaf
+certificate whose signature algorithm the pinned root's key cannot verify is
+now a rejection in `verify_ak_chain` rather than an escaping `TypeError`
+(finding 6).
+### Changed — CONSENSUS: the token manifest is reviewed, from fresh observations
+
+The success contract's token manifest (`data/benchmark_tokens_v1.json`) was a
+`candidate` built from 945 pre-transition calls with three samples for most
+models, and a live validator or miner refused to start until it was reviewed.
+It is now rebuilt from 664 metered calls recorded on 2026-11-02 through the
+benchmark's own proxy and call path on a stratified sample of the pinned pool
+(40 per model; 24 for mistral-large, upstream-rate-limited), reviewed, and
+promoted to `reviewed` with the record inside the file. **This changes the
+protocol identity**: every head, state file, reveal and proof produced under
+the candidate identity is rejected, the rehearsal fixture
+(`tests/fixtures/success_bundle`) is regenerated, and the measured miner image
+and approved entry are rebuilt from this commit. Billing cross-check on the
+sample: table-priced $2.158 vs provider-billed $2.159. `docs/SUCCESS_CONTRACT.md`
+has the review; `scripts/record_token_observations.py` is how to record more.
 
 ### Changed — CONSENSUS: the success contract (2026-09-21, PR #32)
 

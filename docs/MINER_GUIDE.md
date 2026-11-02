@@ -107,9 +107,10 @@ no implicit random fallback. Synthetic training is explicitly test-only.
 Heads require the versioned success contract, not just W/b/models. See
 [the contract and transition guide](SUCCESS_CONTRACT.md) for metadata, archive
 limits, export, and the required fresh evidence namespace. The checked-in token
-manifest is a review candidate derived from historical recorded calls. Live
-startup and deployable export reject it until it is reviewed; mocked rehearsals
-can exercise the candidate without publishing or spending on inference.
+manifest was reviewed on 2026-11-02 from 664 fresh metered calls (the record is
+in `SUCCESS_CONTRACT.md` and inside the file); your head's token statistics must
+match it exactly, which `train_head.py --manifest data/benchmark_tokens_v1.json`
+does for you.
 
 ## Step 4: Run the Miner
 

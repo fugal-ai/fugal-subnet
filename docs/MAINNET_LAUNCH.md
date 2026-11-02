@@ -19,7 +19,7 @@ will otherwise go looking in the wrong place:
 
 | Gate | Where it is enforced | What clears it |
 |---|---|---|
-| The token manifest shipped in the checkout is `reviewed`, not `candidate` | `neurons/validator.py`, `neurons/miner.py` (`--live` only) | The review and promotion in `SUCCESS_CONTRACT.md`; it changes the protocol identity, so the image and approved entry are rebuilt with it |
+| The token manifest shipped in the checkout is `reviewed`, not `candidate` | `neurons/validator.py`, `neurons/miner.py` (`--live` only) | **Cleared by #99 (2026-11-02)**: rebuilt from 664 fresh metered calls and promoted; the record is in `SUCCESS_CONTRACT.md`. Any later change to it is a protocol-identity change (image and approved entry rebuilt, evidence reset) |
 | `data/reference_frame.json` exists and matches its pin | `reference_frame.load_bootstrap(require=True)`, `check_safety_invariants.py` | `scripts/build_bootstrap_frame.py` from reveals produced under the current protocol identity |
 | `FUGAL_TEE_MEASUREMENTS` holds at least one `<base>:<compose_hash>` entry | validator startup | A signed `image-v*` release; `scripts/fetch_approved_entries.py` needs `deploy/keys/allowed_signers` to exist, which it does not yet |
 | No consensus constant is set in the environment | `fingerprint.assert_environment` | Unset it; only `FUGAL_EPOCH_INTERVAL` and `FUGAL_TEE_MEASUREMENTS` are meant to be set per deployment |

@@ -17,6 +17,19 @@ updates:
       # only through a deliberate compatibility release, never an automated PR.
       - dependency-name: bittensor
         update-types: ["version-update:semver-major"]
+      # Exact pins on the consensus path (pyproject.toml says why each one is
+      # pinned): the embedding profile, the DCAP and TPM verifiers, the price
+      # of a float. A version bump here is a consensus change and arrives
+      # through a reviewed PR with the gate run on both environments, never
+      # through a weekly bot PR that sat red for a month (#52, #53, #54).
+      # Security advisories against these pins still surface: pip-audit in CI
+      # fails the lockfile, as it did for aiohttp and setuptools in 2026-10.
+      - dependency-name: torch
+      - dependency-name: transformers
+      - dependency-name: numpy
+      - dependency-name: dcap-qvl
+      - dependency-name: cryptography
+      - dependency-name: datasets
 
   - package-ecosystem: github-actions
     directory: "/"

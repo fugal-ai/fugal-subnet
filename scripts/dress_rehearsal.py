@@ -204,7 +204,17 @@ def miner_env(extra=None):
     env = os.environ.copy()
     env["FUGAL_EPOCH_INTERVAL"] = EPOCH_INTERVAL_S
     env["FUGAL_SLICE_SIZE"] = "40"
-    env["FUGAL_EXPLORE_FRACTION"] = "0.10"
+    # Half the slice explores. Exploration targets are drawn over the WHOLE
+    # pinned price table (17 models), and the frontier values any unmeasured
+    # model at 1.0, so until every model priced at or below a head's cost per
+    # question has been explored that head's headroom is negative by
+    # construction. At 0.10 that was 4 samples an epoch and scenario B's
+    # frontier was still unmeasured at both heads' prices after five epochs
+    # (run 41513035321); at 0.50 it is 20, and the 17 models are covered in a
+    # few epochs. Stubbed calls, so this costs nothing but seconds. Mock
+    # neurons accept the consensus override with a warning, as they do for
+    # the slice size above.
+    env["FUGAL_EXPLORE_FRACTION"] = "0.50"
     env["FUGAL_REQUIRE_COMMITMENT"] = "0"
     # NOT 127.0.0.1: the chain rejects loopback for serve_axon at pool
     # validation, so the axon would never register and no validator could
@@ -486,6 +496,27 @@ def _launch_sequential(procs, netuid, pool_path, specs, timeout=300):
     return started
 
 
+# Scenario B judges headroom only once the frontier has measured every model
+# the rehearsal heads route to; three cheap models and three exploration
+# slots per epoch make that likely within a few epochs, never certain.
+B_MAX_EPOCHS = 8
+
+
+def frontier_measured(scores: dict, uids) -> bool:
+    """True when the frontier has a measured value at every listed miner's price.
+
+    `reference_accuracy` in an epoch-log score entry is the frontier's value at
+    that miner's cost per question. The frontier values an unmeasured model at
+    exactly 1.0 (nothing is known, nothing is paid above it), so 1.0 means the
+    comparison would be against ignorance, not against the model pool. A
+    missing entry counts as unmeasured.
+    """
+    return all(
+        float((scores.get(str(u)) or {}).get("reference_accuracy", 1.0)) < 1.0
+        for u in uids
+    )
+
+
 def _headroom(scores: dict, uid) -> float:
     return float((scores.get(str(uid)) or {}).get("headroom", float("-inf")))
 
@@ -562,9 +593,37 @@ def scenario_b(report, subtensor, netuid, wallets, pool_path, procs):
 
     state = os.path.join(RESULTS, "val_b")
     os.makedirs(state, exist_ok=True)
-    entry = run_validator_once("dr_val1", netuid,
-                               os.path.join(state, "state.json"),
-                               os.path.join(RESULTS, "val_b.log"))
+    state_path = os.path.join(state, "state.json")
+    log_path = os.path.join(RESULTS, "val_b.log")
+    honest_uid = uid_of(subtensor, netuid, wallets["dr_m1"])
+    copier_uid = uid_of(subtensor, netuid, wallets["dr_m2"])
+    cheap_uid = uid_of(subtensor, netuid, wallets["dr_m3"])
+
+    # Run epochs until the frontier has MEASURED the models these heads route
+    # to, then judge. This validator starts with no frame, and after one epoch
+    # it holds a handful of nonce-chosen exploration samples; a model nobody
+    # explored is valued at 1.0 by design (nothing is known, nothing is paid
+    # above it), so a router whose model went unsampled shows negative
+    # headroom whatever it did. Which models get sampled is the local chain's
+    # block hash, so the one-epoch comparison was a coin toss (it failed on
+    # 2026-11-02 with router=-0.26 against cheap=+0.09, and passed hours
+    # earlier on the same code). `reference_accuracy` in the epoch log is the
+    # frontier's value at that miner's price: 1.0 means unmeasured.
+    entry = {}
+    last_epoch = None
+    for attempt in range(B_MAX_EPOCHS):
+        if attempt:
+            last_epoch = wait_for_epoch(procs[-3:], subtensor, after=last_epoch)
+            if last_epoch is None:
+                break
+        entry = run_validator_once("dr_val1", netuid, state_path, log_path)
+        scores = entry.get("scores") or {}
+        measured = frontier_measured(scores, (honest_uid, copier_uid, cheap_uid))
+        print(f"    epoch {attempt + 1}/{B_MAX_EPOCHS}: valid={entry.get('n_heads_valid')} "
+              f"frontier measured at every head's price={measured}", flush=True)
+        if measured:
+            break
+        last_epoch = last_epoch or current_epoch_id(subtensor)
 
     report.check("b", "validator verified all three proofs",
                  entry.get("n_heads_valid", 0) == 3,
@@ -572,9 +631,6 @@ def scenario_b(report, subtensor, netuid, wallets, pool_path, procs):
 
     dq = set(entry.get("dedup_disqualified") or [])
     weights = entry.get("weights") or {}
-    honest_uid = uid_of(subtensor, netuid, wallets["dr_m1"])
-    copier_uid = uid_of(subtensor, netuid, wallets["dr_m2"])
-    cheap_uid = uid_of(subtensor, netuid, wallets["dr_m3"])
 
     report.check("b", "dedup disqualified exactly one of the identical pair",
                  len(dq & {honest_uid, copier_uid}) == 1,
@@ -593,8 +649,31 @@ def scenario_b(report, subtensor, netuid, wallets, pool_path, procs):
     survivor = ({honest_uid, copier_uid} - dq)
     surv = max((_headroom(scores, u) for u in survivor), default=float("-inf"))
     cheap_h = _headroom(scores, cheap_uid)
-    report.check("b", "a real router has more headroom than the always-cheapest router",
-                 surv > cheap_h, f"router={surv:.4f} cheap-only={cheap_h:.4f}")
+    report.check("b", "the frontier measured the models both heads route to",
+                 measured, "reference_accuracy < 1.0 for every head" if measured
+                 else f"unmeasured after {B_MAX_EPOCHS} epochs: "
+                      f"{ {u: (scores.get(str(u)) or {}).get('reference_accuracy') for u in (honest_uid, cheap_uid)} }")
+    # NOT "the router has more headroom than the constant policy". That claim
+    # cannot be tested here and was passing for the wrong reason. A nightly
+    # frame holds a handful of trials per model (7 after six epochs at half the
+    # slice exploring), and at that depth the frontier is noise: in run
+    # 41518618768 the cheapest model came out 0 of 7 in exploration against a
+    # true 30%, the frontier at that price fell to the mixture ray, and the
+    # always-cheapest head showed +0.09 of "headroom" while the router showed
+    # -0.14 against a frontier made of single models that each scored above it.
+    # Mainnet pays nothing until every hull model has FRONTIER_MIN_TRIALS (300)
+    # trials, which is ~250 epochs here; the evidence that routers beat
+    # constant policies is docs/HEAD_EFFICACY.md and the live testnet, not this
+    # stub. What the rehearsal CAN show: routing to better models buys
+    # accuracy, and a constant cheap policy earns nothing (the quality floor).
+    def _lcb(u):
+        e = scores.get(str(u)) or {}
+        return float(e.get("headroom", 0.0)) + float(e.get("reference_accuracy", 0.0))
+    surv_lcb = max((_lcb(u) for u in survivor), default=float("-inf"))
+    report.check("b", "a real router's accuracy lower bound beats the always-cheapest router's",
+                 surv_lcb > _lcb(cheap_uid),
+                 f"router lcb={surv_lcb:.3f} cheap-only lcb={_lcb(cheap_uid):.3f} "
+                 f"(headroom router={surv:.3f} cheap={cheap_h:.3f}, informational)")
     report.check("b", "the always-cheapest router earns no weight",
                  weights.get(str(cheap_uid), 0.0) == 0.0, f"weights={weights}")
     report.check("b", "what a cold frontier does not pay burns to UID 0",

@@ -4,6 +4,19 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — CONSENSUS: the TPM half of a dstack attestation must be bound to its TDX quote
+
+On GCP a proof carries two signatures: Intel's over the TDX quote and
+Google's over a vTPM quote. `unwrap_attestation` verified the TPM quote's
+signature and certificate chain but never checked that it was *this* TDX
+quote's TPM quote. dstack puts `sha256(tdx_quote)` in `TPMS_ATTEST.extra_data`
+(measured on both real fixtures), so a genuine TPM quote from any Confidential
+VM could have been stapled onto any TDX quote and the second trust root proved
+only that some GCP vTPM existed. The binding is now checked and a mismatch is
+a rejection (I8). Every honest dstack blob already satisfies it; a validator
+without this change accepts envelopes one with it rejects, so all validators
+take it together. `tests/test_tpm.py` holds both the fact and the refusal.
+
 ### Changed — CONSENSUS: the score is headroom above the constant-policy frontier
 
 Re-scores every miner; decided in `docs/I3_DECISION.md` (option 3). The

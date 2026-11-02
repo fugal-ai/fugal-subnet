@@ -4,6 +4,19 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — Python 3.11 is the floor; the miner image moves to 3.12
+
+GitHub's Dependabot alerts reported 17 open advisories on `main` (1 high,
+GHSA-v4x8-3wr5-3wq8) while `pip-audit` in CI was clean: every one was
+`filelock` 4.1.0, the resolution fork the lockfile kept for Python 3.10,
+and every fixed `filelock` requires Python 3.11 or newer. The miner image
+was built on Python 3.10 (`Dockerfile`), so it shipped the vulnerable one.
+`requires-python` is now `>=3.11,<3.13`, the lockfile has one `filelock`
+(4.2.6), the CI matrix is 3.11 and 3.12, ruff targets py311, and the image
+base is `uv:0.8.14-python3.12-bookworm-slim`, pinned by digest. The image
+digest changes, so the compose hash and approved entry change with it — as
+they do for the reviewed manifest in the same release.
+
 ### Changed — CONSENSUS: the success contract (2026-09-21, PR #32)
 
 Recorded here on 2026-11-02; it shipped without a changelog entry, which

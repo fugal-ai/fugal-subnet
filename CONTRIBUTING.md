@@ -4,7 +4,7 @@ Thanks for contributing. Fugal combines security-sensitive artifact handling wit
 
 ## Development setup
 
-Fugal supports Linux or WSL2 with Python 3.10–3.12.
+Fugal supports Linux or WSL2 with Python 3.11–3.12 (3.10 was dropped on 2026-11-02: the last `filelock` with the GHSA-v4x8-3wr5-3wq8 fix needs 3.11, and the miner image is built on 3.12).
 
 ```bash
 git clone https://github.com/fugal-ai/fugal-subnet.git

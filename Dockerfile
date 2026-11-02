@@ -1,6 +1,6 @@
 # Production target is intentionally Linux amd64; keep this manifest digest and
 # uv.lock review-coupled. The image contains no mutable dependency installation.
-FROM ghcr.io/astral-sh/uv:0.8.14-python3.10-bookworm-slim@sha256:7b97c0f66dd8c8329b28d6509c0e13ef500aa90a91d48689ec9cc9ec0ea69bac
+FROM ghcr.io/astral-sh/uv:0.8.14-python3.12-bookworm-slim@sha256:b748a09ec61c993083278020a84e16f0c81485c5349b30c64dd29d6a22da7462
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \

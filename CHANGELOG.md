@@ -4,6 +4,24 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — the validator checks the chain's weight parameters, retries a failed submit, and keeps a state backup
+
+Validator review 2026-11-02, findings 3, 4 and 6. At startup a live
+validator now reads `CommitRevealWeightsVersion` and the subnet's
+`weights_version` and refuses to run if the SDK would commit a version the
+chain rejects at reveal, or a `version_key` below the subnet's — failures
+that never appear in `set_weights`'s result and would have looked healthy
+for as long as nobody checked emission. `set_weights` is wrapped: the
+chain's rate limit is read first so a refusal is named instead of logged as
+`None`, and a failed submit is retried up to `FUGAL_WEIGHTS_SET_RETRIES`
+(3) times while blocks remain in the epoch. `save_state` fsyncs before the
+atomic rename and keeps the previous epoch's file as `.bak`; `load_state`
+falls back to it with a loud error when the main file is unreadable, and
+ignores fields a newer or older release added, so an upgrade or a power
+loss no longer makes deleting the state the only recovery.
+`FUGAL_ARCHIVE_ENDPOINTS` / `FUGAL_FALLBACK_ENDPOINTS` reach
+`bt.Subtensor`, and a live validator without an archive endpoint is warned
+at startup. `tests/test_validator_chain_guards.py`.
 ### Fixed — the provisioning receiver takes one push, bounds every connection, and refuses oversized bodies
 
 The TD-side receiver (`fugal_subnet/tee/provision.py`) accepted any number of

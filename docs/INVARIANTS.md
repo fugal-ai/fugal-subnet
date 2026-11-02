@@ -2008,6 +2008,25 @@ time set theirs. In live a failed read now raises and the epoch is retried.
 A validator should still run against an archive endpoint; this removes the
 window, not the dependency.
 
+### I6 — a submitted weight vector that the chain will discard (fixed 2026-11-02)
+
+Three parameters decide whether a `set_weights` the SDK reports as
+submitted ever reaches Yuma, and none of them is visible in the result. The
+chain checks the commit-reveal VERSION at reveal time
+(`IncorrectCommitRevealVersion`), not at commit, so a validator committing
+with the wrong version logs "Weights set successfully" every epoch while
+every reveal is rejected; `WeightsVersionKey` must be at or below the SDK's
+`version_key`; and `min_allowed_weights` / `max_weights_limit` bound the
+vector. `assert_chain_weight_parameters` reads all of them once at startup,
+logs them, and refuses live on the first two. The SDK also returns
+`(False, None)` without attempting anything while the rate limit has not
+elapsed, which the loop logged as a failure with no reason and then marked the
+epoch done; `set_weights_with_retry` names the rate limit when that is the
+cause and otherwise retries a transient failure while the epoch has blocks
+left. Finney at runtime 486 (2026-11-02): `CommitRevealWeightsVersion` 4, a
+fresh subnet's `weights_version` 0, `min_allowed_weights` 1,
+`max_weights_limit` 65535. `tests/test_validator_chain_guards.py`.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

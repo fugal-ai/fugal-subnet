@@ -4,6 +4,77 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — CONSENSUS: the success contract (2026-09-21, PR #32)
+
+Recorded here on 2026-11-02; it shipped without a changelog entry, which
+CONTRIBUTING's own rule forbids for a consensus change, and it is the reason
+every pre-2026-09-21 head, state file, reveal and proof is rejected.
+
+The benchmark now routes with core's shared success contract
+(`fugal_subnet/vendor/success_contract.py`, vendored from a pinned core
+commit and proven against it in CI): independent per-model sigmoid success
+predictions minus λ × estimated dollars per query at a fixed benchmark λ of
+1, rounded on the 1e-4 grid, ties in artifact row order. The embedding profile
+is pinned — Qwen3-0.6B at one tokenizer revision, the exact core system prompt,
+2048 total input tokens, right-padded batches of two, mask-mean pooling,
+L2-normalised, **CPU float32 only** (CUDA and float16 are refused). Heads must
+carry the contract metadata (contract and profile ids, backbone revision,
+provenance, default λ, per-model measured input/output token means, the token
+manifest identity); legacy preference heads cannot enter the benchmark.
+
+A protocol identity (`fugal_subnet/routing_protocol.py`) binds the contract,
+profile, λ, token manifest and price snapshot. It is written into every proof,
+state file, frame snapshot and reveal, and `require_identity` rejects anything
+carrying a different one — so old state and reveals cannot be resumed or
+replayed, and state paths moved to `results/success-v1/`. The token manifest
+`data/benchmark_tokens_v1.json` is a **review candidate** built from 945
+recorded calls; **a live validator or miner refuses to start until it is
+promoted to `reviewed`**, and promotion changes the identity again, which
+means a rebuilt measured image and a new approved entry. The transition and
+rollback runbook is `docs/SUCCESS_CONTRACT.md`. Rewards, graders, exploration
+and the number of paid calls per benchmark were unchanged.
+
+### Changed — CONSENSUS: the 2026-10-14 diligence batch (PRs #68–#82)
+
+Fourteen pull requests from an external review, each re-scoring or re-gating
+miners; `docs/INVARIANTS.md` has the analysis per finding.
+
+- **Frontier valued at the raw sample mean, not the prior** (finding 3). The
+  neutral prior let a constant policy collect the gap between a model's true
+  accuracy and its shrunk estimate. `FRONTIER_MIN_TRIALS` is now 300
+  *distinct* observations per hull model, and a live validator starts from a
+  hash-pinned bootstrap frame `data/reference_frame.json` (file pending).
+- **One observation per (question, model) per epoch; one vote per coldkey;
+  failed calls attested as failed and excluded** (finding 2). A proof whose
+  exploration fails more than `EXPLORE_FAIL_MARGIN` above its scored calls is
+  rejected; exploration is interleaved with scored calls.
+- **Two-sided, baseline-free exploration detector** (finding 4); a flagged
+  operator's samples are kept out of the frame for the epoch, never scored.
+- **Dedup gains a parameter clause** (`DEDUP_PARAM_DISTANCE`) **and the
+  epsilon rule** (`DEDUP_EPSILON`, `DEDUP_EPSILON_AGREEMENT`); seniority is
+  registration block, then commitment block, read from chain at the boundary;
+  the per-validator `first_commit_blocks` map is gone (findings 5, A4).
+- **Live miners answer only validator permits or stake ≥
+  `MIN_VALIDATOR_STAKE`** (finding 5); a live miner refuses to start with the
+  threshold at 0.
+- **Slice shares capped at 1.5× pool share** (`SLICE_SHARE_FACTOR`, finding 6).
+- **Bare base approved entries refused outside mock**; the app half is the
+  compose hash replayed from RTMR3 (finding 1). `check_upstream_is_inside_the_
+  measurement` fails CI on a compose that allows an env, names an image by
+  tag, or sets the upstream.
+- **Every scoring constant is in the consensus digest; a live validator
+  refuses to start with any of them set in its environment** (A2).
+- **Validator is live by default; both neurons refuse `--mock` on finney**
+  (A3; the shipped genesis hash was corrected in #87).
+- **Burn UID resolved from the subnet owner on chain** at the boundary block
+  (A5), not hard-coded 0.
+- **Reveals published** to a public-read bucket with the hash committed on
+  chain (A1).
+- **Pool materialised once** by `scripts/export_pool.py` and preferred by
+  `load_all()` (finding 8); **miner image published by digest and approved
+  entries as signed releases** (finding 7; `deploy/keys/allowed_signers`
+  pending).
+
 ### Changed — CONSENSUS: the score is headroom above the constant-policy frontier
 
 Re-scores every miner; decided in `docs/I3_DECISION.md` (option 3). The
@@ -19,6 +90,9 @@ the old score a W=0 head that always called one mid-priced model beat the best
 trained router by 12%. While the frontier is cold (`FRONTIER_MIN_TRIALS`
 decayed trials per hull model) scores scale down and unassigned weight burns to
 UID 0 rather than paying constant policies for the frame's ignorance.
+*(Superseded 2026-10-14: the threshold is 300 distinct observations and the
+burn goes to the subnet owner's UID read from chain — see the diligence entry
+above.)*
 `SCORE_QUALITY_EXPONENT`, `SCORE_QUALITY_CAP` and `SCORE_THRIFT_CAP` are gone;
 `Evidence` gains `n_priced` so a skipped epoch cannot make a miner look cheaper.
 New tests: `tests/test_frontier.py`; `tests/test_degenerate_constant_policy.py`
@@ -340,6 +414,8 @@ as an executable regression in `fugal_subnet/attacks/run_tee_attacks.py`:
 - Pinned every direct runtime dependency to exact versions.
 - Dedup seniority now tracks the earliest block a hotkey was ever seen
   committing, not its current commitment block. Prevents a copier from
+*(Superseded 2026-10-14: seniority is the registration block, then the
+commitment block, both read from chain at the boundary; no per-validator map.)*
   outranking the author after the author retrains.
 - Added environment fingerprint (package versions, BLAS config, kernel dispatch,
   grader hash) to every reveal.json for post-hoc divergence diagnosis.

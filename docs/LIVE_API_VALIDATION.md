@@ -16,8 +16,11 @@ nothing local notices.
 
 The proxy already records the provider's own reported cost alongside the table
 price (`APICallRecord.provider_cost_usd`, `MeteringProxy.provider_total_cost`),
-attested inside the enclave, precisely so the drift is detectable. Nobody has
-looked at that number against reality yet.
+attested inside the enclave, precisely so the drift is detectable. It was
+looked at once, account-level, over four miner-epochs on netuid 552
+(2026-09-07): within ~5%, with completions averaging 534 tokens against the
+256 assumed (`MAINNET_LAUNCH.md`, "What is still unverified"). Per-proof
+comparison is still open.
 
 So the open question is narrow: **does the pinned table match what OpenRouter
 actually bills?**
@@ -29,12 +32,13 @@ in any test or script, and `--mock` is the default for the miner and every scrip
 
 ```bash
 export OPENROUTER_API_KEY=<key>          # the only place this is ever needed
-export FUGAL_SLICE_SIZE=40               # keep the bill small
+export FUGAL_SLICE_SIZE=40               # keep the bill small (mock warns; live would refuse)
 export FUGAL_BENCHMARK_POOL=$PWD/results/rehearsal/pool.json
+export FUGAL_POOL_UNPINNED=1             # a rehearsal pool is not the pinned one, say so
 
 # Miner: real models, real money. Do NOT set FUGAL_OPENROUTER_BASE — the
-# default is the real endpoint.
-python neurons/miner.py --netuid <N> --head-path <head>.npz --mock
+# default is the real endpoint. --mock is refused on finney; use a test chain.
+python neurons/miner.py --network test --netuid <N> --head-path <head>.npz --mock
 ```
 
 At 40 questions across the pool's price range, expect **well under $1**. Watch

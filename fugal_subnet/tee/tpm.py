@@ -210,7 +210,7 @@ def verify_ak_chain(ak_cert_der: bytes, extra_certs: "list[bytes] | None" = None
     the parameter exists rather than a hidden call to the clock.
     """
     from cryptography import x509
-    from cryptography.exceptions import InvalidSignature
+    from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 
     if at is None:
         at = datetime.datetime.now(datetime.timezone.utc)
@@ -265,6 +265,17 @@ def verify_ak_chain(ak_cert_der: bytes, extra_certs: "list[bytes] | None" = None
         except InvalidSignature:
             logger.warning("signature on %s does not verify under %s",
                            cert.subject.rfc4514_string(), issuer.subject.rfc4514_string())
+            return False
+        except (TypeError, ValueError, UnsupportedAlgorithm, TpmError) as e:
+            # A leaf whose issuer NAME is the pinned root but whose signature
+            # algorithm the issuer's key cannot verify (Ed25519 under an EC
+            # key, an unknown OID, a hash-less scheme) used to escape here as
+            # TypeError / UnsupportedAlgorithm, breaking verify_proof's
+            # documented no-raise contract; the validator's outer catch-all
+            # kept it per-UID, but direct callers (provision.push, scripts)
+            # crashed (security read 2026-11-02, finding 6). It is a rejection.
+            logger.warning("cannot verify signature on %s under %s: %s",
+                           cert.subject.rfc4514_string(), issuer.subject.rfc4514_string(), e)
             return False
 
         if issuer is root:

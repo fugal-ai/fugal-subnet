@@ -4,6 +4,82 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — Python 3.11 is the floor; the miner image moves to 3.12
+
+GitHub's Dependabot alerts reported 17 open advisories on `main` (1 high,
+GHSA-v4x8-3wr5-3wq8) while `pip-audit` in CI was clean: every one was
+`filelock` 4.1.0, the resolution fork the lockfile kept for Python 3.10,
+and every fixed `filelock` requires Python 3.11 or newer. The miner image
+was built on Python 3.10 (`Dockerfile`), so it shipped the vulnerable one.
+`requires-python` is now `>=3.11,<3.13`, the lockfile has one `filelock`
+(4.2.6), the CI matrix is 3.11 and 3.12, ruff targets py311, and the image
+base is `uv:0.8.14-python3.12-bookworm-slim`, pinned by digest. The image
+digest changes, so the compose hash and approved entry change with it — as
+they do for the reviewed manifest in the same release.
+### Fixed — the validator checks the chain's weight parameters, retries a failed submit, and keeps a state backup
+
+Validator review 2026-11-02, findings 3, 4 and 6. At startup a live
+validator now reads `CommitRevealWeightsVersion` and the subnet's
+`weights_version` and refuses to run if the SDK would commit a version the
+chain rejects at reveal, or a `version_key` below the subnet's — failures
+that never appear in `set_weights`'s result and would have looked healthy
+for as long as nobody checked emission. `set_weights` is wrapped: the
+chain's rate limit is read first so a refusal is named instead of logged as
+`None`, and a failed submit is retried up to `FUGAL_WEIGHTS_SET_RETRIES`
+(3) times while blocks remain in the epoch. `save_state` fsyncs before the
+atomic rename and keeps the previous epoch's file as `.bak`; `load_state`
+falls back to it with a loud error when the main file is unreadable, and
+ignores fields a newer or older release added, so an upgrade or a power
+loss no longer makes deleting the state the only recovery.
+`FUGAL_ARCHIVE_ENDPOINTS` / `FUGAL_FALLBACK_ENDPOINTS` reach
+`bt.Subtensor`, and a live validator without an archive endpoint is warned
+at startup. `tests/test_validator_chain_guards.py`.
+### Fixed — the provisioning receiver takes one push, bounds every connection, and refuses oversized bodies
+
+The TD-side receiver (`fugal_subnet/tee/provision.py`) accepted any number of
+pushes for the life of the miner, and each replaced the session key, so anyone
+who reached port 8092 after provisioning could lock the operator out of the
+TD's logs; the attest endpoint stayed open as a quote oracle; the server was
+single-threaded with no socket timeout, so one half-open connection stalled
+provisioning for good; and `Content-Length` was unbounded (security read
+2026-11-02, finding 7). Now: one push per process (`409 already provisioned`
+on both `/provision` and `/provision/attest` afterwards; re-provisioning is a
+stop/start of the instance, which the miner guide says), a 3 MB body cap
+refused before a byte is read, a per-connection timeout, and a threaded
+server. `/provision/logs` is unchanged. Three new tests in
+`tests/test_provision_transport.py`.
+### Changed — verification runs every free check before the collateral fetch
+
+`verify_proof` ran DCAP (a network fetch against the per-epoch collateral
+budget every miner shares, whose FMSPC target is unsigned at parse time) and
+the measurement match FIRST, then the free local bindings. A replayed or
+stale proof — wrong nonce, wrong report_data, wrong advertised hash, wrong
+slice, relayed from another hotkey — cost every validator a fetch that a
+comparison would have refused (I4, I6; security read 2026-11-02, finding 5).
+The order is now: hotkey, unwrap (TPM half), report_data, nonce, questions
+hash, slice, exploration, head commitment and bytes, head compatibility,
+advertised hash, gold, failed flags, exploration failure rate, cost
+consistency, and only then DCAP and the approved image/application. No
+rule changed; `tests/test_verify_order.py` counts the fetches. A leaf
+certificate whose signature algorithm the pinned root's key cannot verify is
+now a rejection in `verify_ak_chain` rather than an escaping `TypeError`
+(finding 6).
+### Changed — CONSENSUS: the token manifest is reviewed, from fresh observations
+
+The success contract's token manifest (`data/benchmark_tokens_v1.json`) was a
+`candidate` built from 945 pre-transition calls with three samples for most
+models, and a live validator or miner refused to start until it was reviewed.
+It is now rebuilt from 664 metered calls recorded on 2026-11-02 through the
+benchmark's own proxy and call path on a stratified sample of the pinned pool
+(40 per model; 24 for mistral-large, upstream-rate-limited), reviewed, and
+promoted to `reviewed` with the record inside the file. **This changes the
+protocol identity**: every head, state file, reveal and proof produced under
+the candidate identity is rejected, the rehearsal fixture
+(`tests/fixtures/success_bundle`) is regenerated, and the measured miner image
+and approved entry are rebuilt from this commit. Billing cross-check on the
+sample: table-priced $2.158 vs provider-billed $2.159. `docs/SUCCESS_CONTRACT.md`
+has the review; `scripts/record_token_observations.py` is how to record more.
+
 ### Changed — CONSENSUS: the success contract (2026-09-21, PR #32)
 
 Recorded here on 2026-11-02; it shipped without a changelog entry, which

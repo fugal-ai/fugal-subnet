@@ -7,9 +7,9 @@ Fugal processes untrusted miner artifacts, interacts with Bittensor wallets and 
 | Version | Supported |
 |---|---|
 | `main` | Yes |
-| Anything else | No — the project is pre-launch and has no release branches |
+| Anything else | No — there are no release branches; miner images are published as signed `image-v*` tags from `main` |
 
-Support means best-effort investigation and fixes while the project is pre-launch; it is not a service-level guarantee.
+Support means best-effort investigation and fixes; it is not a service-level guarantee.
 
 ## Reporting a vulnerability
 
@@ -33,9 +33,9 @@ Please do not exploit a vulnerability against public infrastructure, access data
 |---|---|
 | Pickle/code execution through `.npz` | `allow_pickle=False`, size limits, shape/dtype validation |
 | Head swapping after question selection | On-chain hash commitment before the epoch boundary |
-| Copied routing behavior | Cosine-similarity deduplication in a global model index space; earliest commitment wins |
+| Copied routing behavior | Three-clause deduplication: routing-decision cosine in a global model index space, relative weight distance, and the epsilon rule (a near-copy must beat its senior); the senior hotkey by registration block, then commitment block, survives. In `--live` the axon answers only validator permits or stake ≥ `FUGAL_MIN_VALIDATOR_STAKE` |
 | Validator budget exhaustion | Resolved architecturally: validators never call models, so there is no budget to exhaust. Miners pay for their own inference inside the TEE |
-| Forged or tampered TEE proofs | Approved-image matching against the quote's own measurement registers (MRTD, RTMR0-2), report_data binding, slice binding, head-to-commitment binding, bundle-to-advertised-hash binding, cost consistency as a rejection — each with an executable exploit in `run_tee_attacks.py` |
+| Forged or tampered TEE proofs | Approved-image matching against the quote's own measurement registers (MRTD, RTMR1, RTMR2; RTMR0 excluded) plus the compose-hash event replayed from the RTMR3 log against a `<base>:<compose_hash>` entry (bare bases refused outside mock), report_data binding, hotkey binding, slice binding, head-to-commitment binding, bundle-to-advertised-hash binding, cost consistency as a rejection — each with an executable exploit in `run_tee_attacks.py` |
 | Understated or fabricated costs | Costs priced from the hash-pinned `data/models.json`, metered inside the attested enclave, and reconciled per-question and per-model against the attested total |
 | Steering the shared reference frame | Exploration questions and target models are nonce-derived, not miner-chosen; the frame pools over time rather than over miners |
 | Credential disclosure | Environment-based secrets, no-key logging rule, ignored `.env` and key files |

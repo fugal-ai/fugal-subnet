@@ -491,6 +491,25 @@ REVEAL_BUCKET = os.getenv("FUGAL_REVEAL_BUCKET", "").strip()
 # read it from the chain.
 REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
 
+# --- Chain endpoints (operational) ---
+# The validator pins three reads to old blocks every epoch (commitments and
+# the owner hotkey at the boundary block, the metagraph at the collection
+# block). A non-archive node serves roughly the last 300 blocks, so a validator
+# that starts late in an epoch, or retries one, can be refused those reads. Name
+# archive-capable endpoints here; the SDK uses them for historical queries and
+# the fallbacks for everything else when the primary drops.
+ARCHIVE_ENDPOINTS = [
+    e.strip() for e in os.getenv("FUGAL_ARCHIVE_ENDPOINTS", "").split(",") if e.strip()
+]
+FALLBACK_ENDPOINTS = [
+    e.strip() for e in os.getenv("FUGAL_FALLBACK_ENDPOINTS", "").split(",") if e.strip()
+]
+# How many times one epoch may re-submit set_weights after a failure, while
+# blocks remain before the next boundary and the chain's rate limit allows.
+# Each SDK call already retries up to five times internally; this bounds the
+# outer loop so a transient websocket drop costs seconds, not the epoch.
+WEIGHTS_SET_RETRIES = int(os.getenv("FUGAL_WEIGHTS_SET_RETRIES", "3"))
+
 # --- Chain identity ---
 # Genesis block hash of Bittensor mainnet (finney). Not configurable: it is the
 # one fact about the chain a --network URL cannot disguise, and it is what
@@ -578,4 +597,7 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_MIN_VALIDATOR_STAKE",
     "FUGAL_REVEAL_BUCKET",
     "FUGAL_REVEAL_DELAY_EPOCHS",
+    "FUGAL_ARCHIVE_ENDPOINTS",
+    "FUGAL_FALLBACK_ENDPOINTS",
+    "FUGAL_WEIGHTS_SET_RETRIES",
 )

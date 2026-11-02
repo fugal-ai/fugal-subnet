@@ -201,8 +201,10 @@ This asserts what cannot be asserted anywhere else:
    `run_tee_attacks.py`, which is blocked there against a synthetic quote and
    should be blocked here against a real one.
 
-Both must pass before mainnet. The second is the one that matters: passing DCAP
-only proves the hardware is real.
+Both passed on 2026-09-07 on GCP `c3` under dstack 0.6.0-rc0
+(`MAINNET_LAUNCH.md`, "What is still unverified"); re-run them on the reviewed
+runtime before launch. The second is the one that matters: passing DCAP only
+proves the hardware is real.
 
 ## Tearing down
 
@@ -219,11 +221,15 @@ az group delete --name fugal-tdx-rg --yes --no-wait
 ## Running live
 
 ```bash
-# Miner, inside the TD
-python neurons/miner.py --netuid <N> --head-path head.npz --live
+# Miner: a dstack TD running deploy/dstack/docker-compose.yaml, provisioned with
+# scripts/provision_td.py (MINER_GUIDE, "Running Under dstack"). A --live miner
+# on a stock VM produces a quote with no compose-hash event and is rejected.
 
-# Validator (does not need TDX — it verifies, it does not attest)
-FUGAL_TEE_MEASUREMENTS=<base>:<compose_hash> python neurons/validator.py --netuid <N> --live
+# Validator (does not need TDX — it verifies, it does not attest). Also needs
+# the tee extra installed, data/reference_frame.json present and
+# FUGAL_EPOCH_INTERVAL equal to tempo x 12 (MAINNET_LAUNCH §0-2).
+FUGAL_TEE_MEASUREMENTS=<base>:<compose_hash> FUGAL_EPOCH_INTERVAL=4320 \
+  python neurons/validator.py --netuid <N> --live
 ```
 
 Validators do not need confidential hardware. Only miners do.

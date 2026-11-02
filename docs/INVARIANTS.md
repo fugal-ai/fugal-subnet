@@ -1125,7 +1125,12 @@ is unchanged.
 
 ### I8 — the approved entry is a PAIR, not a hash
 
-An approved-list entry is `<base_measurement>` or `<base_measurement>:<app_identity>`.
+An approved-list entry is `<base_measurement>:<app_identity>`. (Written
+2026-09; since 2026-10-14 a bare `<base_measurement>` is **refused** outside
+mock — see "The model upstream is miner-controlled" under Known gaps — and the
+app half that is enforced is the sha256 of the frozen `app-compose.json`'s raw
+bytes, replayed out of the RTMR3 log. The sha384 `runtime_identity` below is the
+advisory userspace extend; the shape argument is unchanged.)
 
     base_measurement = sha256(MRTD || RTMR1 || RTMR2)     what booted
     app_identity     = sha384(source || pool || grader || upstream)   what ran
@@ -1411,6 +1416,23 @@ miner's own.)
 Not built. Recorded because the throughput work will otherwise fix the symptom
 that was measured rather than the property that is wrong.
 
+### I4/I6 — no fetch before the free checks pass (fixed 2026-11-02)
+
+The section below says the fetch target is derived from the miner's own
+bytes and the fetch is charged to a budget every miner shares. Until
+2026-11-02 `verify_proof` ran that fetch FIRST, before the report_data,
+nonce, slice, hotkey and advertised-hash comparisons that cost nothing, so a
+proof copied from a public source (this repository's own fixtures hold two
+real quotes), or last epoch's proof replayed, bought a fetch from every
+validator before being refused by ten lines of comparison. Every local
+binding now precedes DCAP and the measurement match; a fetch only ever
+follows a fresh quote over a fresh content hash that names this miner, this
+epoch and this slice. `tests/test_verify_order.py` counts the fetches; four
+of its six cases fail against the previous order (the hotkey check was
+already first, and a sound proof fetched once either way). The residual (a
+quote that parses but carries an unknown FMSPC) is unchanged and still needs
+collateral-in-proof.
+
 ### I4 — "unverifiable" is a privilege, and the miner picks the fetch target
 
 If a proof can be classified *unverifiable* rather than *invalid*, that outcome
@@ -1601,7 +1623,7 @@ Nothing is cancelled, so pyo3 is never unwound. Measured 12/12 clean.
 common 1024 default would exhaust it within a few epochs against a stalled
 PCCS and lose its axon and subtensor sockets — an I6 failure by a different
 road. The only way to leak fewer is to dial fewer times, so `CollateralBudget`
-carries a circuit breaker: `TEE_COLLATERAL_MAX_TIMEOUTS` (3) consecutive
+carries a circuit breaker: `TEE_COLLATERAL_MAX_TIMEOUTS` (10; see below for why not 3) consecutive
 timeouts and this validator stops dialling that endpoint for the rest of the
 epoch.
 
@@ -1622,7 +1644,7 @@ peer close or by the kernel's retransmit timeout (~15 min, well inside a 3600 s
 epoch). The leak is transient, not cumulative across epochs. The original
 "exhausts 1024 in four epochs" came from a stall server that held every
 connection open forever, which no real PCCS does. Consecutive rather than cumulative — an upstream answering in between is
-slow, and slow is what the time budget is for. That bounds the leak at 3 per
+slow, and slow is what the time budget is for. That bounds the leak at 10 per
 epoch instead of one per miner.
 
 **The per-proof bound does not by itself satisfy I6 at field scale**, and that
@@ -1717,7 +1739,7 @@ quote while running a modified harness.
 For a period this subnet checked `proof.source_hash`, a field the workload
 writes about itself, against the approved-image list. That is not an attestation
 of anything: the attacker simply writes an approved value. The check now reads
-`measurement_id(quote)`, derived from MRTD and RTMR0-2, which the CPU fills in
+`measurement_id(quote)`, derived from MRTD, RTMR1 and RTMR2 (RTMR0 was dropped later; see above), which the CPU fills in
 and the Intel signature covers. RTMR3 is excluded because it is
 application-extendable, so including it would make an image identity change
 with runtime data and no image could stay on an approved list.
@@ -1985,6 +2007,25 @@ proof and marked the epoch processed with no weights while peers that read in
 time set theirs. In live a failed read now raises and the epoch is retried.
 A validator should still run against an archive endpoint; this removes the
 window, not the dependency.
+
+### I6 — a submitted weight vector that the chain will discard (fixed 2026-11-02)
+
+Three parameters decide whether a `set_weights` the SDK reports as
+submitted ever reaches Yuma, and none of them is visible in the result. The
+chain checks the commit-reveal VERSION at reveal time
+(`IncorrectCommitRevealVersion`), not at commit, so a validator committing
+with the wrong version logs "Weights set successfully" every epoch while
+every reveal is rejected; `WeightsVersionKey` must be at or below the SDK's
+`version_key`; and `min_allowed_weights` / `max_weights_limit` bound the
+vector. `assert_chain_weight_parameters` reads all of them once at startup,
+logs them, and refuses live on the first two. The SDK also returns
+`(False, None)` without attempting anything while the rate limit has not
+elapsed, which the loop logged as a failure with no reason and then marked the
+epoch done; `set_weights_with_retry` names the rate limit when that is the
+cause and otherwise retries a transient failure while the epoch has blocks
+left. Finney at runtime 486 (2026-11-02): `CommitRevealWeightsVersion` 4, a
+fresh subnet's `weights_version` 0, `min_allowed_weights` 1,
+`max_weights_limit` 65535. `tests/test_validator_chain_guards.py`.
 
 ## Attack surface by actor
 

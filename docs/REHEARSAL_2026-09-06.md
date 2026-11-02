@@ -301,7 +301,7 @@ All times UTC.
   probes of `/provision/status` on both TDs timed out from the laptop, and one
   slow answer (16 s) was read as the receiver thread starving behind four torch
   threads. Wrong. Session B found the real cause: the laptop's public IP had
-  changed while it was closed (71.105.160.190 → 96.246.150.17), so the
+  changed while it was closed (the operator's residential address rotated), so the
   operator-only firewall rule silently dropped every packet, and the one slow
   answer coincided with the rule being updated. Re-timed after the fix: **64 ms
   on both TDs at 100% CPU** — the receiver is not starved. The real lesson: an

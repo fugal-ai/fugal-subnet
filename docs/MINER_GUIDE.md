@@ -11,7 +11,7 @@ on model count) on a frozen
 Qwen3-0.6B backbone. Given a question's hidden state, your head picks which LLM
 should answer it. Each epoch, your miner:
 
-1. Receives a nonce from the validator (derived from the chain block hash)
+1. Derives the epoch nonce from the boundary block's hash (the validator derives the same one)
 2. Selects the epoch's question slice (deterministic, ~300 questions)
 3. Loads your head, computes backbone embeddings, runs routing decisions
 4. Calls the routed models via a metered proxy (you pay for inference)
@@ -24,10 +24,12 @@ exact token counts and costs. Validators verify proofs — they never call model
 
 ## Requirements
 
-- **Intel TDX VM** — GCP `c3-standard` or Azure confidential VMs
-  (required for hardware attestation in `--live` mode; `--mock` works anywhere)
+- **Intel TDX VM running dstack on GCP `c3`** — the only base measurement
+  with an approved entry today (`12a1f2f5…9141`); another cloud or image
+  produces a different base that no validator approves. Required for `--live`;
+  `--mock` works anywhere
 - Linux (Ubuntu 22.04+ recommended)
-- Python 3.10-3.12
+- Python 3.11-3.12
 - GPU recommended for training heads (CPU works but slower). If a GPU job runs
   far slower than the card should manage, read *A slow embedding job is usually
   VRAM, not a small card* below before sizing up — the failure is silent
@@ -105,74 +107,59 @@ no implicit random fallback. Synthetic training is explicitly test-only.
 Heads require the versioned success contract, not just W/b/models. See
 [the contract and transition guide](SUCCESS_CONTRACT.md) for metadata, archive
 limits, export, and the required fresh evidence namespace. The checked-in token
-manifest is a review candidate derived from historical recorded calls. Live
-startup and deployable export reject it until it is reviewed; mocked rehearsals
-can exercise the candidate without publishing or spending on inference.
+manifest was reviewed on 2026-11-02 from 664 fresh metered calls (the record is
+in `SUCCESS_CONTRACT.md` and inside the file); your head's token statistics must
+match it exactly, which `train_head.py --manifest data/benchmark_tokens_v1.json`
+does for you.
 
 ## Step 4: Run the Miner
 
+There are two ways to run the miner and they are not interchangeable:
+
+| | Where | Attestation | Model calls | Who accepts the proofs |
+|---|---|---|---|---|
+| **Rehearsal** (`--mock`, the default) | any Linux box, **test or local chain only** | synthetic quote | whatever `FUGAL_OPENROUTER_BASE` points at — use the stub, or your key is spent | `--mock` validators |
+| **Production** (`--live`) | a dstack TD on GCP `c3`, started with `--await-provisioning` | real TDX + TPM quote, compose hash in RTMR3 | real OpenRouter, key pushed over the attested channel | `--live` validators |
+
+`--mock` replaces the attestation and nothing else. **It is refused on
+finney**, and a mock miner with `OPENROUTER_API_KEY` in its environment makes
+real, paid calls. A `--live` miner on a stock VM (not dstack) produces a quote
+with no compose-hash event, which every live validator rejects while the miner
+keeps paying for inference — so the "live on a plain TDX VM" path does not
+exist.
+
+### Rehearsal on a test chain (no spend)
+
 ```bash
-OPENROUTER_API_KEY=sk-or-... python neurons/miner.py \
+# A deterministic OpenAI-compatible stand-in for OpenRouter, from the pool's
+# own gold answers. No key, no spend.
+python scripts/stub_upstream.py --port 8799 &
+
+FUGAL_OPENROUTER_BASE=http://127.0.0.1:8799 python neurons/miner.py \
   --netuid <NETUID> \
-  --network finney \
+  --network test \
   --coldkey fugal_miner \
   --hotkey default \
   --head-path data/my_head.npz \
-  --benchmark-pool data/benchmark_pool.json \
   --port 8091 \
   --mock
 ```
 
-### Test run (mock mode)
+Leave `--benchmark-pool` off: the miner loads the same manifest-pinned pool
+the validators do (`data/benchmarks/pool.json.gz` if you built it with
+`scripts/export_pool.py`, else the pinned Hugging Face revisions). A smaller
+local pool is for local chains only and must be declared with
+`FUGAL_POOL_UNPINNED=1`.
 
-`--mock` (the default) runs without real TDX attestation — useful for testing
-on any hardware. Everything works the same except the attestation quote is
-synthetic. Validators in mock mode accept these proofs.
+### Production
 
-### Live mode (requires TDX VM)
-
-```bash
-OPENROUTER_API_KEY=sk-or-... python neurons/miner.py \
-  --netuid <NETUID> \
-  --network finney \
-  --coldkey fugal_miner \
-  --hotkey default \
-  --head-path data/my_head.npz \
-  --benchmark-pool data/benchmark_pool.json \
-  --port 8091 \
-  --live
-```
-
-`--live` produces real TDX attestation. Requires an Intel TDX-capable VM.
-
-### Running as a service
-
-```bash
-sudo tee /etc/systemd/system/fugal-miner.service > /dev/null <<'EOF'
-[Unit]
-Description=Fugal Subnet Miner
-After=network.target
-
-[Service]
-Type=simple
-User=$USER
-WorkingDirectory=/path/to/fugal-subnet
-Environment=OPENROUTER_API_KEY=sk-or-...
-ExecStart=/path/to/fugal-subnet/.venv/bin/python neurons/miner.py \
-  --netuid <NETUID> --network finney \
-  --coldkey fugal_miner --hotkey default \
-  --head-path data/my_head.npz \
-  --benchmark-pool data/benchmark_pool.json \
-  --port 8091 --live
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl enable --now fugal-miner
-```
+Production is the dstack deployment in the next section, driven by
+`deploy/dstack/docker-compose.yaml` and provisioned with
+`scripts/provision_td.py`. The API key is never in a unit file, a compose
+file or the environment of anything outside the TD — it is read from a 0600
+file on your machine and pushed encrypted to the attested TD. There is no
+systemd unit for a production miner because the production miner is a
+container inside a confidential VM.
 
 ### CLI options
 
@@ -310,7 +297,11 @@ different digest, so a different compose hash, so no validator will accept its
 proofs. Deploy the published image — `ghcr.io/<org>/fugal-miner@sha256:…`,
 the digest named in the signed `image-v<date>` release — with the frozen
 `deploy/dstack/app-compose.frozen-<date>.json` that matches the entry the
-validators carry (`docs/APPROVED_ENTRY_ROTATION.md`, "Publishing"). Building
+validators carry (`docs/APPROVED_ENTRY_ROTATION.md`, "Publishing"). **Until
+the first `image-v*` release exists, there is no mainnet-valid image**: the
+digest currently in `deploy/dstack/docker-compose.yaml` is the 2026-09-07
+testnet image, built before the success-contract transition, and no live
+validator can accept proofs from it. Building
 your own image is for development against a local testnet in `--mock`, where
 no application is bound.
 
@@ -497,8 +488,16 @@ box holding no secrets and wrong for yours.
 
 ## Updating Your Head
 
-Retrain on newer data and restart the miner with the new `.npz` file. The
-restart re-commits the new hash on-chain.
+Retrain on newer data, then re-provision: `dstack-cloud stop` and `start`
+the instance (not `deploy --delete`, which discards the data disk and the
+embedding cache), wait for the miner to log that it is waiting to be
+provisioned, and push again with `scripts/provision_td.py --head <new.npz>`
+(the same encrypted, attested push as the first time). The miner commits the
+new hash on-chain when it serves. The receiver takes exactly one push per
+process and answers `409 already provisioned` to any later one, so a push to a
+running miner changes nothing: that is deliberate, it is what keeps a stranger
+who reaches port 8092 from replacing your session key and locking you out of
+your own logs. On a rehearsal miner, restart it with the new `--head-path`.
 
 **Important:** Recommitting a new head resets your evidence accumulator. Your
 accumulated score drops to zero and must rebuild over epochs. Retrain in big
@@ -643,7 +642,7 @@ You pay for model inference each epoch. Cost depends on:
 **Typical epoch cost, computed from the pinned price table** over real
 300-question slices (22,095 input tokens on average, 256-token completions):
 
-| If your head routed everything to | $/epoch | $/day at 24 epochs |
+| If your head routed everything to | $/epoch | $/day at 24 epochs (3600 s testnet; mainnet runs 20 at 4320 s) |
 |---|---|---|
 | `deepseek/deepseek-v4-flash` (cheapest) | 0.014 | 0.34 |
 | `openai/gpt-5.4-mini` (mid) | 0.362 | 8.69 |
@@ -668,8 +667,11 @@ the attested proof.
 
 **Port already in use** — Change `--port`.
 
-**TDX attestation fails** — Ensure you're running on an Intel TDX-capable VM.
-Check that `/usr/bin/tdx-quote-generator` is available.
+**TDX attestation fails** — Under dstack the quote comes from the guest agent
+socket; check `/var/run/dstack.sock` is mounted into the container (the
+shipped compose does this). On a stock VM the configfs-tsm interface is tried
+first and `tdx-quote-generator` is only a fallback — and a stock VM cannot
+produce a proof validators accept anyway (see Step 4).
 
 **Low scores** — Retrain with more data, try different model selections.
 Evidence accumulation means scores improve with consistency over epochs.

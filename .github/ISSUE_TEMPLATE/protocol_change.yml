@@ -28,7 +28,7 @@ body:
     id: vectors
     attributes:
       label: Regression and golden vectors
-      description: List tests needed across Python 3.10-3.12 and adversarial cases.
+      description: List tests needed across Python 3.11-3.12 and adversarial cases.
     validations:
       required: true
   - type: checkboxes

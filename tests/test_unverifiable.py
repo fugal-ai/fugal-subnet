@@ -19,20 +19,49 @@ from fugal_subnet.tee.runtime import TEERuntime
 from fugal_subnet.tee.verify import VerifyResult, verify_proof
 
 HOTKEY = "5TestMinerHotkeyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+MODEL = "deepseek/deepseek-v4-flash"      # priced in data/models.json
+GOLD = {"q1": {"question_id": "q1", "prompt": "1+1?", "gold": "2",
+               "grader_id": "numeric_final", "benchmark": "gsm8k", "metadata": {}}}
+
+
+def _head_bytes() -> bytes:
+    """A success head bound to the SHIPPED manifest, so the local head check
+    passes and only the hardware-trust checks decide the verdict. Since the
+    verification reorder (2026-11-02) every free local check runs BEFORE the
+    DCAP fetch, so a proof used to exercise the DCAP outcomes has to be
+    locally sound: priced model, gold for its question, a compatible head."""
+    import hashlib
+    import io
+    import json
+
+    import numpy as np
+
+    from fugal_subnet.routing_protocol import MANIFEST_PATH
+    from fugal_subnet.vendor import success_contract as c
+
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    buf = io.BytesIO()
+    np.savez(buf, **c.make_head(np.zeros((1, 1024), np.float32), np.zeros(1, np.float32),
+                               [MODEL], manifest, "synthetic-test-only"))
+    data = buf.getvalue()
+    _head_bytes.sha256 = hashlib.sha256(data).hexdigest()
+    return data
 
 
 def _proof():
+    head = _head_bytes()
     p = BenchmarkProof(
         hotkey=HOTKEY, epoch_id="e1", nonce="ab" * 32,
-        questions_hash="c" * 64, weights_hash="d" * 64, source_hash="e" * 64,
+        questions_hash="c" * 64, weights_hash=_head_bytes.sha256, source_hash="e" * 64,
         results=[QuestionResult(
-            question_id="q1", routed_model="m", correct=True, cost_usd=0.01,
+            question_id="q1", routed_model=MODEL, correct=True, cost_usd=0.01,
             response_hash="f" * 64, prompt_tokens=1, completion_tokens=1)],
-        total_cost_usd=0.01, per_model_costs={"m": 0.01},
+        total_cost_usd=0.01, per_model_costs={MODEL: 0.01},
         attestation_quote=b"", timestamp=1.0,
     )
     p.attestation_quote = TEERuntime(mock=True).generate_attestation(
         bytes.fromhex(p.content_hash()))
+    p.head_bytes_for_test = head
     return p
 
 
@@ -52,7 +81,8 @@ def _verify(monkeypatch, dcap):
     p = _proof()
     return verify_proof(
         p, approved_measurements=set(), expected_questions_hash=p.questions_hash,
-        expected_nonce=p.nonce, gold_answers={}, expected_hotkey=HOTKEY, mock=False,
+        expected_nonce=p.nonce, gold_answers=GOLD, expected_hotkey=HOTKEY,
+        head_bytes=p.head_bytes_for_test, mock=False,
     )
 
 
@@ -117,7 +147,8 @@ def test_failures_after_the_dcap_step_are_never_unverifiable(monkeypatch):
     monkeypatch.setattr(verify_mod, "verify_dcap", lambda _q, **_kw: True)
     r = verify_proof(
         p, approved_measurements=set(), expected_questions_hash=p.questions_hash,
-        expected_nonce=p.nonce, gold_answers={}, expected_hotkey=HOTKEY, mock=False,
+        expected_nonce=p.nonce, gold_answers=GOLD, expected_hotkey=HOTKEY,
+        head_bytes=p.head_bytes_for_test, mock=False,
     )
     assert r.valid is False
     assert r.unverifiable is False

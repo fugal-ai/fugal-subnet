@@ -11,6 +11,26 @@ the design.
 
 ## Before you spend anything
 
+### 0. The gates a neuron refuses to start behind
+
+Each of these is a startup error, not a silent failure, and each is listed
+here because an operator who meets the six items below and still cannot start
+will otherwise go looking in the wrong place:
+
+| Gate | Where it is enforced | What clears it |
+|---|---|---|
+| The token manifest shipped in the checkout is `reviewed`, not `candidate` | `neurons/validator.py`, `neurons/miner.py` (`--live` only) | **Cleared by #99 (2026-11-02)**: rebuilt from 664 fresh metered calls and promoted; the record is in `SUCCESS_CONTRACT.md`. Any later change to it is a protocol-identity change (image and approved entry rebuilt, evidence reset) |
+| `data/reference_frame.json` exists and matches its pin | `reference_frame.load_bootstrap(require=True)`, `check_safety_invariants.py` | `scripts/build_bootstrap_frame.py` from reveals produced under the current protocol identity |
+| `FUGAL_TEE_MEASUREMENTS` holds at least one `<base>:<compose_hash>` entry | validator startup | A signed `image-v*` release; `scripts/fetch_approved_entries.py` needs `deploy/keys/allowed_signers` to exist, which it does not yet |
+| No consensus constant is set in the environment | `fingerprint.assert_environment` | Unset it; only `FUGAL_EPOCH_INTERVAL` and `FUGAL_TEE_MEASUREMENTS` are meant to be set per deployment |
+| `--mock` is not finney | `fingerprint.assert_mock_allowed` | Run `--live` |
+
+Two more that are not startup errors but are just as final: a validator with
+neither a permit nor `FUGAL_MIN_VALIDATOR_STAKE` (1000 TAO) staked is refused
+by every live miner's axon and sees "No valid proofs" forever; and
+`FUGAL_REVEAL_BUCKET` unset only warns, so the subnet's product is never
+published.
+
 ### 1. The subnet must be activated, and nothing will tell you if it isn't
 
 `start_call` is the single most consequential extrinsic in a launch, and its
@@ -54,8 +74,11 @@ epoch must also be at least `weights_rate_limit` blocks (100 by default, a
 
 The short version since 2026-10-14: build the pool once with
 `python scripts/export_pool.py` on a machine that can reach Hugging Face,
-copy `data/benchmarks/pool.json.gz` to every neuron (or point
-`FUGAL_POOL_FILE` at it), and leave `FUGAL_BENCHMARK_POOL` unset. The loader
+copy `data/benchmarks/pool.json.gz` to every **validator** (or point
+`FUGAL_POOL_FILE` at it), and leave `FUGAL_BENCHMARK_POOL` unset. A dstack
+miner cannot take the file — `data/benchmarks/` is excluded from the image and
+the pool is deliberately not on the provisioning allow-list — so a TD builds it
+from the pinned revisions at first boot and needs Hugging Face egress once. The loader
 prefers the file, verifies it against the pinned manifest at startup, and
 never touches Hugging Face. Do not publish the file: the datasets carry their
 own licences.
@@ -137,16 +160,21 @@ image with a pinned kernel and initrd is still a prerequisite for `--live` on
 mainnet.** dstack now supplies exactly that, and provisioning has been proven
 end to end against a live TD (see [OPEN_WORK.md](OPEN_WORK.md) for what the
 rehearsal did and did not demonstrate). Approved entries are
-`<base>:<compose_hash>` pairs; the current ones, and the procedure for
-rotating them when the image or the miner code changes, are in
-[APPROVED_ENTRY_ROTATION.md](APPROVED_ENTRY_ROTATION.md). With an entry
+`<base>:<compose_hash>` pairs; the procedure for publishing and rotating them
+is [APPROVED_ENTRY_ROTATION.md](APPROVED_ENTRY_ROTATION.md). **No entry exists
+yet for a runtime a current validator would accept**: the four recorded there
+are 2026-09-06/07 testnet images from before the success-contract transition.
+The first `image-v*` release creates the first. With an entry
 published, `--live` is the only honest mode; `--mock` accepts unattested
 proofs and is for local rehearsals. See [TDX_VALIDATION.md](TDX_VALIDATION.md).
 
 ### 6. Miner startup cost
 
-Backbone embeddings for the 21,717-question pool take **13.2 hours** on an
-x86_64 laptop and **36 hours** on a 4-core aarch64 VM. Both measured on real
+Backbone embeddings for the pool (21,553 questions since the code benchmarks
+were excluded) took **13.2 hours** on an x86_64 laptop and **36 hours** on a
+4-core aarch64 VM **under the legacy embedding profile**; the 2048-token
+profile shipped since 2026-09-21 is heavier per question and has not been
+timed on a TD (MINER_GUIDE, "The first boot embeds the whole pool"). Both measured on real
 pool prompts, which average 330 characters: 0.46 q/s and 0.167 q/s
 respectively. This is startup cost before the miner answers its first query.
 
@@ -212,15 +240,17 @@ python scripts/provision_subnet.py --network finney --netuid <N> \
 # 2. Confirm before starting neurons. No wallet needed.
 python scripts/provision_subnet.py --network finney --netuid <N> --status
 
-# 3. Start neurons with the aligned interval and the pinned pool.
+# 3. Start neurons with the aligned interval and the pinned pool file in
+#    place (built once with scripts/export_pool.py; FUGAL_BENCHMARK_POOL stays
+#    unset — see §3 above).
 export FUGAL_EPOCH_INTERVAL=4320
-export FUGAL_BENCHMARK_POOL=/opt/fugal/pool.json
+export FUGAL_POOL_FILE=/opt/fugal/pool.json.gz
 
 # 4. Watch, and assert rather than read.
 python scripts/watch_subnet.py --network finney --netuid <N> --epochs 3 \
   --epoch-interval 4320 \
   --miners m1=<hotkey> --validators v1=<hotkey>,v2=<hotkey> \
-  --reveals v1=/opt/v1/results/epochs,v2=/opt/v2/results/epochs
+  --reveals v1=/opt/v1/results/success-v1/epochs,v2=/opt/v2/results/success-v1/epochs
 ```
 
 `watch_subnet.py` must report zero failures across at least two consecutive
@@ -259,4 +289,5 @@ Honest list, as of this branch:
 | Real OpenRouter billing vs the pinned price table | **measured once**, account-level: within ~5% over four miner-epochs; completions averaged 534 tokens against the 256 assumed, and exploration was ~60% of a cheap head's epoch cost |
 | A real trained head outscoring a random one | **measured** offline (`docs/HEAD_EFFICACY.md`); on chain only two synthetic heads have been scored |
 | Behaviour under adversarial miners over weeks | **never executed** |
-| Miner startup cost on a TD | **measured**: 7 h 39 m to embed the pool at four threads on a `c3-standard-4`; re-paid on every image rotation because the tool recreates the data disk |
+| Miner startup cost on a TD | **measured on the legacy profile**: 7 h 39 m to embed the pool at four threads on a `c3-standard-4`; re-paid on every image rotation because the tool recreates the data disk. **Unmeasured** for the 2048-token profile |
+| An end-to-end epoch under the success-contract runtime (protocol since 2026-09-21) | **never executed** on any chain; the runbook is `SUCCESS_CONTRACT.md` |

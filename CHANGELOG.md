@@ -4,6 +4,24 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — an epoch is applied once, or not at all
+
+`update_scores` mutated the validator's records in place and the reference
+frame was rebound as soon as it was computed, before the epoch was durable.
+Any exception between scoring and `save_state` — a dropped websocket in
+`set_weights`, a failed owner-hotkey read, a disk error on the reveal — left
+the loop with the state already advanced, and the retry of the same epoch
+accumulated every miner's evidence twice, applied every miss twice and decayed
+the frame twice, then persisted it (I1, I3). `update_scores` is now
+copy-on-write and the loop holds the epoch's state in epoch-local names until
+the commit point just before `save_state`. The on-chain commitments are read
+at the boundary block the moment the epoch starts, not after the collection
+wait and the 120 s query, and a failed read in live raises (the outer loop
+retries) instead of degrading to an empty map that rejected every proof and
+marked the epoch processed with no weights (I6). `tests/test_epoch_atomicity.py`
+holds the shape of both fixes and was checked to fail against the previous
+loop.
+
 ### Changed — CONSENSUS: the score is headroom above the constant-policy frontier
 
 Re-scores every miner; decided in `docs/I3_DECISION.md` (option 3). The

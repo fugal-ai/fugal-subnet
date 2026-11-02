@@ -314,33 +314,6 @@ def verify_proof(
     if event_log is None:
         event_log = embedded_events
 
-    if not mock:
-        try:
-            dcap_ok = verify_dcap(
-                attestation_quote, budget=collateral_budget)
-        except ImportError:
-            raise
-        except CollateralUnavailable as e:
-            # The operator's infrastructure, not the miner's proof. Sits here
-            # beside the ImportError re-raise because it is the same category:
-            # in both, nothing was learned about this miner, and reporting
-            # "invalid" would be an accusation the evidence does not support.
-            #
-            # It does NOT return valid=True. Nothing was verified, so nothing is
-            # accepted — this only changes what the failure is called, and what
-            # the caller is permitted to conclude from it.
-            return VerifyResult(
-                False,
-                f"DCAP collateral unavailable, so this proof was never judged: {e}",
-                unverifiable=True,
-            )
-        except Exception as e:  # noqa: BLE001 - miner-controlled bytes
-            return VerifyResult(
-                False, f"DCAP attestation verification failed: {type(e).__name__}: {e}",
-            )
-        if not dcap_ok:
-            return VerifyResult(False, "DCAP attestation verification failed")
-
     # 2. Quote parses, and report_data binds the proof body to the hardware.
     #    Enforced in every mode: the mock quote generator embeds report_data
     #    correctly, so tamper detection works on a local testnet too.
@@ -359,100 +332,6 @@ def verify_proof(
             f"expected {expected_report_data.hex()[:32]}... — the proof body "
             "was altered after it was attested",
         )
-
-    # 3. Approved runtime image, from the hardware's own measurement registers.
-    if not mock:
-        approved = parse_approved(approved_measurements)
-        measured = measurement_id(quote)
-        if measured not in approved:
-            return VerifyResult(
-                False,
-                f"Unapproved runtime image: measurement {measured[:16]}... "
-                f"not among {len(approved)} approved measurements",
-            )
-
-        # 3b. Runtime identity, when the approved entry names one.
-        #     RTMR3 is an EXTEND, not a set — the register holds
-        #     SHA384(SHA384(...zeros || first) || second)..., never the value
-        #     written. So this replays from zero and compares the result to what
-        #     the CPU signed, which is also what makes an untrusted extend log
-        #     safe to read later: a log that does not reproduce the quote's
-        #     register is discarded before any field of it is believed.
-        required_apps = approved[measured]
-        if not required_apps:
-            # A bare base says nothing about the application, and the
-            # application is what fixes the model upstream. Outside mock that
-            # is the upstream-substitution exploit with every signature intact
-            # (diligence 2026-10, finding 1), so it is a rejection and not a
-            # warning. The live validator already refuses to START with such an
-            # entry; this is the same rule at the point of use, for scripts
-            # that call verify_proof directly.
-            return VerifyResult(
-                False,
-                f"Approved entry for image {measured[:16]}... is a bare base: no "
-                "app identity, so the application (and its model upstream) is "
-                "unchecked. Live verification requires <base>:<compose_hash>.",
-            )
-        if required_apps:
-            if event_log:
-                # A measured image extends RTMR3 several times during boot, so
-                # the register is a chain and the log is the only description of
-                # it. Replay first, compare to the quote, and only then read a
-                # field: a log that does not reproduce what the CPU signed is
-                # discarded whole rather than partially believed.
-                try:
-                    replayed, events = replay_event_log(event_log, imr=3)
-                except ValueError as e:
-                    return VerifyResult(False, f"Malformed TDX event log: {e}")
-                if replayed != quote.rtmr3:
-                    return VerifyResult(
-                        False,
-                        f"Event log does not reproduce RTMR3: replayed "
-                        f"{replayed[:16]}... but the quote says "
-                        f"{quote.rtmr3[:16]}...",
-                    )
-                app_seen = events.get("compose-hash", b"").hex()
-                if app_seen not in required_apps:
-                    return VerifyResult(
-                        False,
-                        f"Unapproved application: compose-hash {app_seen[:16]}... "
-                        f"not among {len(required_apps)} approved for this image",
-                    )
-            elif any(len(a) == 64 for a in required_apps):
-                # A 64-hex identity is a dstack compose hash, and a dstack TD
-                # extends RTMR3 NINE times during boot — including `instance-id`,
-                # WHICH CHANGES ON EVERY DEPLOY. Two honest miners running the
-                # identical approved compose therefore produce DIFFERENT RTMR3
-                # values, and so does one miner after a redeploy. Measured on two
-                # real deploys: same compose, different RTMR3.
-                #
-                # So RTMR3 can never be compared to a fixed value for this shape,
-                # and without the log there is nothing to replay. Refusing is the
-                # only correct answer; falling through to the single-extend
-                # comparison below would reject an honest miner on their second
-                # deploy and look exactly like an attack.
-                return VerifyResult(
-                    False,
-                    "Approved entry names a compose hash but the proof carries no "
-                    "TDX event log. RTMR3 on a measured image is a chain that "
-                    "includes per-deploy values, so it can only be checked by "
-                    "replaying the log — never by comparison.",
-                )
-            else:
-                # No log: the single-extend case a Fugal miner produces today,
-                # where the whole chain is one runtime_identity from a zeroed
-                # register. A fresh TD really does start from zero — a GCP
-                # confidential VM stop/start yields a new TD with RTMR3 cleared,
-                # measured twice — so a miner cannot accumulate extends across
-                # restarts to reach a chosen value.
-                candidates = {expected_rtmr3(app) for app in required_apps}
-                if quote.rtmr3 not in candidates:
-                    return VerifyResult(
-                        False,
-                        f"Runtime identity mismatch: RTMR3 {quote.rtmr3[:16]}... "
-                        f"replays from none of the {len(required_apps)} approved "
-                        f"runtime identities for this image",
-                    )
 
     # 4. Nonce — ties the proof to this epoch's unpredictable block hash.
     if proof.nonce != expected_nonce:
@@ -627,6 +506,138 @@ def verify_proof(
             f"Cost inconsistency: per-model sum ${per_model_sum:.4f} vs "
             f"attested total ${proof.total_cost_usd:.4f}",
         )
+
+    # 11. ONLY NOW the hardware-trust checks, because everything above was free
+    #     and local, and these are not: DCAP fetches collateral over the network
+    #     against a per-epoch budget shared by every miner (I4, I6), and the
+    #     measurement match follows it. Running them first meant a replayed or
+    #     stale proof — wrong nonce, wrong report_data, wrong advertised hash —
+    #     cost every validator a fetch whose FMSPC target was still unsigned at
+    #     parse time, for a proof that ten lines of comparison would have
+    #     refused (security read 2026-11-02, finding 5). A fetch now only ever
+    #     follows a fresh quote over a fresh content hash that names this
+    #     miner, this epoch and this slice. tests/test_verify_order.py counts
+    #     the fetches.
+    if not mock:
+        try:
+            dcap_ok = verify_dcap(
+                attestation_quote, budget=collateral_budget)
+        except ImportError:
+            raise
+        except CollateralUnavailable as e:
+            # The operator's infrastructure, not the miner's proof. Sits here
+            # beside the ImportError re-raise because it is the same category:
+            # in both, nothing was learned about this miner, and reporting
+            # "invalid" would be an accusation the evidence does not support.
+            #
+            # It does NOT return valid=True. Nothing was verified, so nothing is
+            # accepted — this only changes what the failure is called, and what
+            # the caller is permitted to conclude from it.
+            return VerifyResult(
+                False,
+                f"DCAP collateral unavailable, so this proof was never judged: {e}",
+                unverifiable=True,
+            )
+        except Exception as e:  # noqa: BLE001 - miner-controlled bytes
+            return VerifyResult(
+                False, f"DCAP attestation verification failed: {type(e).__name__}: {e}",
+            )
+        if not dcap_ok:
+            return VerifyResult(False, "DCAP attestation verification failed")
+
+    # 3. Approved runtime image, from the hardware's own measurement registers.
+    if not mock:
+        approved = parse_approved(approved_measurements)
+        measured = measurement_id(quote)
+        if measured not in approved:
+            return VerifyResult(
+                False,
+                f"Unapproved runtime image: measurement {measured[:16]}... "
+                f"not among {len(approved)} approved measurements",
+            )
+
+        # 3b. Runtime identity, when the approved entry names one.
+        #     RTMR3 is an EXTEND, not a set — the register holds
+        #     SHA384(SHA384(...zeros || first) || second)..., never the value
+        #     written. So this replays from zero and compares the result to what
+        #     the CPU signed, which is also what makes an untrusted extend log
+        #     safe to read later: a log that does not reproduce the quote's
+        #     register is discarded before any field of it is believed.
+        required_apps = approved[measured]
+        if not required_apps:
+            # A bare base says nothing about the application, and the
+            # application is what fixes the model upstream. Outside mock that
+            # is the upstream-substitution exploit with every signature intact
+            # (diligence 2026-10, finding 1), so it is a rejection and not a
+            # warning. The live validator already refuses to START with such an
+            # entry; this is the same rule at the point of use, for scripts
+            # that call verify_proof directly.
+            return VerifyResult(
+                False,
+                f"Approved entry for image {measured[:16]}... is a bare base: no "
+                "app identity, so the application (and its model upstream) is "
+                "unchecked. Live verification requires <base>:<compose_hash>.",
+            )
+        if required_apps:
+            if event_log:
+                # A measured image extends RTMR3 several times during boot, so
+                # the register is a chain and the log is the only description of
+                # it. Replay first, compare to the quote, and only then read a
+                # field: a log that does not reproduce what the CPU signed is
+                # discarded whole rather than partially believed.
+                try:
+                    replayed, events = replay_event_log(event_log, imr=3)
+                except ValueError as e:
+                    return VerifyResult(False, f"Malformed TDX event log: {e}")
+                if replayed != quote.rtmr3:
+                    return VerifyResult(
+                        False,
+                        f"Event log does not reproduce RTMR3: replayed "
+                        f"{replayed[:16]}... but the quote says "
+                        f"{quote.rtmr3[:16]}...",
+                    )
+                app_seen = events.get("compose-hash", b"").hex()
+                if app_seen not in required_apps:
+                    return VerifyResult(
+                        False,
+                        f"Unapproved application: compose-hash {app_seen[:16]}... "
+                        f"not among {len(required_apps)} approved for this image",
+                    )
+            elif any(len(a) == 64 for a in required_apps):
+                # A 64-hex identity is a dstack compose hash, and a dstack TD
+                # extends RTMR3 NINE times during boot — including `instance-id`,
+                # WHICH CHANGES ON EVERY DEPLOY. Two honest miners running the
+                # identical approved compose therefore produce DIFFERENT RTMR3
+                # values, and so does one miner after a redeploy. Measured on two
+                # real deploys: same compose, different RTMR3.
+                #
+                # So RTMR3 can never be compared to a fixed value for this shape,
+                # and without the log there is nothing to replay. Refusing is the
+                # only correct answer; falling through to the single-extend
+                # comparison below would reject an honest miner on their second
+                # deploy and look exactly like an attack.
+                return VerifyResult(
+                    False,
+                    "Approved entry names a compose hash but the proof carries no "
+                    "TDX event log. RTMR3 on a measured image is a chain that "
+                    "includes per-deploy values, so it can only be checked by "
+                    "replaying the log — never by comparison.",
+                )
+            else:
+                # No log: the single-extend case a Fugal miner produces today,
+                # where the whole chain is one runtime_identity from a zeroed
+                # register. A fresh TD really does start from zero — a GCP
+                # confidential VM stop/start yields a new TD with RTMR3 cleared,
+                # measured twice — so a miner cannot accumulate extends across
+                # restarts to reach a chosen value.
+                candidates = {expected_rtmr3(app) for app in required_apps}
+                if quote.rtmr3 not in candidates:
+                    return VerifyResult(
+                        False,
+                        f"Runtime identity mismatch: RTMR3 {quote.rtmr3[:16]}... "
+                        f"replays from none of the {len(required_apps)} approved "
+                        f"runtime identities for this image",
+                    )
 
     return VerifyResult(
         valid=True,

@@ -4,6 +4,22 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — verification runs every free check before the collateral fetch
+
+`verify_proof` ran DCAP (a network fetch against the per-epoch collateral
+budget every miner shares, whose FMSPC target is unsigned at parse time) and
+the measurement match FIRST, then the free local bindings. A replayed or
+stale proof — wrong nonce, wrong report_data, wrong advertised hash, wrong
+slice, relayed from another hotkey — cost every validator a fetch that a
+comparison would have refused (I4, I6; security read 2026-11-02, finding 5).
+The order is now: hotkey, unwrap (TPM half), report_data, nonce, questions
+hash, slice, exploration, head commitment and bytes, head compatibility,
+advertised hash, gold, failed flags, exploration failure rate, cost
+consistency, and only then DCAP and the approved image/application. No
+rule changed; `tests/test_verify_order.py` counts the fetches. A leaf
+certificate whose signature algorithm the pinned root's key cannot verify is
+now a rejection in `verify_ak_chain` rather than an escaping `TypeError`
+(finding 6).
 ### Changed — CONSENSUS: the token manifest is reviewed, from fresh observations
 
 The success contract's token manifest (`data/benchmark_tokens_v1.json`) was a

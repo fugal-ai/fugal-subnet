@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — `provision_subnet.py` no longer needs the owner coldkey to check or register
+
+`--status` loads no wallet, so the read-only activation and tempo check from
+MAINNET_LAUNCH §1-2 runs on a validator host, which holds a hotkey and never
+the owner coldkey. `--owner-wallet` is optional: without it the owner steps
+(identity, `start_call`, hyperparameters) are skipped and the script refuses
+to register or stake into a subnet that is inactive or whose tempo does not
+equal the epoch length, the two failures that have each silently cost epochs
+before. `--create` still needs the owner. MAINNET_LAUNCH shows the owner half
+and the operator half. `tests/test_provision_subnet_cli.py` drives `main()`
+against a stubbed chain with wallet loading replaced by an assertion.
 ### Fixed — `scripts/export_pool.py` could not run
 
 The documented way of building the consensus pool for every neuron

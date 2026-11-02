@@ -41,36 +41,68 @@ logger = logging.getLogger("fugal.validator")
 STATE_PATH = os.getenv("FUGAL_STATE_PATH", "results/success-v1/validator_state.json")
 
 
-def load_state(records_cls) -> dict:
-    """Load persisted validator state across supervisor-managed restarts."""
-    from fugal_subnet.evidence import Evidence
+def _known_fields(cls, data: dict) -> dict:
+    """Keep the keys the dataclass declares; a field added or removed in an
+    upgrade must not make every existing state file unloadable."""
+    names = {f.name for f in dataclasses.fields(cls)}
+    dropped = sorted(set(data) - names)
+    if dropped:
+        logger.warning("state carries fields %s unknown to %s; ignored", dropped, cls.__name__)
+    return {k: v for k, v in data.items() if k in names}
 
+
+def _parse_state(raw: dict, records_cls) -> dict:
+    from fugal_subnet.evidence import Evidence
+    from fugal_subnet.routing_protocol import require_identity
+
+    require_identity(raw.get("routing_protocol"))
+    records = {}
+    for uid, rec in raw.get("records", {}).items():
+        rec = dict(rec)
+        ev_data = rec.pop("evidence", None)
+        record = records_cls(**_known_fields(records_cls, rec))
+        if ev_data is not None:
+            record.evidence = Evidence(**_known_fields(Evidence, ev_data))
+        records[int(uid)] = record
+    return {
+        "records": records,
+        "prev_uids": [int(u) for u in raw.get("prev_uids", [])],
+        "prev_weights": [float(w) for w in raw.get("prev_weights", [])],
+        "last_epoch_index": int(raw.get("last_epoch_index", -1)),
+        # "first_commit_blocks" was persisted here until 2026-10-14. It is
+        # ignored on load: seniority is now derived from chain state at
+        # the boundary block (commitments.seniority_key), not remembered.
+        "frame": raw.get("frame"),
+    }
+
+
+def load_state(records_cls, path: str | None = None) -> dict:
+    """Load persisted validator state across supervisor-managed restarts.
+
+    A truncated or unparseable file (a power loss between the write and the
+    rename used to be able to leave one) falls back to the previous epoch's
+    copy, `<path>.bak`, with a loud warning: one epoch of stale evidence is a
+    small divergence, and deleting the file was the only recovery before,
+    which is a large one (I1).
+    """
+    path = path or STATE_PATH
     try:
-        with open(STATE_PATH) as f:
+        with open(path) as f:
             raw = json.load(f)
-        from fugal_subnet.routing_protocol import require_identity
-        require_identity(raw.get("routing_protocol"))
-        records = {}
-        for uid, rec in raw.get("records", {}).items():
-            ev_data = rec.pop("evidence", None)
-            record = records_cls(**rec)
-            if ev_data is not None:
-                record.evidence = Evidence(**ev_data)
-            records[int(uid)] = record
-        return {
-            "records": records,
-            "prev_uids": [int(u) for u in raw.get("prev_uids", [])],
-            "prev_weights": [float(w) for w in raw.get("prev_weights", [])],
-            "last_epoch_index": int(raw.get("last_epoch_index", -1)),
-            # "first_commit_blocks" was persisted here until 2026-10-14. It is
-            # ignored on load: seniority is now derived from chain state at
-            # the boundary block (commitments.seniority_key), not remembered.
-            "frame": raw.get("frame"),
-        }
+        return _parse_state(raw, records_cls)
     except FileNotFoundError:
         return _empty_state()
     except Exception as e:
-        raise ValueError(f"Cannot resume validator state {STATE_PATH}: {e}") from e
+        bak = path + ".bak"
+        if os.path.exists(bak):
+            logger.error(
+                "Validator state %s is unreadable (%s); resuming from the previous "
+                "epoch's copy %s. This validator is one epoch behind its peers until "
+                "it catches up.", path, e, bak,
+            )
+            with open(bak) as f:
+                return _parse_state(json.load(f), records_cls)
+        raise ValueError(f"Cannot resume validator state {path}: {e}") from e
 
 
 def _empty_state() -> dict:
@@ -79,9 +111,10 @@ def _empty_state() -> dict:
 
 
 def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
-               last_epoch_index: int, frame=None):
-    """Persist validator state."""
-    os.makedirs(os.path.dirname(STATE_PATH) or ".", exist_ok=True)
+               last_epoch_index: int, frame=None, path: str | None = None):
+    """Persist validator state: write, fsync, keep the previous copy, rename."""
+    path = path or STATE_PATH
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     from fugal_subnet.routing_protocol import identity
     payload = {
         "routing_protocol": identity(),
@@ -91,10 +124,14 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
         "last_epoch_index": last_epoch_index,
         "frame": frame.to_dict() if frame is not None else None,
     }
-    tmp = STATE_PATH + ".tmp"
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(payload, f)
-    os.replace(tmp, STATE_PATH)
+        f.flush()
+        os.fsync(f.fileno())      # the rename is atomic; the bytes were not
+    if os.path.exists(path):
+        os.replace(path, path + ".bak")
+    os.replace(tmp, path)
 
 
 @click.command()
@@ -243,7 +280,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
 
     wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
-    subtensor = bt.Subtensor(network=network)
+    from fugal_subnet.config import ARCHIVE_ENDPOINTS, FALLBACK_ENDPOINTS
+    subtensor = bt.Subtensor(
+        network=network,
+        archive_endpoints=ARCHIVE_ENDPOINTS or None,
+        fallback_endpoints=FALLBACK_ENDPOINTS or None,
+    )
+    if live and not ARCHIVE_ENDPOINTS:
+        logger.warning(
+            "FUGAL_ARCHIVE_ENDPOINTS is unset. The validator pins reads to the "
+            "boundary and collection blocks; a non-archive node keeps ~300 blocks "
+            "and refuses older ones after a late start or a retried epoch."
+        )
     from fugal_subnet.fingerprint import assert_mock_allowed, chain_genesis_hash
     try:
         assert_mock_allowed(chain_genesis_hash(subtensor), mock)
@@ -259,6 +307,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         )
     my_uid = metagraph.hotkeys.index(my_hotkey)
     logger.info("Validator UID %d on %s netuid %d", my_uid, network, netuid)
+    try:
+        assert_chain_weight_parameters(subtensor, netuid, live=live)
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
 
     # Reveal publishing: the bucket is operational configuration; the hold is
     # the chain's commit-reveal period unless overridden.
@@ -887,13 +939,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # --- SET WEIGHTS ---
             timer.start_phase("set_weights")
             logger.info("Setting weights for %d UIDs", len(uids))
-            response = subtensor.set_weights(
-                wallet=wallet, netuid=netuid,
-                uids=uids, weights=weights,
-                wait_for_inclusion=True,
-                wait_for_finalization=True,
+            success, msg = set_weights_with_retry(
+                subtensor, wallet, netuid, my_uid, uids, weights,
+                deadline_block=(epoch_index + 1) * blocks_per_epoch - 5,
             )
-            success, msg = response
             weights_confirmed = False
             confirm_detail = "not attempted"
             next_prev_uids, next_prev_weights = prev_uids, prev_weights
@@ -1073,6 +1122,115 @@ def _get_bundle_for_uid(uid, resp):
 # defined here, and the nominal block time is only used to render a human
 # estimate — the wait itself is on block height, never on wall clock.
 from fugal_subnet.benchmarks.slicer import BLOCK_TIME_S as _BLOCK_TIME_S  # noqa: E402
+
+
+def assert_chain_weight_parameters(subtensor, netuid: int, *, live: bool) -> dict:
+    """Refuse (live) or warn (mock) when the chain would silently drop our weights.
+
+    Three parameters decide whether a set_weights that the SDK reports as
+    submitted ever reaches Yuma, and none of them is visible in the result:
+    the chain's commit-reveal VERSION must equal the one the SDK commits with
+    (`IncorrectCommitRevealVersion` surfaces only at reveal), the SDK's
+    `version_key` must be >= the subnet's `weights_version`, and the vector
+    must satisfy `min_allowed_weights` / `max_weights_limit`. Read once at
+    startup and logged; the first two are refusals in live, because a
+    validator that commits every epoch into a chain that discards every reveal
+    looks perfectly healthy from its own logs (validator review 2026-11-02,
+    findings 3 and 4).
+    """
+    import inspect
+
+    out: dict = {}
+    sdk_crv = inspect.signature(subtensor.set_weights).parameters["commit_reveal_version"].default
+    sdk_vk = inspect.signature(subtensor.set_weights).parameters["version_key"].default
+    try:
+        chain_crv = subtensor.query_subtensor("CommitRevealWeightsVersion")
+        chain_crv = int(getattr(chain_crv, "value", chain_crv))
+    except Exception as e:  # noqa: BLE001 - an unreadable value is reported, not guessed
+        chain_crv = None
+        logger.warning("Could not read CommitRevealWeightsVersion: %s", e)
+    try:
+        hp = subtensor.get_subnet_hyperparameters(netuid=netuid)
+        out = {
+            "commit_reveal_enabled": bool(getattr(hp, "commit_reveal_weights_enabled", False)),
+            "commit_reveal_period": getattr(hp, "commit_reveal_period", None),
+            "weights_rate_limit": getattr(hp, "weights_rate_limit", None),
+            "min_allowed_weights": getattr(hp, "min_allowed_weights", None),
+            "max_weights_limit": getattr(hp, "max_weights_limit", None),
+            "weights_version": getattr(hp, "weights_version", None),
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not read subnet hyperparameters: %s", e)
+    out["chain_commit_reveal_version"] = chain_crv
+    out["sdk_commit_reveal_version"] = sdk_crv
+    logger.info("Chain weight parameters: %s", out)
+
+    problems = []
+    if chain_crv is not None and out.get("commit_reveal_enabled") and chain_crv != sdk_crv:
+        problems.append(
+            f"chain CommitRevealWeightsVersion is {chain_crv} but this SDK commits "
+            f"version {sdk_crv}; every reveal would be rejected"
+        )
+    wv = out.get("weights_version")
+    if wv is not None and int(wv) > int(sdk_vk):
+        problems.append(
+            f"subnet weights_version {wv} exceeds the SDK version_key {sdk_vk}; "
+            "set_weights would be refused"
+        )
+    if problems:
+        msg = "; ".join(problems)
+        if live:
+            raise RuntimeError(msg)
+        logger.warning("%s (continuing: mock)", msg)
+    return out
+
+
+def set_weights_with_retry(subtensor, wallet, netuid: int, my_uid: int, uids, weights,
+                           *, deadline_block: int, attempts: int | None = None,
+                           sleep_s: float = 12.0) -> tuple[bool, str]:
+    """Submit weights, naming the reason when the SDK will not, and retry
+    while the epoch has blocks left.
+
+    The SDK's set_weights returns `(False, None)` without attempting anything
+    when the chain's rate limit has not elapsed, and a transient websocket
+    error becomes `(False, <exception text>)` after its own five attempts. A
+    failure here used to be logged and the epoch marked done, so one blip cost
+    the epoch's weights (validator review 2026-11-02, finding 3). Now the rate
+    limit is read first so the log says why, and a failed submit is retried up
+    to WEIGHTS_SET_RETRIES times while `deadline_block` has not passed.
+    """
+    from fugal_subnet.config import WEIGHTS_SET_RETRIES
+
+    attempts = WEIGHTS_SET_RETRIES if attempts is None else attempts
+    msg = ""
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            since = int(subtensor.blocks_since_last_update(netuid, my_uid))
+            limit = int(subtensor.weights_rate_limit(netuid))
+        except Exception as e:  # noqa: BLE001 - diagnostic only
+            since, limit = -1, -1
+            logger.warning("Could not read the weights rate limit: %s", e)
+        if 0 <= since <= limit:
+            return False, (f"rate limit: {since} blocks since this UID's last update, "
+                           f"limit {limit}; the chain would refuse the extrinsic")
+        response = subtensor.set_weights(
+            wallet=wallet, netuid=netuid, uids=uids, weights=weights,
+            wait_for_inclusion=True, wait_for_finalization=True,
+        )
+        success, msg = response
+        if success:
+            return True, str(msg or "")
+        msg = str(msg or "submit returned no message")
+        try:
+            now = int(subtensor.get_current_block())
+        except Exception:  # noqa: BLE001
+            now = deadline_block
+        if attempt >= attempts or now >= deadline_block:
+            break
+        logger.warning("set_weights attempt %d/%d failed (%s); retrying in %.0fs "
+                       "(block %d, deadline %d)", attempt, attempts, msg, sleep_s, now, deadline_block)
+        time.sleep(sleep_s)
+    return False, msg
 
 
 def read_commitments_or_fail(subtensor, netuid: int, block: int, *, required: bool):

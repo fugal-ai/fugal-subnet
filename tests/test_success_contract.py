@@ -58,8 +58,12 @@ def test_old_head_cannot_enter_benchmark_and_candidates_cannot_deploy():
     with pytest.raises(ValueError, match="legacy"):
         routing_protocol.benchmark_costs(load_head_from_npz(buf.getvalue()))
     manifest = json.loads(routing_protocol.MANIFEST_PATH.read_text())
+    # The shipped manifest is reviewed (2026-11-02) and deploys; the same
+    # file with its status rolled back to candidate must not.
+    assert manifest["status"] == "reviewed"
+    c.validate_manifest(manifest, deployable=True)
     with pytest.raises(ValueError, match="reviewed"):
-        c.validate_manifest(manifest, deployable=True)
+        c.validate_manifest(dict(manifest, status="candidate"), deployable=True)
 
 
 def test_offline_evaluation_keeps_observed_failures_and_aligns_columns():

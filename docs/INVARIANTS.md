@@ -1416,6 +1416,23 @@ miner's own.)
 Not built. Recorded because the throughput work will otherwise fix the symptom
 that was measured rather than the property that is wrong.
 
+### I4/I6 — no fetch before the free checks pass (fixed 2026-11-02)
+
+The section below says the fetch target is derived from the miner's own
+bytes and the fetch is charged to a budget every miner shares. Until
+2026-11-02 `verify_proof` ran that fetch FIRST, before the report_data,
+nonce, slice, hotkey and advertised-hash comparisons that cost nothing, so a
+proof copied from a public source (this repository's own fixtures hold two
+real quotes), or last epoch's proof replayed, bought a fetch from every
+validator before being refused by ten lines of comparison. Every local
+binding now precedes DCAP and the measurement match; a fetch only ever
+follows a fresh quote over a fresh content hash that names this miner, this
+epoch and this slice. `tests/test_verify_order.py` counts the fetches; four
+of its six cases fail against the previous order (the hotkey check was
+already first, and a sound proof fetched once either way). The residual (a
+quote that parses but carries an unknown FMSPC) is unchanged and still needs
+collateral-in-proof.
+
 ### I4 — "unverifiable" is a privilege, and the miner picks the fetch target
 
 If a proof can be classified *unverifiable* rather than *invalid*, that outcome
@@ -1990,6 +2007,25 @@ proof and marked the epoch processed with no weights while peers that read in
 time set theirs. In live a failed read now raises and the epoch is retried.
 A validator should still run against an archive endpoint; this removes the
 window, not the dependency.
+
+### I6 — a submitted weight vector that the chain will discard (fixed 2026-11-02)
+
+Three parameters decide whether a `set_weights` the SDK reports as
+submitted ever reaches Yuma, and none of them is visible in the result. The
+chain checks the commit-reveal VERSION at reveal time
+(`IncorrectCommitRevealVersion`), not at commit, so a validator committing
+with the wrong version logs "Weights set successfully" every epoch while
+every reveal is rejected; `WeightsVersionKey` must be at or below the SDK's
+`version_key`; and `min_allowed_weights` / `max_weights_limit` bound the
+vector. `assert_chain_weight_parameters` reads all of them once at startup,
+logs them, and refuses live on the first two. The SDK also returns
+`(False, None)` without attempting anything while the rate limit has not
+elapsed, which the loop logged as a failure with no reason and then marked the
+epoch done; `set_weights_with_retry` names the rate limit when that is the
+cause and otherwise retries a transient failure while the epoch has blocks
+left. Finney at runtime 486 (2026-11-02): `CommitRevealWeightsVersion` 4, a
+fresh subnet's `weights_version` 0, `min_allowed_weights` 1,
+`max_weights_limit` 65535. `tests/test_validator_chain_guards.py`.
 
 ## Attack surface by actor
 

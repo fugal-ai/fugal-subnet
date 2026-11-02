@@ -218,19 +218,24 @@ def test_verify_proof_nonmock_rejects_a_synthetic_quote():
     an assertion about the environment wearing the name of an assertion about
     the code.
     """
-    proof = _make_proof()
-    gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
+    # A LOCALLY SOUND proof (priced model, gold, a head bound to the shipped
+    # manifest), so that every free check passes and the hardware check is the
+    # one that decides. Since 2026-11-02 the local checks run first; with the
+    # old factory's unpriced model the rejection would name the head instead.
+    from tests.test_unverifiable import GOLD, _proof
+    proof = _proof()
     try:
         result = verify_proof(
             proof,
             approved_measurements={"some_other_measurement"},
             expected_questions_hash=proof.questions_hash,
             expected_nonce=proof.nonce,
-            gold_answers=gold,
+            gold_answers=GOLD,
             # Required outside mock: a proof not bound to a miner can be
             # relayed. These tests are about hardware checks, so they supply
             # the hotkey their factory used and let the real subject fail.
             expected_hotkey=proof.hotkey,
+            head_bytes=proof.head_bytes_for_test,
             mock=False,
         )
     except ImportError:

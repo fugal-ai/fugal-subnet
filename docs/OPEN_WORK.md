@@ -39,8 +39,11 @@ has.
 Two things that cost an hour each and are easy to hit again, both now in
 MINER_GUIDE:
 
-- `FUGAL_BENCHMARK_POOL` **must** be in the compose, or the miner silently
-  starts a 13-hour job while looking healthy.
+- ~~`FUGAL_BENCHMARK_POOL` **must** be in the compose~~ — superseded the same
+  week: the override now runs the manifest check, so a non-pinned pool file is
+  refused and the pinned one buys nothing in the compose. Do **not** set it;
+  the first boot embeds the pinned pool and that cost is paid once per instance
+  (MINER_GUIDE, "The first boot embeds the whole pool").
 - Cloud Build on a fresh GCP project fails twice before it works, until the
   default compute service account is granted `storage.objectAdmin`,
   `artifactregistry.writer` and `logging.logWriter`.

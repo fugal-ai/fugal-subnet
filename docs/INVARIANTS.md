@@ -1105,7 +1105,12 @@ is unchanged.
 
 ### I8 — the approved entry is a PAIR, not a hash
 
-An approved-list entry is `<base_measurement>` or `<base_measurement>:<app_identity>`.
+An approved-list entry is `<base_measurement>:<app_identity>`. (Written
+2026-09; since 2026-10-14 a bare `<base_measurement>` is **refused** outside
+mock — see "The model upstream is miner-controlled" under Known gaps — and the
+app half that is enforced is the sha256 of the frozen `app-compose.json`'s raw
+bytes, replayed out of the RTMR3 log. The sha384 `runtime_identity` below is the
+advisory userspace extend; the shape argument is unchanged.)
 
     base_measurement = sha256(MRTD || RTMR1 || RTMR2)     what booted
     app_identity     = sha384(source || pool || grader || upstream)   what ran
@@ -1581,7 +1586,7 @@ Nothing is cancelled, so pyo3 is never unwound. Measured 12/12 clean.
 common 1024 default would exhaust it within a few epochs against a stalled
 PCCS and lose its axon and subtensor sockets — an I6 failure by a different
 road. The only way to leak fewer is to dial fewer times, so `CollateralBudget`
-carries a circuit breaker: `TEE_COLLATERAL_MAX_TIMEOUTS` (3) consecutive
+carries a circuit breaker: `TEE_COLLATERAL_MAX_TIMEOUTS` (10; see below for why not 3) consecutive
 timeouts and this validator stops dialling that endpoint for the rest of the
 epoch.
 
@@ -1602,7 +1607,7 @@ peer close or by the kernel's retransmit timeout (~15 min, well inside a 3600 s
 epoch). The leak is transient, not cumulative across epochs. The original
 "exhausts 1024 in four epochs" came from a stall server that held every
 connection open forever, which no real PCCS does. Consecutive rather than cumulative — an upstream answering in between is
-slow, and slow is what the time budget is for. That bounds the leak at 3 per
+slow, and slow is what the time budget is for. That bounds the leak at 10 per
 epoch instead of one per miner.
 
 **The per-proof bound does not by itself satisfy I6 at field scale**, and that
@@ -1697,7 +1702,7 @@ quote while running a modified harness.
 For a period this subnet checked `proof.source_hash`, a field the workload
 writes about itself, against the approved-image list. That is not an attestation
 of anything: the attacker simply writes an approved value. The check now reads
-`measurement_id(quote)`, derived from MRTD and RTMR0-2, which the CPU fills in
+`measurement_id(quote)`, derived from MRTD, RTMR1 and RTMR2 (RTMR0 was dropped later; see above), which the CPU fills in
 and the Intel signature covers. RTMR3 is excluded because it is
 application-extendable, so including it would make an image identity change
 with runtime data and no image could stay on an approved list.

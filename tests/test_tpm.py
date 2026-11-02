@@ -236,6 +236,51 @@ def test_an_envelope_whose_tpm_half_fails_is_rejected_whole():
         unwrap_attestation(bytes(blob))
 
 
+@pytest.mark.parametrize("name", ["A", "B"])
+def test_the_tpm_half_is_bound_to_its_own_tdx_quote(name):
+    """TPMS_ATTEST.extra_data == sha256(tdx_quote) on every real dstack blob;
+    this is the only thing tying the Intel signature to the Google one."""
+    import hashlib
+
+    from fugal_subnet.tee.tpm import parse_attest
+
+    p = FIXTURES / f"attestation_{name}.bin"
+    if not p.exists():
+        pytest.skip(f"fixture {p.name} not present")
+    d = decode_dstack_attestation(p.read_bytes())
+    assert parse_attest(d["tpm"]["message"])["extra_data"] == hashlib.sha256(d["quote"]).hexdigest()
+
+
+def test_a_tpm_quote_from_another_machine_cannot_be_stapled_onto_a_tdx_quote(monkeypatch):
+    """Both halves genuine, both verify alone, and the envelope is still refused
+    because B's TPM quote attests sha256 of B's TDX quote, not A's. Before
+    2026-11-02 this passed unwrap_attestation (found by splicing the fixtures),
+    so the TPM check proved only that some GCP vTPM exists somewhere."""
+    from fugal_subnet.tee import verify as verify_mod
+
+    pa, pb = FIXTURES / "attestation_A.bin", FIXTURES / "attestation_B.bin"
+    if not (pa.exists() and pb.exists()):
+        pytest.skip("fixtures not present")
+    a = decode_dstack_attestation(pa.read_bytes())
+    b = decode_dstack_attestation(pb.read_bytes())
+    spliced = dict(a)
+    spliced["tpm"] = b["tpm"]          # A's TDX quote and log, B's (genuine) TPM half
+
+    # Splice at the decode boundary: re-encoding SCALE is not what is under
+    # test, the binding check is. The envelope bytes only need to not look
+    # like a bare quote so unwrap takes the dstack path.
+    monkeypatch.setattr(verify_mod, "decode_dstack_attestation", lambda blob: spliced, raising=False)
+    import fugal_subnet.scale as scale_mod
+    monkeypatch.setattr(scale_mod, "decode_dstack_attestation", lambda blob: spliced)
+    with pytest.raises(ValueError, match="not bound to this TDX quote"):
+        verify_mod.unwrap_attestation(pa.read_bytes())
+
+    # And the unspliced originals still pass through the same code.
+    monkeypatch.setattr(scale_mod, "decode_dstack_attestation", lambda blob: a)
+    quote, events = verify_mod.unwrap_attestation(pa.read_bytes())
+    assert quote == a["quote"] and events == a["events"]
+
+
 def test_bytes_that_are_neither_shape_are_refused():
     from fugal_subnet.tee.verify import unwrap_attestation
 

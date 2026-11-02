@@ -21,6 +21,13 @@ Ordering is load-bearing:
 6. **stake** validators, so they hold a permit before the first epoch.
 
 Spending is gated: the run prints every cost and stops unless --yes is given.
+
+Two parties, two halves. Steps 1-4 need the subnet OWNER coldkey; 5-6 need only
+the wallets being registered. When the slot is held by someone else (a launch
+partner, a multisig that is not on this machine), run without --owner-wallet:
+the script verifies the subnet is active and tempo-aligned, refuses to go on if
+it is not (nothing downstream can work until the owner runs start_call), and
+then registers and stakes. --status needs no wallet at all.
 """
 from __future__ import annotations
 
@@ -293,7 +300,10 @@ def main() -> int:
     p.add_argument("--netuid", type=int, default=None,
                    help="Existing subnet to provision. Omit with --create to make one.")
     p.add_argument("--create", action="store_true", help="Register a new subnet (costs the lock)")
-    p.add_argument("--owner-wallet", required=True)
+    p.add_argument("--owner-wallet", default=None,
+                   help="Subnet owner coldkey. Omit when someone else holds the slot: "
+                        "the owner steps are skipped and the subnet must already be "
+                        "active. Not needed for --status.")
     p.add_argument("--owner-hotkey", default="default")
     p.add_argument("--validators", default="",
                    help="Comma-separated wallet/hotkey pairs, e.g. w1/val1,w1/val2")
@@ -321,41 +331,72 @@ def main() -> int:
         return out
 
     subtensor = bt.Subtensor(network=args.network)
-    owner = bt.Wallet(name=args.owner_wallet, hotkey=args.owner_hotkey)
     logger.info("Network %s at block %d", args.network, subtensor.get_current_block())
-    logger.info("Owner coldkey %s balance %s",
-                owner.coldkeypub.ss58_address,
-                subtensor.get_balance(owner.coldkeypub.ss58_address))
 
     netuid = args.netuid
     if args.status:
+        # Report only. No wallet is loaded: a validator host holds a hotkey
+        # and never the owner coldkey, and it must still be able to ask the
+        # chain whether the subnet is active and aligned (MAINNET_LAUNCH §1).
         if netuid is None:
             logger.error("--status needs --netuid")
             return 2
         report(subtensor, netuid, args.epoch_interval)
         return 0
 
+    owner = None
+    if args.owner_wallet:
+        owner = bt.Wallet(name=args.owner_wallet, hotkey=args.owner_hotkey)
+        logger.info("Owner coldkey %s balance %s",
+                    owner.coldkeypub.ss58_address,
+                    subtensor.get_balance(owner.coldkeypub.ss58_address))
+
     if netuid is None:
         if not args.create:
             logger.error("Give --netuid, or --create to register a new subnet")
+            return 2
+        if owner is None:
+            logger.error("--create needs --owner-wallet: the lock is paid by the owner")
             return 2
         netuid = step_create(subtensor, owner, args)
         if netuid is None:
             return 1
 
-    owner_ck = subtensor.subnet(netuid).owner_coldkey
-    if owner_ck != owner.coldkeypub.ss58_address:
-        logger.error("Wallet %s is not the owner of subnet %d (owner is %s). "
-                     "start_call and hyperparameters would be refused.",
-                     args.owner_wallet, netuid, owner_ck)
-        return 1
-
-    step_identity(subtensor, owner, netuid, args)
-    if not step_activate(subtensor, owner, netuid):
-        logger.error("Subnet %d could not be activated — stopping. Nothing "
-                     "downstream can work: no permits, no weights.", netuid)
-        return 1
-    step_hyperparams(subtensor, owner, netuid, args.epoch_interval)
+    if owner is not None:
+        owner_ck = subtensor.subnet(netuid).owner_coldkey
+        if owner_ck != owner.coldkeypub.ss58_address:
+            logger.error("Wallet %s is not the owner of subnet %d (owner is %s). "
+                         "start_call and hyperparameters would be refused.",
+                         args.owner_wallet, netuid, owner_ck)
+            return 1
+        step_identity(subtensor, owner, netuid, args)
+        if not step_activate(subtensor, owner, netuid):
+            logger.error("Subnet %d could not be activated — stopping. Nothing "
+                         "downstream can work: no permits, no weights.", netuid)
+            return 1
+        step_hyperparams(subtensor, owner, netuid, args.epoch_interval)
+    else:
+        # The owner steps belong to whoever holds the slot. What this side can
+        # do is refuse to register into a subnet that cannot pay anyone yet:
+        # without start_call staking fails, no permit is ever granted and
+        # every set_weights is refused, while the neurons log success.
+        if not subtensor.is_subnet_active(netuid):
+            logger.error("Subnet %d is INACTIVE and no --owner-wallet was given. "
+                         "The owner must run start_call before anything here "
+                         "can work (no permits, no weights). Stopping.", netuid)
+            return 1
+        hp = subtensor.get_subnet_hyperparameters(netuid=netuid)
+        bpe = max(1, int(args.epoch_interval) // BLOCK_TIME_S)
+        tempo = int(getattr(hp, "tempo", 0) or 0)
+        if tempo != bpe:
+            logger.error("MISALIGNED: chain tempo %d blocks vs Fugal epoch %d blocks. "
+                         "Only the owner can change tempo; set "
+                         "FUGAL_EPOCH_INTERVAL=%d on every neuron instead "
+                         "(MAINNET_LAUNCH §2). Stopping.",
+                         tempo, bpe, tempo * BLOCK_TIME_S)
+            return 1
+        logger.info("Subnet %d is active and tempo-aligned (%d blocks); owner steps "
+                    "skipped (no --owner-wallet)", netuid, tempo)
 
     validators, miners = parse(args.validators), parse(args.miners)
     if validators or miners:

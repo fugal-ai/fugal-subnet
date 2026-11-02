@@ -63,7 +63,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 ### Validator pipeline (verification, no model calls)
 1. `benchmarks/loader.py` + individual loaders → load question pool (pinned HF revisions)
 2. `benchmarks/slicer.py` → HMAC-seeded stratified question selection
-3. `protocol.py` → FugalProofSynapse wire format (epoch_id + nonce → proof_bundle_url + proof_hash + weights_hash)
+3. `protocol.py` → FugalProofSynapse wire format (epoch_id + nonce → proof_json + head_npz_b64 + proof_hash + weights_hash + event_log_json, all inline and size-capped)
 4. `commitments.py` → read/write on-chain head commitments (Commitments pallet)
 5. `tee/verify.py` → verify TEE proofs (DCAP attestation, measurement match, nonce, questions hash, cost consistency)
 6. `graders.py` → 7 deterministic mechanical checkers (consensus-critical, hash-versioned)
@@ -83,7 +83,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 ### Support
 - `config.py` → all env-overridable constants (single source), including TEE config. Read the comments: several constants record *why* a value is what it is, and some (the frame prior, the frontier warm-up) are measured rather than chosen.
 - `data/models.json` → the pinned price table. Consensus-critical and hash-pinned like `graders.py`: a price change re-scores every miner.
-- `backbone.py` → Qwen3-0.6B hidden state extraction (float32 on CPU, float16 on CUDA)
+- `backbone.py` → Qwen3-0.6B hidden state extraction (CPU float32 only, the pinned 2048-token profile; CUDA and float16 are refused)
 - `api.py` → call models via OpenRouter (used by miner inside TEE, not by validator)
 - `consensus.py` → offline multi-validator audit tool (not used in the live loop)
 - `epoch_logger.py` → structured JSONL logging
@@ -141,13 +141,14 @@ over the attested provisioning channel (`scripts/provision_td.py`).
 - **Docker logging**: use `print(..., flush=True)` — bittensor's loguru swallows
   Python's logging module output in Docker containers
 - **Benchmark downloads**: `datasets` library required; benchmarks download on
-  first run. GPQA is a gated HF dataset requiring `huggingface-cli login` +
-  accepted terms, or add `gpqa` to `FUGAL_SKIP_BENCHMARKS`
+  first run, or once via `scripts/export_pool.py`. GPQA (gated) and LiveCodeBench
+  are skipped by the pinned manifest. **Never set `FUGAL_SKIP_BENCHMARKS` on a
+  neuron**: it replaces the manifest's skip list and the pool diverges silently
 - **Local chain**: `scripts/dress_rehearsal.py` (the shipped neurons as real
-  processes) or `docker compose up --build` (one in-container epoch). Both set
-  `FUGAL_POOL_UNPINNED=1` for their fixture pools; the compose also sets
-  `FUGAL_REQUIRE_COMMITMENT=0` because in-container miners run without chain
-  commitments
+  processes) or `docker compose up --build` (one in-container epoch). The
+  rehearsal sets `FUGAL_POOL_UNPINNED=1` for its fixture pool; the compose demo
+  builds a synthetic pool in-process and sets `FUGAL_REQUIRE_COMMITMENT=0`
+  because in-container miners run without chain commitments
 - **Weight setting on local chain**: the chain's 100-block rate limit means
   consecutive `--once` runs may get "weights already set" — normal at local
-  testnet cadence, not an issue at hourly mainnet epochs
+  testnet cadence, not an issue at 72-minute mainnet epochs

@@ -11,7 +11,15 @@
 #
 # Pin the image BY DIGEST. A tag that moves leaves this hash stable while the
 # code under it changes, which is the exact defect the measured image exists to
-# prevent. Replace the digest below with the one Cloud Build printed.
+# prevent. The digest comes from the signed `image-v<date>` release
+# (.github/workflows/image.yml publishes to ghcr.io by digest), never from a
+# local or private build: an image nobody can pull is an entry nobody can audit.
+#
+# STATUS 2026-11-02: the digest below is the 2026-09-07 TESTNET image, built
+# before the success-contract transition, in a private registry, on netuid
+# 552. It is kept so the recorded testnet entries can be recomputed. It is NOT
+# valid for mainnet; the first image-v* release replaces this block (image,
+# FUGAL_NETWORK, FUGAL_NETUID and --network/--netuid) together.
 services:
   miner:
     image: us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:e4c2deff9c9ee2b38b3495690c7e5c5b52acb740a96e1b16664a235725736ca4

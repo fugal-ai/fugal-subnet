@@ -1416,6 +1416,23 @@ miner's own.)
 Not built. Recorded because the throughput work will otherwise fix the symptom
 that was measured rather than the property that is wrong.
 
+### I4/I6 — no fetch before the free checks pass (fixed 2026-11-02)
+
+The section below says the fetch target is derived from the miner's own
+bytes and the fetch is charged to a budget every miner shares. Until
+2026-11-02 `verify_proof` ran that fetch FIRST, before the report_data,
+nonce, slice, hotkey and advertised-hash comparisons that cost nothing, so a
+proof copied from a public source (this repository's own fixtures hold two
+real quotes), or last epoch's proof replayed, bought a fetch from every
+validator before being refused by ten lines of comparison. Every local
+binding now precedes DCAP and the measurement match; a fetch only ever
+follows a fresh quote over a fresh content hash that names this miner, this
+epoch and this slice. `tests/test_verify_order.py` counts the fetches; four
+of its six cases fail against the previous order (the hotkey check was
+already first, and a sound proof fetched once either way). The residual (a
+quote that parses but carries an unknown FMSPC) is unchanged and still needs
+collateral-in-proof.
+
 ### I4 — "unverifiable" is a privilege, and the miner picks the fetch target
 
 If a proof can be classified *unverifiable* rather than *invalid*, that outcome

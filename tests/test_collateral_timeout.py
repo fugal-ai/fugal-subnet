@@ -177,18 +177,24 @@ def test_a_timeout_is_an_outage_and_never_an_accusation(stalled_pccs, monkeypatc
 
     Asserted end to end through verify_proof, because that is where the
     accusation would actually have been recorded."""
-    from tests.test_unverifiable import _proof
+    from tests.test_unverifiable import GOLD, _proof
 
     p = _proof()
     # The real envelope, so the parse-first gate is passed rather than stubbed.
     p.attestation_quote = (FIXTURES / "attestation_A.bin").read_bytes()
+    # A real quote cannot carry THIS proof's content hash, and since the
+    # verification reorder (2026-11-02) the report_data binding runs before
+    # the fetch. Satisfy that one binding so the fetch is reached; everything
+    # this test asserts is about what the fetch's timeout is called.
+    monkeypatch.setattr(verify_mod, "extract_report_data",
+                        lambda _q: bytes.fromhex(p.content_hash()).ljust(64, b"\x00"))
     monkeypatch.setattr(
         verify_mod, "verify_dcap",
         lambda q, **kw: verify_dcap(q, pccs_url="https://pccs.invalid", **kw))
     r = verify_mod.verify_proof(
         p, approved_measurements=set(), expected_questions_hash=p.questions_hash,
-        expected_nonce=p.nonce, gold_answers={},
-        expected_hotkey=p.hotkey, mock=False,
+        expected_nonce=p.nonce, gold_answers=GOLD,
+        expected_hotkey=p.hotkey, head_bytes=p.head_bytes_for_test, mock=False,
     )
     assert r.valid is False          # nothing was checked, so nothing is accepted
     assert r.unverifiable is True    # but it is an outage, not fraud

@@ -107,9 +107,10 @@ no implicit random fallback. Synthetic training is explicitly test-only.
 Heads require the versioned success contract, not just W/b/models. See
 [the contract and transition guide](SUCCESS_CONTRACT.md) for metadata, archive
 limits, export, and the required fresh evidence namespace. The checked-in token
-manifest is a review candidate derived from historical recorded calls. Live
-startup and deployable export reject it until it is reviewed; mocked rehearsals
-can exercise the candidate without publishing or spending on inference.
+manifest was reviewed on 2026-11-02 from 664 fresh metered calls (the record is
+in `SUCCESS_CONTRACT.md` and inside the file); your head's token statistics must
+match it exactly, which `train_head.py --manifest data/benchmark_tokens_v1.json`
+does for you.
 
 ## Step 4: Run the Miner
 
@@ -487,10 +488,16 @@ box holding no secrets and wrong for yours.
 
 ## Updating Your Head
 
-Retrain on newer data and push the new `.npz` to your TD with
-`scripts/provision_td.py --head <new.npz>` (the same encrypted, attested push
-as the first provisioning); the miner re-commits the new hash on-chain. On a
-rehearsal miner, restart it with the new `--head-path`.
+Retrain on newer data, then re-provision: `dstack-cloud stop` and `start`
+the instance (not `deploy --delete`, which discards the data disk and the
+embedding cache), wait for the miner to log that it is waiting to be
+provisioned, and push again with `scripts/provision_td.py --head <new.npz>`
+(the same encrypted, attested push as the first time). The miner commits the
+new hash on-chain when it serves. The receiver takes exactly one push per
+process and answers `409 already provisioned` to any later one, so a push to a
+running miner changes nothing: that is deliberate, it is what keeps a stranger
+who reaches port 8092 from replacing your session key and locking you out of
+your own logs. On a rehearsal miner, restart it with the new `--head-path`.
 
 **Important:** Recommitting a new head resets your evidence accumulator. Your
 accumulated score drops to zero and must rebuild over epochs. Retrain in big

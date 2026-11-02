@@ -1,7 +1,7 @@
 {
   "mode": "mocked local-chain mechanism rehearsal; no paid inference or real chain writes",
-  "routing_protocol": "a4eff5243a93c7de6420e23ed2c176a38407b536b74acea73172bcde3d2fc6a8",
-  "head_sha256": "36a7e15e65dd7c2d05c2e1fd0334fd048094fca69823d9c85fa10b55ee6fad97",
+  "routing_protocol": "49390166e93fbf5c4bdb7f29e813a8015df4a2affaae64e421eed1d3ce5f0a1a",
+  "head_sha256": "e1a82009e315cb1626f7eca2a83002f42c842b439b86610592f4b5e5d28d60bd",
   "selected_epoch": 5,
   "history": [
     {

@@ -318,16 +318,19 @@ def test_real_receiver_attests_over_nonce_and_key_then_accepts_one_sealed_push(m
         assert _post("http://127.0.0.1:18093/provision", env) == {"provisioned": True}
         assert store.ready and store.session_key == key
 
-        # Replaying the same envelope is refused: the nonce is spent.
+        # Replaying the same envelope is refused. Since 2026-11-02 the receiver
+        # is one-shot, so once provisioned it answers 409 before looking at
+        # the nonce at all; the spent-nonce rule still stands underneath it
+        # (the plaintext attempt above consumed its nonce pre-provisioning).
         with pytest.raises(urllib.error.HTTPError) as e:
             _post("http://127.0.0.1:18093/provision", env)
-        assert e.value.code == 400 and "already used" in e.value.read().decode()
+        assert e.value.code == 409 and "already provisioned" in e.value.read().decode()
 
-        # A never-attested nonce is refused before any decryption is attempted.
+        # A never-attested nonce is refused too, for the same reason.
         env2, _ = seal(PAYLOAD, bytes.fromhex(ans["pubkey"]), provision.new_nonce())
         with pytest.raises(urllib.error.HTTPError) as e:
             _post("http://127.0.0.1:18093/provision", env2)
-        assert e.value.code == 400 and "not attested" in e.value.read().decode()
+        assert e.value.code == 409
     finally:
         server.shutdown()
 
@@ -467,3 +470,72 @@ def test_a_pushed_wallet_lands_in_tmpfs_with_private_modes(monkeypatch, tmp_path
         assert stat.S_IMODE(os.stat(p).st_mode) == 0o600, f"{p} is not 0600"
     for d in (root, os.path.join(root, "fugal")):
         assert stat.S_IMODE(os.stat(d).st_mode) == 0o700, f"{d} is not 0700"
+
+
+def test_the_receiver_takes_one_push_and_then_refuses_both_paths(monkeypatch):
+    """Security read 2026-11-02, finding 7. A second push used to replace the
+    session key — whoever reached the port after provisioning could lock the
+    real operator out of the logs — and the attest endpoint stayed open as a
+    quote oracle for the life of the miner."""
+    store, server, _ = _real_receiver(monkeypatch, 18095)
+    try:
+        nonce = provision.new_nonce()
+        ans = _post("http://127.0.0.1:18095/provision/attest", {"nonce": nonce})
+        env, key = seal(PAYLOAD, bytes.fromhex(ans["pubkey"]), nonce)
+        assert _post("http://127.0.0.1:18095/provision", env) == {"provisioned": True}
+        assert store.session_key == key
+
+        # A fresh, correctly sealed second push is refused and changes nothing.
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post("http://127.0.0.1:18095/provision/attest", {"nonce": provision.new_nonce()})
+        assert e.value.code == 409
+        env2, key2 = seal(PAYLOAD, bytes.fromhex(ans["pubkey"]), provision.new_nonce())
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post("http://127.0.0.1:18095/provision", env2)
+        assert e.value.code == 409 and "already provisioned" in e.value.read().decode()
+        assert store.session_key == key and store.session_key != key2
+
+        # The operator's log path still works under the original key.
+        req = urllib.request.Request(
+            "http://127.0.0.1:18095/provision/logs?since=0",
+            headers={"Authorization": f"Bearer {provision.log_token(key)}"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert r.status == 200
+
+        # And the store itself refuses a second accept, whoever calls it.
+        with pytest.raises(ProvisionError, match="already provisioned"):
+            store.accept(dict(PAYLOAD), b"z" * 32)
+    finally:
+        server.shutdown()
+
+
+def test_an_oversized_body_is_refused_before_it_is_read(monkeypatch):
+    import socket
+
+    _store, server, _ = _real_receiver(monkeypatch, 18096)
+    try:
+        s = socket.create_connection(("127.0.0.1", 18096), timeout=5)
+        s.sendall(b"POST /provision HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                  b"Content-Length: 999999999\r\n\r\n")       # header only, no body
+        head = s.recv(4096).decode(errors="replace")
+        s.close()
+        assert head.startswith("HTTP/1.0 413") or head.startswith("HTTP/1.1 413"), head[:60]
+    finally:
+        server.shutdown()
+
+
+def test_a_half_open_connection_does_not_stall_other_clients(monkeypatch):
+    """The receiver was single-threaded with no socket timeout: one client that
+    connected and sent nothing held provisioning hostage."""
+    import socket
+
+    monkeypatch.setattr(provision, "_HANDLER_TIMEOUT_S", 2)
+    store, server, _ = _real_receiver(monkeypatch, 18097)
+    try:
+        idle = socket.create_connection(("127.0.0.1", 18097), timeout=5)   # says nothing
+        nonce = provision.new_nonce()
+        ans = _post("http://127.0.0.1:18097/provision/attest", {"nonce": nonce})   # must not block
+        assert "pubkey" in ans
+        idle.close()
+    finally:
+        server.shutdown()

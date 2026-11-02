@@ -178,6 +178,14 @@ _AEAD_NONCE_BYTES = 12
 # How many attested-but-unused nonces the TD remembers. Bounded so a flood of
 # /attest requests cannot grow memory; the operator needs exactly one.
 _MAX_PENDING_NONCES = 64
+# A sealed push is a ~1 MB head base64-encoded plus a keyfile and envelope
+# overhead; nothing legitimate approaches this, and a body that is not read
+# cannot be allocated (I2 on the miner side).
+_MAX_BODY_BYTES = 3 * 1024 * 1024
+# Per-connection socket timeout. The receiver was a single-threaded
+# HTTPServer with no handler timeout, so one half-open connection stalled
+# provisioning for good; it is threaded now and each connection is bounded.
+_HANDLER_TIMEOUT_S = 30
 # The in-memory log ring the operator may pull. Lines, not bytes, so a burst of
 # long tracebacks cannot silently evict the line that explains them.
 LOG_RING_LINES = 5000
@@ -337,6 +345,8 @@ class ProvisionStore:
     """
 
     def __init__(self) -> None:
+        import threading
+        self._lock = threading.Lock()
         self._values: dict[str, str] = {}
         # The session key the successful push was sealed with. Held so the
         # operator who provisioned this TD — and only them — can pull its logs.
@@ -347,8 +357,21 @@ class ProvisionStore:
         return bool(self._values)
 
     def accept(self, payload: dict, session_key: bytes = b"") -> None:
-        self._values = validate_payload(payload)
-        self.session_key = session_key
+        # ONE push per process. The receiver used to accept any number, and a
+        # second one replaced the session key: anyone who reached the port
+        # after provisioning could lock the real operator out of the TD's logs
+        # (security read 2026-11-02, finding 7). The miner reads the store
+        # once at startup anyway, so a later push changed nothing it ran on;
+        # re-provisioning is a stop/start of the instance, which recreates the
+        # store empty. Validate first so a bad payload is still named.
+        values = validate_payload(payload)
+        with self._lock:
+            if self._values:
+                raise ProvisionError(
+                    "already provisioned; stop/start the instance to provision again"
+                )
+            self._values = values
+            self.session_key = session_key
         # Field NAMES only. The values are the secrets this whole design exists
         # to protect, and a log line is the easiest place to lose one.
         logger.info("provisioned with fields: %s", sorted(self._values))
@@ -384,7 +407,7 @@ def serve(store: ProvisionStore, port: int = PROVISION_PORT, host: str = "0.0.0.
     """
     import json
     import threading
-    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import parse_qs, urlparse
 
     from fugal_subnet.tee import dstack_client
@@ -399,6 +422,8 @@ def serve(store: ProvisionStore, port: int = PROVISION_PORT, host: str = "0.0.0.
     logging.getLogger().addHandler(ring)
 
     class Handler(BaseHTTPRequestHandler):
+        timeout = _HANDLER_TIMEOUT_S   # socket timeout per connection
+
         def _send(self, code: int, body: dict) -> None:
             raw = json.dumps(body).encode()
             self.send_response(code)
@@ -429,7 +454,20 @@ def serve(store: ProvisionStore, port: int = PROVISION_PORT, host: str = "0.0.0.
             self._send(404, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
-            length = int(self.headers.get("Content-Length", 0))
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                return self._send(400, {"error": "bad Content-Length"})
+            if length < 0 or length > _MAX_BODY_BYTES:
+                # Refused before a byte of it is read or allocated.
+                self.close_connection = True
+                return self._send(413, {"error": f"body exceeds {_MAX_BODY_BYTES} bytes"})
+            if self.path in (_ATTEST_PATH, _PUSH_PATH) and store.ready:
+                # After the one push the receiver has nothing left to do on
+                # these paths. Attest in particular would otherwise stay open
+                # as an oracle for approved-image quotes over chosen 32-byte
+                # nonces for the life of the miner.
+                return self._send(409, {"error": "already provisioned"})
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
             except ValueError as e:
@@ -476,7 +514,8 @@ def serve(store: ProvisionStore, port: int = PROVISION_PORT, host: str = "0.0.0.
             # miner's own output. Route it through our logger instead.
             logger.debug("provision http: " + fmt, *args)
 
-    server = HTTPServer((host, port), Handler)
+    server = ThreadingHTTPServer((host, port), Handler)
+    server.daemon_threads = True
     logger.info("provisioning receiver listening on %s:%d", host, port)
     return server
 

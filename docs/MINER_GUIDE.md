@@ -488,10 +488,16 @@ box holding no secrets and wrong for yours.
 
 ## Updating Your Head
 
-Retrain on newer data and push the new `.npz` to your TD with
-`scripts/provision_td.py --head <new.npz>` (the same encrypted, attested push
-as the first provisioning); the miner re-commits the new hash on-chain. On a
-rehearsal miner, restart it with the new `--head-path`.
+Retrain on newer data, then re-provision: `dstack-cloud stop` and `start`
+the instance (not `deploy --delete`, which discards the data disk and the
+embedding cache), wait for the miner to log that it is waiting to be
+provisioned, and push again with `scripts/provision_td.py --head <new.npz>`
+(the same encrypted, attested push as the first time). The miner commits the
+new hash on-chain when it serves. The receiver takes exactly one push per
+process and answers `409 already provisioned` to any later one, so a push to a
+running miner changes nothing: that is deliberate, it is what keeps a stranger
+who reaches port 8092 from replacing your session key and locking you out of
+your own logs. On a rehearsal miner, restart it with the new `--head-path`.
 
 **Important:** Recommitting a new head resets your evidence accumulator. Your
 accumulated score drops to zero and must rebuild over epochs. Retrain in big

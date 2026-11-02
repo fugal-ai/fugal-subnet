@@ -442,6 +442,68 @@ produce one head and are deduped as one (`docs/HEAD_EFFICACY.md`,
 experiment 3). That is the intended incentive — independence is data — but
 it should be said in MINER_GUIDE, and `docs/MINER_ECONOMICS.md` needs
 re-deriving for the new ramp.
+### New since the 2026-11-02 reviews
+
+Three read-only reviews on 2026-11-02 (miner-facing surface, validator epoch
+loop, docs against code) and what followed. Fixed the same day, each with a
+test that fails against the previous code: the epoch applied twice on an
+in-process retry and the commitments read swallowed into an empty map (#94);
+the TPM half of a dstack attestation not bound to its TDX quote (#95); the
+collateral fetch before the free local bindings, and an AK-chain exception
+escaping as a crash (#101); the provisioning receiver taking unlimited pushes
+with no body cap or connection timeout (#102); the chain's commit-reveal
+version and `weights_version` never checked, a failed `set_weights` never
+retried, and a state file with no fsync or backup (#103); `export_pool.py`
+unable to run (#91); `provision_subnet.py` needing the owner coldkey for a
+read-only status (#92). The token manifest was rebuilt from 664 fresh
+observations and promoted (#99); `scripts/record_token_observations.py` is
+how to record more.
+
+**Still open, in the reviewers' priority order.** None blocks launch; each is
+a decision or a bounded change, and each is written here so it is not
+rediscovered:
+
+- **Miner axon gate** (`neurons/miner.py` `caller_allowed`): a validator
+  permit alone admits a caller, and subtensor grants a permit to any nonzero
+  stake while fewer than `max_allowed_validators` are staked, so on a young
+  subnet a dust-staked hotkey can download every head. Also the threshold is
+  compared to `metagraph.S`, which is alpha-denominated under dTAO. One-line
+  fix plus a units decision (plan D2).
+- **Compose-hash last-wins** (`attestation.replay_event_log`, `verify.py`):
+  the claim is read from the LAST event of that name over the whole replayed
+  chain with no `boot-mr-done` boundary, which dstack's own guidance tells
+  verifiers not to do. Not exploitable on the pinned image (the guest-agent
+  `EmitEvent` is absent at that tag); it goes live on any future base.
+  Fix before approving a new base: take the first occurrence or stop claims
+  at `boot-mr-done`, with a `run_tee_attacks` case.
+- **TD attributes** (`td_attributes` DEBUG bit, `xfam`, `mrconfigid`) are
+  parsed and never policed; masked while the only approved base is Google's
+  firmware plus the TPM half. Pin expected attributes per approved base when
+  a second provider is considered.
+- **UID recycling**: the weight cap (`rewards.cap_weight_change`) and miner
+  records are keyed by UID; a recycled UID inherits the previous occupant's
+  cap baseline, and its record until the newcomer submits a proof or
+  `epochs_missed` reaches the liveness bound. Hotkey-keyed `prev` and
+  dropping records on hotkey change would close it; consensus-adjacent.
+- **Epochs a validator did not run** are never accounted for: after a
+  k-epoch outage its evidence and frame are k epochs "younger" than its
+  peers' until decayed. Applying `apply_miss` and frame decay for the gap on
+  resume would align them; consensus-adjacent.
+- **Reveal hold**: `delay_epochs_for` holds one Fugal epoch; chain epochs
+  are anchored at `LastEpochBlock`, not block 0, so a reveal can precede the
+  chain's by a few blocks of jitter. `period + 1` closes it.
+- **`event_log_json`** is a dead synapse field (the embedded SCALE log is
+  what is read); remove it or assert every synapse field is consumed.
+- **The approved list is env-only**, not hash-pinned like every other
+  consensus input; pin it once a shipped list exists.
+- **Dendrite response buffering**: bittensor's dendrite reads and
+  gzip-expands the whole axon response before any protocol cap applies
+  (204 KB on the wire → 419 MB client peak, reproduced). SDK-level; mitigate
+  with memory limits per validator and revisit when the SDK offers a
+  streaming cap.
+- **Chain-error loop** still logs a full traceback every 60 s during an
+  outage; harmless, noisy.
+
 ### Response text is hashed, not kept — and why that is not a distillation corpus (2026-10-09)
 
 **Decided, by construction.** Inside the TEE harness every completion is graded,

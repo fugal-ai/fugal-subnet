@@ -623,6 +623,26 @@ reason a missing `dcap-qvl` does: it is the operator's misconfiguration, and
 downgrading it to "this proof is bad" lets a --live validator reject the entire
 field while appearing healthy.
 
+### I8 — the TPM half is bound to the TDX half (fixed 2026-11-02)
+
+The section above says a GCP attestation has two halves and a validator must
+check both. It checked both *in isolation*: the TPM quote's signature and its
+chain to Google's root, and the TDX quote's DCAP chain — and nothing tied the
+two together. dstack's agent writes `sha256(tdx_quote)` into
+`TPMS_ATTEST.extra_data`, measured equal on both real fixtures, and that field
+was parsed and ignored. So fixture A's TDX quote with fixture B's TPM quote
+passed `unwrap_attestation`: two genuine signatures from two different
+machines, accepted as one attestation. The second trust root proved only that
+some Confidential VM's vTPM existed somewhere.
+
+`unwrap_attestation` now requires `extra_data == sha256(tdx_quote)` and
+rejects otherwise. Consensus-affecting in the direction every verification
+rule is: a validator without it accepts what one with it rejects, so it ships
+to all validators together, and no honest dstack blob changes outcome.
+`tests/test_tpm.py::test_the_tpm_half_is_bound_to_its_own_tdx_quote` holds the
+measured fact; `::test_a_tpm_quote_from_another_machine_cannot_be_stapled_onto_a_tdx_quote`
+holds the refusal and was checked to fail against the previous code.
+
 ### I8 — a proof names the miner it was produced for
 
 `content_hash` covers the epoch, the slice, the head and the runtime — and,

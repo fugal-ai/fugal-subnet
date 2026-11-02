@@ -4,6 +4,22 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — CONSENSUS: the token manifest is reviewed, from fresh observations
+
+The success contract's token manifest (`data/benchmark_tokens_v1.json`) was a
+`candidate` built from 945 pre-transition calls with three samples for most
+models, and a live validator or miner refused to start until it was reviewed.
+It is now rebuilt from 664 metered calls recorded on 2026-11-02 through the
+benchmark's own proxy and call path on a stratified sample of the pinned pool
+(40 per model; 24 for mistral-large, upstream-rate-limited), reviewed, and
+promoted to `reviewed` with the record inside the file. **This changes the
+protocol identity**: every head, state file, reveal and proof produced under
+the candidate identity is rejected, the rehearsal fixture
+(`tests/fixtures/success_bundle`) is regenerated, and the measured miner image
+and approved entry are rebuilt from this commit. Billing cross-check on the
+sample: table-priced $2.158 vs provider-billed $2.159. `docs/SUCCESS_CONTRACT.md`
+has the review; `scripts/record_token_observations.py` is how to record more.
+
 ### Changed — CONSENSUS: the success contract (2026-09-21, PR #32)
 
 Recorded here on 2026-11-02; it shipped without a changelog entry, which

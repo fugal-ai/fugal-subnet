@@ -142,7 +142,7 @@ coordinated miner upgrade.
 
 **That premise is wrong, and it was tested rather than reasoned about.** A line
 was appended to `harness.py` on a live TD and the measurement was identical
-before and after. `measurement_id` covers MRTD and RTMR0-2 — firmware,
+before and after. `measurement_id` covers MRTD, RTMR1 and RTMR2 (RTMR0 was dropped afterwards) — firmware,
 bootloader, kernel, initrd — and the repo is git-cloned onto an unmeasured
 filesystem at runtime. Changing the harness changes nothing the attestation sees.
 

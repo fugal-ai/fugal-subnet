@@ -88,7 +88,7 @@ Completed epoch artifacts are immutable. A new grader version applies no earlier
 
 - Do not add `from __future__ import annotations` to `neurons/miner.py` or `fugal_subnet/protocol.py`; Bittensor v10 inspects their annotations at runtime.
 - Every `np.load()` call must use `allow_pickle=False`.
-- `FugalSynapse.deserialize()` must return `self`.
+- `FugalProofSynapse.deserialize()` must return `self`.
 - Never print or log any part of an OpenRouter API key.
 - Never add real paid API calls to the default test path.
 

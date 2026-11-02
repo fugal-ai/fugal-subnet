@@ -28,6 +28,10 @@ validator:
 - Python 3.10-3.12
 - CPU sufficient (no model inference required)
 - TAO for subnet registration
+- **A validator permit, or at least `FUGAL_MIN_VALIDATOR_STAKE` TAO (default
+  1000) staked to your hotkey.** In `--live` a miner's axon answers only
+  hotkeys that have one or the other; below that you receive no proofs and
+  see "No valid proofs received" every epoch with no error on either side
 - Reliable server with good uptime
 
 **No OpenRouter API key needed** — validators verify proofs, not call models.
@@ -45,7 +49,8 @@ source .venv/bin/activate
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
-pip install -e .
+# The DCAP verifier lives in the `tee` extra; --live refuses to start without it.
+uv sync --locked --extra tee          # or: pip install -e ".[tee]"
 ```
 
 ## Step 1: Create a Wallet
@@ -76,62 +81,69 @@ python neurons/validator.py \
   --live
 ```
 
-### Test run (mock mode)
+Before that command can start on mainnet, four things must be true, and the
+validator refuses to start until each is (deliberately — the alternative was a
+validator that scored the whole field zero while looking healthy):
 
-To verify everything works before going live:
+1. `FUGAL_TEE_MEASUREMENTS` holds at least one `<base>:<compose_hash>` entry
+   from a signed release (`docs/APPROVED_ENTRY_ROTATION.md`).
+2. `FUGAL_EPOCH_INTERVAL` equals the chain tempo × 12 s (**4320** for the
+   default tempo of 360). Misaligned, some epochs' weights are overwritten
+   before Yuma reads them, silently (`docs/MAINNET_LAUNCH.md` §2).
+3. `data/reference_frame.json`, the hash-pinned bootstrap reference frame, is
+   present in the checkout (or `FUGAL_FRAME_BOOTSTRAP` names a directory of
+   published reveals to rebuild from).
+4. The token manifest shipped in the checkout is `reviewed`, not `candidate`
+   (`docs/SUCCESS_CONTRACT.md`).
+
+### Test run (mock mode, test chain only)
+
+`--mock` accepts unattested proofs and is **refused on finney**. To exercise
+the loop against a test subnet before going live:
 
 ```bash
 python neurons/validator.py \
   --netuid <NETUID> \
-  --network finney \
+  --network test \
   --coldkey fugal_validator \
   --hotkey default \
   --mock \
   --once
 ```
 
-`--mock` accepts unattested proofs (no real TDX
-verification). `--live` requires real TDX attestation from miners.
 `--once` exits after a single epoch.
 
 ### Running as a service
 
+Use the unit and environment file in the repository rather than writing your
+own: they carry the settings whose absence has failed before (`LimitNOFILE`
+for the collateral fetch's descriptor leak, `EnvironmentFile` so approved
+entries never appear in `ps`, `Restart=always` because state is persisted).
+
 ```bash
-sudo tee /etc/systemd/system/fugal-validator.service > /dev/null <<'EOF'
-[Unit]
-Description=Fugal Subnet Validator
-After=network.target
-
-[Service]
-Type=simple
-User=$USER
-WorkingDirectory=/path/to/fugal-subnet
-Environment=FUGAL_NETWORK=finney
-Environment=FUGAL_NETUID=<NETUID>
-ExecStart=/path/to/fugal-subnet/.venv/bin/python neurons/validator.py \
-  --netuid <NETUID> --network finney \
-  --coldkey fugal_validator --hotkey default \
-  --live
-Restart=always
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl enable --now fugal-validator
+sudo cp deploy/systemd/fugal-validator.service /etc/systemd/system/
+sudo install -D -m 0600 deploy/env/validator.env.example /etc/fugal/validator.env
+sudoedit /etc/fugal/validator.env      # network, netuid, approved entries, epoch interval, bucket, paths
+sudo systemctl daemon-reload && sudo systemctl enable --now fugal-validator
+journalctl -u fugal-validator -f
 ```
+
+Edit **every** value in the environment file; the example ships pointed at the
+test network.
 
 ## Configuration
 
-All settings are configurable via environment variables (see `fugal_subnet/config.py`):
+Operational settings are read from the environment (see `fugal_subnet/config.py`).
+Constants that decide a score are **not** settable on a live validator: they
+are consensus state, their values are in the digest every reveal carries, and
+`--live` refuses to start if any of them is set in the environment
+(`fingerprint.assert_environment`). They are listed separately below.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FUGAL_NETWORK` | `test` | Network: `finney`, `test`, `local` |
 | `FUGAL_NETUID` | `1` | Subnet netuid |
-| `FUGAL_EPOCH_INTERVAL` | `3600` | Seconds between epochs |
-| `FUGAL_SLICE_SIZE` | `300` | Questions per epoch |
+| `FUGAL_EPOCH_INTERVAL` | `3600` | Seconds between epochs. **Mainnet: 4320** (tempo 360 × 12 s); must equal tempo × 12 on every neuron |
 | `FUGAL_TEE_MEASUREMENTS` | — | Comma-separated approved entries, each `<base_measurement>:<compose_hash>`. Required for `--live`, which refuses a bare base: one would accept any application on that image, and the application fixes the model upstream (see `deploy/dstack/README.md`) |
 | `FUGAL_PCCS_URL` | `https://pccs.phala.network` | Where DCAP collateral is fetched. Not a trust root; point at a local caching proxy to remove the third party from the epoch path |
 | `FUGAL_COLLATERAL_TIMEOUT` | `10` | Seconds one collateral fetch may take before the proof is recorded `unverifiable` |
@@ -139,17 +151,34 @@ All settings are configurable via environment variables (see `fugal_subnet/confi
 | `FUGAL_BENCHMARK_POOL` | — | Leave unset. A materialised pool file is accepted only if it matches the pinned manifest and the size floor; a non-pinned pool must declare `FUGAL_POOL_UNPINNED=1` and is for local rehearsals only |
 | `FUGAL_REVEAL_BUCKET` | — | Public-read GCS bucket each epoch's `reveal.json` is published to, after the weight commit-reveal window, with its sha256 committed on chain by this hotkey (`reveal:<epoch_id>:<sha256>`). Unset: reveals stay on local disk |
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
+| `FUGAL_FRAME_BOOTSTRAP` | — | Directory of published reveals to rebuild the reference frame from when there is no local state; otherwise the shipped `data/reference_frame.json` is required in `--live` |
+| `FUGAL_POOL_FILE` | `data/benchmarks/pool.json.gz` | Where the materialised pool built by `scripts/export_pool.py` is looked for; verified against the manifest on load |
+| `FUGAL_COLLATERAL_MAX_TIMEOUTS` | `10` | Consecutive abandoned collateral fetches before the validator stops dialling the PCCS for the epoch |
+| `FUGAL_STATE_PATH` | `results/success-v1/validator_state.json` | Persisted scoring state. Put it on durable disk |
+| `FUGAL_EPOCH_DIR` | `results/success-v1/epochs` | Where each epoch's `reveal.json` is written |
+| `FUGAL_EPOCH_LOG_DIR` | `results` | Where `epoch_logs/` is written |
+| `FUGAL_LAMBDA` | `2.0` | Legacy preference-training knob only. Benchmark routing uses the success contract's fixed λ=1 (`fugal_subnet/routing_protocol.py`) |
+| `LOG_LEVEL` | `INFO` | Logging level |
+
+**Consensus constants — read-only in `--live`.** Shown so you know what the
+digest covers; setting any of them makes a live validator refuse to start.
+
+| Variable | Value | What it decides |
+|----------|-------|-----------------|
+| `FUGAL_SLICE_SIZE` | `300` | Questions per epoch |
+| `FUGAL_SLICE_SHARE_FACTOR` | `1.5` | Cap on a benchmark's share of the slice relative to its share of the pool |
+| `FUGAL_COLLECT_FRACTION` | `0.5` | How far into the epoch proofs are collected |
+| `FUGAL_EXPLORE_FRACTION` | `0.05` | Exploration quota, as a fraction of the slice |
 | `FUGAL_REQUIRE_COMMITMENT` | `1` | Require on-chain commitment before scoring |
 | `FUGAL_EVIDENCE_HALF_LIFE` | `200` | EWMA decay half-life for evidence accumulation |
-| `FUGAL_LAMBDA` | `2.0` | Miner-side TRAINING hyperparameter only. The routing rule has no cost term — see `TRAINING_COST_LAMBDA` in config.py |
-| `FUGAL_EXPLORE_FRACTION` | `0.05` | Exploration quota, as a fraction of the slice |
 | `FUGAL_FRAME_HALF_LIFE` | `500` | Reference-frame decay half-life, in epochs |
-| `FUGAL_FRAME_PRIOR_STRENGTH` | `20` | Frame prior strength, in pseudo-observations (calibrated by measurement — see config.py) |
+| `FUGAL_FRAME_PRIOR_STRENGTH` | `20` | Frame prior strength, in pseudo-observations |
+| `FUGAL_FRONTIER_MIN_TRIALS` | `300` | Distinct exploration observations per hull model before the frontier pays in full |
 | `FUGAL_BURN_IN_QUESTIONS` | `3000` | Scored questions before a fresh head reaches full score |
 | `FUGAL_WILSON_CONFIDENCE` | `0.95` | Wilson LCB confidence level |
+| `FUGAL_SCORE_QUALITY_FLOOR` | `0.8` | Share of the frontier's best accuracy below which a head scores zero |
 | `FUGAL_MAX_WEIGHT_DELTA` | `0.3` | Max weight change per UID per epoch |
-| `FUGAL_STATE_PATH` | `results/validator_state.json` | Persisted scoring state |
-| `LOG_LEVEL` | `INFO` | Logging level |
+| dedup, exploration-integrity and head-bound constants | see `config.py` | `FUGAL_DEDUP_*`, `FUGAL_EXPLORE_*`, `FUGAL_HEAD_*`, `FUGAL_POOL_MIN_SIZE`, `FUGAL_MODEL_PRICES` |
 
 ### CLI options
 
@@ -256,7 +285,10 @@ The validator automatically flags:
 **"Hotkey not registered"** — Register on the subnet first.
 
 **"No valid proofs received"** — No miners responded or all proofs failed
-verification. The epoch is skipped and logged.
+verification. The epoch is skipped and logged. If it happens every epoch,
+check your stake first: in `--live` miners answer only hotkeys with a
+validator permit or at least `FUGAL_MIN_VALIDATOR_STAKE` TAO (default 1000),
+and a refused query looks exactly like an absent miner from your side.
 
 **Weight-setting failed** — Check that your validator has enough stake.
 

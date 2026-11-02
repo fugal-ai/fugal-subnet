@@ -58,16 +58,20 @@ python scripts/train_head.py --matrix data/matrix.npz \
   --models deepseek/deepseek-v4-flash meta-llama/llama-4-maverick openai/gpt-5.4-nano \
   --output data/my_head.npz
 
-# Run the miner (commits the head hash on-chain, benchmarks, serves proofs)
-python neurons/miner.py --netuid 1 \
-  --head-path data/my_head.npz \
-  --benchmark-pool data/pool.json
+# Run the miner against a local or test chain (commits the head hash
+# on-chain, benchmarks, serves proofs). Mock is the miner's default; the pool
+# comes from load_all() — data/benchmarks/pool.json.gz if scripts/export_pool.py
+# has built it, else the pinned Hugging Face revisions.
+python neurons/miner.py --network test --netuid <N> --head-path data/my_head.npz
 
-# Run the validator (mock mode — no API spend)
-python neurons/validator.py --netuid 1 --mock
+# Run the validator in mock mode on a test chain (no API spend). The
+# validator defaults to --live, and both neurons refuse --mock on finney.
+python neurons/validator.py --network test --netuid <N> --mock
 ```
 
-The commands above do not call OpenRouter. Mock mode is the default. A
+The commands above do not call OpenRouter as long as `OPENROUTER_API_KEY` is
+unset: `--mock` replaces the attestation, not the model upstream, so a mock
+miner with a key in its environment spends real money. A
 validator has no API key and no budget at all — it verifies proofs, it never
 calls a model. The only paid path is a miner running `--live` with an
 OpenRouter key delivered over the attested provisioning channel; see the
@@ -81,7 +85,7 @@ OpenRouter key delivered over the attested provisioning channel; see the
 
 ## How It Works
 
-1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (stratified across benchmarks) — every honest validator derives the identical slice, and neither side can know it in advance.
+1. **Epochs are aligned to chain blocks**: every `EPOCH_INTERVAL/12` blocks is an epoch boundary. The boundary block's hash seeds a nonce that selects ~300 questions (drawn in proportion to each benchmark's share of the pool, capped at 1.5× that share) — every honest validator derives the identical slice, and neither side can know it in advance.
 2. **Miners run the benchmark themselves, inside an Intel TDX enclave.** The enclave loads the miner's `.npz` head, routes each question, calls the chosen model through a metering proxy, grades the reply with the hash-pinned graders, and produces a hardware-attested `BenchmarkProof`. Miners pay for their own inference. A head is only scoreable if its SHA256 was **committed on-chain at or before the boundary block** — a head swapped after the nonce is knowable is rejected.
 3. **Miners also answer a nonce-chosen ~5% of extra questions using a model they do not pick.** These are never scored against them; they are the only unbiased samples of how good each model actually is, and a proof missing them is rejected.
 4. **Validators never call a model.** They verify the proof: the Intel DCAP signature, the hardware's own measurement registers against the approved runtime image, the attested content hash, the head against its on-chain commitment, the answers against the assigned slice, the exploration set against the nonce, and the cost figures against each other.
@@ -90,25 +94,28 @@ OpenRouter key delivered over the attested provisioning channel; see the
 
 ## Benchmarks
 
+The pinned pool (`fugal_subnet/benchmarks/pool_manifest.json`) is **21,553
+questions**:
+
 | Benchmark | Questions | Grader |
 |-----------|-----------|--------|
 | MMLU | 14,042 | letter_mcq |
 | MATH | 5,000 | boxed_math |
 | GSM8K | 1,319 | numeric_final |
 | AIME | 933 | integer_exact |
-| IFEval | up to 259 | partial constraint_set |
-| GPQA-Diamond | 198 | letter_mcq (gated dataset — needs HF auth) |
-| HumanEval | 155 exec_io + 9 legacy fallback | exec_io / exec_unittest |
-| LiveCodeBench | optional | exec_io (local JSON cache, see `fugal_subnet/benchmarks/livecode.py`) |
+| IFEval | 259 | partial constraint_set |
 
-HuggingFace dataset revisions are pinned for reproducibility. GPQA is a gated
-dataset requiring `huggingface-cli login` and accepted terms, or add `gpqa` to
-`FUGAL_SKIP_BENCHMARKS` to exclude it.
+HuggingFace dataset revisions are pinned for reproducibility. GPQA (gated) and
+LiveCodeBench are skipped by the pinned manifest, and HumanEval is excluded
+while `FUGAL_HARNESS_ALLOW_EXEC=0` (`docs/CODE_BENCHMARK_PLAN.md`). **Do not
+set `FUGAL_SKIP_BENCHMARKS` on any neuron**: it replaces the manifest's skip
+list, and a neuron with a different list builds a different pool and fails
+every proof on `questions_hash`.
 
 ## Guides
 
 - **[Miner Guide](docs/MINER_GUIDE.md)** — train a router head, register, commit, run the miner
-- **[Validator Guide](docs/VALIDATOR_GUIDE.md)** — set up API keys, sandboxing, run the validator, monitor epochs
+- **[Validator Guide](docs/VALIDATOR_GUIDE.md)** — register, load the approved entries, run as a service, monitor epochs (no API key)
 - **[Mainnet Launch](docs/MAINNET_LAUNCH.md)** — the operational sequence, and the five things that fail silently if you skip them
 - **[Consensus Invariants](docs/INVARIANTS.md)** — the nine properties the subnet rests on, what enforces each, and the known gaps
 - **[Design Decisions](docs/design-decisions.md)** — why the scoring formula, the reference frame and the TEE architecture are what they are

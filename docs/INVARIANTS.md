@@ -623,6 +623,26 @@ reason a missing `dcap-qvl` does: it is the operator's misconfiguration, and
 downgrading it to "this proof is bad" lets a --live validator reject the entire
 field while appearing healthy.
 
+### I8 — the TPM half is bound to the TDX half (fixed 2026-11-02)
+
+The section above says a GCP attestation has two halves and a validator must
+check both. It checked both *in isolation*: the TPM quote's signature and its
+chain to Google's root, and the TDX quote's DCAP chain — and nothing tied the
+two together. dstack's agent writes `sha256(tdx_quote)` into
+`TPMS_ATTEST.extra_data`, measured equal on both real fixtures, and that field
+was parsed and ignored. So fixture A's TDX quote with fixture B's TPM quote
+passed `unwrap_attestation`: two genuine signatures from two different
+machines, accepted as one attestation. The second trust root proved only that
+some Confidential VM's vTPM existed somewhere.
+
+`unwrap_attestation` now requires `extra_data == sha256(tdx_quote)` and
+rejects otherwise. Consensus-affecting in the direction every verification
+rule is: a validator without it accepts what one with it rejects, so it ships
+to all validators together, and no honest dstack blob changes outcome.
+`tests/test_tpm.py::test_the_tpm_half_is_bound_to_its_own_tdx_quote` holds the
+measured fact; `::test_a_tpm_quote_from_another_machine_cannot_be_stapled_onto_a_tdx_quote`
+holds the refusal and was checked to fail against the previous code.
+
 ### I8 — a proof names the miner it was produced for
 
 `content_hash` covers the epoch, the slice, the head and the runtime — and,
@@ -1939,6 +1959,32 @@ validators' commitments for the same epoch should carry the same hash (I1).
 A `.published` marker is written only after the upload, so failures are
 retried and nothing is marked that was not sent. Operational, not consensus:
 an unset bucket skips with a warning. `tests/test_reveal_publisher.py`.
+
+### I1/I6 — an epoch is applied once, or not at all (fixed 2026-11-02)
+
+Found by reading the loop, not by a failure, which is the point of recording
+it: the shape was invisible to every test because no test re-entered an epoch.
+`update_scores` mutated records in place and the frame was rebound as soon as
+it was computed, before the epoch was durable; an exception anywhere between
+scoring and `save_state` — a dropped websocket in `set_weights`, a failed
+owner-hotkey read, a disk error on the reveal — landed in the outer handler
+with the loop-level state already advanced, and the retry of the SAME epoch
+applied it again: evidence accumulated twice, misses applied twice, the frame
+decayed twice, then persisted. One chain blip at the wrong moment made one
+validator's evidence differ from every peer's until it decayed (half-life 200
+epochs). Now `update_scores` is copy-on-write and the loop rebinds its durable
+names only at the commit point; `tests/test_epoch_atomicity.py` asserts that
+structurally against the AST and fails against the previous loop.
+
+The same pass moved the pinned commitments read to the moment the boundary
+block is known. It sat after the collection wait and the 120 s query, by
+which time the boundary block was ~250 behind the head and a non-archive node
+(which keeps ~300) was one slow epoch from refusing it — and the refusal was
+swallowed into an empty map, which under `REQUIRE_COMMITMENT` rejected every
+proof and marked the epoch processed with no weights while peers that read in
+time set theirs. In live a failed read now raises and the epoch is retried.
+A validator should still run against an archive endpoint; this removes the
+window, not the dependency.
 
 ## Attack surface by actor
 

@@ -47,9 +47,20 @@ def test_missing_token_observations_never_get_fabricated(tmp_path):
         build([source], ["a"], "test")
 
 
-def test_checked_in_observations_reproduce_candidate_manifest():
+def test_checked_in_observations_reproduce_the_reviewed_manifest():
+    """The shipped manifest is the builder's output over the checked-in v2
+    observations, plus exactly two things a human added: `status: reviewed`
+    and the `review` record. Anything else differing means a number was edited
+    by hand, which is the one thing a token manifest must never carry."""
     root = Path(__file__).resolve().parents[1]
-    expected = json.loads((root / "data/benchmark_tokens_v1.json").read_text())
-    actual = build([root / "data/observations/benchmark_tokens_v1.jsonl"],
-                   [m["id"] for m in expected["models"]], expected["worker_profile"])
+    shipped = json.loads((root / "data/benchmark_tokens_v1.json").read_text())
+    assert shipped["status"] == "reviewed"
+    assert shipped["review"]["date"] and shipped["review"]["samples"]
+    actual = build([root / "data/observations/benchmark_tokens_v2.jsonl"],
+                   [m["id"] for m in shipped["models"]], shipped["worker_profile"])
+    expected = dict(shipped)
+    expected.pop("review")
+    expected["status"] = "candidate"
     assert actual == expected
+    mirror = json.loads((root / "fugal_subnet/routing_data/benchmark_tokens_v1.json").read_text())
+    assert mirror == shipped

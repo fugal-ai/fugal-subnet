@@ -45,23 +45,49 @@ Legacy preference heads cannot enter this subnet benchmark.
 are measured token means times those rates. A miner's statistics must exactly
 match `data/benchmark_tokens_v1.json`, including its identity.
 
-## Candidate token manifest
+## Reviewed token manifest (2026-11-02)
 
-The candidate comes from 945 recorded calls in three saved historical testnet
-proof bundles. One zero-input record is excluded. Normalized observations are
-committed in `data/observations/benchmark_tokens_v1.jsonl`, including original
-bundle hashes and source runtime hashes; no response text or API secrets are
-included. Some models have only one to three samples. Most observations for cheap
-models are selected routes, so sampling is policy-dependent. This is an initial
-cost interface fixture, not a representative estimate of future workload cost.
+`data/benchmark_tokens_v1.json` (mirrored byte-for-byte at
+`fugal_subnet/routing_data/`, which CI checks) is `status: reviewed`. The review
+record travels inside the file as its `review` block, so it is part of the
+protocol identity; this section is the prose version.
 
-Reproduce the candidate with the command recorded in
-`data/observations/README.md`. Missing observations for any requested model block
-manifest generation. No fabricated token counts enter a deployable export.
-The manifest's `candidate` status deliberately blocks **live startup and deployable
-export** until its observations and sampling limitations receive review. Promotion
-to `reviewed` changes protocol identity and requires rebuilding the measured runtime.
-Mocked benchmarks can exercise the candidate. Synthetic fixtures are test-only.
+**Source.** `data/observations/benchmark_tokens_v2.jsonl`: 664 metered calls made
+on 2026-11-02 by `scripts/record_token_observations.py` through the same
+`MeteringProxy` and `harness._call_model` the benchmark uses (`max_tokens` 2048,
+the full benchmark prompt), on a deterministic benchmark-stratified sample of the
+pinned pool (`pool_hash 1779b4a5…`), 40 questions per model. Every row carries the
+provider's own prompt and completion token counts, the table-priced and
+provider-billed cost, the question id, the response hash, the pool hash, the
+source hash and the script commit. No response text.
+
+**Billing cross-check.** Table-priced total $2.158 against provider-billed $2.159
+over the whole sample, so `data/models.json` tracks OpenRouter's billing to the
+cent in aggregate; the largest per-model gaps (deepseek-v4-pro billed above table,
+glm-5.2 below) come from provider-side cache and discount accounting and are not
+a reason to move a pinned rate before launch.
+
+**What changed against the candidate of 2026-09-21** (945 calls from three
+pre-transition proof bundles, three samples for most models): completion means
+moved far enough to change routing — kimi-k2.6 3711→965, gpt-5.5 1334→323,
+claude-haiku-4.5 1374→281, minimax-m3 1853→391, glm-5.2 343→927,
+gemini-3.1-pro 621→877. Medians sit far below means for terse models
+(gpt-5.4-nano 5, claude-sonnet-5 3, gpt-5.4-mini 11) and the 90th percentile hits
+the 2048 cap for long-reasoning ones; the manifest stores the mean because the
+cost estimate needs the mean.
+
+**Limitations, accepted.** 40 samples per model is a cost interface, not a
+workload study; `mistralai/mistral-large-2512` has 24, because OpenRouter's
+shared upstream pool rate-limited it for the whole session (every other attempt
+returned HTTP 429, retried for two hours). Questions are benchmark questions, not
+a user workload. Changing any number here changes the protocol identity and
+resets all evidence, so this manifest is expected to stand for the first launch
+period; the next revision is a flag day run as the runbook below describes.
+
+**Reproduce.** The command is in `data/observations/README.md`; the builder emits
+`candidate`, and `tests/test_success_export.py` asserts the shipped file equals
+that output plus exactly `status` and `review`. A candidate manifest still refuses
+`--live` startup and deployable export (`tests/test_success_contract.py`).
 
 ## Offline export
 

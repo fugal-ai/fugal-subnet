@@ -179,7 +179,7 @@ def unwrap_attestation(blob: bytes) -> tuple[bytes, list | None]:
     except ScaleError as e:
         raise ValueError(f"attestation is neither a TDX quote nor a dstack blob: {e}") from e
 
-    from fugal_subnet.tee.tpm import TpmError, verify_tpm_quote
+    from fugal_subnet.tee.tpm import TpmError, parse_attest, verify_tpm_quote
 
     try:
         ok = verify_tpm_quote(att["tpm"])
@@ -190,6 +190,25 @@ def unwrap_attestation(blob: bytes) -> tuple[bytes, list | None]:
             "TPM quote verification failed — the attestation key certificate "
             "does not chain to Google's pinned EK/AK root, or the quote was not "
             "signed by it"
+        )
+
+    # The TPM half must be THIS TDX quote's TPM half. dstack's GCP agent puts
+    # sha256(tdx_quote) in TPMS_ATTEST.extra_data (measured on both real
+    # fixtures), which is the only thing tying the two signatures together.
+    # Without this check a genuine Google-signed TPM quote from any Confidential
+    # VM could be stapled onto any TDX quote, and the "second trust root" proved
+    # only that some GCP vTPM exists somewhere (found 2026-11-02; I8).
+    import hashlib
+    try:
+        extra = parse_attest(att["tpm"]["message"])["extra_data"]
+    except (TpmError, KeyError, ValueError) as e:
+        raise ValueError(f"TPM quote rejected: unreadable TPMS_ATTEST: {e}") from e
+    expected = hashlib.sha256(att["quote"]).hexdigest()
+    if extra != expected:
+        raise ValueError(
+            "TPM quote is not bound to this TDX quote: TPMS_ATTEST.extra_data is "
+            f"{extra[:16]}..., sha256(tdx_quote) is {expected[:16]}... — the two "
+            "halves of the attestation come from different quotes"
         )
 
     return att["quote"], att["events"]

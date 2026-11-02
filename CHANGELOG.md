@@ -4,6 +4,105 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — CONSENSUS: the success contract (2026-09-21, PR #32)
+
+Recorded here on 2026-11-02; it shipped without a changelog entry, which
+CONTRIBUTING's own rule forbids for a consensus change, and it is the reason
+every pre-2026-09-21 head, state file, reveal and proof is rejected.
+
+The benchmark now routes with core's shared success contract
+(`fugal_subnet/vendor/success_contract.py`, vendored from a pinned core
+commit and proven against it in CI): independent per-model sigmoid success
+predictions minus λ × estimated dollars per query at a fixed benchmark λ of
+1, rounded on the 1e-4 grid, ties in artifact row order. The embedding profile
+is pinned — Qwen3-0.6B at one tokenizer revision, the exact core system prompt,
+2048 total input tokens, right-padded batches of two, mask-mean pooling,
+L2-normalised, **CPU float32 only** (CUDA and float16 are refused). Heads must
+carry the contract metadata (contract and profile ids, backbone revision,
+provenance, default λ, per-model measured input/output token means, the token
+manifest identity); legacy preference heads cannot enter the benchmark.
+
+A protocol identity (`fugal_subnet/routing_protocol.py`) binds the contract,
+profile, λ, token manifest and price snapshot. It is written into every proof,
+state file, frame snapshot and reveal, and `require_identity` rejects anything
+carrying a different one — so old state and reveals cannot be resumed or
+replayed, and state paths moved to `results/success-v1/`. The token manifest
+`data/benchmark_tokens_v1.json` is a **review candidate** built from 945
+recorded calls; **a live validator or miner refuses to start until it is
+promoted to `reviewed`**, and promotion changes the identity again, which
+means a rebuilt measured image and a new approved entry. The transition and
+rollback runbook is `docs/SUCCESS_CONTRACT.md`. Rewards, graders, exploration
+and the number of paid calls per benchmark were unchanged.
+
+### Changed — CONSENSUS: the 2026-10-14 diligence batch (PRs #68–#82)
+
+Fourteen pull requests from an external review, each re-scoring or re-gating
+miners; `docs/INVARIANTS.md` has the analysis per finding.
+
+- **Frontier valued at the raw sample mean, not the prior** (finding 3). The
+  neutral prior let a constant policy collect the gap between a model's true
+  accuracy and its shrunk estimate. `FRONTIER_MIN_TRIALS` is now 300
+  *distinct* observations per hull model, and a live validator starts from a
+  hash-pinned bootstrap frame `data/reference_frame.json` (file pending).
+- **One observation per (question, model) per epoch; one vote per coldkey;
+  failed calls attested as failed and excluded** (finding 2). A proof whose
+  exploration fails more than `EXPLORE_FAIL_MARGIN` above its scored calls is
+  rejected; exploration is interleaved with scored calls.
+- **Two-sided, baseline-free exploration detector** (finding 4); a flagged
+  operator's samples are kept out of the frame for the epoch, never scored.
+- **Dedup gains a parameter clause** (`DEDUP_PARAM_DISTANCE`) **and the
+  epsilon rule** (`DEDUP_EPSILON`, `DEDUP_EPSILON_AGREEMENT`); seniority is
+  registration block, then commitment block, read from chain at the boundary;
+  the per-validator `first_commit_blocks` map is gone (findings 5, A4).
+- **Live miners answer only validator permits or stake ≥
+  `MIN_VALIDATOR_STAKE`** (finding 5); a live miner refuses to start with the
+  threshold at 0.
+- **Slice shares capped at 1.5× pool share** (`SLICE_SHARE_FACTOR`, finding 6).
+- **Bare base approved entries refused outside mock**; the app half is the
+  compose hash replayed from RTMR3 (finding 1). `check_upstream_is_inside_the_
+  measurement` fails CI on a compose that allows an env, names an image by
+  tag, or sets the upstream.
+- **Every scoring constant is in the consensus digest; a live validator
+  refuses to start with any of them set in its environment** (A2).
+- **Validator is live by default; both neurons refuse `--mock` on finney**
+  (A3; the shipped genesis hash was corrected in #87).
+- **Burn UID resolved from the subnet owner on chain** at the boundary block
+  (A5), not hard-coded 0.
+- **Reveals published** to a public-read bucket with the hash committed on
+  chain (A1).
+- **Pool materialised once** by `scripts/export_pool.py` and preferred by
+  `load_all()` (finding 8); **miner image published by digest and approved
+  entries as signed releases** (finding 7; `deploy/keys/allowed_signers`
+  pending).
+### Fixed — CONSENSUS: the TPM half of a dstack attestation must be bound to its TDX quote
+
+On GCP a proof carries two signatures: Intel's over the TDX quote and
+Google's over a vTPM quote. `unwrap_attestation` verified the TPM quote's
+signature and certificate chain but never checked that it was *this* TDX
+quote's TPM quote. dstack puts `sha256(tdx_quote)` in `TPMS_ATTEST.extra_data`
+(measured on both real fixtures), so a genuine TPM quote from any Confidential
+VM could have been stapled onto any TDX quote and the second trust root proved
+only that some GCP vTPM existed. The binding is now checked and a mismatch is
+a rejection (I8). Every honest dstack blob already satisfies it; a validator
+without this change accepts envelopes one with it rejects, so all validators
+take it together. `tests/test_tpm.py` holds both the fact and the refusal.
+### Fixed — an epoch is applied once, or not at all
+
+`update_scores` mutated the validator's records in place and the reference
+frame was rebound as soon as it was computed, before the epoch was durable.
+Any exception between scoring and `save_state` — a dropped websocket in
+`set_weights`, a failed owner-hotkey read, a disk error on the reveal — left
+the loop with the state already advanced, and the retry of the same epoch
+accumulated every miner's evidence twice, applied every miss twice and decayed
+the frame twice, then persisted it (I1, I3). `update_scores` is now
+copy-on-write and the loop holds the epoch's state in epoch-local names until
+the commit point just before `save_state`. The on-chain commitments are read
+at the boundary block the moment the epoch starts, not after the collection
+wait and the 120 s query, and a failed read in live raises (the outer loop
+retries) instead of degrading to an empty map that rejected every proof and
+marked the epoch processed with no weights (I6). `tests/test_epoch_atomicity.py`
+holds the shape of both fixes and was checked to fail against the previous
+loop.
 ### Changed — `provision_subnet.py` no longer needs the owner coldkey to check or register
 
 `--status` loads no wallet, so the read-only activation and tempo check from
@@ -15,6 +114,21 @@ equal the epoch length, the two failures that have each silently cost epochs
 before. `--create` still needs the owner. MAINNET_LAUNCH shows the owner half
 and the operator half. `tests/test_provision_subnet_cli.py` drives `main()`
 against a stubbed chain with wallet loading replaced by an assertion.
+### Fixed — `scripts/export_pool.py` could not run
+
+The documented way of building the consensus pool for every neuron
+(MAINNET_LAUNCH §3) failed on every Linux host and nothing ran it. It set
+`FUGAL_POOL_FILE=os.devnull` to mean "no file"; the loader tested the path
+with `os.path.exists`, true for `/dev/null`, and fed a device node to the JSON
+parser. Behind that, `gzip.open(..., mtime=0)` raised `TypeError` (only
+`GzipFile` takes `mtime`), and the gzip header carried the output file name,
+so the "file sha256" operators are told to compare differed by path alone.
+The loader now ignores anything that is not a regular file; the script uses a
+sentinel that can never be one and writes a header free of time and name.
+Verified against the pinned revisions: 21,553 questions, `pool_hash` and
+`content_hash` equal to the manifest, and the file reloads as the pinned pool.
+Three tests in `tests/test_pool_file.py`, one of which runs the script's
+`main()`.
 
 ### Changed — CONSENSUS: the score is headroom above the constant-policy frontier
 
@@ -31,6 +145,9 @@ the old score a W=0 head that always called one mid-priced model beat the best
 trained router by 12%. While the frontier is cold (`FRONTIER_MIN_TRIALS`
 decayed trials per hull model) scores scale down and unassigned weight burns to
 UID 0 rather than paying constant policies for the frame's ignorance.
+*(Superseded 2026-10-14: the threshold is 300 distinct observations and the
+burn goes to the subnet owner's UID read from chain — see the diligence entry
+above.)*
 `SCORE_QUALITY_EXPONENT`, `SCORE_QUALITY_CAP` and `SCORE_THRIFT_CAP` are gone;
 `Evidence` gains `n_priced` so a skipped epoch cannot make a miner look cheaper.
 New tests: `tests/test_frontier.py`; `tests/test_degenerate_constant_policy.py`
@@ -352,6 +469,8 @@ as an executable regression in `fugal_subnet/attacks/run_tee_attacks.py`:
 - Pinned every direct runtime dependency to exact versions.
 - Dedup seniority now tracks the earliest block a hotkey was ever seen
   committing, not its current commitment block. Prevents a copier from
+*(Superseded 2026-10-14: seniority is the registration block, then the
+commitment block, both read from chain at the boundary; no per-validator map.)*
   outranking the author after the author retrains.
 - Added environment fingerprint (package versions, BLAS config, kernel dispatch,
   grader hash) to every reveal.json for post-hoc divergence diagnosis.

@@ -124,7 +124,12 @@ def load_all(strict: bool = True) -> list[dict]:
         # datasets carry their own licences and this repo does not redistribute
         # them; operators build it once and copy it to their neurons.
         default_file = os.getenv("FUGAL_POOL_FILE", DEFAULT_POOL_FILE)
-        if os.path.exists(default_file):
+        # isfile, not exists: the question is whether an operator has PLACED a
+        # pool file, and a directory or a device node is not one. os.devnull
+        # exists on every platform, and scripts/export_pool.py once pointed
+        # here at it to mean "no file"; exists() then handed /dev/null to the
+        # JSON parser and the one script that builds the pool could not run.
+        if os.path.isfile(default_file):
             override = default_file
     if override:
         pool = _read_pool_file(override)

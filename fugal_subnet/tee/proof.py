@@ -76,17 +76,42 @@ class QuestionResult:
 
     @classmethod
     def from_dict(cls, d: dict) -> QuestionResult:
+        # Numbers are kept EXACTLY as the JSON carried them. `content_hash`
+        # canonicalises `hash_payload()`, and JSON distinguishes `0` from
+        # `0.0`: the miner hashes the in-memory object it serialised, so a
+        # validator that coerced `cost_usd` to float re-hashed a *different*
+        # payload whenever a result arrived with an integer cost. That is what
+        # every failed call carries (`cost_usd: 0`), and on mainnet day one
+        # (2026-11-03, epoch e00026188) it made both honest seeds' proofs fail
+        # `report_data == content_hash` while the quotes were genuine. Types
+        # are still checked: a bool (a JSON true/false, which Python would
+        # happily treat as 1/0) or a string is rejected, never reinterpreted.
         return cls(
             question_id=d["question_id"],
             routed_model=d["routed_model"],
             correct=bool(d["correct"]),
-            cost_usd=float(d["cost_usd"]),
+            cost_usd=_json_number(d["cost_usd"], "cost_usd"),
             response_hash=d["response_hash"],
-            prompt_tokens=int(d.get("prompt_tokens", 0)),
-            completion_tokens=int(d.get("completion_tokens", 0)),
+            prompt_tokens=_json_number(d.get("prompt_tokens", 0), "prompt_tokens"),
+            completion_tokens=_json_number(d.get("completion_tokens", 0), "completion_tokens"),
             is_exploration=bool(d.get("is_exploration", False)),
             failed=bool(d.get("failed", False)),
         )
+
+
+def _json_number(value, name: str):
+    """A JSON number as it arrived: int stays int, float stays float.
+
+    Rejects bool (a subclass of int in Python, but `true` is not a cost) and
+    anything that is not a finite number. No coercion in either direction: the
+    value goes back into `hash_payload()` byte-identical to what the miner
+    hashed.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a JSON number, got {type(value).__name__}")
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        raise ValueError(f"{name} must be finite")
+    return value
 
 
 @dataclass

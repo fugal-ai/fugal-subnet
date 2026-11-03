@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — a proof with a failed call no longer fails verification on the validator
+
+`QuestionResult.from_dict` coerced `cost_usd` to float; the harness records a
+failed call's cost as the integer `0`; canonical JSON distinguishes the two, so
+the validator's `content_hash` differed from the miner's attested `report_data`
+on every proof that contained a failed call. Both seed miners' first mainnet
+epoch was rejected for it (2026-11-03). `from_dict` now keeps every JSON number
+as it arrived and rejects bools, strings and non-finite values. Validator-side
+only; the image is unchanged. INVARIANTS states the rule.
+
 ### Added — the bootstrap reference frame, built from direct logged calls
 
 `data/reference_frame.json` ships and is pinned (`PINNED_BOOTSTRAP_FRAME_SHA256`).

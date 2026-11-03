@@ -1,0 +1,17 @@
+# One liveness check of the subnet from this validator host; see fugal-watch.sh.
+# Started by fugal-watch.timer. Runs as the validator user so it can read the
+# local reveals; it holds no key and never sets weights.
+[Unit]
+Description=Fugal subnet hourly watch (watch_subnet.py, one epoch boundary)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fugal
+WorkingDirectory=/opt/fugal/fugal-subnet
+EnvironmentFile=/etc/fugal/watch.env
+ExecStart=/opt/fugal/fugal-subnet/deploy/systemd/fugal-watch.sh
+TimeoutStartSec=6000
+ProtectSystem=full
+NoNewPrivileges=true

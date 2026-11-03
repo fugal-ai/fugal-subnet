@@ -1,0 +1,17 @@
+# Hourly watch_subnet run. A run that is still waiting for the epoch boundary
+# is not restarted; the tick is skipped (systemd semantics for an active
+# oneshot). Install:
+#   sudo cp deploy/systemd/fugal-watch.{service,timer} /etc/systemd/system/
+#   sudo install -m 0600 deploy/env/watch.env.example /etc/fugal/watch.env  # then edit
+#   sudo systemctl daemon-reload && sudo systemctl enable --now fugal-watch.timer
+[Unit]
+Description=Run fugal-watch every hour
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

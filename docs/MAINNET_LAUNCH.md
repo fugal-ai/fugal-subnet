@@ -49,7 +49,7 @@ will otherwise go looking in the wrong place:
 |---|---|---|
 | The token manifest shipped in the checkout is `reviewed`, not `candidate` | `neurons/validator.py`, `neurons/miner.py` (`--live` only) | **Cleared by #99 (2026-11-02)**: rebuilt from 664 fresh metered calls and promoted; the record is in `SUCCESS_CONTRACT.md`. Any later change to it is a protocol-identity change (image and approved entry rebuilt, evidence reset) |
 | `data/reference_frame.json` exists and matches its pin | `reference_frame.load_bootstrap(require=True)`, `check_safety_invariants.py` | `scripts/build_bootstrap_frame.py` from reveals produced under the current protocol identity |
-| `FUGAL_TEE_MEASUREMENTS` holds at least one `<base>:<compose_hash>` entry | validator startup | A signed `image-v*` release; `scripts/fetch_approved_entries.py` needs `deploy/keys/allowed_signers` to exist, which it does not yet |
+| `FUGAL_TEE_MEASUREMENTS` holds at least one `<base>:<compose_hash>` entry | validator startup | A signed `image-v*` release, verified by `scripts/fetch_approved_entries.py` against `deploy/keys/allowed_signers` (first key added 2026-11-03) |
 | No consensus constant is set in the environment on finney | `fingerprint.assert_consensus_overrides_allowed`, by genesis hash, in both neurons | Unset it; only `FUGAL_EPOCH_INTERVAL` and `FUGAL_TEE_MEASUREMENTS` are meant to be set per deployment. On a test or local chain an override starts with a warning, which is how the netuid-552 warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every neuron |
 | `--mock` is not finney | `fingerprint.assert_mock_allowed` | Run `--live` |
 

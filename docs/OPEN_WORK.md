@@ -427,9 +427,9 @@ all pass). Four things need an operator rather than code (one done since):
   `scripts/build_bootstrap_frame.py`, pin the digest in
   `check_safety_invariants.py`. A live validator refuses to start cold until
   then (or set `FUGAL_FRAME_BOOTSTRAP`).
-- **First signed approved-entry release.** A signing key in
-  `deploy/keys/allowed_signers`, an `image-v<date>` tag, the published
-  digest; then validators drop any bare base entry.
+- **First signed approved-entry release.** ~~A signing key in
+  `deploy/keys/allowed_signers`~~ (added 2026-11-03), an `image-v<date>` tag,
+  the published digest; then validators drop any bare base entry.
 - **Reveal bucket.** A public-read GCS bucket and `FUGAL_REVEAL_BUCKET` on
   every validator.
 - ~~**Finney genesis hash.**~~ Done 2026-10-29: the shipped value was wrong in

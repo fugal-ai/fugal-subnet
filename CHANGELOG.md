@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — the release signing trust root has its first key
+
+`deploy/keys/allowed_signers` now exists, with one ED25519 key
+(`release@fugalai.com`, fingerprint
+`SHA256:MpaQWZxhrW77AJg8HAR2TxgFrag5HAo+i9oDnUiIBO8`, git namespace only).
+Until now the file was absent by design and `scripts/fetch_approved_entries.py`
+failed closed; from here a `git tag -s image-v<date>` by that key verifies, and
+the first signed release can be cut. Adding or rotating a key stays a reviewed
+pull request to this file.
+
 ### Changed — consensus overrides are refused on finney by genesis hash and allowed with a warning elsewhere; the testnet twin compose explores at 0.5
 
 A live neuron with a consensus constant in its environment was refused at

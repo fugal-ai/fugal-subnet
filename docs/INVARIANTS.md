@@ -1897,6 +1897,25 @@ beat the frame's expectation by more than 35 points, compared against the
 frame the attack of finding 2 was moving, and changed nothing: a log line and
 an anomaly entry. The 2026-10-14 diligence review rated this high. Now:
 
+**Numbers in a proof hash as the miner serialised them (2026-11-03, mainnet
+day one).** `content_hash` canonicalises `hash_payload()` with `json.dumps`,
+and JSON tells `0` from `0.0`. The harness records a failed call's
+`cost_usd` as the integer `0`; the validator's `QuestionResult.from_dict`
+coerced every cost to `float`, so for any proof containing a failed call the
+validator re-hashed `"cost_usd":0.0` where the miner had hashed
+`"cost_usd":0`, and `report_data == content_hash` failed on a genuine quote.
+Both seed miners' first mainnet epoch (e00026188, 42 and 39 failed calls,
+nearly all `mistral-large-2512` upstream errors) was rejected this way; no
+rehearsal had ever produced a proof with a failed call. Fix: `from_dict`
+keeps each JSON number as it arrived (int stays int, float stays float) and
+rejects bools, strings and non-finite values instead of reinterpreting them.
+Rule, stated generally: **the validator must hash the bytes the miner hashed;
+any parse that normalises a value changes the hash of some honest proof.**
+Enforced by `tests/test_proof_json_number_types.py`. The miner-side
+normalisation (record failed costs as `0.0`) is deliberately NOT part of this
+change: it alters the image and therefore the approved entry, and belongs to
+the next rotation.
+
 1. **Both directions.** `|observed - expected| > margin`, against the frame
    as it stood before the epoch's samples are folded in (the call order in
    `neurons/validator.py`). A miner serving itself gold and a miner dropping

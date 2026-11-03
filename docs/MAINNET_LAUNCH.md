@@ -177,9 +177,17 @@ Getting a usable value is the real remaining work.
 measurement.** It records the TDVF configuration the host builds — vCPU count,
 memory size, device config — which the cloud provider chooses and which proves
 nothing about the code. Measured byte-identical across three real deploys
-(`c3-standard-4` and `c3-standard-8`, two different applications):
+(`c3-standard-4` and `c3-standard-8`, two different applications) in September:
 
     12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+
+and, on 2026-11-03, across two fresh deploys:
+
+    f4be9383e31c6cc87707b2b01ace9114ed958435b524425677e63d65065aa427
+
+The change is MRTD (GCP's TDX firmware), not the image: RTMR1 and RTMR2 are
+identical on both dates. Publish the base you measure on the day, not the one
+in a document.
 
 Miners may therefore pick any instance size. An earlier version of this section
 gave the formula as `sha256(MRTD‖RTMR0‖RTMR1‖RTMR2)` and concluded the subnet
@@ -319,7 +327,7 @@ Honest list, as of this branch:
 | Scoring path determinism across x86_64 and aarch64 | **verified** byte-identical (local, and on netuid 552 with real proofs: three consecutive scored epochs, identical weights on both hosts) |
 | Full pipeline against a real chain, multi-miner, multi-validator | **verified** — local chain, and public testnet with two dstack TDX miners and two validators (`docs/REHEARSAL_2026-09-06.md`) |
 | Real DCAP verification and measurement matching | **verified** on real Intel TDX (GCP `c3`, dstack 0.6.0-rc0): proofs verified `UpToDate`, a genuine proof refused against a retired entry |
-| A reproducible TDX guest image with a stable measurement | **exists**: dstack 0.6.0-rc0 UKI on GCP, base `12a1f2f5…9141` measured across seven deploys and two instance sizes; the compose hash rotates with the image and the rotation procedure is `docs/APPROVED_ENTRY_ROTATION.md` |
+| A reproducible TDX guest image with a stable measurement | **exists**: dstack 0.6.0-rc0 UKI on GCP, base `12a1f2f5…9141` in September across seven deploys and two instance sizes, `f4be9383…aa427` on 2026-11-03 after a GCP firmware change (image registers identical); the compose hash rotates with the image and the rotation procedure is `docs/APPROVED_ENTRY_ROTATION.md` |
 | Real OpenRouter billing vs the pinned price table | **measured once**, account-level: within ~5% over four miner-epochs; completions averaged 534 tokens against the 256 assumed, and exploration was ~60% of a cheap head's epoch cost |
 | A real trained head outscoring a random one | **measured** offline (`docs/HEAD_EFFICACY.md`); on chain only two synthetic heads have been scored |
 | Behaviour under adversarial miners over weeks | **never executed** |

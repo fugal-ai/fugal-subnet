@@ -735,9 +735,19 @@ the local CPU measurement showed on its own.
 ### I8 — the base measurement is independent of instance shape AND application
 
 `measurement_id` is `sha256(MRTD ‖ RTMR1 ‖ RTMR2)`. Byte-identical across three
-real deploys:
+real deploys in September 2026:
 
     12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+
+and across two fresh deploys on 2026-11-03:
+
+    f4be9383e31c6cc87707b2b01ace9114ed958435b524425677e63d65065aa427
+
+The two differ because MRTD (and RTMR0) changed between the dates while RTMR1
+and RTMR2 did not: GCP rolled the TDX virtual firmware, the image stayed. The
+invariant (shape- and application-independent) holds on both dates; what it
+does not promise is platform-independence over time, which is why an entry is
+published from a live measurement and a firmware roll is a base rotation.
 
     fixture A   c3-standard-4, nginx/socat test app
     fixture B   c3-standard-4, nginx/socat test app

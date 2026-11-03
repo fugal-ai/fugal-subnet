@@ -4,6 +4,29 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — the first signed release's approved entries, one per network
+
+`image-v2026.11.03b` (signed by the key in `deploy/keys/allowed_signers`,
+commit `bac2a33`) built `ghcr.io/fugal-ai/fugal-miner@sha256:3f6e3e2d…fda12`,
+public. Both composes now pin that digest and their status comments describe
+it (the previous comment, baked into the attested compose, still named the
+September private image). The frozen files are
+`deploy/dstack/app-compose.frozen-2026-11-03b-test.json` (test/552, the
+warm-up, `FUGAL_EXPLORE_FRACTION=0.5` inside) and `…-finney.json` (finney/70);
+they embed exactly the repo composes, were produced by `dstack-cloud prepare`
+from `Phala-Network/meta-dstack-cloud` at tag `v0.6.1` (`5a1bfea`), and their
+raw-byte sha256 are the compose halves of the entries. The base half was
+re-measured on the first two warm-up TDs on 2026-11-03 and is
+`f4be9383…aa427`, not the September `12a1f2f5…9141`: RTMR1 and RTMR2 (the
+dstack image) are unchanged, MRTD and RTMR0 (GCP's TDX firmware) moved. The
+entries are therefore `f4be9383…aa427:dcd0dd8d…2d7f` (test) and
+`f4be9383…aa427:ed2be85f…85c4` (finney); the frozen files differ only in
+`docker_compose_file`, and the two composes only in network, netuid and the
+warm-up's exploration fraction. Every doc that quoted the September base as
+current now quotes the measured one with the date, and `tests/test_tpm.py` pins
+today's registers beside the September fixtures. The September entries are
+retired in the rotation table; no mainnet validator ever carried them.
+
 ### Added — OCI labels on the miner image
 
 `Dockerfile` now sets `org.opencontainers.image.source`, `title`,

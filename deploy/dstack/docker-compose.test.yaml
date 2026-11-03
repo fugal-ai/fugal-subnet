@@ -21,13 +21,14 @@
 # image digest yields two compose hashes and two approved entries, one per
 # network. Keep them in lockstep: any other change to one that is not made to
 # the other is a difference between what was rehearsed and what ships.
-# STATUS 2026-11-03: the digest below is the 2026-09-07
-# testnet image, built before the success-contract transition, in a private
-# registry; kept so the recorded testnet entries can be recomputed. The first
-# image-v* release replaces the image line.
+# STATUS 2026-11-03: the image line is the first signed release, tag
+# image-v2026.11.03b (commit bac2a33), built by .github/workflows/image.yml
+# and public on ghcr.io. The 2026-09-07 private-registry digest that stood
+# here before is kept in the frozen app-compose files beside this one, so the
+# recorded September entries can still be recomputed.
 services:
   miner:
-    image: us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:e4c2deff9c9ee2b38b3495690c7e5c5b52acb740a96e1b16664a235725736ca4
+    image: ghcr.io/fugal-ai/fugal-miner@sha256:3f6e3e2d1252a340b2a7609974987aa031da7abdf6724c267982d6feeb1fda12
     restart: unless-stopped
     ports:
       - "8091:8091"   # axon: validators reach the miner here (open to the world)

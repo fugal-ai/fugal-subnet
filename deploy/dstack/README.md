@@ -20,12 +20,17 @@ tar xzf dstack-0.6.0-rc0-uki.tar.gz
 # ~/.config/dstack-cloud/config.json: set image_search_paths to the extracted dir
 ```
 
-The base measurement this image produces on a GCP `c3` (any size) is
+The base measurement this image produces on a GCP `c3` (any size) is, as of
+**2026-11-03** (two fresh deploys),
 
-    12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+    f4be9383e31c6cc87707b2b01ace9114ed958435b524425677e63d65065aa427
 
-measured on three real deploys (`fugal_subnet/tee/attestation.measurement_id`,
-sha256 over MRTD‖RTMR1‖RTMR2).
+(`fugal_subnet/tee/attestation.measurement_id`, sha256 over MRTD‖RTMR1‖RTMR2).
+In September the same image measured `12a1f2f5…9141` on three deploys; RTMR1 and
+RTMR2 are unchanged between the two, MRTD and RTMR0 are not, i.e. GCP changed
+the TDX virtual firmware under the image. **Measure before you publish**
+(`scripts/provision_td.py --inspect` prints it) and expect it to move again
+whenever GCP rolls firmware; see the rotation doc for how a base rotation is run.
 
 ## Application settings (they are part of the approved identity)
 

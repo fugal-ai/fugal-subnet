@@ -25,7 +25,7 @@ exact token counts and costs. Validators verify proofs — they never call model
 ## Requirements
 
 - **Intel TDX VM running dstack on GCP `c3`** — the only base measurement
-  with an approved entry today (`12a1f2f5…9141`); another cloud or image
+  with an approved entry today (`f4be9383…aa427`, measured 2026-11-03); another cloud or image
   produces a different base that no validator approves. Required for `--live`;
   `--mock` works anywhere
 - Linux (Ubuntu 22.04+ recommended)
@@ -280,9 +280,15 @@ Cache files from the legacy profile are rejected.
 
 Your base measurement is `sha256(MRTD ‖ RTMR1 ‖ RTMR2)` and it does **not**
 include the machine shape. Measured across three real deploys — `c3-standard-4`
-and `c3-standard-8`, two different applications — the value is byte-identical:
+and `c3-standard-8`, two different applications — the value was byte-identical
+in September 2026 (`12a1f2f5…9141`), and on 2026-11-03 two fresh `c3-standard-4`
+deploys both measure
 
-    12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+    f4be9383e31c6cc87707b2b01ace9114ed958435b524425677e63d65065aa427
+
+It moved because GCP changed the TDX firmware (MRTD), not because the image
+changed (RTMR1/RTMR2 are identical). Run `scripts/provision_td.py --inspect`
+against your own TD and compare with the entry the validators publish.
 
 Choose an instance with enough memory for the new embedding profile. These
 historical measurements do not approve the success runtime; follow the

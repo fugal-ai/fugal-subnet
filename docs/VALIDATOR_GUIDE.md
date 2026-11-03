@@ -163,15 +163,18 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_LAMBDA` | `2.0` | Legacy preference-training knob only. Benchmark routing uses the success contract's fixed λ=1 (`fugal_subnet/routing_protocol.py`) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
-**Consensus constants — read-only in `--live`.** Shown so you know what the
-digest covers; setting any of them makes a live validator refuse to start.
+**Consensus constants — read-only on mainnet.** Shown so you know what the
+digest covers. Setting any of them makes a neuron refuse to start on finney
+(identified by genesis hash, as `--mock` is); on a test or local chain it
+starts with a warning naming the override, which is how the netuid-552
+warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every neuron.
 
 | Variable | Value | What it decides |
 |----------|-------|-----------------|
 | `FUGAL_SLICE_SIZE` | `300` | Questions per epoch |
 | `FUGAL_SLICE_SHARE_FACTOR` | `1.5` | Cap on a benchmark's share of the slice relative to its share of the pool |
 | `FUGAL_COLLECT_FRACTION` | `0.5` | How far into the epoch proofs are collected |
-| `FUGAL_EXPLORE_FRACTION` | `0.05` | Exploration quota, as a fraction of the slice |
+| `FUGAL_EXPLORE_FRACTION` | `0.05` | Exploration quota, as a fraction of the slice (the testnet warm-up sets `0.5` on every neuron, miners' compose included) |
 | `FUGAL_REQUIRE_COMMITMENT` | `1` | Require on-chain commitment before scoring |
 | `FUGAL_EVIDENCE_HALF_LIFE` | `200` | EWMA decay half-life for evidence accumulation |
 | `FUGAL_FRAME_HALF_LIFE` | `500` | Reference-frame decay half-life, in epochs |

@@ -208,8 +208,13 @@ def _expected_pins() -> dict[str, str] | None:
     return {k: v for k, v in found.items() if k in CONSENSUS_PACKAGES}
 
 
-def check_environment() -> list[str]:
-    """Return human-readable reasons this host would diverge. Empty means OK."""
+def check_environment(consensus_overrides: bool = True) -> list[str]:
+    """Return human-readable reasons this host would diverge. Empty means OK.
+
+    `consensus_overrides=False` leaves the consensus-constant check to
+    `assert_consensus_overrides_allowed`, which needs the chain's genesis hash
+    and therefore runs later in a neuron's startup than this does.
+    """
     problems: list[str] = []
 
     installed = _package_versions()
@@ -251,9 +256,8 @@ def check_environment() -> list[str]:
     # the field by its own rules (diligence 2026-10, finding A2). The value is
     # in the digest either way; refusing at startup is what keeps the digest
     # from being the only place the divergence shows up.
-    from fugal_subnet.config import CONSENSUS_ENV_VARS
-    for name in CONSENSUS_ENV_VARS:
-        if name in os.environ:
+    if consensus_overrides:
+        for name in _consensus_overrides():
             problems.append(
                 f"{name} is set in the environment; consensus constants cannot be "
                 "overridden on a live validator (unset it, or change config.py "
@@ -263,7 +267,57 @@ def check_environment() -> list[str]:
     return problems
 
 
-def assert_environment(strict: bool = True) -> None:
+def _consensus_overrides() -> list[str]:
+    """Consensus constants currently set in this process's environment."""
+    from fugal_subnet.config import CONSENSUS_ENV_VARS
+
+    return [name for name in CONSENSUS_ENV_VARS if name in os.environ]
+
+
+def assert_consensus_overrides_allowed(genesis_hash: str | None) -> None:
+    """Refuse a consensus constant set in the environment on finney; warn elsewhere.
+
+    A consensus constant in the environment is a neuron scoring, or being
+    scored, by its own rules (diligence 2026-10, finding A2). On mainnet that
+    is refused outright, and FUGAL_ALLOW_ENV_DRIFT does not lift it. On a test
+    or local chain it is allowed with a warning, because a rehearsal can need a
+    different epoch shape from the one that ships: the netuid-552 warm-up runs
+    FUGAL_EXPLORE_FRACTION=0.5 on every neuron so the reference frame reaches
+    FRONTIER_MIN_TRIALS in days rather than weeks, and the frame itself does
+    not depend on the fraction. Every neuron on that subnet must set the
+    identical value; it is in the consensus digest and in the miner's compose
+    hash, so a divergence is attributable. The chain is identified by its
+    genesis hash, as for --mock, and an unreadable genesis is not a pass.
+    """
+    names = _consensus_overrides()
+    if not names:
+        return
+    from fugal_subnet.config import FINNEY_GENESIS_HASH
+
+    listed = ", ".join(names)
+    if genesis_hash is None:
+        raise RuntimeError(
+            f"{listed} set in the environment, and the chain's genesis hash could "
+            "not be read, so this cannot be shown not to be finney. Unset the "
+            "override, or point --network at a chain that answers."
+        )
+    if str(genesis_hash).lower() == FINNEY_GENESIS_HASH.lower():
+        raise RuntimeError(
+            f"{listed} set in the environment on finney (mainnet): consensus "
+            "constants cannot be overridden there. Unset it, or change config.py "
+            "through review."
+        )
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "Consensus override in effect on a non-finney chain: %s. Every neuron on "
+        "this subnet must set the identical value; it is in the consensus digest "
+        "(%s), and a divergence fails every proof.",
+        listed, consensus_digest(),
+    )
+
+
+def assert_environment(strict: bool = True, consensus_overrides: bool = True) -> None:
     """Fail loudly at startup rather than skewing weights quietly for hours.
 
     A validator running mismatched libraries does not crash — it computes
@@ -271,7 +325,7 @@ def assert_environment(strict: bool = True) -> None:
     whole time. In a consensus system a loud failure is always the better
     trade, so this raises by default.
     """
-    problems = check_environment()
+    problems = check_environment(consensus_overrides=consensus_overrides)
     if not problems:
         return
     detail = "\n".join(f"  - {p}" for p in problems)

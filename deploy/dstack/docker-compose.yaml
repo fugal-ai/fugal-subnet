@@ -20,7 +20,8 @@
 # success-contract transition, in a private registry; it is NOT valid for
 # mainnet and the first image-v* release replaces the image line. The
 # testnet twin for the netuid-552 warm-up is docker-compose.test.yaml; the
-# two differ only in network/netuid, so one digest yields two entries.
+# two differ only in network/netuid and the warm-up's FUGAL_EXPLORE_FRACTION
+# (set there, not here), so one digest yields two entries.
 services:
   miner:
     image: us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:e4c2deff9c9ee2b38b3495690c7e5c5b52acb740a96e1b16664a235725736ca4

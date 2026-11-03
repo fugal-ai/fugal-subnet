@@ -95,6 +95,45 @@ def test_a_live_validator_refuses_an_overridden_consensus_constant(monkeypatch):
     monkeypatch.setenv("FUGAL_SCORE_QUALITY_FLOOR", "0.5")
     after = [p for p in check_environment() if "FUGAL_SCORE_QUALITY_FLOOR" in p]
     assert not before and after and "cannot be overridden" in after[0]
+    # The neurons defer this check to the genesis-aware one below.
+    deferred = [p for p in check_environment(consensus_overrides=False)
+                if "FUGAL_SCORE_QUALITY_FLOOR" in p]
+    assert not deferred
+
+
+def test_consensus_overrides_are_refused_on_finney_and_warned_elsewhere(monkeypatch, caplog):
+    import logging
+
+    from fugal_subnet.config import FINNEY_GENESIS_HASH
+    from fugal_subnet.fingerprint import assert_consensus_overrides_allowed
+
+    monkeypatch.delenv("FUGAL_EXPLORE_FRACTION", raising=False)
+    assert_consensus_overrides_allowed(FINNEY_GENESIS_HASH)  # nothing set: nothing to refuse
+    assert_consensus_overrides_allowed(None)
+
+    monkeypatch.setenv("FUGAL_EXPLORE_FRACTION", "0.5")
+    with pytest.raises(RuntimeError, match="finney"):
+        assert_consensus_overrides_allowed(FINNEY_GENESIS_HASH)
+    with pytest.raises(RuntimeError, match="genesis"):
+        assert_consensus_overrides_allowed(None)
+    # The drift flag downgrades library and dispatch problems; it does not lift this.
+    monkeypatch.setenv("FUGAL_ALLOW_ENV_DRIFT", "1")
+    with pytest.raises(RuntimeError, match="finney"):
+        assert_consensus_overrides_allowed(FINNEY_GENESIS_HASH)
+    # A test chain: allowed, named in a warning that carries the digest.
+    with caplog.at_level(logging.WARNING, logger="fugal_subnet.fingerprint"):
+        assert_consensus_overrides_allowed("0x" + "00" * 32)
+    assert any("FUGAL_EXPLORE_FRACTION" in r.getMessage() for r in caplog.records)
+
+
+def test_both_neurons_check_consensus_overrides_against_the_genesis():
+    import inspect
+
+    import neurons.miner
+    import neurons.validator
+
+    for mod in (neurons.validator, neurons.miner):
+        assert "assert_consensus_overrides_allowed(genesis)" in inspect.getsource(mod), mod.__name__
 
 
 def test_an_unreadable_genesis_does_not_pass_mock():

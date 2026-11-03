@@ -20,8 +20,20 @@ that the chain prunes the non-immune subnet with the lowest *moving* alpha
 price whenever a new subnet registers, and the moving price stays at 0 until
 `start_call`. Every value here moves — re-read it with `--status` before acting.
 The deploy files already name this target: `deploy/dstack/docker-compose.yaml`
-(the testnet twin for rehearsals is `docker-compose.test.yaml`) and the
-`validator.env.example` comment.
+(the testnet twin for rehearsals is `docker-compose.test.yaml`, which also
+sets the warm-up's `FUGAL_EXPLORE_FRACTION=0.5`) and the `validator.env.example`
+comment.
+
+### The protocol label stays `fugal-testnet-success-v1` on mainnet
+
+`routing_protocol.identity()` hashes the literal string
+`"fugal-testnet-success-v1"` together with the success contract, the token
+manifest and `data/models.json`. That digest names every reveal, and the
+bootstrap frame is built from reveals produced under it on testnet. Renaming
+the label to say "mainnet", or refreshing the price table between the warm-up
+and the launch, is a new identity that rejects the frame. The word "testnet"
+in it is a historical name, not a network setting; the network is `--network`
+and `FUGAL_NETWORK`.
 
 ---
 
@@ -38,7 +50,7 @@ will otherwise go looking in the wrong place:
 | The token manifest shipped in the checkout is `reviewed`, not `candidate` | `neurons/validator.py`, `neurons/miner.py` (`--live` only) | **Cleared by #99 (2026-11-02)**: rebuilt from 664 fresh metered calls and promoted; the record is in `SUCCESS_CONTRACT.md`. Any later change to it is a protocol-identity change (image and approved entry rebuilt, evidence reset) |
 | `data/reference_frame.json` exists and matches its pin | `reference_frame.load_bootstrap(require=True)`, `check_safety_invariants.py` | `scripts/build_bootstrap_frame.py` from reveals produced under the current protocol identity |
 | `FUGAL_TEE_MEASUREMENTS` holds at least one `<base>:<compose_hash>` entry | validator startup | A signed `image-v*` release; `scripts/fetch_approved_entries.py` needs `deploy/keys/allowed_signers` to exist, which it does not yet |
-| No consensus constant is set in the environment | `fingerprint.assert_environment` | Unset it; only `FUGAL_EPOCH_INTERVAL` and `FUGAL_TEE_MEASUREMENTS` are meant to be set per deployment |
+| No consensus constant is set in the environment on finney | `fingerprint.assert_consensus_overrides_allowed`, by genesis hash, in both neurons | Unset it; only `FUGAL_EPOCH_INTERVAL` and `FUGAL_TEE_MEASUREMENTS` are meant to be set per deployment. On a test or local chain an override starts with a warning, which is how the netuid-552 warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every neuron |
 | `--mock` is not finney | `fingerprint.assert_mock_allowed` | Run `--live` |
 
 Two more that are not startup errors but are just as final: a validator with
@@ -51,8 +63,13 @@ published.
 
 `start_call` is the single most consequential extrinsic in a launch, and its
 absence is invisible. Without it the subnet has no first-emission block:
-staking is rejected with `SubtokenDisabled`, no validator ever earns a permit,
-and every `set_weights` fails. The neurons run, log success, and land nothing.
+staking is rejected with `SubtokenDisabled` and the subnet earns nothing.
+Validators whose stake comes from root (their own or childkeyed to them,
+counted at 0.18) do hold permits and do land weights before `start_call`
+(measured on netuid 70 at block 9422854: three root-staked validators with
+weights set and zero emission). A validator that depends on alpha staked to it
+holds nothing, earns no permit, and every `set_weights` fails. Either way the
+neurons run, log success, and nothing is paid.
 
 Fugal's own testnet subnet (netuid 552) sat in exactly this state from May to
 September. Its miner served an axon, its validator ran epochs, and not one

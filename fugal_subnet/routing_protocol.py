@@ -12,6 +12,11 @@ PRICES_PATH = ROOT / "routing_data" / "models.json"
 BENCHMARK_LAMBDA = 1.0  # Consensus constant; never a miner environment setting.
 
 
+# "fugal-testnet-success-v1" is a protocol name, not a network name. It is
+# hashed into every reveal and into the bootstrap frame built from testnet
+# reveals, so renaming it for mainnet, or changing models.json or the manifest
+# between the warm-up and the launch, is a new identity that rejects that
+# frame. The network is --network / FUGAL_NETWORK, never this string.
 def identity():
     return contract.digest({"protocol": "fugal-testnet-success-v1", "contract": contract.CONTRACT,
                             "profile": contract.PROFILE_ID, "lambda": BENCHMARK_LAMBDA,

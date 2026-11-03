@@ -213,9 +213,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     subtensor = bt.Subtensor(network=network)
     # The miner keeps --mock as its default because --live spends real money
     # on inference; what it must never do is run mock on mainnet.
-    from fugal_subnet.fingerprint import assert_mock_allowed, chain_genesis_hash
+    from fugal_subnet.fingerprint import (
+        assert_consensus_overrides_allowed,
+        assert_mock_allowed,
+        chain_genesis_hash,
+    )
     try:
-        assert_mock_allowed(chain_genesis_hash(subtensor), mock)
+        genesis = chain_genesis_hash(subtensor)
+        assert_mock_allowed(genesis, mock)
+        # A consensus constant in the environment (the compose sets
+        # FUGAL_EXPLORE_FRACTION=0.5 for the testnet warm-up) is refused on
+        # finney and warned about elsewhere, as on the validator.
+        assert_consensus_overrides_allowed(genesis)
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
     metagraph = subtensor.metagraph(netuid)

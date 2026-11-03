@@ -4,6 +4,18 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — approved entries for image-v2026.11.03c (the retry image), one per network
+
+`image-v2026.11.03c` (signed, commit `1a0bce0`) built
+`ghcr.io/fugal-ai/fugal-miner@sha256:843460e6…4a6f8`, public. Both composes pin
+it; the frozen `app-compose.frozen-2026-11-03c-{finney,test}.json` embed them
+byte for byte and their raw-byte sha256 are the compose halves of the entries
+(finney `9ab870cf…f166`, test `c9b5c43b…0dad8`). The base half was re-measured
+on the first TD booted from this image before publication (rotation table).
+The 03b entries stay approved alongside for the 48-hour transition window per
+`docs/APPROVED_ENTRY_ROTATION.md`; seed 1 keeps serving 03b until seed 2 has
+served a verified epoch on 03c.
+
 ### Changed — the miner's proxy retries transient upstream errors; 401/402 are named as operator problems; failed results carry canonical number types (next image rotation)
 
 Mainnet day one: one provider's 429s failed ~13% of a seed's calls and each

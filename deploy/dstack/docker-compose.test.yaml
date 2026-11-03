@@ -21,14 +21,14 @@
 # image digest yields two compose hashes and two approved entries, one per
 # network. Keep them in lockstep: any other change to one that is not made to
 # the other is a difference between what was rehearsed and what ships.
-# STATUS 2026-11-03: the image line is the first signed release, tag
-# image-v2026.11.03b (commit bac2a33), built by .github/workflows/image.yml
-# and public on ghcr.io. The 2026-09-07 private-registry digest that stood
+# STATUS 2026-11-03 (evening): the image line is the second signed release,
+# tag image-v2026.11.03c (commit 1a0bce0: proxy retries, operator errors named,
+# canonical result types), built by .github/workflows/image.yml and public. The 2026-09-07 private-registry digest that stood
 # here before is kept in the frozen app-compose files beside this one, so the
 # recorded September entries can still be recomputed.
 services:
   miner:
-    image: ghcr.io/fugal-ai/fugal-miner@sha256:3f6e3e2d1252a340b2a7609974987aa031da7abdf6724c267982d6feeb1fda12
+    image: ghcr.io/fugal-ai/fugal-miner@sha256:843460e6277be6a3af2ec749b210f7ec00f05a802dd32d07427441e57954a6f8
     restart: unless-stopped
     ports:
       - "8091:8091"   # axon: validators reach the miner here (open to the world)

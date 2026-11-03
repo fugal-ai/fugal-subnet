@@ -134,12 +134,13 @@ journalctl -u fugal-validator -f
 Edit **every** value in the environment file; the example ships pointed at the
 test network.
 
-### Host reference (what the first Fugal validator host runs on)
+### Host reference
 
-Measured on 2026-11-03, so the numbers are a starting point, not a floor.
+Measured on a validator host on 2026-11-03, so the numbers are a starting
+point, not a floor.
 
-- **Shape.** A 2 vCPU / 4 GB / 80 GB x86 cloud VM (Hetzner CPX22, Falkenstein)
-  on Ubuntu 24.04 with Python 3.12. The validator verifies proofs and does
+- **Shape.** A 2 vCPU / 4 GB / 80 GB x86 cloud VM on Ubuntu 24.04 with
+  Python 3.12. The validator verifies proofs and does
   arithmetic; it never runs the model. The locked venv is 5.7 GB on disk
   because `torch` is pinned from PyPI with its CUDA libraries, so give the
   disk 20 GB of headroom. 2 GB of swap is cheap insurance on a 4 GB box.
@@ -153,8 +154,10 @@ Measured on 2026-11-03, so the numbers are a starting point, not a floor.
   login and password authentication are off in `sshd`, `fail2ban` guards the
   SSH jail, and unattended security upgrades are on.
 - **Outbound.** The chain endpoints (wss), the miners' axons (8091), the PCCS
-  (`FUGAL_PCCS_URL`), Hugging Face for the token manifest, GitHub and PyPI
-  for the build, and the reveal bucket.
+  (`FUGAL_PCCS_URL`), Hugging Face for the benchmark datasets the pool is
+  built from (not needed when a manifest-matching `pool.json.gz` is
+  provided; the token manifest ships in the repo), GitHub and PyPI for the
+  build, and the reveal bucket.
 - **Reveal uploads.** `google-cloud-storage` is not in the lock, so
   `reveal_publisher` uses the `gcloud` CLI. Install it on the host and
   activate the bucket's writer service account **as the service user**
@@ -188,7 +191,10 @@ journalctl -t fugal-watch         # every FAIL, with or without an alert URL
 
 `FUGAL_ALERT_URL` is an ntfy topic (`https://ntfy.sh/<topic>`, no account,
 pushes to a phone) or a Discord channel webhook (`FUGAL_ALERT_KIND=discord`).
-Left empty, failures go to the journal only. One run lasts until the next
+**ntfy topics are public: anyone who knows the name can read every alert, and
+alerts carry the hostname and the FAIL lines.** Use a long random topic, for
+example `fugal-` followed by 32 random characters, and treat it like a
+password. Left empty, failures go to the journal only. One run lasts until the next
 boundary, up to 72 minutes on a 4320 s epoch; systemd does not start a
 second instance while one is active, so the hourly tick simply skips.
 

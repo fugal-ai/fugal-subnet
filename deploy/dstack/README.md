@@ -39,7 +39,10 @@ sha256 over MRTD‖RTMR1‖RTMR2).
 | `no_instance_id` | `false` | The `instance-id` event is what lets the pusher refuse a correctly-imaged TD somebody else booted |
 | `.env` | absent | Refused without KMS anyway; the key travels over the attested channel |
 
-`docker-compose.yaml` in this directory is the compose. Pin the image by digest.
+`docker-compose.yaml` in this directory is the mainnet compose (`finney`, netuid 70);
+`docker-compose.test.yaml` is its testnet twin (`test`, netuid 552) for rehearsals.
+Copy the one for your network into the project as `docker-compose.yaml`. Pin the
+image by digest.
 
 ## Identity → approved entry
 

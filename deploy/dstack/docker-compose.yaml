@@ -15,11 +15,13 @@
 # (.github/workflows/image.yml publishes to ghcr.io by digest), never from a
 # local or private build: an image nobody can pull is an entry nobody can audit.
 #
-# STATUS 2026-11-02: the digest below is the 2026-09-07 TESTNET image, built
-# before the success-contract transition, in a private registry, on netuid
-# 552. It is kept so the recorded testnet entries can be recomputed. It is NOT
-# valid for mainnet; the first image-v* release replaces this block (image,
-# FUGAL_NETWORK, FUGAL_NETUID and --network/--netuid) together.
+# STATUS 2026-11-03: this is the MAINNET compose, finney / netuid 70. The
+# digest below is still the 2026-09-07 testnet image, built before the
+# success-contract transition, in a private registry; it is NOT valid for
+# mainnet and the first image-v* release replaces the image line. The
+# testnet twin for the netuid-552 warm-up is docker-compose.test.yaml; the
+# two differ only in network/netuid and the warm-up's FUGAL_EXPLORE_FRACTION
+# (set there, not here), so one digest yields two entries.
 services:
   miner:
     image: us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:e4c2deff9c9ee2b38b3495690c7e5c5b52acb740a96e1b16664a235725736ca4
@@ -41,8 +43,8 @@ services:
       # image upgrades, which is a consensus hazard wearing a convenience hat.
       - fugal-results:/app/results
     environment:
-      - FUGAL_NETWORK=test
-      - FUGAL_NETUID=552
+      - FUGAL_NETWORK=finney
+      - FUGAL_NETUID=70
       # MUST equal tempo x 12 s on every neuron (validators included).
       - FUGAL_EPOCH_INTERVAL=4320
       - FUGAL_EMBEDDING_CACHE=/app/results/embeddings
@@ -61,9 +63,9 @@ services:
       - --live
       - --await-provisioning
       - --network
-      - test
+      - finney
       - --netuid
-      - "552"
+      - "70"
       - --coldkey
       - fugal
       - --hotkey

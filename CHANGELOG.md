@@ -4,6 +4,43 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — consensus overrides are refused on finney by genesis hash and allowed with a warning elsewhere; the testnet twin compose explores at 0.5
+
+A live neuron with a consensus constant in its environment was refused at
+startup on every chain, and `FUGAL_ALLOW_ENV_DRIFT=1` was the only way past,
+which also waived the library and CPU-dispatch pins. Both neurons now check
+the overrides against the connected chain's genesis hash, as `--mock` already
+is: refused on finney, and the drift flag no longer lifts that; allowed with a
+warning that names the override and the consensus digest on a test or local
+chain. The reason is the netuid-552 warm-up: the reference frame needs
+`FRONTIER_MIN_TRIALS` (300) distinct exploration trials per model before the
+frontier pays in full, which is about 17 days at the shipped 0.05 and about 2
+days at 0.5 (150 slots an epoch over 17 models), and the frame does not depend
+on the fraction. `deploy/dstack/docker-compose.test.yaml` therefore sets
+`FUGAL_EXPLORE_FRACTION=0.5` (the testnet entry attests it; the mainnet compose
+does not set it, so the two twins now differ in that line as well as network
+and netuid) and `validator.env.example` documents the matching validator line.
+`MAINNET_LAUNCH.md` corrects §1 (before `start_call`, root-staked validators
+do hold permits and do land weights, measured on netuid 70 at block 9422854;
+only staking fails) and records that the protocol label
+`fugal-testnet-success-v1` is not renamed for mainnet, since it is in the
+identity the bootstrap frame is built under; the same note sits beside the
+string in `routing_protocol.py`.
+
+### Changed — the deploy files name mainnet: finney, netuid 70
+
+The subnet is registered on finney as netuid 70 (block 9364303, 2026-10-26;
+`start_call` not yet called as of block 9422441). `deploy/dstack/
+docker-compose.yaml` now targets `finney`/`70`; its testnet twin for the
+netuid-552 warm-up is `docker-compose.test.yaml`, identical except for
+network and netuid, so one image digest yields one compose hash and one
+approved entry per network. `image.yml` freezes and attaches both. The image
+line in both is still the pre-transition testnet digest until the first
+`image-v*` release. `MAINNET_LAUNCH.md` records the chain facts that bind
+the launch (tempo, commit-reveal, the immunity end block and the pruning
+rule) and its commands name netuid 70; `validator.env.example` and
+`APPROVED_ENTRY_ROTATION.md` point at the right compose.
+
 ### Changed — a validator permit no longer admits a caller to a live miner's axon; the stake floor is 50
 
 Review 2026-11-02 (miner surface), decided 2026-11-03. `caller_allowed`

@@ -1942,9 +1942,15 @@ three lists (`CONSENSUS_ENV_VARS`, `CONSENSUS_ENV_INPUTS`,
 unclassified one), the fingerprint carries a `scoring` block with every
 consensus constant's value as in effect, `consensus_digest` hashes it along
 with the routing-protocol identity (which covers the price table), and
-`check_environment` reports any consensus constant set in the environment so a
-live validator refuses to start. Inputs — the epoch length, the approved
-entries — are set per deployment on purpose and are recorded, not refused.
+`assert_consensus_overrides_allowed` refuses any consensus constant set in the
+environment on finney, identified by genesis hash as `--mock` is, in both
+neurons, and `FUGAL_ALLOW_ENV_DRIFT` does not lift that. On a test or local
+chain the override is allowed with a warning that names it and the digest
+(2026-11-03): the netuid-552 warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every
+neuron, miners' compose included, so the reference frame reaches
+`FRONTIER_MIN_TRIALS` in days, and the frame does not depend on the fraction.
+Inputs — the epoch length, the approved entries — are set per deployment on
+purpose and are recorded, not refused.
 
 ### I8 — the validator is live by default, and nothing runs mock on finney (fixed 2026-10-14)
 

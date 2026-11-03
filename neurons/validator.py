@@ -242,7 +242,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         from fugal_subnet.routing_protocol import MANIFEST_PATH
         from fugal_subnet.vendor import success_contract as contract
         contract.validate_manifest(json.loads(MANIFEST_PATH.read_text()), deployable=True)
-    assert_environment(strict=live)
+    # Consensus overrides are checked against the chain's genesis hash once the
+    # chain is connected (below): refused on finney, warned about elsewhere.
+    assert_environment(strict=live, consensus_overrides=False)
     logger.info("Consensus environment digest: %s", consensus_digest())
 
     import bittensor as bt
@@ -311,9 +313,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             "boundary and collection blocks; a non-archive node keeps ~300 blocks "
             "and refuses older ones after a late start or a retried epoch."
         )
-    from fugal_subnet.fingerprint import assert_mock_allowed, chain_genesis_hash
+    from fugal_subnet.fingerprint import (
+        assert_consensus_overrides_allowed,
+        assert_mock_allowed,
+        chain_genesis_hash,
+    )
     try:
-        assert_mock_allowed(chain_genesis_hash(subtensor), mock)
+        genesis = chain_genesis_hash(subtensor)
+        assert_mock_allowed(genesis, mock)
+        assert_consensus_overrides_allowed(genesis)
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
     metagraph = subtensor.metagraph(netuid)

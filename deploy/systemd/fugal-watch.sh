@@ -4,6 +4,8 @@
 # run itself dies. Driven by fugal-watch.timer; settings in /etc/fugal/watch.env.
 #
 #   FUGAL_WATCH_NETWORK / FUGAL_WATCH_NETUID   which chain and subnet
+#   FUGAL_WATCH_EPOCH_INTERVAL   tempo x 12 s (4320); the script defaults to 3600
+#                            and would then watch the wrong boundaries
 #   FUGAL_WATCH_VALIDATORS   name=hotkey_ss58,...  (this host's hotkey at least)
 #   FUGAL_WATCH_MINERS       name=hotkey_ss58,...  (optional)
 #   FUGAL_WATCH_REVEALS      name=/path/to/epochs,... (optional)
@@ -20,6 +22,7 @@ tmp="$(mktemp)"
 .venv/bin/python scripts/watch_subnet.py \
   --network "${FUGAL_WATCH_NETWORK:-test}" --netuid "${FUGAL_WATCH_NETUID:-552}" \
   --epochs 1 --timeout "${FUGAL_WATCH_TIMEOUT:-5400}" \
+  --epoch-interval "${FUGAL_WATCH_EPOCH_INTERVAL:-4320}" \
   --validators "${FUGAL_WATCH_VALIDATORS:-}" --miners "${FUGAL_WATCH_MINERS:-}" \
   --reveals "${FUGAL_WATCH_REVEALS:-}" >"$tmp" 2>&1
 rc=$?

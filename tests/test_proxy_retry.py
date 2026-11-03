@@ -71,7 +71,8 @@ def _run(monkeypatch, script):
     proxy.api_key = "test"
     proxy.prices = {"openai/gpt-5.4-nano": (0.2e-6, 1.25e-6)}
     proxy.start()
-    import socket, time as _t
+    import socket
+    import time as _t
     for _ in range(100):                       # the server thread may not be accepting yet
         try:
             socket.create_connection(("127.0.0.1", proxy.port), timeout=0.2).close(); break

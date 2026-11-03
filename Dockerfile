@@ -2,6 +2,16 @@
 # uv.lock review-coupled. The image contains no mutable dependency installation.
 FROM ghcr.io/astral-sh/uv:0.8.14-python3.12-bookworm-slim@sha256:b748a09ec61c993083278020a84e16f0c81485c5349b30c64dd29d6a22da7462
 
+# OCI labels. Without them the published package inherits the base image's
+# description (uv's) and is not linked to this repository on ghcr.io. The
+# labels are part of the image config and therefore of the digest; changing
+# them is a new image, hence a new approved entry, like any other byte here.
+LABEL org.opencontainers.image.source="https://github.com/fugal-ai/fugal-subnet" \
+      org.opencontainers.image.title="fugal-miner" \
+      org.opencontainers.image.description="Fugal subnet miner: trains cost-aware LLM router heads and serves attested benchmark proofs from a TDX confidential VM under dstack. Deploy by digest; see deploy/dstack/README.md." \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.vendor="Fugal"
+
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \

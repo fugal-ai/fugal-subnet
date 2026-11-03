@@ -4,6 +4,14 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — OCI labels on the miner image
+
+`Dockerfile` now sets `org.opencontainers.image.source`, `title`,
+`description`, `licenses` and `vendor`. Without them the ghcr.io package page
+showed the base image's (uv's) description and was not linked to this
+repository. The labels live in the image config, so they are in the digest:
+the first build carrying them is a new image and a new approved entry.
+
 ### Added — the release signing trust root has its first key
 
 `deploy/keys/allowed_signers` now exists, with one ED25519 key

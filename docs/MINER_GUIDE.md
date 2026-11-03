@@ -626,9 +626,11 @@ about your head.
   rest are disqualified. Routing decisions are compared in a global model
   index space, so renumbering your model list does not evade it, and nudging
   a bias term until a few decisions change does not either.
-- **Axon access** — in `--live` only hotkeys with a validator permit or at
-  least `FUGAL_MIN_VALIDATOR_STAKE` TAO can query you. Your head is served in
-  full to whoever can.
+- **Axon access** — in `--live` only hotkeys with at least
+  `FUGAL_MIN_VALIDATOR_STAKE` (default 50) stake on the subnet, as the chain
+  reports it, can query you; a validator permit alone does not. Your head is
+  served in full to whoever can, so this is a speed bump in front of dedup,
+  not the defence.
 - **Evidence accumulation** — miss=0 prevents selective publication.
 
 ## Costs

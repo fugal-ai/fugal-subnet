@@ -28,10 +28,13 @@ validator:
 - Python 3.11-3.12
 - CPU sufficient (no model inference required)
 - TAO for subnet registration
-- **A validator permit, or at least `FUGAL_MIN_VALIDATOR_STAKE` TAO (default
-  1000) staked to your hotkey.** In `--live` a miner's axon answers only
-  hotkeys that have one or the other; below that you receive no proofs and
-  see "No valid proofs received" every epoch with no error on either side
+- **At least `FUGAL_MIN_VALIDATOR_STAKE` (default 50) stake on the subnet,
+  as the chain reports it for your UID: alpha on this subnet plus root TAO
+  at the 0.18 root weight, after childkey inheritance.** A validator permit
+  alone does not qualify. In `--live` a miner's axon answers only hotkeys at
+  or above that floor; below it you receive no proofs and see "No valid
+  proofs received" every epoch with no error on either side. The validator
+  warns at startup when its own stake is below the floor
 - Reliable server with good uptime
 
 **No OpenRouter API key needed** — validators verify proofs, not call models.
@@ -289,9 +292,10 @@ The validator automatically flags:
 
 **"No valid proofs received"** — No miners responded or all proofs failed
 verification. The epoch is skipped and logged. If it happens every epoch,
-check your stake first: in `--live` miners answer only hotkeys with a
-validator permit or at least `FUGAL_MIN_VALIDATOR_STAKE` TAO (default 1000),
-and a refused query looks exactly like an absent miner from your side.
+check your stake first: in `--live` miners answer only hotkeys with at least
+`FUGAL_MIN_VALIDATOR_STAKE` (default 50) stake on the subnet as the chain
+reports it, a permit alone does not qualify, and a refused query looks exactly
+like an absent miner from your side. The startup log says so when it applies.
 
 **Weight-setting failed** — Check that your validator has enough stake.
 

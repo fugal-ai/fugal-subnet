@@ -92,15 +92,20 @@ def test_live_miners_do_not_serve_heads_to_unstaked_callers():
     from neurons.miner import caller_allowed
 
     class MG:
-        hotkeys = ["5validator", "5miner"]
-        validator_permit = [True, False]
-        S = [10_000.0, 0.0]
+        hotkeys = ["5validator", "5miner", "5dust"]
+        validator_permit = [True, False, True]   # 5dust: permit, no stake
+        S = [10_000.0, 0.0, 0.5]
 
     allowed, _ = caller_allowed(MG(), "5validator", live=True)
     blocked, reason = caller_allowed(MG(), "5miner", live=True)
     assert allowed
     assert not blocked
     assert "stake" in reason.lower() and "permit" in reason.lower()
+    # A permit alone no longer admits: subtensor grants one to any nonzero
+    # stake while fewer than max_allowed_validators are staked (2026-11-03).
+    dust_allowed, dust_reason = caller_allowed(MG(), "5dust", live=True)
+    assert not dust_allowed
+    assert "permit alone" in dust_reason
     # Mock keeps the open default for local testnets and the dress rehearsal.
     assert caller_allowed(MG(), "5miner", live=False)[0]
 

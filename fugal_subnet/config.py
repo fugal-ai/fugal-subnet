@@ -467,13 +467,21 @@ MAX_WEIGHT_DELTA = float(os.getenv("FUGAL_MAX_WEIGHT_DELTA", "0.3"))
 REQUIRE_COMMITMENT = os.getenv("FUGAL_REQUIRE_COMMITMENT", "1") not in ("0", "false", "False")
 
 # --- Miner axon access control ---
-# Minimum stake (TAO) a querying hotkey needs when it lacks a validator permit,
-# in --live. The axon answers with the miner's FULL head, so an open axon is a
-# free download of the leader's router for anyone with a registration
-# (diligence 2026-10, finding 5). Mock ignores this and admits any registered
+# Minimum stake a querying hotkey needs in --live, permit or not. The unit is
+# the chain's `total_stake` for the UID as `metagraph.S` reports it: alpha on
+# this subnet plus root TAO at the chain's 0.18 root weight, after child/parent
+# key inheritance -- the same quantity subtensor uses for permits. A permit
+# alone does not admit: the chain grants one to any nonzero stake while fewer
+# than max_allowed_validators hotkeys are staked (review 2026-11-02). The axon
+# answers with the miner's FULL head, so an open axon is a free download of
+# the leader's router for anyone with a registration (diligence 2026-10,
+# finding 5); dedup, not this floor, is the defence, so the floor is set where
+# it never starves a real validator (50, decided 2026-11-03) rather than where
+# it would stop a determined copier. It ships inside the measured image, so a
+# change is an image rotation. Mock ignores it and admits any registered
 # hotkey, for local testnets and the dress rehearsal; a live miner refuses to
 # start with it at 0 (neurons/miner.py, caller_allowed).
-MIN_VALIDATOR_STAKE = float(os.getenv("FUGAL_MIN_VALIDATOR_STAKE", "1000"))
+MIN_VALIDATOR_STAKE = float(os.getenv("FUGAL_MIN_VALIDATOR_STAKE", "50"))
 
 # Grader execution limits live in graders.py itself (EXEC_TIMEOUT_SECS and the
 # output cap): that file is hash-pinned consensus code and cannot read an

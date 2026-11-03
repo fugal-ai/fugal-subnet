@@ -1908,8 +1908,11 @@ cosine ≥ 0.99, and a copy that rerouted 3 of 300 questions passed (measured
 with `find_duplicates`); weight was proportional to score, so N near-copies
 collected close to N shares for one TDX VM each. Diligence 2026-10, finding 5.
 
-1. **Access.** In `--live` the miner's axon admits a validator permit or stake
-   ≥ `MIN_VALIDATOR_STAKE` (default 1000 TAO), and refuses to start with the
+1. **Access.** In `--live` the miner's axon admits stake ≥
+   `MIN_VALIDATOR_STAKE` (default 50, in the chain's `total_stake` units for
+   the UID: alpha plus 0.18 × root TAO, childkey-inherited) and nothing else;
+   a validator permit alone was dropped 2026-11-03 because the chain grants one
+   to any nonzero stake on a young subnet. It refuses to start with the
    threshold at zero (`neurons/miner.py`, `caller_allowed`). Mock stays open.
 2. **Parameter clause.** `head_distance.relative_distance`, rows aligned by
    model id; below `DEDUP_PARAM_DISTANCE` (0.2) two heads are one. Measured

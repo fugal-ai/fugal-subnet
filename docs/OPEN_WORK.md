@@ -463,12 +463,11 @@ how to record more.
 a decision or a bounded change, and each is written here so it is not
 rediscovered:
 
-- **Miner axon gate** (`neurons/miner.py` `caller_allowed`): a validator
-  permit alone admits a caller, and subtensor grants a permit to any nonzero
-  stake while fewer than `max_allowed_validators` are staked, so on a young
-  subnet a dust-staked hotkey can download every head. Also the threshold is
-  compared to `metagraph.S`, which is alpha-denominated under dTAO. One-line
-  fix plus a units decision (plan D2).
+- **Miner axon gate** — **closed 2026-11-03**: stake is required of every
+  caller, a permit no longer admits on its own, and the floor is 50 in the
+  chain's `total_stake` units (alpha plus 0.18 × root TAO, childkey-inherited,
+  which is what `metagraph.S` holds). The value is inside the measured image,
+  so changing it is an image rotation.
 - **Compose-hash last-wins** (`attestation.replay_event_log`, `verify.py`):
   the claim is read from the LAST event of that name over the whole replayed
   chain with no `boot-mr-done` boundary, which dstack's own guidance tells

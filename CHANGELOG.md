@@ -4,6 +4,25 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — a validator permit no longer admits a caller to a live miner's axon; the stake floor is 50
+
+Review 2026-11-02 (miner surface), decided 2026-11-03. `caller_allowed`
+admitted any hotkey with a validator permit, and subtensor grants a permit
+to any nonzero stake while fewer than `max_allowed_validators` hotkeys are
+staked, so on a young subnet a dust-staked hotkey could download every head.
+Stake at or above `MIN_VALIDATOR_STAKE` is now required of every caller; the
+permit is reported in the reason, not trusted. The quantity compared is
+`metagraph.S`, the chain's `total_stake` for the UID — alpha on this subnet
+plus root TAO at the chain's 0.18 root weight, after child/parent-key
+inheritance (`get_stake_weights_for_network`) — which is what the chain
+itself uses for permits. The default drops from 1000 to 50 in those units:
+the gate is a speed bump in front of dedup, not the defence, and a floor set
+too high silently starves every validator of proofs while one set too low
+only cheapens a download that dedup already makes worthless. The value ships
+inside the measured image, so changing it is an image rotation. A live
+validator now logs a warning at startup when its own stake is below the
+floor, instead of discovering it as "No valid proofs received" every epoch.
+
 ### Changed — Python 3.11 is the floor; the miner image moves to 3.12
 
 GitHub's Dependabot alerts reported 17 open advisories on `main` (1 high,

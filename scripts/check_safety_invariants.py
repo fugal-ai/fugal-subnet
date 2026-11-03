@@ -32,7 +32,13 @@ PINNED_PRICE_TABLE_SHA256 = (
 # miner is scored against is valued from it. Consensus state like models.json.
 # None means the file must not exist yet; once scripts/build_bootstrap_frame.py
 # produces it, pin the digest it prints here in the same commit and say why.
-PINNED_BOOTSTRAP_FRAME_SHA256: str | None = None
+# Pinned 2026-11-03: built by scripts/build_frame_from_calls.py from
+# data/observations/bootstrap_frame_calls_v1.jsonl (17 models x up to 300 direct,
+# logged, graded calls; mistral stopped at 80 after upstream 429s and is not on
+# the hull). Rebuild with --build-only --batch 6000 to reproduce this digest.
+PINNED_BOOTSTRAP_FRAME_SHA256: str | None = (
+    "c31417505fe7a80e253a11261665fa5f7e63343d28f963f3ed96da2dd521a1c0"
+)
 PINNED_TPM_ROOT_SHA256 = (
     "594759594b9b61524f6c8ef668f7177f7b9066bc0674f2f49fe9e052be78beb2"
 )

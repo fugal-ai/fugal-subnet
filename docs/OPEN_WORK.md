@@ -463,6 +463,42 @@ how to record more.
 a decision or a bounded change, and each is written here so it is not
 rediscovered:
 
+- **The base measurement moves with GCP's firmware (2026-11-03).** The
+  first mainnet TDs measured `f4be9383…aa427` where every document said
+  `12a1f2f5…9141`; RTMR1/RTMR2 (the image) were unchanged, MRTD/RTMR0 (GCP's
+  TDX firmware) had moved. Three operational items follow, none yet built:
+  (a) an alert when `n_heads_invalid` jumps for every miner in the same epoch,
+  which is what a firmware roll looks like from a validator; (b) the same-day
+  base rotation as a runbook step: measure the new base on a live TD
+  (`provision_td.py --inspect`), publish the entry, add it beside the old one
+  on every validator, retire the old one after the window; (c) re-measure the
+  base on a live TD at T-24h before every entry publication.
+- **A rate-limited model drags the frontier's confidence (2026-11-03).**
+  `mistralai/mistral-large-2512` answered 42 of 275 direct calls at
+  concurrency 2 (429 from a shared upstream pool); live miners' exploration
+  calls to it would fail the same way, land as `failed`, and leave it under
+  `FRONTIER_MIN_TRIALS` while it sits on the hull — which scales every miner's
+  payout by `least_trials / 300`. Options: a per-model observation floor below
+  which a model drops off the hull (consensus change), or a price-table
+  refresh that drops chronically unavailable models (identity change). Decide
+  before the first model-list upgrade.
+- **CPU-only torch in the image.** The locked `torch` pulls the CUDA toolkit
+  (`nvidia-cuda-cupti` and friends) into a 6.4 GB image that never uses it,
+  and a PyPI timeout on one of those wheels failed a main build on 2026-11-03.
+  Switching to CPU wheels is a lockfile change under the determinism
+  fingerprint: do it after launch with a `check_determinism.py` re-run.
+- **Model-list v2.** The pinned 17 date from 2026-06; a full generation has
+  shipped since and 5 of 17 prices drifted (GLM's by an order of magnitude).
+  Launch kept the list because a change is a protocol-identity change (new
+  manifest, image, entries, evidence reset) and no head beats the frontier on
+  models it has no data for. Before the first upgrade: carry the frame over
+  for models whose row did not change, so an addition does not reset the
+  frontier's confidence for everything.
+- **The OpenRouter key limit is an outage.** A key with a total spend cap
+  returns 403 to every call once it is reached; a miner carrying such a key
+  fails every exploration and scored call with no error on the validator's
+  side. MINER_GUIDE should say: no total limit on the miner's key, and monitor
+  credits.
 - **Miner axon gate** — **closed 2026-11-03**: stake is required of every
   caller, a permit no longer admits on its own, and the floor is 50 in the
   chain's `total_stake` units (alpha plus 0.18 × root TAO, childkey-inherited,

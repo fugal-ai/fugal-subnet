@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — the bootstrap reference frame, built from direct logged calls
+
+`data/reference_frame.json` ships and is pinned (`PINNED_BOOTSTRAP_FRAME_SHA256`).
+It was built by the new `scripts/build_frame_from_calls.py`: 17 models × 300
+nonce-stratified pool questions, called through the miner's own `MeteringProxy`
+with the harness's prompt and token cap, graded by `graders.grade` with the
+harness's exec setting, folded with `aggregate_observations` and
+`accumulate_exploration`. Every call is a row in
+`data/observations/bootstrap_frame_calls_v1.jsonl` (model, question, correct,
+token counts, provider cost, response hash, pool hash, protocol identity,
+source hash, commit), so anyone with the pool and a key can re-issue and
+re-grade it. The provenance trade (logged calls, not TEE quotes) is stated in
+`INVARIANTS.md` item 3 and in the script. `build_bootstrap_frame.py` (from
+reveals) is unchanged. OPEN_WORK records what the launch day taught: the base
+measurement follows GCP's firmware, a rate-limited model caps everyone's
+payout, the CUDA wheels in the image, model-list v2, and key spend limits.
+
 ### Added — the first signed release's approved entries, one per network
 
 `image-v2026.11.03b` (signed by the key in `deploy/keys/allowed_signers`,

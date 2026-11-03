@@ -101,16 +101,25 @@ Three changes:
    ramp is a count of what has been measured and cannot be filled by
    duplicates.
 3. **A live validator starts from the shipped bootstrap frame**,
-   `data/reference_frame.json`, built by `scripts/build_bootstrap_frame.py`
-   from testnet reveals and hash-pinned in `check_safety_invariants.py`
+   `data/reference_frame.json`, hash-pinned in `check_safety_invariants.py`
    (`check_bootstrap_frame_pinned`). It is measured evidence, not a prior:
-   decayed exploration counts, valued exactly as live samples are. Without it
+   exploration counts, valued exactly as live samples are. Without it
    epoch 1 pays nobody and full payout arrives after roughly 340 epochs at
    fifteen exploration slots over seventeen models. `load_bootstrap(require=
    True)` makes a missing file a startup error in live, because one validator
    starting cold is one validator scoring the field against a different
-   frontier (I1). Pending: the file itself, which needs the val2 testnet
-   reveals.
+   frontier (I1). Two builders produce the same structure: `scripts/
+   build_bootstrap_frame.py` replays published reveals (attested samples), and
+   `scripts/build_frame_from_calls.py` makes the exploration calls directly,
+   through the miner's own proxy, prompts and graders, and commits the call log
+   beside the frame (re-gradeable, not attested). **The 2026-11-03 launch frame
+   is the second kind**: 17 models × 300 nonce-stratified questions,
+   `data/observations/bootstrap_frame_calls_v1.jsonl`, chosen so the subnet
+   could launch with a full-confidence frontier in a day instead of waiting two
+   days of chain epochs. The trade is stated in the script's docstring and
+   here: the bootstrap's provenance is Fugal's logged calls, which anyone can
+   re-issue and re-grade, rather than TEE quotes. Live exploration folds in from
+   epoch 1 and the bootstrap decays out at `FRAME_HALF_LIFE`.
 
 Enforced by `tests/test_finding3_prior_bias.py` and the rewritten
 `test_every_constant_policy_scores_zero`, both of which score constant policies
@@ -2368,10 +2377,10 @@ every `set_weights` failed while the neurons reported success.
 5. Second independent validator operator; coldkeys encrypted and off every
    neuron host; monitoring with an alert channel.
 6. ~~Recalibrate the reference-frame prior from real testnet data.~~ The prior
-   no longer values the frontier (I3, 2026-10-14). What remains is to ship
-   `data/reference_frame.json` built from the val2 testnet reveals with
-   `scripts/build_bootstrap_frame.py`, and pin it; until then a live
-   validator refuses to start cold.
+   no longer values the frontier (I3, 2026-10-14). ~~What remains is to ship
+   `data/reference_frame.json` and pin it.~~ Shipped 2026-11-03, built from
+   direct logged calls (`scripts/build_frame_from_calls.py`, item 3 above) and
+   pinned.
 7. ~~Close or consciously accept the pool-memorization gap above.~~ Bounded
    2026-10-14 (`SLICE_SHARE_FACTOR`; a memoriser buys ~17% of a score) and
    the residual is accepted — see "Pool memorization" under Known gaps.

@@ -83,8 +83,10 @@ down is a worse failure than one that needs an operator to run step 5.
 |---|---|---|---|---|
 | `12a1f2f5…9141:cf31a1a4…69d2` | `3430da97…541f` | `e284963` | 2026-09-06 | 2026-09-07 (no instance ever verified on it; both TDs recreated) |
 | `12a1f2f5…9141:12d945d2…3910` | `59039d01…692a` | `45729c2` | 2026-09-06 | 2026-09-07 (never verified; TDs recreated) |
-| `12a1f2f5…9141:00354525…ab0d` | `9d7916c3…e0a9` | `d9fa3a5` | 2026-09-07 | — |
-| `12a1f2f5…9141:41de1e4c…9e10` | `e4c2deff…6ca4` | `37495ae` | 2026-09-07 | — |
+| `12a1f2f5…9141:00354525…ab0d` | `9d7916c3…e0a9` | `d9fa3a5` | 2026-09-07 | 2026-11-03 (private-registry image; pre-success-contract protocol; testnet only) |
+| `12a1f2f5…9141:41de1e4c…9e10` | `e4c2deff…6ca4` | `37495ae` | 2026-09-07 | 2026-11-03 (same) |
+| `12a1f2f5…9141:dcd0dd8d…2d7f` (**test / 552**, warm-up; compose sets `FUGAL_EXPLORE_FRACTION=0.5`) | `3f6e3e2d…fda12` (`image-v2026.11.03b`, public ghcr) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | — |
+| `12a1f2f5…9141:ed2be85f…85c4` (**finney / 70**, mainnet) | `3f6e3e2d…fda12` (same image) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | — |
 
 ## The transition window
 

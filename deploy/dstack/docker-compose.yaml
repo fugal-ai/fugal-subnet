@@ -16,15 +16,14 @@
 # local or private build: an image nobody can pull is an entry nobody can audit.
 #
 # STATUS 2026-11-03: this is the MAINNET compose, finney / netuid 70. The
-# digest below is still the 2026-09-07 testnet image, built before the
-# success-contract transition, in a private registry; it is NOT valid for
-# mainnet and the first image-v* release replaces the image line. The
+# image line is the first signed release, tag image-v2026.11.03b (commit
+# bac2a33), built by .github/workflows/image.yml and public on ghcr.io. The
 # testnet twin for the netuid-552 warm-up is docker-compose.test.yaml; the
 # two differ only in network/netuid and the warm-up's FUGAL_EXPLORE_FRACTION
 # (set there, not here), so one digest yields two entries.
 services:
   miner:
-    image: us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:e4c2deff9c9ee2b38b3495690c7e5c5b52acb740a96e1b16664a235725736ca4
+    image: ghcr.io/fugal-ai/fugal-miner@sha256:3f6e3e2d1252a340b2a7609974987aa031da7abdf6724c267982d6feeb1fda12
     restart: unless-stopped
     ports:
       - "8091:8091"   # axon: validators reach the miner here (open to the world)

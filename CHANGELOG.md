@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — the first signed release's approved entries, one per network
+
+`image-v2026.11.03b` (signed by the key in `deploy/keys/allowed_signers`,
+commit `bac2a33`) built `ghcr.io/fugal-ai/fugal-miner@sha256:3f6e3e2d…fda12`,
+public. Both composes now pin that digest and their status comments describe
+it (the previous comment, baked into the attested compose, still named the
+September private image). The frozen files are
+`deploy/dstack/app-compose.frozen-2026-11-03b-test.json` (test/552, the
+warm-up, `FUGAL_EXPLORE_FRACTION=0.5` inside) and `…-finney.json` (finney/70);
+they embed exactly the repo composes, were produced by `dstack-cloud prepare`
+from `Phala-Network/meta-dstack-cloud` at tag `v0.6.1` (`5a1bfea`), and their
+raw-byte sha256 are the entries: `12a1f2f5…9141:dcd0dd8d…2d7f` (test) and
+`12a1f2f5…9141:ed2be85f…85c4` (finney). The two differ only in
+`docker_compose_file`, and the two composes differ only in network, netuid and
+the warm-up's exploration fraction. The September entries are retired in the
+rotation table; no mainnet validator ever carried them.
+
 ### Added — OCI labels on the miner image
 
 `Dockerfile` now sets `org.opencontainers.image.source`, `title`,

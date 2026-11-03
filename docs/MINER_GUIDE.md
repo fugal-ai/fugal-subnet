@@ -300,14 +300,20 @@ and obtain the actual measurements for the reviewed build.
 Validators approve `<base>:<compose_hash>` pairs and refuse bare bases, and the
 compose hash covers the image digest. An image you build yourself has a
 different digest, so a different compose hash, so no validator will accept its
-proofs. Deploy the published image — `ghcr.io/<org>/fugal-miner@sha256:…`,
-the digest named in the signed `image-v<date>` release — with the frozen
+proofs. Deploy the published image — the digest named in the signed
+`image-v<date>` release — with the frozen
 `deploy/dstack/app-compose.frozen-<date>.json` that matches the entry the
-validators carry (`docs/APPROVED_ENTRY_ROTATION.md`, "Publishing"). **Until
-the first `image-v*` release exists, there is no mainnet-valid image**: the
-digest currently in `deploy/dstack/docker-compose.yaml` is the 2026-09-07
-testnet image, built before the success-contract transition, and no live
-validator can accept proofs from it. Building
+validators carry (`docs/APPROVED_ENTRY_ROTATION.md`, "Publishing").
+
+**The current release is `image-v2026.11.03b`**, image
+`ghcr.io/fugal-ai/fugal-miner@sha256:3f6e3e2d1252a340b2a7609974987aa031da7abdf6724c267982d6feeb1fda12`.
+Verify the tag before you deploy it:
+
+    git -c gpg.ssh.allowedSignersFile=deploy/keys/allowed_signers verify-tag image-v2026.11.03b
+
+The image digest is fixed by the release. The base-measurement half of the
+approved entry depends on the cloud's TD firmware, and it is published with the
+entry when validators start scoring. Building
 your own image is for development against a local testnet in `--mock`, where
 no application is bound.
 

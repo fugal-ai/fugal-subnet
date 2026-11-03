@@ -4,6 +4,20 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — the miner's proxy retries transient upstream errors; 401/402 are named as operator problems; failed results carry canonical number types (next image rotation)
+
+Mainnet day one: one provider's 429s failed ~13% of a seed's calls and each
+was scored as a wrong answer, which held an otherwise frontier-level head
+0.11 below the frontier; an exhausted OpenRouter balance (402) failed ~55% of
+an epoch and looked, at first, like a bad head. `MeteringProxy` now retries
+408/409/425/429/5xx up to three attempts with 1/3/9 s jittered backoff,
+honouring `Retry-After`, capped at 20 s per wait and 120 s per call, inside the
+harness's own wait; 401 and 402 are never retried and are logged as
+"OPERATOR ACTION REQUIRED". The harness writes a failed call's `cost_usd` as
+`0.0` and its tokens as ints, so the JSON the validator hashes is the JSON the
+miner hashed (the validator-side half is #120). All of this is inside the
+measured image: it ships with the next `image-v*` tag and approved entry.
+
 ### Fixed — a proof with a failed call no longer fails verification on the validator
 
 `QuestionResult.from_dict` coerced `cost_usd` to float; the harness records a

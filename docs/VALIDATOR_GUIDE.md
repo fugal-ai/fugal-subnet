@@ -194,7 +194,11 @@ pushes to a phone) or a Discord channel webhook (`FUGAL_ALERT_KIND=discord`).
 **ntfy topics are public: anyone who knows the name can read every alert, and
 alerts carry the hostname and the FAIL lines.** Use a long random topic, for
 example `fugal-` followed by 32 random characters, and treat it like a
-password. Left empty, failures go to the journal only. One run lasts until the next
+password. For Telegram, create a bot with BotFather, send it one message, then
+run `sudo deploy/systemd/fugal-alert-telegram-setup.sh` on the host: it asks
+for the token without echo, finds the chat id, writes the three alert values
+into `/etc/fugal/watch.env` and posts a test message. Left empty, failures go
+to the journal only. One run lasts until the next
 boundary, up to 72 minutes on a 4320 s epoch; systemd does not start a
 second instance while one is active, so the hourly tick simply skips.
 

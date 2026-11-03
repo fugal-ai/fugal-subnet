@@ -10,7 +10,8 @@
 #   FUGAL_WATCH_MINERS       name=hotkey_ss58,...  (optional)
 #   FUGAL_WATCH_REVEALS      name=/path/to/epochs,... (optional)
 #   FUGAL_ALERT_URL          where failures go; empty means journal only
-#   FUGAL_ALERT_KIND         ntfy (plain text POST) or discord (JSON webhook)
+#   FUGAL_ALERT_KIND         ntfy (plain text POST), discord (JSON webhook) or
+#                            telegram (bot sendMessage; needs FUGAL_ALERT_CHAT_ID)
 #
 # One run lasts until the next epoch boundary (up to FUGAL_EPOCH_INTERVAL
 # seconds). systemd never starts a second instance while one is running, so
@@ -33,6 +34,10 @@ if [ "$rc" -ne 0 ]; then
   body="fugal-watch on $(hostname): watch_subnet exit $rc, $fails FAIL lines
 $(grep '\[FAIL\]' "$tmp" | head -10)"
   case "${FUGAL_ALERT_KIND:-ntfy}" in
+    telegram)
+      [ -n "${FUGAL_ALERT_URL:-}" ] && curl -fsS -m 20 \
+        -d "chat_id=${FUGAL_ALERT_CHAT_ID:-}" --data-urlencode "text=$(printf '%s' "$body" | head -c 3900)" \
+        "$FUGAL_ALERT_URL" >/dev/null ;;
     discord)
       [ -n "${FUGAL_ALERT_URL:-}" ] && printf '%s' "$body" \
         | .venv/bin/python -c 'import json,sys;print(json.dumps({"content":sys.stdin.read()[:1900]}))' \

@@ -54,8 +54,9 @@ will otherwise go looking in the wrong place:
 | `--mock` is not finney | `fingerprint.assert_mock_allowed` | Run `--live` |
 
 Two more that are not startup errors but are just as final: a validator with
-neither a permit nor `FUGAL_MIN_VALIDATOR_STAKE` (1000 TAO) staked is refused
-by every live miner's axon and sees "No valid proofs" forever; and
+less than `FUGAL_MIN_VALIDATOR_STAKE` (50, in the chain's stake units for the
+UID; a permit alone does not count) is refused by every live miner's axon and
+sees "No valid proofs" forever, and is warned about it at startup; and
 `FUGAL_REVEAL_BUCKET` unset only warns, so the subnet's product is never
 published.
 

@@ -40,12 +40,18 @@ METAGRAPH_REFRESH_S = 300
 def caller_allowed(metagraph, caller, *, live: bool, min_stake: float | None = None):
     """May `caller` query this axon? Returns (allowed, reason).
 
-    Live: a registered hotkey with a validator permit, or with stake at or
-    above `min_stake` (default MIN_VALIDATOR_STAKE), may query. The axon
-    answers with the full head, so anyone else is a copier with a download
-    link (diligence 2026-10, finding 5). Mock: any registered hotkey, for local
-    testnets where nothing has a permit. Factored out of the axon closure so
-    the rule can be tested without a chain.
+    Live: a registered hotkey with stake at or above `min_stake` (default
+    MIN_VALIDATOR_STAKE) may query. A validator permit on its own does not:
+    subtensor grants a permit to any nonzero stake while fewer than
+    `max_allowed_validators` hotkeys are staked, so on a young subnet a
+    dust-staked hotkey holds one (review 2026-11-02). The axon answers with
+    the full head, so anyone else is a copier with a download link (diligence
+    2026-10, finding 5). The stake read is `metagraph.S`, the chain's
+    `total_stake` for the UID: alpha on this subnet plus root TAO at the
+    chain's root weight (0.18), after child/parent-key inheritance -- the
+    same quantity the chain uses for permits and weight influence. Mock: any
+    registered hotkey, for local testnets where nothing is staked. Factored
+    out of the axon closure so the rule can be tested without a chain.
     """
     if not caller:
         return False, "no caller hotkey"
@@ -56,23 +62,26 @@ def caller_allowed(metagraph, caller, *, live: bool, min_stake: float | None = N
         return True, "ok (mock admits any registered hotkey)"
     threshold = MIN_VALIDATOR_STAKE if min_stake is None else float(min_stake)
     uid = hotkeys.index(caller)
-    permit = False
-    try:
-        permit = bool(metagraph.validator_permit[uid])
-    except (AttributeError, IndexError, TypeError):
-        pass
-    if permit:
-        return True, "ok (validator permit)"
     stake = 0.0
     try:
         stake = float(metagraph.S[uid])
     except (AttributeError, IndexError, TypeError):
         pass
+    permit = False
+    try:
+        permit = bool(metagraph.validator_permit[uid])
+    except (AttributeError, IndexError, TypeError):
+        pass
     if stake >= threshold:
-        return True, f"ok (stake {stake:.0f} >= {threshold:.0f})"
+        return True, f"ok (stake {stake:.0f} >= {threshold:.0f}{', permit' if permit else ''})"
+    if permit:
+        return False, (
+            f"caller {caller[:8]}... has stake {stake:.0f} below {threshold:.0f}; "
+            "a validator permit alone does not admit"
+        )
     return False, (
-        f"caller {caller[:8]}... has no validator permit and stake {stake:.0f} "
-        f"below {threshold:.0f}"
+        f"caller {caller[:8]}... has stake {stake:.0f} below {threshold:.0f} "
+        "and no validator permit"
     )
 
 
@@ -276,14 +285,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                 "produce its proofs.", identity[:16],
             )
     # A live axon serves the full head to whoever may query it, and the
-    # default admits only validators (permit or stake). Zero would admit any
+    # default admits only staked validators. Zero would admit any
     # registered hotkey, which is a free download of this router (diligence
     # 2026-10, finding 5), so it is refused rather than warned about.
     if not mock and MIN_VALIDATOR_STAKE <= 0:
         raise click.ClickException(
             "--live with FUGAL_MIN_VALIDATOR_STAKE=0 would serve this miner's head "
             "to any registered hotkey. Leave it at the default or set a positive "
-            "threshold; validators with a permit always pass."
+            "threshold; a validator permit alone does not admit a caller."
         )
 
     current_proof = {

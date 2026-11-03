@@ -134,6 +134,25 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
     os.replace(tmp, path)
 
 
+def axon_gate_notice(stake: float, permit: bool, threshold: float) -> str | None:
+    """Startup warning when this validator's own stake is below the floor live
+    miners apply before answering a query (`neurons/miner.py`, `caller_allowed`).
+    A refused query is indistinguishable from an absent miner on this side, so
+    the one place it can be said is here, before the first epoch."""
+    if stake >= threshold:
+        return None
+    permit_note = (" A validator permit does not substitute for it."
+                   if permit else "")
+    return (
+        f"This hotkey's stake on the subnet is {stake:.0f} (chain total_stake: "
+        f"alpha plus 0.18 x root TAO, childkey-inherited), below the "
+        f"{threshold:.0f} that live miners require before answering a query "
+        f"(FUGAL_MIN_VALIDATOR_STAKE in the miner image).{permit_note} Until it "
+        "is staked you receive no proofs and see 'No valid proofs received' "
+        "every epoch with no error on either side."
+    )
+
+
 @click.command()
 @click.option("--network", default=lambda: os.getenv("FUGAL_NETWORK", "test"),
               help="Network: finney, test, local")
@@ -333,11 +352,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         )
     else:
         logger.info("Reveals publish to gs://%s after %d epoch(s)", REVEAL_BUCKET, reveal_delay)
+    own_permit = False
     try:
-        if not bool(metagraph.validator_permit[my_uid]):
+        own_permit = bool(metagraph.validator_permit[my_uid])
+        if not own_permit:
             logger.warning("This hotkey has NO validator permit — set_weights will "
                            "likely fail until it gains enough stake.")
     except (AttributeError, IndexError):
+        pass
+    try:
+        from fugal_subnet.config import MIN_VALIDATOR_STAKE
+        notice = axon_gate_notice(float(metagraph.S[my_uid]), own_permit, MIN_VALIDATOR_STAKE)
+        if notice:
+            (logger.warning if live else logger.info)(notice)
+    except (AttributeError, IndexError, TypeError, ValueError):
         pass
 
     logger.info("Loading benchmark pool...")

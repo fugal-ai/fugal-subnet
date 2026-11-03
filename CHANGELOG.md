@@ -15,11 +15,17 @@ September private image). The frozen files are
 warm-up, `FUGAL_EXPLORE_FRACTION=0.5` inside) and `…-finney.json` (finney/70);
 they embed exactly the repo composes, were produced by `dstack-cloud prepare`
 from `Phala-Network/meta-dstack-cloud` at tag `v0.6.1` (`5a1bfea`), and their
-raw-byte sha256 are the entries: `12a1f2f5…9141:dcd0dd8d…2d7f` (test) and
-`12a1f2f5…9141:ed2be85f…85c4` (finney). The two differ only in
-`docker_compose_file`, and the two composes differ only in network, netuid and
-the warm-up's exploration fraction. The September entries are retired in the
-rotation table; no mainnet validator ever carried them.
+raw-byte sha256 are the compose halves of the entries. The base half was
+re-measured on the first two warm-up TDs on 2026-11-03 and is
+`f4be9383…aa427`, not the September `12a1f2f5…9141`: RTMR1 and RTMR2 (the
+dstack image) are unchanged, MRTD and RTMR0 (GCP's TDX firmware) moved. The
+entries are therefore `f4be9383…aa427:dcd0dd8d…2d7f` (test) and
+`f4be9383…aa427:ed2be85f…85c4` (finney); the frozen files differ only in
+`docker_compose_file`, and the two composes only in network, netuid and the
+warm-up's exploration fraction. Every doc that quoted the September base as
+current now quotes the measured one with the date, and `tests/test_tpm.py` pins
+today's registers beside the September fixtures. The September entries are
+retired in the rotation table; no mainnet validator ever carried them.
 
 ### Added — OCI labels on the miner image
 

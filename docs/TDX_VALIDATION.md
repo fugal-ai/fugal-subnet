@@ -157,9 +157,17 @@ would fork the approved list by instance size. RTMR3 is excluded because it is
 application-extendable and includes per-deploy values; what is approved from it
 is the `compose-hash` event replayed out of the log, which is the `app_identity`
 half of the entry. Measured on GCP `c3` with the dstack 0.6.0-rc0 image, across
-three deploys and two instance sizes, the base is
+three deploys and two instance sizes in September 2026, the base was
 
     12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+
+and on two fresh deploys on **2026-11-03** it is
+
+    f4be9383e31c6cc87707b2b01ace9114ed958435b524425677e63d65065aa427
+
+with RTMR1 and RTMR2 identical between the two dates and MRTD/RTMR0 changed:
+the image is the same, the cloud's TDX firmware is not. The base is a
+measurement of image **and** platform; take it from a live TD when you publish.
 
 Run this on the TD to print the measurement of the image you are about to
 approve. Quote generation needs write access to configfs, so run it as root:

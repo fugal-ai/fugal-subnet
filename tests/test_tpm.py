@@ -463,15 +463,36 @@ def test_the_base_measurement_ignores_instance_shape_and_application():
     ever stops being true, every published measurement is wrong and the symptom
     would be honest miners rejected as unapproved.
     """
+    import hashlib
+
     from fugal_subnet.tee.attestation import measurement_id, parse_quote
     from fugal_subnet.tee.verify import unwrap_attestation
 
     MEASURED_ON_HARDWARE = (
         "12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141"
     )
+    # 2026-11-03, two fresh c3-standard-4 TDs in a different GCP project,
+    # same sha256-verified dstack 0.6.0-rc0 UKI: RTMR1 and RTMR2 identical to
+    # the September fixtures, MRTD and RTMR0 different. GCP rolled the TDX
+    # virtual firmware; the image did not change. The base is therefore a
+    # measurement of image AND platform, and is taken from a live TD on the
+    # day an entry is published.
+    MRTD_2026_11_03 = (
+        "f21e6b48743fe14c2d090078ca1197f09ae4c99438677f2c79901ef80e2aeefe"
+        "2f9a7eb6e3eb3b5047c4f1511731e5d3"
+    )
+    BASE_2026_11_03 = (
+        "f4be9383e31c6cc87707b2b01ace9114ed958435b524425677e63d65065aa427"
+    )
     for name in ("A", "B"):
         p = FIXTURES / f"attestation_{name}.bin"
         if not p.exists():
             pytest.skip(f"fixture {p.name} not present")
-        quote, _ = unwrap_attestation(p.read_bytes())
-        assert measurement_id(parse_quote(quote)) == MEASURED_ON_HARDWARE
+        quote = parse_quote(unwrap_attestation(p.read_bytes())[0])
+        assert measurement_id(quote) == MEASURED_ON_HARDWARE
+        # The November base is the November firmware over the September image.
+        assert MRTD_2026_11_03 != quote.mrtd
+        rebased = hashlib.sha256(
+            bytes.fromhex(MRTD_2026_11_03 + quote.rtmr1 + quote.rtmr2)
+        ).hexdigest()
+        assert rebased == BASE_2026_11_03

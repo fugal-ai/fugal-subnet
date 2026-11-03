@@ -134,6 +134,64 @@ journalctl -u fugal-validator -f
 Edit **every** value in the environment file; the example ships pointed at the
 test network.
 
+### Host reference (what the first Fugal validator host runs on)
+
+Measured on 2026-11-03, so the numbers are a starting point, not a floor.
+
+- **Shape.** A 2 vCPU / 4 GB / 80 GB x86 cloud VM (Hetzner CPX22, Falkenstein)
+  on Ubuntu 24.04 with Python 3.12. The validator verifies proofs and does
+  arithmetic; it never runs the model. The locked venv is 5.7 GB on disk
+  because `torch` is pinned from PyPI with its CUDA libraries, so give the
+  disk 20 GB of headroom. 2 GB of swap is cheap insurance on a 4 GB box.
+- **Users.** The service runs as a system user (`fugal`, no login shell
+  access over SSH) that owns `/opt/fugal/fugal-subnet`, `/var/lib/fugal` and
+  the wallet directory. A separate admin user holds the SSH key and `sudo`.
+  The hotkey is regenerated on the host, as the service user, by the person
+  who holds the words; it is never copied over the network.
+- **Inbound.** The validator serves no axon, so the host accepts **SSH only**:
+  provider firewall and host firewall (`ufw`) both deny everything else, root
+  login and password authentication are off in `sshd`, `fail2ban` guards the
+  SSH jail, and unattended security upgrades are on.
+- **Outbound.** The chain endpoints (wss), the miners' axons (8091), the PCCS
+  (`FUGAL_PCCS_URL`), Hugging Face for the token manifest, GitHub and PyPI
+  for the build, and the reveal bucket.
+- **Reveal uploads.** `google-cloud-storage` is not in the lock, so
+  `reveal_publisher` uses the `gcloud` CLI. Install it on the host and
+  activate the bucket's writer service account **as the service user**
+  (`gcloud auth activate-service-account --key-file=...`); the key file
+  belongs to that user, mode 0600, and never enters the repo.
+- **Archive endpoint per network.** `FUGAL_ARCHIVE_ENDPOINTS` must be on the
+  same chain as `FUGAL_NETWORK`: a finney archive is the wrong chain for a
+  testnet subnet. Probed from the host: `wss://test.finney.opentensor.ai:443`
+  served state 100 000 blocks back in 1.6 s, and
+  `wss://archive.chain.opentensor.ai:443` did the same on finney in 3.2 s.
+  Switching a host from testnet to finney changes four values in
+  `validator.env`: network, netuid, the archive endpoint, and the approved
+  entry; `FUGAL_EXPLORE_FRACTION` is removed (a finney neuron refuses it).
+
+### Hourly watch with an alert
+
+`deploy/systemd/fugal-watch.timer` runs `scripts/watch_subnet.py` for one
+epoch boundary every hour from the validator host and raises an alert when
+any assertion fails or the run dies. The script's own epoch-interval default
+is 3600 s; the wrapper passes `FUGAL_WATCH_EPOCH_INTERVAL` (4320) so it
+watches the subnet's real boundaries.
+
+```bash
+sudo cp deploy/systemd/fugal-watch.{service,timer} /etc/systemd/system/
+sudo install -m 0600 deploy/env/watch.env.example /etc/fugal/watch.env
+sudoedit /etc/fugal/watch.env     # your hotkey, the epoch interval, the alert URL
+sudo systemctl daemon-reload && sudo systemctl enable --now fugal-watch.timer
+systemctl list-timers fugal-watch.timer
+journalctl -t fugal-watch         # every FAIL, with or without an alert URL
+```
+
+`FUGAL_ALERT_URL` is an ntfy topic (`https://ntfy.sh/<topic>`, no account,
+pushes to a phone) or a Discord channel webhook (`FUGAL_ALERT_KIND=discord`).
+Left empty, failures go to the journal only. One run lasts until the next
+boundary, up to 72 minutes on a 4320 s epoch; systemd does not start a
+second instance while one is active, so the hourly tick simply skips.
+
 ## Configuration
 
 Operational settings are read from the environment (see `fugal_subnet/config.py`).

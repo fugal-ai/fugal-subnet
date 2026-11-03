@@ -30,7 +30,9 @@ entry regardless of how many times they redeploy.
 ## Computing the new entry
 
 1. Build the miner image from a clean checkout of the exact commit, by digest.
-2. Put the digest into `deploy/dstack/docker-compose.yaml`; run
+2. Put the digest into the compose for the target network
+   (`deploy/dstack/docker-compose.yaml` for finney/70, `docker-compose.test.yaml`
+   for test/552 — one digest, one entry per network); run
    `dstack-cloud prepare` in a project whose `app.json` has the documented
    field values (`deploy/dstack/README.md`); do not touch `prelaunch.sh`.
 3. `python scripts/compute_app_identity.py --compose shared/app-compose.json

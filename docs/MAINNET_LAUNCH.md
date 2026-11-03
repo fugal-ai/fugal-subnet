@@ -9,6 +9,22 @@ the design.
 
 ---
 
+## The subnet: finney netuid 70
+
+Registered at block 9364303 (2026-10-26). Read from the chain at block 9422441
+(2026-11-03 02:27 UTC): `start_call` **not yet called**; tempo 360, so every
+neuron runs `FUGAL_EPOCH_INTERVAL=4320`; commit-reveal enabled with a one-epoch
+reveal period; registration open; owner cut 18%; subnet identity unset. Network
+immunity from deregistration ends at block 9796303 (about 2026-12-25); after
+that the chain prunes the non-immune subnet with the lowest *moving* alpha
+price whenever a new subnet registers, and the moving price stays at 0 until
+`start_call`. Every value here moves — re-read it with `--status` before acting.
+The deploy files already name this target: `deploy/dstack/docker-compose.yaml`
+(the testnet twin for rehearsals is `docker-compose.test.yaml`) and the
+`validator.env.example` comment.
+
+---
+
 ## Before you spend anything
 
 ### 0. The gates a neuron refuses to start behind
@@ -43,7 +59,7 @@ September. Its miner served an axon, its validator ran epochs, and not one
 weight ever reached the chain.
 
 ```bash
-python scripts/provision_subnet.py --network finney --netuid <N> --status
+python scripts/provision_subnet.py --network finney --netuid 70 --status
 ```
 
 `active` must be `True`. If it is not, nothing below matters. `--status` loads
@@ -228,17 +244,17 @@ refused while the neurons log success.
 ```bash
 # 1a. Owner half (whoever holds the owner coldkey): identity, start_call,
 #     hyperparameters. Idempotent — safe to re-run after any partial failure.
-python scripts/provision_subnet.py --network finney --netuid <N> \
+python scripts/provision_subnet.py --network finney --netuid 70 \
   --owner-wallet <owner> --epoch-interval 4320 --yes
 
 # 1b. Operator half (hotkey hosts; no owner coldkey anywhere near them):
 #     register and stake. Refuses if the subnet is inactive or misaligned.
-python scripts/provision_subnet.py --network finney --netuid <N> \
+python scripts/provision_subnet.py --network finney --netuid 70 \
   --validators <w>/val1,<w>/val2 --miners <w>/m1 \
   --stake <TAO> --epoch-interval 4320 --yes
 
 # 2. Confirm before starting neurons. No wallet needed.
-python scripts/provision_subnet.py --network finney --netuid <N> --status
+python scripts/provision_subnet.py --network finney --netuid 70 --status
 
 # 3. Start neurons with the aligned interval and the pinned pool file in
 #    place (built once with scripts/export_pool.py; FUGAL_BENCHMARK_POOL stays
@@ -247,7 +263,7 @@ export FUGAL_EPOCH_INTERVAL=4320
 export FUGAL_POOL_FILE=/opt/fugal/pool.json.gz
 
 # 4. Watch, and assert rather than read.
-python scripts/watch_subnet.py --network finney --netuid <N> --epochs 3 \
+python scripts/watch_subnet.py --network finney --netuid 70 --epochs 3 \
   --epoch-interval 4320 \
   --miners m1=<hotkey> --validators v1=<hotkey>,v2=<hotkey> \
   --reveals v1=/opt/v1/results/success-v1/epochs,v2=/opt/v2/results/success-v1/epochs

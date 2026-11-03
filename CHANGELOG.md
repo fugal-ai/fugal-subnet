@@ -4,6 +4,20 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — the deploy files name mainnet: finney, netuid 70
+
+The subnet is registered on finney as netuid 70 (block 9364303, 2026-10-26;
+`start_call` not yet called as of block 9422441). `deploy/dstack/
+docker-compose.yaml` now targets `finney`/`70`; its testnet twin for the
+netuid-552 warm-up is `docker-compose.test.yaml`, identical except for
+network and netuid, so one image digest yields one compose hash and one
+approved entry per network. `image.yml` freezes and attaches both. The image
+line in both is still the pre-transition testnet digest until the first
+`image-v*` release. `MAINNET_LAUNCH.md` records the chain facts that bind
+the launch (tempo, commit-reveal, the immunity end block and the pruning
+rule) and its commands name netuid 70; `validator.env.example` and
+`APPROVED_ENTRY_ROTATION.md` point at the right compose.
+
 ### Changed — Python 3.11 is the floor; the miner image moves to 3.12
 
 GitHub's Dependabot alerts reported 17 open advisories on `main` (1 high,

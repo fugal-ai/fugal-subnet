@@ -33,6 +33,63 @@ _OPENROUTER_BASE = os.getenv(
     "FUGAL_OPENROUTER_BASE", "https://openrouter.ai/api/v1",
 ).rstrip("/")
 
+# Upstream retry policy, inside the measured image so every miner has it.
+# Mainnet day one (2026-11-03): ~13% of a seed's calls failed on 429 from one
+# provider's shared pool and every failure was scored as a wrong answer, which
+# put an otherwise frontier-level head 0.11 below the frontier. A bounded retry
+# with backoff turns most of those into answers. Hard limits keep the whole
+# attempt inside the harness's own 200 s wait: at most PROXY_MAX_ATTEMPTS tries,
+# no new try after PROXY_RETRY_BUDGET_S, each wait capped at PROXY_MAX_WAIT_S.
+# 401/402 are never retried: they mean the operator's key or balance, and
+# they are logged as such so a payment problem is never read as model quality.
+PROXY_RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+PROXY_OPERATOR_STATUS = {401: "unauthorized key", 402: "payment required: the account balance is exhausted"}
+PROXY_MAX_ATTEMPTS = 3
+PROXY_RETRY_BUDGET_S = 120.0
+PROXY_MAX_WAIT_S = 20.0
+
+
+def _retry_wait(attempt: int, retry_after: str | None) -> float:
+    """Backoff in seconds before attempt+1: 1, 3, 9 … with jitter, or the
+    upstream's Retry-After when it is larger, capped at PROXY_MAX_WAIT_S."""
+    import random
+    base = min(PROXY_MAX_WAIT_S, 3.0 ** (attempt - 1)) + random.uniform(0.0, 1.0)
+    if retry_after:
+        try:
+            base = max(base, float(retry_after))
+        except ValueError:
+            pass
+    return min(PROXY_MAX_WAIT_S, base)
+
+
+def _fetch_upstream(req, model_id: str) -> bytes:
+    """POST to the upstream with the retry policy above. Returns the body or raises."""
+    from urllib.error import HTTPError
+    started = time.time()
+    attempt = 0
+    while True:
+        attempt += 1
+        remaining = 180.0 - (time.time() - started)
+        try:
+            with urlopen(req, timeout=max(20.0, min(180.0, remaining))) as resp:
+                return resp.read()
+        except HTTPError as e:
+            code = e.code
+            if code in PROXY_OPERATOR_STATUS:
+                logger.error(
+                    "Upstream %s for %s: %s. OPERATOR ACTION REQUIRED (OpenRouter key or "
+                    "balance); not retried; the call is recorded as failed",
+                    code, model_id, PROXY_OPERATOR_STATUS[code],
+                )
+                raise
+            elapsed = time.time() - started
+            if code in PROXY_RETRYABLE_STATUS and attempt < PROXY_MAX_ATTEMPTS and elapsed < PROXY_RETRY_BUDGET_S:
+                wait = _retry_wait(attempt, e.headers.get("Retry-After") if e.headers else None)
+                logger.warning("Upstream %s for %s; retry %d/%d in %.1fs", code, model_id, attempt, PROXY_MAX_ATTEMPTS - 1, wait)
+                time.sleep(wait)
+                continue
+            raise
+
 
 class UnpricedModel(RuntimeError):
     """Raised when a routed model has no entry in the pinned price table."""
@@ -122,9 +179,8 @@ class MeteringProxy:
                 )
 
                 try:
-                    with urlopen(req, timeout=180) as resp:
-                        resp_body = resp.read()
-                        resp_data = json.loads(resp_body)
+                    resp_body = _fetch_upstream(req, model_id)
+                    resp_data = json.loads(resp_body)
 
                     usage = resp_data.get("usage", {})
                     prompt_tokens = usage.get("prompt_tokens", 0)
@@ -188,6 +244,8 @@ class MeteringProxy:
                 "using ephemeral port %d instead", self.port, actual,
             )
             self.port = actual
+        # port=0 asks the OS for an ephemeral port; report the one actually bound.
+        self.port = self._server.server_address[1]
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         logger.info("MeteringProxy started on port %d", self.port)

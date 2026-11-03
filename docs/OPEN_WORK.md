@@ -494,11 +494,17 @@ rediscovered:
   models it has no data for. Before the first upgrade: carry the frame over
   for models whose row did not change, so an addition does not reset the
   frontier's confidence for everything.
-- **The OpenRouter key limit is an outage.** A key with a total spend cap
-  returns 403 to every call once it is reached; a miner carrying such a key
-  fails every exploration and scored call with no error on the validator's
-  side. MINER_GUIDE should say: no total limit on the miner's key, and monitor
-  credits.
+- **The OpenRouter key limit, and the account balance, are outages.** A key
+  with a total spend cap returns 403 once it is reached; an exhausted account
+  balance returns 402 (mainnet day one, 2026-11-03: ~55% of an epoch's calls,
+  scored as wrong answers, 41% accuracy where the previous epoch had 79%). The
+  proxy now logs both as OPERATOR ACTION and never retries them; MINER_GUIDE
+  should say: no total limit on the miner's key, a balance alert, and budget
+  ~$0.65–0.80 per epoch for a head that routes at ~$0.002/question.
+- **Retry on 429 ships with the next image** (`PROXY_*` in `tee/runtime.py`);
+  until that rotation, calls to a rate-limited provider fail and score as
+  wrong. Measured 2026-11-03: `mistral-large-2512` 429s at any concurrency
+  above 1–2.
 - **Miner axon gate** — **closed 2026-11-03**: stake is required of every
   caller, a permit no longer admits on its own, and the floor is 50 in the
   chain's `total_stake` units (alpha plus 0.18 × root TAO, childkey-inherited,

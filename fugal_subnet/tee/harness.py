@@ -152,14 +152,18 @@ def run_benchmark(
         # stays False and the proof says why.
         correct = (not failed) and bool(grade(build_grader_task(q), response_text,
                                               allow_exec=HARNESS_ALLOW_EXEC))
+        # Canonical number types at the source: a failed call sums an empty
+        # record list to the int 0, and canonical JSON tells 0 from 0.0. The
+        # validator keeps numbers as serialised since #120; writing them as
+        # float/int here means both sides hash the same bytes by construction.
         results.append(QuestionResult(
             question_id=q["question_id"],
             routed_model=model_id,
             correct=correct,
-            cost_usd=cost,
+            cost_usd=float(cost),
             response_hash=hashlib.sha256(response_text.encode()).hexdigest(),
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
+            prompt_tokens=int(prompt_tokens),
+            completion_tokens=int(completion_tokens),
             is_exploration=is_explore,
             failed=failed,
         ))

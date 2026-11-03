@@ -83,8 +83,21 @@ down is a worse failure than one that needs an operator to run step 5.
 |---|---|---|---|---|
 | `12a1f2f5…9141:cf31a1a4…69d2` | `3430da97…541f` | `e284963` | 2026-09-06 | 2026-09-07 (no instance ever verified on it; both TDs recreated) |
 | `12a1f2f5…9141:12d945d2…3910` | `59039d01…692a` | `45729c2` | 2026-09-06 | 2026-09-07 (never verified; TDs recreated) |
-| `12a1f2f5…9141:00354525…ab0d` | `9d7916c3…e0a9` | `d9fa3a5` | 2026-09-07 | — |
-| `12a1f2f5…9141:41de1e4c…9e10` | `e4c2deff…6ca4` | `37495ae` | 2026-09-07 | — |
+| `12a1f2f5…9141:00354525…ab0d` | `9d7916c3…e0a9` | `d9fa3a5` | 2026-09-07 | 2026-11-03 (private-registry image; pre-success-contract protocol; testnet only) |
+| `12a1f2f5…9141:41de1e4c…9e10` | `e4c2deff…6ca4` | `37495ae` | 2026-09-07 | 2026-11-03 (same) |
+| `f4be9383…aa427:dcd0dd8d…2d7f` (**test / 552**, warm-up; compose sets `FUGAL_EXPLORE_FRACTION=0.5`) | `3f6e3e2d…fda12` (`image-v2026.11.03b`, public ghcr) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | — |
+| `f4be9383…aa427:ed2be85f…85c4` (**finney / 70**, mainnet) | `3f6e3e2d…fda12` (same image) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | — |
+
+**The base moved between September and November without the image changing.**
+Measured 2026-11-03 on two fresh `c3-standard-4` TDs booted from the
+sha256-verified dstack 0.6.0-rc0 UKI: RTMR1 and RTMR2 (kernel, initrd, the
+image) are byte-identical to the September fixtures; MRTD and RTMR0 (the TDX
+virtual firmware and its configuration, which GCP controls) changed. So
+`measurement_id` went from `12a1f2f5…9141` to `f4be9383…aa427` and every
+entry above the line was re-based before publication. The rule this adds:
+**measure the base on a live TD the day an entry is published, and treat a
+GCP firmware roll as a base rotation** (both bases approved across the window,
+or every honest miner that reboots onto the new firmware is refused).
 
 ## The transition window
 

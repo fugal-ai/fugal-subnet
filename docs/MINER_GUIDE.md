@@ -631,9 +631,9 @@ count failures, or keep your head off the model.
 
 **Your OpenRouter account is part of your miner.** A key with a total spend
 limit returns 403 once the limit is reached, and an exhausted account balance
-returns 402. Neither is retried. A 402 (and a 401, an invalid key) is logged
-as `OPERATOR ACTION REQUIRED`; a 403 is logged as an ordinary upstream error,
-so watch for it. On 2026-11-03 an exhausted balance failed about 55% of one epoch's
+returns 402. Neither is retried. A 402, a 403 and a 401 (an invalid key) are
+logged as `OPERATOR ACTION REQUIRED` (from protocol v2's image; on v1 images a
+403 shows as an ordinary upstream error). On 2026-11-03 an exhausted balance failed about 55% of one epoch's
 calls. Set no total limit on the miner's key, and set a low-balance alert on the
 account.
 

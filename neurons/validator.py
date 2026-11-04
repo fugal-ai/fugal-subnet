@@ -482,6 +482,28 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             "directory of published reveals to rebuild instead."
         )
 
+    # Protocol v2 state, rebuilt the same way when this validator has none of
+    # its own: the seat, owners and burn-in from the newest reveal's v2_state
+    # snapshot, the window replayed from the last CHAMPION_WINDOW_EPOCHS
+    # reveals (fugal_subnet/v2_rebuild.py, trust model in its docstring).
+    # Per-head v1 evidence is not rebuilt, as before; only the E'' burn-in
+    # counter is restored, into fresh records, so heads keep the burn-in
+    # their peers credit them with.
+    if not v2_raw and not v2_window.slices and os.getenv("FUGAL_FRAME_BOOTSTRAP"):
+        from fugal_subnet.evidence import Evidence
+        from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
+        rebuilt = rebuild_v2_from_reveals(
+            os.environ["FUGAL_FRAME_BOOTSTRAP"], window_size=CHAMPION_WINDOW_EPOCHS,
+            prices=prices, bench_category=getattr(config_module, "BENCHMARK_CATEGORY", None),
+        )
+        v2_window, v2_seat, v2_owners = rebuilt.window, rebuilt.seat, rebuilt.owners
+        for h, uid in sorted(rebuilt.serving.items()):
+            if uid in scoring_state.records or h not in rebuilt.burn_in:
+                continue
+            rec = MinerRecord(uid=uid, hotkey=rebuilt.owners.get(h, ""), current_head_hash=h)
+            rec.evidence = Evidence(weights_hash=h, burn_in_n=rebuilt.burn_in[h])
+            scoring_state.records[uid] = rec
+
     blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 
     while True:

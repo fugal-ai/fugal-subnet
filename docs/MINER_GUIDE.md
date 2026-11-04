@@ -724,7 +724,6 @@ v2 announcement, 72 hours or more before the flip, in a signed release:
 | `<ACTIVATION_BLOCK>` | the block of the flip. It is an epoch boundary (a multiple of the blocks per epoch) and every validator sets it as `FUGAL_V2_ACTIVATION_BLOCK` |
 | `<V2_IMAGE_DIGEST>` | the v2 miner image, by digest, and its approved entry (`docs/APPROVED_ENTRY_ROTATION.md`) |
 | `<V2_MODEL_LIST>` | the v2 model list and prices, `data/models_v2.json`, hash-pinned |
-| `<V2_POOL_MANIFEST>` | the v2 benchmark pool manifest, with its category targets |
 | `<V2_RELEASE_NOTE>` | the signed release that names all of the above |
 
 ### What changes at the flip
@@ -744,14 +743,26 @@ OpenRouter endpoints, is text-only, and runs at exactly one reasoning setting.
 A v1 head names v1 models, so **every head must be retrained** for v2. There
 is no published label set to retrain from: you label your own data.
 
-**Open benchmarks, by category.** The v2 pool is drawn by category first and
-then by benchmark (`slicer.select_slice_v2`). Exploration is drawn at the same
-mix, so the reference frame measures models on the mix that is scored. The
-categories are knowledge, math, hard reasoning and instruction, at the targets
-in `CATEGORY_TARGETS_V2` (`<V2_POOL_MANIFEST>`). Every set in the pool is
-openly licensed, and the licence of each is recorded in the manifest. None is
-gated. The hard-reasoning category is half multiple-choice and half
-integer-answer olympiad math (`BENCHMARK_WEIGHT_V2`).
+**Open benchmarks, by category.** The v2 pool is
+`fugal_subnet/benchmarks/pool_manifest_v2.json`: 29,036 questions from
+openly licensed sets, none gated, each with its licence in the manifest. The
+pool is split into four categories by `BENCHMARK_CATEGORY_V2`:
+
+| Category (`CATEGORY_TARGETS_V2`) | Share of the slice | Sets |
+|---|---|---|
+| `knowledge` | 40% | MMLU-Pro, MMLU |
+| `math` | 25% | MATH levels 3–5, Omni-MATH (mid difficulty, integer answers) |
+| `hard` | 30% | SuperGPQA (hard), AIME 1983–2025, BeyondAIME, Omni-MATH (difficulty ≥ 7, integer answers) |
+| `instruction` | 5% | IFEval (the constraint kinds the pinned grader checks) |
+
+Inside `hard`, half the weight is the multiple-choice set and half is the
+integer olympiad math (`BENCHMARK_WEIGHT_V2`). Elsewhere a category splits by
+pool size. Miner and validator both choose each epoch's questions through
+`fugal_subnet/epoch_plan.py` with the epoch's protocol version. For v2,
+`epoch_plan.scored_slice` takes the category quotas first and then the
+benchmark quotas (`slicer.select_slice_v2`), and `epoch_plan.exploration_plan`
+draws exploration at the same mix. So the reference frame measures each model
+on the mix that is scored.
 
 **Champion scoring replaces headroom scoring.** In v2 the miner share does not
 go to the field in proportion to score. It goes to a **champion**, and a head
@@ -762,7 +773,7 @@ answers the same scored slice, so the comparison is question by question:
 NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
 V    = CHAMPION_ACCURACY_VALUE (30) x the champion's own mean spend per question
        over the same questions
-u_i  = CHAMPION_HARD_WEIGHT (2) on a hard-reasoning question, else 1
+u_i  = CHAMPION_HARD_WEIGHT (2) on a question in the `hard` category, else 1
 NV   = 100 x mean_i NV_i                          (percentage points)
 ```
 
@@ -791,17 +802,20 @@ NV   = 100 x mean_i NV_i                          (percentage points)
   (`CHAMPION_TIME_GATE_FACTOR`) is not applied at launch.
 - **The first champion.** With nobody seated, the most senior eligible head
   takes the seat: burned in, at or above the accuracy floor, and not an exact
-  copy. Seniority is registration block, then commitment block. There is no
-  virtual champion to beat. Until some head is eligible the miner share burns.
+  copy. In v2, seniority among heads is the **commitment block**: the hotkey
+  that committed a head hash first owns that hash. There is no virtual
+  champion to beat. Until some head is eligible the miner share burns.
 
 **Payout: 85/10/5 across the last three champions.** `PAYOUT_SEAT_SHARES` =
 0.85 / 0.10 / 0.05 go to the current champion, the previous one and the one
 before. A seat pays only while its head is live this epoch and can hold a seat
 (verified, window accuracy at or above 0.30, not an exact copy). An unpaid
 seat's share goes to the current champion. With no current champion, the
-champion's share burns. A seat is paid to the UID serving its head, and one
-head hash pays one UID (the most senior serving it), so running the same head
-on more hotkeys earns nothing. The v2 payout does not read the reference
+champion's share burns. A head hash has one owner, the hotkey that committed
+it first, and a known hash keeps its owner. Only the owner's UID is measured
+as that head and paid for its seat. Another UID serving the same bytes is a
+copy: it is not paid, and it cannot take or retire the head's seat. Running the
+same head on more hotkeys earns nothing. The v2 payout does not read the reference
 frame's confidence: from the flip the whole miner share is paid by this rule,
 and the frame is published for information. `MAX_WEIGHT_DELTA` still limits
 how fast the weights move.

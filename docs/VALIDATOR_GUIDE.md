@@ -413,7 +413,12 @@ A restart at any point is safe. State is written only when an epoch
 completes, so a validator killed mid-epoch resumes from the previous epoch and
 scores the interrupted one again, identically. From the flip, the state also
 holds the champion seat and the comparison window (`<state>.v2window.npz`
-beside the state file). Keep both on durable disk.
+beside the state file). Keep both on durable disk. A validator that has seat
+state but has lost the window logs `v2 seat state present but its comparison
+window is missing`. It keeps holding the seat (hold, resume and ghosts go on)
+but makes no `first` or `take` decision until the window is rebuilt from
+published reveals (`FUGAL_FRAME_BOOTSTRAP`) or has refilled for
+`CHAMPION_WINDOW_EPOCHS` (48) epochs.
 
 ### At the flip
 

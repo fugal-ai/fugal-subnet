@@ -175,9 +175,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         raise click.ClickException(
             "--head-path is required unless --await-provisioning is set"
         )
+    from fugal_subnet.config import V2_ACTIVATION_BLOCK as _V2_BLOCK
     from fugal_subnet.head_eval import load_head_from_npz
-    from fugal_subnet.routing_protocol import benchmark_costs
-    benchmark_costs(load_head_from_npz(head_data), require_reviewed=not mock)
+    from fugal_subnet.routing_protocol import benchmark_costs_for
+    # Validate the head against the protocol this image serves: a v2 head checks
+    # against the v2 token manifest. v1's check refused every genuine v2 head at
+    # startup (found by the v2 flip rehearsal).
+    benchmark_costs_for(load_head_from_npz(head_data), 2 if _V2_BLOCK is not None else 1,
+                        require_reviewed=not mock)
     weights_hash = hashlib.sha256(head_data).hexdigest()
 
     # The pool is consensus state: the slice is drawn from it, so the miner and

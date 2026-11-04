@@ -20,7 +20,7 @@ Timeline (epoch F is the activation boundary; the slice is 40 questions):
     F+2       m1 (the most senior) completes burn-in and takes the empty seat.
     F+5       m2 completes burn-in and takes the seat from m1 by the margin.
     F+8       m3 completes burn-in and takes it from m2: seats 85/10/5.
-    F+10      m3 (burned in) misses: decay without phantom zeros, burn-in
+    F+10      m3 (burned in) misses: the evidence decays (no zeros added), burn-in
               restarts, a ghost bars the seat, the champion share burns.
     F+11      m3 returns and resumes its seat, paid at once without burn-in.
 
@@ -869,7 +869,7 @@ def _check_payout(report, S, val1, f):
 def _check_miss(report, S, val1, f):
     why = missing(f, "miss_rule")
     names = ("E'': a miss before burn-in resets the evidence",
-             "E'': a miss after burn-in decays without phantom zeros and restarts burn-in")
+             "E'': a miss after burn-in decays the evidence (no zeros added) and restarts burn-in")
     o = val1.outputs
     m3, m4 = MINERS[2].uid, MINERS[3].uid
     if why:

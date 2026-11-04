@@ -198,10 +198,8 @@ def apply_miss(
 
 # --- Protocol v2: the E'' miss rule -------------------------------------------
 #
-# v1 scored a missed epoch as a full slice of wrong answers (apply_miss), with
-# a 200-epoch half-life, so a six-hour outage took about 250 epochs to recover
-# from while a new head hash recovered in ten: the rule only punished
-# operators who did not know to reset. A miss cannot be free either, because
+# v1's miss rule (apply_miss) is replaced from protocol v2: it recovers too
+# slowly from an honest outage. A miss cannot be free either, because
 # an operator sees its own grades before serving and could withhold a bad
 # epoch. E'' splits on burn-in:
 #

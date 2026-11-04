@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # guarding code that no longer runs in production.
 STAGES = (
     "slice",
+    "epoch_plan_v2",
     "exploration",
     "synthetic_hidden",
     "routing_decisions",
@@ -333,23 +334,38 @@ def run_pipeline(seed: int) -> dict:
     from fugal_subnet.champion import SeatState, Window
     from fugal_subnet.v2_epoch import run_v2_epoch, seat_params_from_config
     v2_uids = sorted(proof_objs, reverse=True)
+    from fugal_subnet.copy_rule import Commitment, CopyState
     v2 = run_v2_epoch(
-        epoch_index=1, epoch_id="e00000001", questions=questions,
-        pool_models=sorted(prices), prices=prices,
+        epoch_index=1, epoch_id="e00000001", boundary_block=300, blocks_per_epoch=300,
+        questions=questions, pool_models=sorted(prices), prices=prices,
         verified_proofs={u: proof_objs[u] for u in v2_uids},
         head_hashes={u: head_hashes[u] for u in v2_uids},
         coldkey_of={u: f"coldkey-{u % 3}" for u in v2_uids},
         hotkey_of={u: f"hk{u}" for u in v2_uids},
-        commit_block={u: u for u in v2_uids}, commit_epoch={u: 0 for u in v2_uids},
-        records=state.records, exact_copies=set(), commitments={},
-        window=Window.empty(48), seat=SeatState(), owners={}, burn_uid=0,
+        records=state.records,
+        commitments=[Commitment(f"hk{u}", f"coldkey-{u % 3}", head_hashes[u], u + 1)
+                     for u in sorted(v2_uids)],
+        window=Window.empty(48), seat=SeatState(), copy_state=CopyState(), burn_uid=0,
         params=seat_params_from_config(), shares=(0.85, 0.10, 0.05),
         burn_in_questions=0,
     )
     v2_out = {"uids": v2.uids, "weights": v2.weights, "reveal": v2.reveal}
 
+    # Protocol v2 question selection (fugal_subnet/epoch_plan): the scored
+    # slice by category and the exploration plan on a synthetic pool of the v2
+    # benchmarks, so the miner and every validator select the same v2 questions.
+    from fugal_subnet.config import BENCHMARK_CATEGORY_V2
+    from fugal_subnet.epoch_plan import exploration_plan, scored_slice
+    pool_v2 = [{"question_id": f"{b}-{i:04d}", "benchmark": b, "prompt": f"q {b} {i}"}
+               for b in sorted(BENCHMARK_CATEGORY_V2) for i in range(300)]
+    plan_nonce = hashlib.sha256(f"v2-plan-{seed}".encode()).digest()
+    v2_slice = [q["question_id"] for q in scored_slice(2, plan_nonce, pool_v2, 300)]
+    v2_plan = exploration_plan(2, plan_nonce, pool_v2, set(v2_slice),
+                               [f"vendor/model-{i}" for i in range(19)], 15)
+
     return {
         "slice": _digest(question_ids),
+        "epoch_plan_v2": _digest({"slice": v2_slice, "plan": sorted(v2_plan.items())}),
         "exploration": _digest(explore_map),
         "synthetic_hidden": _digest(hidden),
         "routing_decisions": _digest(routing),

@@ -26,7 +26,7 @@ here, and a check that enforces it.**
 
 | | Invariant | Enforced by |
 |---|---|---|
-| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 12 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
+| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 13 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), the v2 copy rule (`copy_rule.py`, `tests/test_copy_rule.py`), the v2 champion rule (`champion.py`, `tests/test_champion.py`; constant policies are no longer zero by construction in v2, see its entry), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time, coldkey-median shared grades from v2 (`tests/test_shared_grades.py`) |
@@ -2378,12 +2378,9 @@ Enforced by `tests/test_payout.py`.
 
 ### I3 — the v2 miss rule (E'') (v2 release; from the activation block)
 
-Under v1 a missed epoch adds a full slice of wrong answers to the head's
-evidence (`apply_miss`) with a 200-epoch half-life: a six-hour outage took
-about 250 epochs to recover from, while publishing a new head hash recovered
-in ten, so the rule punished only operators who did not know to reset. A miss
-cannot be free either: an operator sees its own grades before it serves and
-could withhold a bad epoch. From protocol v2 (`update_scores(...,
+v1's miss rule (`apply_miss`) is replaced from protocol v2: it recovers too
+slowly from an honest outage. A miss cannot be free either: an operator sees
+its own grades before it serves and could withhold a bad epoch. From protocol v2 (`update_scores(...,
 protocol_version=2)`):
 
 - **Before burn-in is complete** (`Evidence.burn_in_progress` <
@@ -2425,13 +2422,11 @@ model per epoch:
    only when the seat is empty.
 2. **Eligibility does not read the frame, nor v1 dedup.** v1's quality floor (a
    fraction of the frontier's maximum accuracy) is replaced by
-   `CHAMPION_MIN_ACCURACY` on window shared-grade accuracy, and the v1
-   epsilon clause (which compares frontier-based composites) does not run.
-   v1's routing-similarity dedup does not decide v2 eligibility either: it
-   keeps the head on the senior *registration*, so a near-constant mimic on an
-   older hotkey could flag the champion and unseat it. In v2 a copy is an
-   exact hash owned by someone else (below) or a junior that fails the NV
-   margin (the copy rule).
+   `CHAMPION_MIN_ACCURACY` on window shared-grade accuracy, and v1's dedup
+   clauses (routing similarity, parameter distance, the epsilon clause) do not
+   decide v2 eligibility. In v2 a copy is decided by the copy rule
+   (`copy_rule.py`): an exact hash owned by another coldkey, or a junior head
+   that fails the margin against a senior seat holder.
 3. **Spend is measured, not modelled (I4).** A head's spend on a question is
    the pool's prompt tokens plus the cell's coldkey-median attested completion
    tokens (`shared_grades.shared_cell_tokens`), at the pinned prices, not
@@ -2445,18 +2440,22 @@ headroom, quality and thrift (computed and published as diagnostics, deciding
 nothing); the exploration detectors (they decide only which samples enter the
 frame); and `best_model` / `reference_cost` (they feed only the diagnostics).
 
-**A head hash has one owner, its first committer.** A hash is owned by the
-hotkey with the earliest on-chain commitment of it among every hotkey
-committing it at the boundary (not only those serving it that epoch), and
-keeps that owner while it is remembered. Only the owner's UID serves it: any
-other UID serving the same bytes is a copy and is not paid as it, not
-measured as it, and cannot become its owner when the author's proof fails. A
-champion is *retired* (24-epoch ghost) only when its OWNER now commits a
-different head, never because a copier did, and *missed* (3-epoch ghost)
-otherwise; a standing missed ghost is checked the same way every epoch and
-upgraded. Payout
-eligibility is the hold rule (live, not an exact copy, window accuracy at or
-above the floor), so a champion that resumes after a miss is paid at once.
+**Ownership, seniority and retirement are the copy rule's.** Each epoch the
+validator folds the boundary snapshot of commitments (every committed hotkey
+with its owning coldkey, read pinned at the boundary) into the copy rule's
+state (`copy_rule.observe`). A hash belongs to the coldkey that first
+committed it; only its canonical owner UID serves it (`copy_rule.classify`),
+so a UID serving another coldkey's bytes is a copy and is not paid as it, not
+measured as it, and cannot retire it. A head's seniority and the first epoch
+of its comparison are its first commit (`v2_seniority`, `first_epoch`), never
+a registration block. A champion is *retired* (24-epoch ghost) only when its
+owner stops committing it (`retired_hashes`), and *missed* (3-epoch ghost)
+otherwise; a standing missed ghost is checked every epoch and upgraded. A
+head takes a seat only by also beating every senior seat holder in the
+comparison set by the margin (`senior_bars`, holders from `seat_holders`).
+The fold is idempotent across a retried epoch. Payout eligibility is the hold
+rule (live, canonical owner, window accuracy at or above the floor), so a
+champion that resumes after a miss is paid at once.
 
 **The reveal.** From the activation boundary it carries `protocol_version`,
 `shared_grades` (each cell's grade and median completion tokens), each UID's
@@ -2492,8 +2491,8 @@ between old and new during the ramp. The seat itself changes at once.
 
 **Bounded token counts (I2).** `verify_proof` refuses a result whose prompt or
 completion token count is outside `0..PROOF_MAX_TOKENS` (ten million): a JSON
-integer is unbounded, and a huge one would overflow the first float
-conversion in the frame or the v2 spend and stop the epoch on every validator.
+integer is unbounded, and every value a validator computes with must be
+bounded before it is used (I2).
 `run_tee_attacks.py` cases "a token count no call can produce" and "a negative
 token count".
 
@@ -2505,17 +2504,44 @@ Enforced by `tests/test_v2_epoch.py`, `tests/test_shared_grades.py`,
 `tests/test_champion.py` (re-adding an epoch, no take on an untrusted window)
 and the `v2_epoch` stage of `scripts/check_determinism.py`.
 
+### I1 — every epoch input is chosen by the boundary-keyed version (v2 release; from the activation block)
+
+A v2 epoch must be scored on v2's questions, v2's prices and v2's model index
+space, by the miner and every validator alike, or every proof fails on
+`questions_hash` and the v2 window is indexed in the wrong model space. So
+every epoch input that differs by version is chosen by the epoch's
+`protocol_version` (the boundary block, I1 above), in one place each:
+
+- **Questions:** `fugal_subnet/epoch_plan.scored_slice(version, …)` and
+  `exploration_plan(version, …)`, the only selection functions either neuron
+  calls; v1 delegates to the v1 functions byte for byte.
+- **Pool:** `loader.load_pool(version)`, v1 and v2 each with its own pinned
+  manifest and pool file.
+- **Prices and model space:** `routing_protocol.price_table(version)` and
+  `models_for_protocol(version)`.
+- **Proof namespace and head cost profile:** `verify_proof(...,
+  protocol_version=)` requires the proof's `routing_protocol` to be the
+  version's (`identity()` for v1, `identity_v2()` for v2, which the harness
+  stamps per version) and checks the head with
+  `benchmark_costs_for(head, version)`; a v1 proof does not verify in a v2
+  epoch, nor the reverse.
+
+The validator loads v1's inputs as before and, when an activation block is
+set, v2's as well, at startup; a live validator that cannot load v2's refuses
+to start rather than fail at the flip. Each epoch it picks one set by version
+before selecting anything. The v2 comparison window starts empty at the flip,
+so the two model spaces never meet in one window.
+
+Enforced by `tests/test_v2_epoch_inputs.py` and the `epoch_plan_v2` stage of
+`scripts/check_determinism.py`.
+
 ### I3/I4 — the v2 copy rule: a head must beat every senior seat holder by the margin (v2 release; from the activation block)
 
-v1 recognised copies by resemblance (`dedup.py`: routing agreement ≥ 0.99,
-relative weight distance < 0.2, and the epsilon clause at 95% agreement and
-0.5% of composite) and ranked seniority by registration block
-(`commitments.seniority_key`). Measured offline, neither holds up. A lightly
-perturbed copy keeps its source's quality while sitting further from it (agreement ~0.87, distance ~0.29) than two
-honest refits on the same data sit from each other (0.74–0.83), so no
-threshold separates them; the epsilon is far below the sampling noise
-between two miners; and registration-first seniority makes an older hotkey
-that copies a newer head the senior one. From protocol v2
+v1 recognised copies by resemblance (`dedup.py`) and ordered seniority by
+registration (`commitments.seniority_key`). v2 replaces both: seniority is
+the first commit of the head, and a junior head must be measurably better
+than every senior seat holder rather than look different from it. From
+protocol v2
 (`fugal_subnet/copy_rule.py`, enforced inside `champion.seat_step`):
 
 - **Seniority is the head's first commit.** A head's age is the block at

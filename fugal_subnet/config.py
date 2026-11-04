@@ -143,9 +143,8 @@ EXECUTION_CHECKERS = frozenset({"exec_io", "exec_unittest"})
 # The largest token count a proof result may carry, prompt or completion. Not
 # env-overridable: it decides which proofs verify. Honest calls are bounded by
 # the harness's answer budget and the pool's prompts, orders of magnitude
-# below this; the bound exists because a JSON integer is unbounded, and a
-# count like 10**400 overflows the first float conversion downstream and
-# would stop the epoch on every validator at once.
+# below this; the bound exists because a JSON integer is unbounded and every
+# value a validator computes with must be bounded first (I2).
 PROOF_MAX_TOKENS = 10_000_000
 
 # --- Head constraints ---

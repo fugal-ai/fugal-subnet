@@ -19,20 +19,20 @@ def reveal_of(epoch, result, policies):
         rs = sorted(proof(epoch, pol).scored_results, key=lambda r: r.question_id)
         decisions[str(uid)] = [model_index[r.routed_model] for r in rs]
     return {
-        "epoch_id": f"e{epoch:08d}", "protocol_version": 2,
+        "epoch_id": f"e{epoch + 1:08d}", "protocol_version": 2,   # run() is chain epoch e+1
         "questions": questions(epoch), "models": MODELS,
         "routing_decisions": decisions, **result.reveal,
     }
 
 
 def live(epochs, schedule):
-    window = seat = owners = None
+    window = seat = copy = None
     reveals = []
     r = None
     for e in range(epochs):
         pols = schedule(e)
-        r = run(e, pols, window=window, seat=seat, owners=owners)
-        window, seat, owners = r.window, r.decision.state, r.owners
+        r = run(e, pols, window=window, seat=seat, copy=copy)
+        window, seat, copy = r.window, r.decision.state, r.copy_state
         reveals.append(json.loads(json.dumps(reveal_of(e, r, pols))))   # as published
     return r, reveals
 
@@ -74,14 +74,16 @@ def test_the_rebuild_equals_the_live_state(tmp_path):
     same_window(rb.window, last.window)
     assert rb.seat == last.decision.state
     assert rb.owners == last.owners
-    assert rb.newest_epoch_id == "e00000029" and rb.epochs_replayed == 30
+    assert rb.newest_epoch_id == "e00000030" and rb.epochs_replayed == 30
+    from fugal_subnet.copy_rule import from_rebuild
+    assert from_rebuild(rb) == last.copy_state
 
 
 def test_the_rebuild_keeps_only_the_window(tmp_path):
     last, reveals = live(12, schedule)
     write(tmp_path, reveals)
     rb = rebuild_v2_from_reveals(tmp_path, window_size=5, prices=PRICES, bench_category=CATEGORY)
-    assert sorted(rb.window.slices) == list(range(7, 12))
+    assert sorted(rb.window.slices) == list(range(8, 13))   # chain epochs 1..12, last 5
 
 
 def test_the_rebuild_does_not_depend_on_reveal_order():
@@ -108,8 +110,10 @@ def test_a_rebuilt_validator_continues_exactly_like_a_live_one(tmp_path):
     last, reveals = live(20, schedule)
     write(tmp_path, reveals)
     rb = rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES, bench_category=CATEGORY)
-    a = run(20, schedule(20), window=last.window, seat=last.decision.state, owners=last.owners)
-    b = run(20, schedule(20), window=rb.window, seat=rb.seat, owners=rb.owners)
+    from fugal_subnet.copy_rule import from_rebuild
+    a = run(20, schedule(20), window=last.window, seat=last.decision.state,
+            copy=last.copy_state)
+    b = run(20, schedule(20), window=rb.window, seat=rb.seat, copy=from_rebuild(rb))
     assert (a.uids, a.weights) == (b.uids, b.weights)
     assert a.reveal == b.reveal
 
@@ -119,7 +123,7 @@ def test_extra_state_is_carried_verbatim(tmp_path):
     reveals[-1]["v2_state"]["first_commit"] = {"h5": 123}
     write(tmp_path, reveals)
     rb = rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES)
-    assert rb.extra == {"first_commit": {"h5": 123}}
+    assert rb.extra["first_commit"] == {"h5": 123} and "copy_rule" in rb.extra
 
 
 def test_no_v2_reveals_means_empty_state(tmp_path):

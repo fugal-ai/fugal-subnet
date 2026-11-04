@@ -26,6 +26,25 @@ rebound only at the commit point. A failed call is graded 0 and costs 0 in v2.
 New determinism stage `v2_epoch`. INVARIANTS: "I3/I4 — v2 pays from the paired
 rule alone; the frame is informational".
 
+### Added — protocol v2 model list: a second pinned price table, selected by protocol version (lands with v2)
+
+- `data/models_v2.json` (identical copy in `fugal_subnet/routing_data/`): 19 models, prices
+  from the public OpenRouter catalogue of 2026-11-04, each with at least three endpoints. Each
+  pins exactly one OpenRouter `reasoning` setting: `effort` for OpenAI and xAI, a `max_tokens`
+  budget for Anthropic, Google and Qwen, `enabled` otherwise. The unified parameter accepts
+  `effort` or `max_tokens`, not both. Hash-pinned in `check_safety_invariants.py` like
+  `data/models.json`.
+- `routing_protocol.price_table(version)`, `models_for_protocol(version)` (the global model
+  index space) and `reasoning_for(version, model)` serve the table of the epoch being scored,
+  keyed on `slicer.protocol_version_for_boundary`. A release/v2 validator scores v1 epochs until
+  the activation block, so the v1 table and `routing_protocol.identity()` are unchanged. The
+  v2 table's hash is in the consensus fingerprint's epoch block.
+- The v2 token manifest **candidate** (`data/benchmark_tokens_protocol_v2.json`, mirrored),
+  built from 757 metered calls through the v2 harness. Review findings are in
+  `docs/SUCCESS_CONTRACT.md`. Also: `routing_protocol.manifest_path(version)`,
+  `benchmark_costs_for(head, version)` and `identity_v2()` (a new namespace; v1's
+  `identity()` is unchanged).
+
 ### Added — protocol v2 benchmark pool: open licences only, category map and weights, its own manifest (lands with v2)
 
 - `fugal_subnet/benchmarks/v2_sets.py`: knowledge = MMLU-Pro + a 3,000-question MMLU subset;

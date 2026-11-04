@@ -135,6 +135,11 @@ def environment_fingerprint() -> dict:
             # In the digest so a validator that would flip at a different
             # block, or never, is visibly different from its first epoch.
             "v2_activation_block": config.V2_ACTIVATION_BLOCK,
+            # The v2 price table is consensus from the flip, and a release/v2
+            # validator ships it while still scoring v1 epochs; its hash is here
+            # so two validators that would score v2 differently differ visibly
+            # from their first epoch (routing_protocol.identity() covers v1).
+            "price_table_v2": _file_sha256(_routing_data("models_v2.json")),
         },
         # Every constant that decides a score or which proofs verify, as in
         # effect right now (read off the module, so an override is recorded
@@ -168,6 +173,19 @@ _SCORING_CONSTANTS = (
     "CHAMPION_GHOST_OFF", "CHAMPION_GHOST_RETIRE", "CHAMPION_WINDOW_EPOCHS",
     "CHAMPION_MIN_ACCURACY", "CHAMPION_MIN_PAIRED_QUESTIONS", "PAYOUT_SEAT_SHARES",
 )
+
+
+def _routing_data(name: str):
+    from pathlib import Path
+    return Path(__file__).resolve().parent / "routing_data" / name
+
+
+def _file_sha256(path) -> str | None:
+    import hashlib
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
 
 
 def consensus_digest(fingerprint: dict | None = None) -> str:

@@ -151,8 +151,9 @@ def reveal_epoch(
     # scored the epoch. `v2_fields` (fugal_subnet/v2_epoch.run_v2_epoch) carry
     # `shared_grades` (every (question, model) cell's coldkey-median grade and
     # attested completion tokens), each UID's failed questions, and the seat
-    # decision, so anyone can recompute every head's v2 grades, spends and NV
-    # from the reveal alone and a rebuild from reveals reproduces them.
+    # decision, so anyone can recompute every head's v2 grades and spends for
+    # the epoch from this reveal alone, and the paired NV from the window's
+    # reveals; a rebuild from reveals reproduces them.
     if protocol_version >= 2:
         reveal["protocol_version"] = int(protocol_version)
         fields = dict(v2_fields or {})

@@ -263,6 +263,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         validate_activation_block(V2_ACTIVATION_BLOCK, _bpe_for_activation(EPOCH_INTERVAL))
     except ValueError as e:
         raise click.ClickException(f"FUGAL_V2_ACTIVATION_BLOCK: {e}") from e
+    from fugal_subnet import config as _config_for_v2
+    if V2_ACTIVATION_BLOCK is not None and not getattr(
+        _config_for_v2, "BENCHMARK_CATEGORY_V2", None
+    ):
+        # Without the category map no question is "hard" and the hard weight
+        # silently never applies; a live validator refuses rather than score
+        # v2 differently from its peers.
+        msg = ("FUGAL_V2_ACTIVATION_BLOCK is set but config.BENCHMARK_CATEGORY_V2 is "
+               "missing: v2 cannot tell hard questions apart")
+        if live:
+            raise click.ClickException(msg)
+        logger.warning(msg)
     if V2_ACTIVATION_BLOCK is None:
         logger.info("Protocol v2 activation: not set; v1 rules apply to every epoch")
     else:
@@ -447,6 +459,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     v2_seat = seat_from_dict(v2_raw.get("seat"))
     v2_owners = dict(v2_raw.get("owners") or {})
     v2_window = load_window(STATE_PATH + ".v2window.npz", CHAMPION_WINDOW_EPOCHS)
+    # A seat with no window to back it (the .npz lost, or never written) must
+    # not be judged on a partial window: hold, resume and ghosts continue, but
+    # no first or take decision is made until the window is rebuilt from
+    # reveals or has refilled itself (fail closed).
+    v2_window_degraded = bool(v2_raw.get("window_degraded")) or bool(
+        (v2_seat.champion is not None or v2_seat.ghosts) and not v2_window.slices
+    )
+    if v2_window_degraded:
+        logger.error(
+            "v2 seat state present but its comparison window is missing: no first or "
+            "take decisions until it is rebuilt (FUGAL_FRAME_BOOTSTRAP) or refills."
+        )
     scoring_state = ScoringState(records=state["records"])
     prev_uids: list[int] = state["prev_uids"]
     prev_weights: list[float] = state["prev_weights"]
@@ -781,7 +805,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # window is counted in epochs, so it still expires on time.
                 save_state(scoring_state.records, prev_uids, prev_weights,
                            last_epoch_index, frame,
-                           v2={"seat": seat_to_dict(v2_seat), "owners": v2_owners},
+                           v2={"seat": seat_to_dict(v2_seat), "owners": v2_owners,
+                               "window_degraded": v2_window_degraded},
                            v2_window=v2_window)
                 if once:
                     break
@@ -1001,7 +1026,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     verified_proofs=verified_proofs, head_hashes=head_hashes,
                     coldkey_of=coldkey_of,
                     hotkey_of={uid: metagraph.hotkeys[uid] for uid in verified_proofs},
-                    seniority={uid: commit_blocks.get(uid, math.inf) for uid in verified_proofs},
+                    commit_block={
+                        uid: chain_commitments[metagraph.hotkeys[uid]][1]
+                        for uid in verified_proofs
+                        if metagraph.hotkeys[uid] in chain_commitments
+                    },
                     commit_epoch={
                         uid: (
                             chain_commitments[metagraph.hotkeys[uid]][1] // blocks_per_epoch
@@ -1009,13 +1038,28 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         )
                         for uid in verified_proofs
                     },
-                    records=epoch_state.records, exact_copies=set(dupes),
-                    commitments={hk: c[0] for hk, c in chain_commitments.items()},
+                    # v1's routing-similarity dedup does NOT decide v2
+                    # eligibility: a near-constant mimic on an older hotkey
+                    # could flag the champion and unseat it. In v2 a copy is
+                    # an exact hash owned by someone else (first committer,
+                    # above) or a junior that fails the NV margin (the copy
+                    # rule).
+                    records=epoch_state.records, exact_copies=set(),
+                    commitments={hk: (c[0], int(c[1])) for hk, c in chain_commitments.items()},
                     window=v2_window, seat=v2_seat, owners=v2_owners, burn_uid=burn_uid,
                     params=seat_params_from_config(), shares=PAYOUT_SEAT_SHARES,
                     burn_in_questions=BURN_IN_QUESTIONS,
-                    bench_category=getattr(config_module, "BENCHMARK_CATEGORY", None),
+                    bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+                    allow_take=not v2_window_degraded,
                 )
+                if v2_window_degraded:
+                    logger.error(
+                        "v2 comparison window was lost and has not been rebuilt: holding "
+                        "the seat but making NO first or take decision this epoch. Set "
+                        "FUGAL_FRAME_BOOTSTRAP to a directory of reveals and restart to "
+                        "rebuild it (it also refills itself after %d epochs).",
+                        CHAMPION_WINDOW_EPOCHS,
+                    )
                 uids, weights = v2_result.uids, v2_result.weights
                 d = v2_result.decision
                 logger.info(
@@ -1230,8 +1274,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             write_epoch_log(epoch_log)
 
             next_v2 = (
-                (v2_result.window, v2_result.decision.state, v2_result.owners)
-                if v2_result is not None else (v2_window, v2_seat, v2_owners)
+                (v2_result.window, v2_result.decision.state, v2_result.owners,
+                 v2_window_degraded
+                 and len(v2_result.window.slices) < CHAMPION_WINDOW_EPOCHS)
+                if v2_result is not None
+                else (v2_window, v2_seat, v2_owners, v2_window_degraded)
             )
 
             # COMMIT. The epoch is complete; only now does it become the state
@@ -1239,10 +1286,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             scoring_state, frame = epoch_state, epoch_frame
             prev_uids, prev_weights = next_prev_uids, next_prev_weights
             last_epoch_index = epoch_index
-            v2_window, v2_seat, v2_owners = next_v2
+            v2_window, v2_seat, v2_owners, v2_window_degraded = next_v2
             save_state(scoring_state.records, prev_uids, prev_weights,
                        last_epoch_index, frame,
-                       v2={"seat": seat_to_dict(v2_seat), "owners": v2_owners},
+                       v2={"seat": seat_to_dict(v2_seat), "owners": v2_owners,
+                           "window_degraded": v2_window_degraded},
                        v2_window=v2_window)
 
         except KeyboardInterrupt:

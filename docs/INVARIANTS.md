@@ -2378,12 +2378,9 @@ Enforced by `tests/test_payout.py`.
 
 ### I3 — the v2 miss rule (E'') (v2 release; from the activation block)
 
-Under v1 a missed epoch adds a full slice of wrong answers to the head's
-evidence (`apply_miss`) with a 200-epoch half-life: a six-hour outage took
-about 250 epochs to recover from, while publishing a new head hash recovered
-in ten, so the rule punished only operators who did not know to reset. A miss
-cannot be free either: an operator sees its own grades before it serves and
-could withhold a bad epoch. From protocol v2 (`update_scores(...,
+v1's miss rule (`apply_miss`) is replaced from protocol v2: it recovers too
+slowly from an honest outage. A miss cannot be free either: an operator sees
+its own grades before it serves and could withhold a bad epoch. From protocol v2 (`update_scores(...,
 protocol_version=2)`):
 
 - **Before burn-in is complete** (`Evidence.burn_in_progress` <
@@ -2494,8 +2491,8 @@ between old and new during the ramp. The seat itself changes at once.
 
 **Bounded token counts (I2).** `verify_proof` refuses a result whose prompt or
 completion token count is outside `0..PROOF_MAX_TOKENS` (ten million): a JSON
-integer is unbounded, and a huge one would overflow the first float
-conversion in the frame or the v2 spend and stop the epoch on every validator.
+integer is unbounded, and every value a validator computes with must be
+bounded before it is used (I2).
 `run_tee_attacks.py` cases "a token count no call can produce" and "a negative
 token count".
 

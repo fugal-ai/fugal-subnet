@@ -256,6 +256,23 @@ def _categories_of(ranked: dict[str, list[dict]], bench_category: dict[str, str]
     return cats
 
 
+def _within_category_shares(benches: list[str], ranked: dict[str, list[dict]],
+                            bench_weight: dict[str, float] | None) -> dict[str, float]:
+    """Each benchmark's share of its category: pool size by default, or explicit
+    weights (`bench_weight`) when the category is weighted. A weighted category
+    must weight EVERY one of its benchmarks; a partial map would mix two
+    meanings of "share" and is refused rather than guessed at."""
+    given = [b for b in benches if bench_weight and b in bench_weight]
+    if given and len(given) != len(benches):
+        missing = sorted(set(benches) - set(given))
+        raise ValueError(f"category weights must cover every benchmark in it; missing {missing}")
+    raw = {b: (float(bench_weight[b]) if given else float(len(ranked[b]))) for b in benches}
+    if any(w < 0 for w in raw.values()) or sum(raw.values()) <= 0:
+        raise ValueError(f"category weights must be non-negative with a positive sum: {raw}")
+    total = sum(raw.values())
+    return {b: raw[b] / total for b in benches}
+
+
 def category_quotas(size: int, targets: dict[str, float], present: set[str], nonce: bytes, salt: str) -> dict[str, int]:
     """Slots per category: largest remainder on the published targets, over the
     categories actually present in the pool (targets renormalised over them)."""
@@ -269,9 +286,11 @@ def select_slice_v2(
     targets: dict[str, float],
     bench_category: dict[str, str],
     share_factor: float = SLICE_SHARE_FACTOR,
+    bench_weight: dict[str, float] | None = None,
 ) -> list[dict]:
     """The v2 scored slice: category quotas at `targets`, then benchmark quotas
-    by pool share within each category under the share_factor cap. A quota a
+    by share within each category (pool size, or `bench_weight` where a
+    category is weighted) under the share_factor cap. A quota a
     benchmark cannot fill (pool exhausted, or capped) passes to the others in
     its category; a category that cannot fill passes its remainder to the
     other categories in proportion to their targets. Deterministic in
@@ -290,7 +309,7 @@ def select_slice_v2(
         csize = sum(len(ranked[b]) for b in benches)
         want = min(cq[c], csize)
         unfilled += cq[c] - want
-        share = {b: len(ranked[b]) / csize for b in benches}
+        share = _within_category_shares(benches, ranked, bench_weight)
         caps = {b: min(len(ranked[b]), max(1, int(share_factor * want * share[b]))) for b in benches}
         q = _largest_remainder(want, share, nonce, f"scored:{c}")
         q = {b: min(q[b], caps[b]) for b in benches}
@@ -352,6 +371,7 @@ def select_explore_set_v2(
     size: int,
     targets: dict[str, float],
     bench_category: dict[str, str],
+    bench_weight: dict[str, float] | None = None,
 ) -> list[dict]:
     """The v2 exploration set, disjoint from the scored slice: category quotas
     at `targets` by largest remainder (no floor), then each slot's benchmark by
@@ -368,7 +388,10 @@ def select_explore_set_v2(
     used = {b: 0 for b in ranked}
     out: list[dict] = []
     for c in sorted(cats):
-        weights = [(b, float(len(full[b]))) for b in cats[c]]
+        # The scored slice's within-category shares (from the WHOLE pool), so the
+        # expected exploration share equals the expected scored share.
+        shares = _within_category_shares(sorted(cats[c]), full, bench_weight)
+        weights = [(b, shares[b]) for b in cats[c]]
         for slot in range(cq[c]):
             live = [(b, w) for b, w in weights if used[b] < len(ranked[b])]
             if not live:

@@ -28,7 +28,7 @@ here, and a check that enforces it.**
 |---|---|---|
 | **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 10 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
-| **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
+| **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), the v2 champion rule (`champion.py`, `tests/test_champion.py`; constant policies are no longer zero by construction in v2, see its entry), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time, coldkey-median shared grades from v2 (`tests/test_shared_grades.py`) |
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior **and no external dependency** can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. Every call that leaves the process on the epoch path is bounded. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py`, `tests/test_collateral_timeout.py`, `check_safety_invariants.check_external_calls_bounded` |
@@ -2200,6 +2200,195 @@ reveal alone; a v1 reveal is byte-for-byte unchanged.
 
 Enforced by `tests/test_shared_grades.py` and the `shared_grades` stage of
 `scripts/check_determinism.py`.
+
+### I3 — one champion; taking the seat needs the margin, holding it needs none (v2 release; from the activation block)
+
+From protocol v2 the miner share is not proportional to score. It goes to a
+**champion** (and, from the payout change, to the last three champions), and
+the seat changes hands by a paired test (`fugal_subnet/champion.py`):
+
+- **Net value per question** of a challenger over the champion,
+  `NV_i = u_i·(g_challenger − g_champion) − (s_challenger − s_champion)/V`,
+  in points. g is the shared cell grade (I4, shared grades) and s the policy
+  spend from pinned prices and the frame's verbosity, so neither side is a
+  miner's self-report. `V = CHAMPION_ACCURACY_VALUE ×` the champion's own
+  mean spend per question over the same paired questions: one extra correct
+  answer is worth that many of the champion's questions. V is measured from
+  the window, so nothing is pinned for it and it is rebuilt from reveals.
+  `u_i = CHAMPION_HARD_WEIGHT` on the hard-reasoning category, fixed by the
+  benchmark's category and therefore the same for every head and active from
+  the first epoch.
+- **Take.** A challenger takes the seat only if its point estimate AND the
+  one-sided paired-bootstrap lower bound (`CHAMPION_CONFIDENCE`,
+  `CHAMPION_BOOTSTRAP_RESAMPLES` resamples within category, both heads'
+  answers to a question kept together) exceed `CHAMPION_MARGIN` points, and it
+  has at least `CHAMPION_MIN_PAIRED_QUESTIONS` (1,500) paired questions
+  against the bar, and passes the accuracy gates: overall accuracy at or above
+  a high-water mark,
+  and the same on the hard subset once it has
+  `CHAMPION_HARD_GATE_MIN_QUESTIONS` questions. The marks are zero until the
+  first champion, then that champion's lower bound (Wilson, at
+  `WILSON_CONFIDENCE`), then each new champion's. They never fall while a
+  champion or its ghost stands; when the last ghost expires with the seat
+  empty they reset to zero, so a departed champion's bar cannot keep the
+  share burning and the next eligible head can be first. The point
+  estimate is part of the rule, not only a shortcut: no bootstrap runs for a
+  mean at or below the margin.
+- **Eligibility.** To hold a seat, or resume one inside its ghost window, a
+  head must be live, not be an exact copy, and have window accuracy (shared
+  grades over the window) at or above `CHAMPION_MIN_ACCURACY` (0.30). That
+  absolute floor replaces v1's frame-based quality floor, because nothing that
+  pays in v2 reads the frame; its job is only to keep a broken head out of the
+  seat, and the value is unmeasured on the v2 benchmarks. To
+  *take* a seat (first or by challenge) it must pass the same floor and also
+  have completed burn-in
+  since its last reset or miss (E''), so a champion that misses an epoch
+  keeps its seat while a head that is not seated re-earns burn-in first.
+- **Hold.** A live, eligible champion keeps the seat with no margin, so two
+  near-equal heads cannot trade it on noise. An identical head has NV exactly
+  0, so copies of the champion never take the seat, and any number of equal
+  juniors earn nothing.
+- **First.** With no champion and no ghost, the most senior eligible head
+  (full burn-in, quality floor, not an exact copy) that passes the high-water
+  gates takes the empty seat; there is nothing to compare it with. Until any
+  head is eligible the champion share burns, as in v1. At the flip this
+  makes the first seat go to the eligible head committed earliest before
+  the activation boundary, which is a timing race between operators; it is
+  accepted because any better head displaces it by the margin.
+- **Ghost.** A champion that stops being live or eligible leaves a ghost bar
+  for `CHAMPION_GHOST_OFF` epochs (missed) or `CHAMPION_GHOST_RETIRE` (its
+  owner serves a different head). While it stands, a challenger must beat the
+  ghost by the margin, the seat is otherwise empty and its share burns, and a
+  champion that only missed resumes its seat if it returns inside the window.
+  A missed ghost whose owner then commits a different head is upgraded to the
+  retire window, counted from when it first stood, and no longer resumes.
+  The windows are as short as the copy rule allows, because an empty seat
+  burns.
+
+**What I3 no longer guarantees, stated plainly.** v1's frontier made every
+constant policy score zero. v2 has no constant-policy reference: a head that
+does not read the question (always one model) can be the first champion, and
+holds the seat until a router beats it by the margin on the same questions.
+That is accepted. Every later promotion is a paired, margin-sized gain in net
+value over the head it replaces, so the subnet still pays only for routing
+that measurably beats what is seated, and a constant-policy champion is the
+easiest seat there is to take. What still holds: no head raises its standing
+except by beating the champion, and extra registrations do not buy seats.
+
+**Accepted residual: withholding.** The comparison pairs only epochs in
+which both heads were scored, and an operator sees its own grades before it
+serves. A champion can therefore withhold an epoch it did badly on, and that
+epoch never enters any challenger's comparison. It is accepted because it is
+bounded and expensive: every withheld epoch empties the seat for that epoch,
+so the champion forgoes its whole seat share, and it pays only while a
+challenger sits within a hair of the margin. Counting a champion's missed
+epoch as wrong answers in the pairing was considered and rejected: axons are
+public addresses, so knocking the champion offline for one collection would
+then be cheaper than building a better router.
+
+**The challenger is measured on its current run.** A challenger's paired
+epochs are only its current unbroken run of served epochs (back from the
+newest epoch to the first one it missed, and from its first commit). An
+unseated head is not paid, so sitting out a bad epoch would otherwise be free:
+it could withhold its bad epochs and then serve a burn-in's worth in a row,
+and be compared on epochs it chose. A miss restarts both its burn-in (E'')
+and its pairing, and its take gates read the same run. The champion's side is
+every window epoch it was scored in (its withholding is the accepted residual
+above). An epoch with no proofs at all is not in the window and breaks no run.
+
+**The window.** The comparison reads the last `CHAMPION_WINDOW_EPOCHS`
+epochs by calendar, only epochs in which both heads were scored, and for the
+challenger only its current run. Per epoch the window holds what is
+common to every head (slice, categories, hard flags, every cell's grade and
+spend) and per head only its routing and its failed calls, so it is bounded
+and reconstructable from the published reveals.
+
+**The bar is never the field.** What a challenger must beat is the champion
+or its ghost. No other head's presence moves it (I4).
+
+**Determinism (I1).** Each NV_i is computed elementwise and quantised to an
+integer number of `NV_UNITS_PER_POINT` units, so every sum is exact on any
+CPU; V is a `math.fsum` mean. The resampling stream is numpy's PCG64 seeded
+from sha256(epoch id, bar, challenger). The lower bound is an order statistic
+of integer sums (the k-th smallest, k = round((1 − confidence) × resamples),
+0-based: 200 of 2,000 at 90%), and the margin comparison is done in the same
+integer units. Per-question NV is clipped to ±`UNIT_CLIP` before it becomes an
+integer, so no sum can overflow, and a NaN is refused. Former champions kept
+in the seat state are bounded (`HISTORY_KEEP`). Candidates are visited in
+seniority order and ties go to the most senior, so
+the decision does not depend on the order proofs arrived.
+
+**Superseded margin.** An earlier draft used an absolute headroom margin
+(0.004) for both taking the seat and beating a senior head. v2 has one
+margin, `CHAMPION_MARGIN`, in NV points.
+
+**Not yet enforced.** The per-call time gate (`CHAMPION_TIME_GATE_FACTOR`)
+needs a hash-bound per-call latency in the proof. Until proofs carry it the
+gate is not applied, and the published policy says so.
+
+Enforced by `tests/test_champion.py`.
+
+### I3 — seats, not shares: the v2 payout (v2 release; from the activation block)
+
+From protocol v2 the miner share is split across **seats** held by the last three champions
+(`fugal_subnet/payout.py`, `PAYOUT_SEAT_SHARES` 0.85 / 0.10 / 0.05: current,
+previous, the one before), never across the field.
+
+- **A seat pays only while its head is live and eligible** this epoch
+  (verified, window accuracy at or above `CHAMPION_MIN_ACCURACY`, not an exact
+  copy: the hold rule, so burn-in is not required and a champion that resumes
+  after a miss is paid at once). An unpaid seat's
+  share goes to the current champion; with no current champion it burns,
+  along with the champion's own share. A seat no champion has filled yet is
+  an empty seat and pays the champion.
+- **Seats are paid to the UID serving the seat's head.** A hotkey keeps every
+  seat it holds. One operator holds several seats only by having won each in
+  turn, so registering more hotkeys buys nothing: under proportional pay an
+  operator with eight passing heads took eight shares, and under seats it
+  takes at most the seats it has won.
+- **The burn UID is never a paid seat.** Its share goes to the champion.
+- The weight-change cap (`MAX_WEIGHT_DELTA`) still applies to the vector
+  afterwards, as in v1, so a change of champion takes several epochs to
+  complete.
+
+`validate_seat_shares` refuses a split that does not sum to one, has a
+negative share, or pays a later seat more than an earlier one.
+
+Enforced by `tests/test_payout.py`.
+
+### I3 — the v2 miss rule (E'') (v2 release; from the activation block)
+
+Under v1 a missed epoch adds a full slice of wrong answers to the head's
+evidence (`apply_miss`) with a 200-epoch half-life: a six-hour outage took
+about 250 epochs to recover from, while publishing a new head hash recovered
+in ten, so the rule punished only operators who did not know to reset. A miss
+cannot be free either: an operator sees its own grades before it serves and
+could withhold a bad epoch. From protocol v2 (`update_scores(...,
+protocol_version=2)`):
+
+- **Before burn-in is complete** (`Evidence.burn_in_progress` <
+  `BURN_IN_QUESTIONS`, counted in scored questions since the last reset or
+  miss, undecayed), a miss **resets the evidence fully**
+  (`evidence.apply_miss_v2`). A young head cannot shape its record by
+  withholding, because withholding restarts it.
+- **After burn-in**, a miss **decays the evidence with no phantom zeros** and
+  **restarts the burn-in counter**. The record survives an honest outage, and
+  the head must re-earn burn-in before it can take a seat. A seated champion
+  keeps its seat (holding needs no burn-in; I3, the champion rule).
+- **Migration.** `Evidence.burn_in_n` is new; a record written before it reads
+  `-1` and counts as its `n_total`, so at the flip every head keeps the
+  burn-in its evidence already shows. A state file without the field loads.
+  Before the flip, a validator running this code writes `burn_in_n: -1.0` into
+  its local state file for every record (v1 accumulation never sets it). That
+  is local state only: it is in no reveal, no hash and no score, and it reads
+  as "not yet counted".
+
+Simulated over 400 runs of 300 epochs: withholding below-mean epochs earns
+3.07 against honest play's 3.19 under E'', where plain decay without the reset
+let a young head out-earn honest play by 6.3%. An isolated honest outage costs
+about 4.5 epochs. v1 epochs keep `apply_miss` unchanged.
+
+Enforced by `tests/test_miss_rule_v2.py`.
 
 ## Attack surface by actor
 

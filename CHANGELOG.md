@@ -20,6 +20,50 @@ All notable changes to this project will be documented here. Releases follow [Se
 - Not yet: the harness sending the per-model `reasoning` object and the output-length
   self-test, and the v2 token manifest (pending a decision).
 
+### Added — protocol v2 champion scoring (module; wiring follows)
+
+`fugal_subnet/champion.py`: the paired net-value test (NV quantised to exact
+integers, V = m times the champion's own mean spend on the paired questions,
+paired bootstrap within category, PCG64 seeded per pair and epoch), the
+bounded comparison window (`CHAMPION_WINDOW_EPOCHS`, 48), and the seat state
+machine (the most senior eligible head takes an empty seat, hold at no
+margin, take at `CHAMPION_MARGIN`, high-water accuracy gates from the first
+champion's lower bound, ghost bars, resume inside the ghost window), and an absolute
+accuracy floor `CHAMPION_MIN_ACCURACY` (0.30, unmeasured on v2 benchmarks) for
+taking and holding, which replaces the frame-based quality floor. A
+challenger is measured only on its current unbroken run of served epochs; a
+take needs `CHAMPION_MIN_PAIRED_QUESTIONS` (1,500) paired questions; a missed
+ghost whose owner commits a new head becomes a retire ghost. Not wired
+into the validator yet. INVARIANTS: "I3 — one champion; taking the seat needs
+the margin, holding it needs none".
+
+### Added — protocol v2 payout: 85/10/5 across the last three champions (module)
+
+`fugal_subnet/payout.py`: `seat_weights` splits the miner share across seats
+held by the current and two previous champions (`PAYOUT_SEAT_SHARES`). A seat
+pays only while its head is live and eligible, otherwise to the current
+champion, and burns when there is none; seats are paid to the serving UID, so
+one hotkey keeps the seats it holds and extra registrations buy nothing. Not
+wired into the validator yet. INVARIANTS: "I3 — seats, not shares".
+
+### Added — protocol v2 miss rule E'' (from the activation block)
+
+`Evidence.burn_in_n` counts scored questions since the last reset or miss.
+From `FUGAL_V2_ACTIVATION_BLOCK`, a miss before burn-in resets the evidence
+fully and a miss after it decays the evidence with no phantom zeros and
+restarts burn-in (`apply_miss_v2`, `accumulate_epoch_v2`, `burn_in_complete`).
+Pre-existing records migrate lazily (the counter reads as `n_total`). v1
+epochs are unchanged. INVARIANTS: "I3 — the v2 miss rule (E'')".
+
+### Added — v2 slicer: explicit benchmark weights inside a category
+
+`select_slice_v2` and `select_explore_set_v2` take an optional `bench_weight` map. Within a
+category a benchmark's share is its weight over the category total (default: pool size, as
+before). The approved v2 hard category weights an open multiple-choice set and integer
+olympiad math 50/50, rather than by raw pool size. A category that weights any benchmark must
+weight all of them (a partial map is refused). The share cap and the exploration draw use the
+same weighted shares, so expected exploration share still equals expected scored share.
+
 ### Added — protocol v2 slicer: category-first allocation; exploration matches the scored mix (not yet wired; lands with v2)
 
 - `select_slice_v2` allocates the scored slice by category at published targets (largest

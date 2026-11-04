@@ -134,3 +134,44 @@ def test_mix_weights_correct_an_epoch_that_rounds_away_from_the_scored_mix():
 def test_unmapped_benchmark_is_an_error_not_a_silent_category():
     with pytest.raises(ValueError):
         select_slice_v2(_nonce(1), POOL + [{"question_id": "x_1", "benchmark": "x"}], 300, TARGETS, CATEGORY)
+
+
+# --- explicit weights inside a category (approved v2 hard category: 50/50 MCQ vs integer math) ---
+
+HARD_WEIGHTS = {"hle": 0.50, "gpqa_d": 0.30, "aime25": 0.10, "aime26": 0.10}   # sums to 1 within "hard"
+
+
+def test_a_weighted_category_follows_its_weights_not_pool_size():
+    """Pool sizes would give hle ~89% of the hard slots; the weights give it 50%."""
+    s = select_slice_v2(_nonce(11), POOL, 300, TARGETS, CATEGORY, bench_weight=HARD_WEIGHTS)
+    hard = Counter(q["benchmark"] for q in s if CATEGORY[q["benchmark"]] == "hard")
+    assert sum(hard.values()) == 90
+    assert hard["hle"] == 45                  # 0.50 x 90
+    assert hard["gpqa_d"] == 27               # 0.30 x 90, within the 1.5x cap and the 198-item pool
+    assert hard["aime25"] + hard["aime26"] == 18
+
+
+def test_weighted_exploration_still_matches_the_weighted_scored_share():
+    scored, explored = Counter(), Counter()
+    for i in range(300):
+        n = _nonce(1000 + i)
+        s = select_slice_v2(n, POOL, 300, TARGETS, CATEGORY, bench_weight=HARD_WEIGHTS)
+        e = select_explore_set_v2(hashlib.sha256(b"x" + n).digest(), POOL, {q["question_id"] for q in s},
+                                  15, TARGETS, CATEGORY, bench_weight=HARD_WEIGHTS)
+        scored.update(q["benchmark"] for q in s)
+        explored.update(q["benchmark"] for q in e)
+    for b in ("hle", "gpqa_d", "aime25"):
+        ps, pe = scored[b] / (300 * 300), explored[b] / (15 * 300)
+        assert abs(ps - pe) < max(0.012, 0.3 * ps), (b, ps, pe)
+
+
+def test_a_partial_weight_map_for_a_category_is_refused():
+    with pytest.raises(ValueError):
+        select_slice_v2(_nonce(1), POOL, 300, TARGETS, CATEGORY, bench_weight={"hle": 0.5, "gpqa_d": 0.5})
+
+
+def test_weights_in_one_category_leave_the_others_on_pool_share():
+    a = select_slice_v2(_nonce(12), POOL, 300, TARGETS, CATEGORY, bench_weight=HARD_WEIGHTS)
+    b = select_slice_v2(_nonce(12), POOL, 300, TARGETS, CATEGORY)
+    other = lambda s: [q["question_id"] for q in s if CATEGORY[q["benchmark"]] != "hard"]  # noqa: E731
+    assert other(a) == other(b)

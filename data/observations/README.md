@@ -54,3 +54,17 @@ It is kept out of the repository on purpose (`.gitignore`): it is the seed
 operator's training data, not protocol evidence, and it was once swept into an
 unrelated PR by `git add -A`. A working copy lives with the operator's training
 scripts; nothing in this repository reads it.
+
+## `benchmark_tokens_protocol_v2.jsonl`: protocol v2 token observations (2026-11-04)
+
+757 metered calls (19 models × 40 questions, 3 failed) through the v2 harness: `max_tokens`
+16384, each model's pinned `reasoning` setting, priced on `data/models_v2.json`. Sampled at the
+v2 category mix from a measurement pool of open sets. Builds the v2 token manifest:
+
+```bash
+python scripts/build_token_manifest.py --observations data/observations/benchmark_tokens_protocol_v2.jsonl \
+  --models data/models_v2.json --worker-profile "$(python -c "import json;print(json.load(open('data/benchmark_tokens_protocol_v2.json'))['worker_profile'])")" \
+  --output data/benchmark_tokens_protocol_v2.json
+```
+
+Same fields as `benchmark_tokens_v2.jsonl`; no response text, no key material.

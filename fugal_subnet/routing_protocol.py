@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = ROOT / "routing_data" / "benchmark_tokens_v1.json"
 PRICES_PATH = ROOT / "routing_data" / "models.json"
 PRICES_PATH_V2 = ROOT / "routing_data" / "models_v2.json"
+MANIFEST_PATH_V2 = ROOT / "routing_data" / "benchmark_tokens_protocol_v2.json"
 BENCHMARK_LAMBDA = 1.0  # Consensus constant; never a miner environment setting.
 
 
@@ -87,3 +88,32 @@ def reasoning_for(version: int, model_id: str) -> dict | None:
         if r["id"] == model_id:
             return dict(r["reasoning"]) if r.get("reasoning") else None
     raise KeyError(f"{model_id!r} is not in the v{version} model list")
+
+
+def manifest_path(version: int) -> Path:
+    if version == 1:
+        return MANIFEST_PATH
+    if version == 2:
+        return MANIFEST_PATH_V2
+    raise ValueError(f"unknown protocol version {version!r}")
+
+
+def identity_v2():
+    """The v2 evidence namespace: the v2 token manifest and price table, under a new protocol
+    name. A v2 reveal or frame cannot be mistaken for a v1 one, and v1's identity() is
+    untouched."""
+    return contract.digest({"protocol": "fugal-success-v2", "contract": contract.CONTRACT,
+                            "profile": contract.PROFILE_ID, "lambda": BENCHMARK_LAMBDA,
+                            "tokens": contract.file_hash(MANIFEST_PATH_V2),
+                            "prices": contract.file_hash(PRICES_PATH_V2)})
+
+
+def benchmark_costs_for(head, version: int, require_reviewed: bool = False):
+    """benchmark_costs for the epoch's protocol: its token manifest and price table."""
+    if version == 1:
+        return benchmark_costs(head, require_reviewed=require_reviewed)
+    if head.success is None:
+        raise ValueError("legacy preference heads cannot enter the success benchmark")
+    manifest = json.loads(manifest_path(version).read_text())
+    contract.check_manifest(head.success, manifest, deployable=require_reviewed)
+    return contract.estimated_cost(head.success, price_table(version))

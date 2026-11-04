@@ -80,3 +80,17 @@ def test_the_harness_sends_the_pinned_reasoning_setting_only_when_given(monkeypa
     hm._call_model(_P(), "openai/gpt-5.5", {"prompt": "q"})
     assert seen[0]["reasoning"] == {"effort": "medium"}
     assert "reasoning" not in seen[1]
+
+
+def test_the_v2_token_manifest_ships_mirrored_and_covers_exactly_the_v2_models():
+    shipped = rp.MANIFEST_PATH_V2.read_bytes()
+    assert (rp.ROOT.parent / "data" / "benchmark_tokens_protocol_v2.json").read_bytes() == shipped
+    m = json.loads(shipped)
+    assert {r["id"] for r in m["models"]} == set(rp.models_for_protocol(2))
+    assert m["status"] in ("candidate", "reviewed")
+    assert all(r["samples"] >= 30 and r["mean_out_tokens"] > 0 for r in m["models"])
+
+
+def test_v2_identity_is_a_separate_namespace():
+    assert rp.identity_v2() != rp.identity()
+    assert rp.identity().startswith("49390166e93fbf5c")

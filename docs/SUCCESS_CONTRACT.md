@@ -89,6 +89,43 @@ period; the next revision is a flag day run as the runbook below describes.
 that output plus exactly `status` and `review`. A candidate manifest still refuses
 `--live` startup and deployable export (`tests/test_success_contract.py`).
 
+## Protocol v2 token manifest: CANDIDATE (2026-11-04), awaiting review
+
+`data/benchmark_tokens_protocol_v2.json` (mirrored at `fugal_subnet/routing_data/`) is
+`status: candidate`. A reviewer promotes it by adding `status: reviewed` and a `review` block,
+as for v1. Until then it refuses `--live` startup and deployable export, like any candidate.
+
+**Source.** `data/observations/benchmark_tokens_protocol_v2.jsonl`: 757 metered calls (3 more
+failed), 2026-11-04, by `scripts/record_token_observations.py --protocol 2` through the v2
+harness path (`max_tokens` 16384, each model's single pinned `reasoning` setting from
+`data/models_v2.json`, the full benchmark prompt). 40 questions per model at the v2 category
+mix: knowledge from MMLU-Pro and MMLU; math from MATH; hard from AIME 2025 and historical AIME,
+standing in for the open hard sets that were not yet loaded; instruction from IFEval. Same
+fields as v1's observations; no response text.
+
+**Billing cross-check.** Table-priced $5.675 against provider-billed $5.183 in total. Five
+models diverge by more than 5%, from OpenRouter routing to endpoints priced differently from
+the catalogue default the table pins:
+
+| model | billed ÷ table |
+|---|---|
+| z-ai/glm-5.3-flash | **2.86** |
+| z-ai/glm-5.3 | **0.49** |
+| deepseek/deepseek-v4-pro-0813 | 0.80 |
+| minimax/minimax-m3.1-flash | 1.15 |
+| qwen/qwen3.8-27b | 1.09 |
+
+**For the reviewer:**
+1. **Cap overrun:** x-ai/grok-4.7 returned 17,763 completion tokens on 1 of 38 calls, against
+   `max_tokens` 16,384 (`reasoning.effort: medium`; xAI accepts only `effort`). Every other model
+   stayed at or under 16,384, and several hit it exactly (cut off as designed).
+2. **Hidden prompt:** grok-4.7's prompt tokens are 1,267–1,575 on every call (others 25–750), so
+   the provider adds ~1.2k tokens per call, and the manifest's mean includes them.
+3. **Pinned rates:** whether to re-pin the five diverging models' rates from measured effective
+   prices before the v2 freeze (a `data/models_v2.json` change; the hash pin moves).
+4. Hard-category questions were AIME only, so the means of long-reasoning models on SuperGPQA and
+   Omni-MATH are an extrapolation.
+
 ## Offline export
 
 The completed 2048-token SPROUT evaluation and explicitly deferred 512-token

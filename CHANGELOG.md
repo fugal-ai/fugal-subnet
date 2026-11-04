@@ -17,8 +17,11 @@ All notable changes to this project will be documented here. Releases follow [Se
   keyed on `slicer.protocol_version_for_boundary`. A release/v2 validator scores v1 epochs until
   the activation block, so the v1 table and `routing_protocol.identity()` are unchanged. The
   v2 table's hash is in the consensus fingerprint's epoch block.
-- Not yet: the harness sending the per-model `reasoning` object and the output-length
-  self-test, and the v2 token manifest (pending a decision).
+- The v2 token manifest **candidate** (`data/benchmark_tokens_protocol_v2.json`, mirrored),
+  built from 757 metered calls through the v2 harness. Review findings are in
+  `docs/SUCCESS_CONTRACT.md`. Also: `routing_protocol.manifest_path(version)`,
+  `benchmark_costs_for(head, version)` and `identity_v2()` (a new namespace; v1's
+  `identity()` is unchanged).
 
 ### Added — protocol v2 champion scoring (module; wiring follows)
 

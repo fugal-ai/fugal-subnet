@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — protocol v2 image wiring: the miner serves v2 only, holds until the flip, and skips epochs it cannot finish
+
+- The harness takes `protocol_version`:
+  - questions come from `epoch_plan`;
+  - v2 heads are priced with `benchmark_costs_for(head, 2)` (the reviewed v2 token manifest and table);
+  - every v2 call carries the model's pinned `reasoning` setting;
+  - v2 proofs carry `identity_v2()`.
+  v1 behaviour is unchanged.
+- The TEE runtime's metering proxy takes the epoch's price table (`setup(prices=...)`).
+- Miner: with `FUGAL_V2_ACTIVATION_BLOCK` set (the v2 compose), the pool, prices and model space
+  are v2's. After embedding, the miner **holds**: it commits its head in the epoch before the
+  activation block (one hotkey holds one commitment, so a commit during the notice window would
+  fail the hotkey's v1 proofs) and registers its axon from the activation block. Unset means v1,
+  as before.
+- Miner: an epoch is not started with fewer than `LATE_START_MARGIN_BLOCKS` (60) blocks left
+  before its collection block. Missing the block is a miss either way, and the calls are paid.
+
 ### Added — protocol v2 model list: a second pinned price table, selected by protocol version (lands with v2)
 
 - `data/models_v2.json` (identical copy in `fugal_subnet/routing_data/`): 19 models, prices

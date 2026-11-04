@@ -297,8 +297,13 @@ class TEERuntime:
     mock: bool = True
     proxy: MeteringProxy | None = None
 
-    def setup(self, api_key: str = "", proxy_port: int = 8199) -> MeteringProxy:
+    def setup(self, api_key: str = "", proxy_port: int = 8199,
+              prices: dict | None = None) -> MeteringProxy:
         self.proxy = MeteringProxy(port=proxy_port, api_key=api_key)
+        if prices:
+            # The epoch's protocol table (routing_protocol.price_table(version)), so a v2 call is
+            # priced on v2 rates; with none, the proxy loads the v1 table as before.
+            self.proxy.prices = dict(prices)
         self.proxy.start()
         return self.proxy
 

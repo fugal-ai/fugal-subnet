@@ -26,10 +26,10 @@ here, and a check that enforces it.**
 
 | | Invariant | Enforced by |
 |---|---|---|
-| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 9 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
+| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 10 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
-| **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time |
+| **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time, coldkey-median shared grades from v2 (`tests/test_shared_grades.py`) |
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior **and no external dependency** can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. Every call that leaves the process on the epoch path is bounded. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py`, `tests/test_collateral_timeout.py`, `check_safety_invariants.check_external_calls_bounded` |
 | **I7** | **Auditability.** Any divergence between two validators is diagnosable after the fact from published artifacts. | `fugal_subnet/fingerprint.py`, `environment` block in every `reveal.json` |
@@ -2146,6 +2146,48 @@ margin (0.004) an earlier draft used, both for a challenger taking the seat
 and for a junior head beating a senior one.
 
 Enforced by `tests/test_v2_activation.py`.
+
+### I4 — shared grades: a cell is a vote of operators (v2 release; from the activation block)
+
+From protocol v2 a challenger is compared with the champion question by
+question, and every head is graded from **one shared grade per (question,
+model) cell** of the epoch's scored slice
+(`fugal_subnet/shared_grades.py`): failed calls dropped, one vote per coldkey
+(the mean over its hotkeys), the median across coldkeys. A head's grade on a
+question is the grade of the cell it routed to, except that its own failed
+call stays a wrong answer: a miner whose call failed did not answer and does
+not collect the answer other miners paid for.
+
+**Why.** Two heads that route a question to the same model are asking the
+same thing of the same model, so a difference between their own answers there
+is the provider answering differently on the second call, not routing.
+Measured on mainnet reveals, two independent answers to one cell disagree on
+about 8% of cells, and the paired comparison's variance falls to 0.48 of the
+unpaired comparison with own answers and to 0.23 with shared cells. That is
+the difference between a promotion margin the field can clear and one it
+cannot.
+
+**What this costs I4, stated plainly.** A head's grade now depends on other
+operators' answers. What they contribute is attested model output graded by
+the pinned grader, so it is a measurement of the model on that question, not
+a judgement of the head, and it is the same measurement for every head that
+routed there. A cell moves only when at least half of its voting coldkeys
+answer differently; at exactly half it moves halfway, and a cell answered by
+one coldkey is that coldkey's own answer. Hotkeys are not a lever: the
+coldkey is the unit, as in the frame (I9). Residual: a cell with few voting
+coldkeys is only as robust as those few, so on a thin field a single operator
+can move a cell it shares with one other operator halfway. The majority
+assumption is the frame's, applied per cell.
+
+**Determinism.** Every step is order-independent and the published form is
+sorted (`cells_for_reveal`); the `shared_grades` stage of
+`check_determinism.py` feeds proofs in the opposite order to the frame stage.
+From the activation boundary the reveal carries `protocol_version` and
+`shared_grades`, so anyone can recompute every head's v2 grades from the
+reveal alone; a v1 reveal is byte-for-byte unchanged.
+
+Enforced by `tests/test_shared_grades.py` and the `shared_grades` stage of
+`scripts/check_determinism.py`.
 
 ## Attack surface by actor
 

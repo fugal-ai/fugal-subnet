@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 shared grades (from the activation block)
+
+`fugal_subnet/shared_grades.py`: one coldkey-median grade per (question,
+model) cell of the scored slice, with failed calls dropped. A head's own failed
+call stays wrong. From `FUGAL_V2_ACTIVATION_BLOCK` the validator computes the
+cells each epoch and the reveal carries `protocol_version` and
+`shared_grades`; v1 reveals are unchanged. Nothing scores from them yet: the
+paired champion comparison reads them in the next change. New determinism
+stage `shared_grades`. INVARIANTS: "I4 — shared grades: a cell is a vote of
+operators".
+
 ### Added — protocol v2 activation block and v2 constants (no behaviour change yet)
 
 `FUGAL_V2_ACTIVATION_BLOCK` names the epoch boundary at which validators switch

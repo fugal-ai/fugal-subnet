@@ -319,6 +319,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.rewards import cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
+    from fugal_subnet.shared_grades import (
+        ScoredAnswer,
+        cells_for_reveal,
+        shared_cell_grades,
+    )
     from fugal_subnet.tee.attestation import CollateralBudget, verification_order
     from fugal_subnet.tee.proof import BenchmarkProof
     from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
@@ -822,6 +827,29 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 frontier.confidence, frontier.least_trials,
             )
 
+            # --- SHARED GRADES (protocol v2) ---
+            # One coldkey-median grade per (question, model) cell of the
+            # scored slice: failed calls dropped, one vote per operator. From
+            # the activation boundary the paired champion comparison grades
+            # every head from these cells, so two heads that routed alike are
+            # not separated by a provider answering differently on the second
+            # call (docs/INVARIANTS.md, "I4 — shared grades").
+            shared_cells = None
+            if protocol_version >= 2:
+                shared_cells = shared_cell_grades(
+                    ScoredAnswer(
+                        question_id=r.question_id, model=r.routed_model,
+                        coldkey=coldkey_of[uid], correct=bool(r.correct),
+                        failed=bool(r.failed),
+                    )
+                    for uid, proof in verified_proofs.items()
+                    for r in proof.scored_results
+                )
+                logger.info(
+                    "Shared grades: %d (question, model) cells from %d coldkeys",
+                    len(shared_cells), len(set(coldkey_of.values())),
+                )
+
             # --- SCORE FROM PROOFS ---
             timer.start_phase("score")
             epoch_scores: dict[int, HeadScore] = {}
@@ -1004,6 +1032,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 head_hashes, routing_for_reveal,
                 epoch_score_dicts, epoch_weight_map,
                 exploration=exploration_for_reveal,
+                protocol_version=protocol_version,
+                shared_grades=(
+                    cells_for_reveal(shared_cells) if shared_cells is not None else None
+                ),
             )
 
             # --- SET WEIGHTS ---

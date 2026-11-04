@@ -1,10 +1,12 @@
 name: CI
 
 on:
+  # release/** so a release branch (protocol v2 lands on release/v2 before
+  # one PR takes it to main at the flip) gets the same checks as main.
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
 
 permissions:
   contents: read

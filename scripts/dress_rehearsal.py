@@ -204,12 +204,20 @@ def write_head(path: str, seed: int, models=None) -> str:
 # select_slice_v2 fills its categories), and heads over three v2 models of
 # different price, built against the v2 manifest.
 def v2_models() -> list[str]:
-    """Three v2 models, cheapest to dearest by output price."""
+    """Three v2 models from the cheap end of the table, rising in price.
+
+    Within a few times of each other in price, so the stub's skill ladder
+    (0.30 / 0.60 / 0.85) decides net value the way a router's accuracy should.
+    Across the whole table (a hundredfold in price) the dearest model's spend,
+    priced at CHAMPION_ACCURACY_VALUE x the champion's own spend, outweighs
+    its accuracy, and no always-dearest challenger could ever take the seat:
+    the rule working, the rehearsal measuring nothing.
+    """
     from fugal_subnet.routing_protocol import price_table
 
     table = price_table(2)
     ranked = sorted(table, key=lambda m: (table[m][1], table[m][0], m))
-    return [ranked[0], ranked[len(ranked) // 2], ranked[-1]]
+    return [ranked[0], ranked[len(ranked) // 6], ranked[len(ranked) // 3]]
 
 
 def write_pool_v2(path: str, per_benchmark: int = 20) -> str:

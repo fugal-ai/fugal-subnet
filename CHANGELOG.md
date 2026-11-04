@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 state rebuilt from reveals (snapshot + replay)
+
+`fugal_subnet/v2_rebuild.py`: the seat, owners, serving UIDs, burn-in
+progress and any later v2 fields are read from the newest v2 reveal's
+`v2_state`; the comparison window is replayed from the last
+`CHAMPION_WINDOW_EPOCHS` v2 reveals. The frame rebuild applies the v2 mix
+weights. A validator with no local v2 state and `FUGAL_FRAME_BOOTSTRAP` set
+rebuilds at startup and restores burn-in counters. INVARIANTS: "I1 — v2 state
+is rebuilt from reveals: snapshot + replay", including the trust model.
+
 ### Added — protocol v2: exploration weighted by the scored mix in the frame
 
 From the activation block each aggregated exploration observation is

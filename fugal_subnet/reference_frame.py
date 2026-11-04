@@ -322,12 +322,21 @@ def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
             for i, e in enumerate(reveal.get("exploration", []))
             if e.get("model")
         ]
-        epochs.append((epoch_id, aggregate_observations(observations)))
+        # Protocol v2 reveals publish the epoch's mix weights and each
+        # explored question's benchmark; the live epoch weighted its samples
+        # by them, so the replay does too.
+        weights = None
+        keyed = aggregate_observations(observations, with_question=True)
+        if int(reveal.get("protocol_version", 1)) >= 2 and "frame_mix_weights" in reveal:
+            mix = reveal.get("frame_mix_weights") or {}
+            bench_of = reveal.get("explore_benchmarks") or {}
+            weights = [float(mix.get(bench_of.get(row[0], ""), 1.0)) for row in keyed]
+        epochs.append((epoch_id, [row[1:] for row in keyed], weights))
 
     frame = None
     replayed = 0
-    for epoch_id, samples in sorted(epochs, key=lambda x: x[0]):
-        frame = accumulate_exploration(frame, samples, half_life=half_life)
+    for epoch_id, samples, weights in sorted(epochs, key=lambda x: x[0]):
+        frame = accumulate_exploration(frame, samples, half_life=half_life, weights=weights)
         replayed += 1
     logger.info(
         "Rebuilt reference frame from %d reveals (%d models measured)",

@@ -506,6 +506,51 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             "directory of published reveals to rebuild instead."
         )
 
+    # Protocol v2 state, rebuilt the same way when this validator has none of
+    # its own, or has a seat but lost its window: the seat, owners and burn-in
+    # from the newest reveal's v2_state snapshot, the window replayed from the
+    # last CHAMPION_WINDOW_EPOCHS reveals (fugal_subnet/v2_rebuild.py, trust
+    # model in its docstring). Per-head v1 evidence is not rebuilt, as before;
+    # only the E'' burn-in counter is restored, into fresh records.
+    #
+    # Exact only if the reveals reach the epoch just before the one this
+    # validator resumes at. Published reveals lag by the commit-reveal hold,
+    # so a rebuild from a peer's may be a few epochs behind: then the window
+    # lacks those epochs and the seat is as of the newest reveal, and the
+    # validator stays DEGRADED (no first or take decision) until its window
+    # has refilled. Start a rebuilding validator after the hold has passed.
+    if ((not v2_raw or v2_window_degraded) and not v2_window.slices
+            and os.getenv("FUGAL_FRAME_BOOTSTRAP")):
+        from fugal_subnet.evidence import Evidence
+        from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
+        rebuilt = rebuild_v2_from_reveals(
+            os.environ["FUGAL_FRAME_BOOTSTRAP"], window_size=CHAMPION_WINDOW_EPOCHS,
+            prices=prices, bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+        )
+        if rebuilt.newest_epoch_id is not None:
+            v2_window, v2_seat, v2_owners = rebuilt.window, rebuilt.seat, rebuilt.owners
+            for h, uid in sorted(rebuilt.serving.items()):
+                if uid in scoring_state.records or h not in rebuilt.burn_in:
+                    continue
+                rec = MinerRecord(uid=uid, hotkey=rebuilt.owners.get(h, ""), current_head_hash=h)
+                rec.evidence = Evidence(weights_hash=h, burn_in_n=rebuilt.burn_in[h])
+                scoring_state.records[uid] = rec
+            resume_epoch = epoch_index_for_block(
+                subtensor.get_current_block(), blocks_per_epoch_fn(EPOCH_INTERVAL),
+            )
+            behind = resume_epoch - 1 - int(rebuilt.newest_epoch_id.lstrip("e"))
+            v2_window_degraded = behind > 0
+            if v2_window_degraded:
+                logger.error(
+                    "v2 state rebuilt from reveals that end %d epoch(s) before this "
+                    "validator resumes: no first or take decisions until the window has "
+                    "refilled. Restart after the commit-reveal hold to rebuild exactly.",
+                    behind,
+                )
+            else:
+                logger.info("v2 state rebuilt exactly from reveals up to %s",
+                            rebuilt.newest_epoch_id)
+
     blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 
     while True:

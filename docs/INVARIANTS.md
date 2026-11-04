@@ -2523,6 +2523,54 @@ question), so a rebuild from reveals reproduces them.
 
 Enforced by `tests/test_frame_mix_v2.py`.
 
+### I1 — v2 state is rebuilt from reveals: snapshot + replay (v2 release; from the activation block)
+
+A validator that lost its state, or has just joined, must reach the v2 state
+its peers hold, or it seats a different champion (I1). The v2 decision state
+cannot be replayed from reveals alone: some of what decided it (dedup
+verdicts, per-head evidence, chain commitments, seniority) is not in them. So
+`fugal_subnet/v2_rebuild.rebuild_v2_from_reveals` rebuilds it in two parts,
+ordered by epoch id and never by filesystem order:
+
+- **Snapshot.** The seat, head owners, the UID chosen for each head, each
+  head's E'' burn-in progress, and every later v2 field (the copy rule's
+  state) are read from the `v2_state` block of the newest v2 reveal.
+- **Replay.** The comparison window is re-derived from the last
+  `CHAMPION_WINDOW_EPOCHS` v2 reveals: each epoch's questions, its
+  `shared_grades` (grades and median tokens) at the pinned prices, and each
+  served head's routing and failed calls. The reference frame's rebuild
+  applies the same v2 mix weights (`frame_mix_weights`,
+  `explore_benchmarks`).
+
+The validator uses it at startup when it has no local v2 state, or has a
+seat but lost its window, and `FUGAL_FRAME_BOOTSTRAP` names a directory of
+reveals. Per-head v1 evidence is not rebuilt (as before); only the burn-in
+counter is restored, into fresh records.
+
+**Exact only when the reveals are current.** Published reveals lag by the
+commit-reveal hold. A rebuild is exact when the newest reveal is the epoch
+just before the one the validator resumes at (its own reveals after a lost
+state, or a peer's once the hold has passed). If they lag by k epochs, the
+window lacks those epochs and the seat is as of the newest reveal; the
+validator then stays degraded (hold, resume and ghosts only; no first or take
+decision) until its window has refilled, and says so. Start a rebuilding
+validator after the hold.
+
+**The trust model, stated plainly.** A validator that rebuilds trusts the
+publishing validator's snapshot, as it trusts a frame rebuilt from someone
+else's reveals. That trust is bounded: every reveal's sha256 is committed on
+chain by the validator that published it, so a rebuilt snapshot is pinned to
+a specific, attributable artifact that cannot be altered after the fact; and
+the window part is not trusted at all, because anyone can re-derive it from
+the cells and routing every reveal carries. Rebuilding from your own reveals
+after a lost disk is self-trust.
+
+Enforced by `tests/test_v2_rebuild.py`: the rebuild equals the live state
+after 30 epochs with intermittent misses, a validator continuing from a
+rebuild produces the same next epoch (weights and reveal) as one continuing
+from its own state, reveal order does not matter, later v2 fields are carried
+verbatim, and the frame rebuild reproduces the weighted frame.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

@@ -402,8 +402,33 @@ def test_the_window_keeps_only_the_last_size_epochs():
     w = build_window({"a": oracle_router}, epochs=range(10), size=4)
     assert sorted(w.slices) == [6, 7, 8, 9]
     assert w.epochs_of("a") == [6, 7, 8, 9]
-    with pytest.raises(ValueError):
-        w.add_epoch(make_slice(9)[0], {})
+
+
+def test_re_adding_an_epoch_replaces_it():
+    # Restart idempotence: a retried epoch (crash between the window and the
+    # JSON state) or a --once re-run re-adds the same epoch; the window must
+    # come out the same, not fail.
+    w = build_window({"a": oracle_router, "b": constant(1)}, epochs=range(10))
+    sl, diff = make_slice(9)
+    again = w.add_epoch(sl, {"a": HeadEpoch(np.asarray(oracle_router(diff)), np.zeros(Q, bool)),
+                             "b": HeadEpoch(np.full(Q, 1), np.zeros(Q, bool))})
+    assert sorted(again.slices) == sorted(w.slices)
+    for h in ("a", "b"):
+        assert np.array_equal(again.heads[h][9].routed, w.heads[h][9].routed)
+    # A head absent from the replacement is absent from that epoch.
+    only_a = w.add_epoch(sl, {"a": HeadEpoch(np.asarray(oracle_router(diff)), np.zeros(Q, bool))})
+    assert 9 not in only_a.heads["b"] and 8 in only_a.heads["b"]
+
+
+def test_a_window_that_is_not_trusted_makes_no_take():
+    w = build_window({"champ": noisy(oracle_router, 0.6, 5), "better": oracle_router})
+    d = seat_step(seated("champ"), 9, "e9", w,
+                  {"champ": cand("champ", 0), "better": cand("better", 1)},
+                  params=PARAMS, allow_take=False)
+    assert d.event == "hold"
+    e = seat_step(SeatState(), 9, "e9", w, {"better": cand("better", 1)}, params=PARAMS,
+                  allow_take=False)
+    assert e.event == "empty"
 
 
 def test_a_failed_call_grades_zero():

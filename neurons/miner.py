@@ -367,8 +367,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         # and register the axon only from the activation block.
         from fugal_subnet.benchmarks.slicer import validate_activation_block
         validate_activation_block(V2_ACTIVATION_BLOCK, blocks_per_epoch)
-        commit_at = V2_ACTIVATION_BLOCK - blocks_per_epoch
-        _wait_for_block(subtensor, commit_at, "commit the v2 head (one epoch before the flip)")
+        # Validators read commitments at each epoch's BOUNDARY block, so a commit
+        # that lands after the last v1 boundary is invisible to that v1 epoch
+        # (its proof is still checked against the old head) and visible at the
+        # flip boundary. COMMIT_AFTER_BOUNDARY_BLOCKS keeps it clear of the
+        # boundary block itself.
+        from fugal_subnet.config import COMMIT_AFTER_BOUNDARY_BLOCKS
+        commit_at = V2_ACTIVATION_BLOCK - blocks_per_epoch + COMMIT_AFTER_BOUNDARY_BLOCKS
+        _wait_for_block(subtensor, commit_at, "commit the v2 head (after the last v1 boundary)")
         committed = ensure_commitment(subtensor, wallet, netuid, weights_hash)
         _wait_for_block(subtensor, V2_ACTIVATION_BLOCK, "serve the axon (the v2 flip)")
 

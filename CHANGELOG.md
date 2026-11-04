@@ -14,7 +14,7 @@ All notable changes to this project will be documented here. Releases follow [Se
   Apache-2.0, ODC-BY, CC0-1.0. Subsets are chosen in sha256 order of a stable id, never load
   order. Revisions are pinned in `DATASET_REVISIONS`.
 - `BENCHMARK_CATEGORY_V2`, `BENCHMARK_WEIGHT_V2` (hard: 50% the multiple-choice set, 50% integer
-  olympiad math by pool size), `CATEGORY_TARGETS_V2` (30/25/30/15).
+  olympiad math by pool size), `CATEGORY_TARGETS_V2` (40/25/30/5: instruction stays at 5% in v2.0 because only 259 IFEval items are checkable by the pinned constraint kinds, repeating every ~17 epochs at 15 a slice; a generated instruction set is v2.1).
 - `loader.load_all_v2` / `load_pool(protocol_version)`: a separate pool, file
   (`data/benchmarks/pool_v2.json.gz`, `FUGAL_BENCHMARK_POOL_V2`) and manifest
   (`pool_manifest_v2.json`, with licences, categories and weights), verified the same way as v1.

@@ -1,8 +1,8 @@
 {
  "category_targets": {
   "hard": 0.3,
-  "instruction": 0.15,
-  "knowledge": 0.3,
+  "instruction": 0.05,
+  "knowledge": 0.4,
   "math": 0.25
  },
  "content_hash": "fc383e3b87020ab6b25331640767b17bfa49346f2a2f8ecb1e39c0c172983278",

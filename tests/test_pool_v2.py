@@ -50,7 +50,7 @@ def test_a_v2_slice_on_the_manifest_shape_hits_the_targets():
     by_cat = {}
     for q in s:
         by_cat[BENCHMARK_CATEGORY_V2[q["benchmark"]]] = by_cat.get(BENCHMARK_CATEGORY_V2[q["benchmark"]], 0) + 1
-    assert by_cat == {"knowledge": 90, "math": 75, "hard": 90, "instruction": 45}
+    assert by_cat == {"knowledge": 120, "math": 75, "hard": 90, "instruction": 15}
     assert sum(1 for q in s if q["benchmark"] == "supergpqa_hard") == 45
 
 

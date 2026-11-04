@@ -39,6 +39,17 @@ rebound only at the commit point. A failed call is graded 0 and costs 0 in v2.
 New determinism stage `v2_epoch`. INVARIANTS: "I3/I4 — v2 pays from the paired
 rule alone; the frame is informational".
 
+### Fixed — v2 slicer: unbiased apportionment (systematic sampling of the leftover units)
+
+The v2 allocation gave leftover slots to the largest fractional parts every epoch. When a
+category's or benchmark's fractions don't tie, that's a fixed bias the nonce never rotates. At
+the v2.0 targets (40/25/30/5) the 15 exploration slots always split 6/4/4/1 instead of
+6/3.75/4.5/0.75 on average, under-exploring the hard category by a sixth; inside a weighted
+category a small benchmark could never win its fraction. Leftover units are now assigned by
+systematic sampling over the fractional parts (one nonce-keyed offset), so each key's expected
+quota equals its exact share. Exact rational arithmetic keeps every validator identical.
+Integer allocations (e.g. 300 at 30/25/30/15) are unchanged.
+
 ### Added — protocol v2 champion scoring (module; wiring follows)
 
 `fugal_subnet/champion.py`: the paired net-value test (NV quantised to exact

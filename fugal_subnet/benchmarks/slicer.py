@@ -220,22 +220,45 @@ def _hmac_rank(nonce: bytes, key: str) -> str:
 
 
 def _largest_remainder(total: int, weights: dict[str, float], nonce: bytes, salt: str) -> dict[str, int]:
-    """Integer quotas summing to `total`, proportional to `weights`, no floor.
+    """Integer quotas summing to `total`, proportional to `weights`, no floor,
+    and UNBIASED: each key's expected quota equals its exact share.
 
-    Floors first, then the leftover units go to the largest fractional parts;
-    equal fractions are ordered by HMAC(nonce, salt:key) so ties rotate with the
-    nonce instead of always favouring the same key. Deterministic.
+    Floors first. The leftover units are then assigned by systematic sampling
+    over the fractional parts: one uniform offset u in [0, 1) from
+    HMAC(nonce, salt), points u, u+1, ..., and a key gets an extra unit when a
+    point falls in its stretch of the cumulative fractions. Each key with
+    fractional part f gains a unit with probability exactly f.
+
+    Plain largest-remainder (the earlier rule) gave the leftover units to the
+    largest fractions EVERY epoch. With the v2 targets that meant 15 exploration
+    slots always split 6/4/4/1 instead of 6/3.75/4.5/0.75 on average, a fixed
+    bias the nonce never rotated. Exact rational arithmetic
+    (fractions.Fraction) keeps the sum and every threshold identical on every
+    validator. Deterministic in (total, weights, nonce, salt).
     """
+    from fractions import Fraction
+
     keys = sorted(k for k, w in weights.items() if w > 0)
     if total <= 0 or not keys:
         return {k: 0 for k in weights}
-    wsum = float(sum(weights[k] for k in keys))
-    exact = {k: total * weights[k] / wsum for k in keys}
-    quotas = {k: int(exact[k]) for k in keys}
-    left = total - sum(quotas.values())
-    order = sorted(keys, key=lambda k: (-(exact[k] - quotas[k]), _hmac_rank(nonce, f"{salt}:{k}")))
-    for k in order[:left]:
-        quotas[k] += 1
+    w = {k: Fraction(weights[k]) for k in keys}
+    wsum = sum(w.values())
+    exact = {k: total * w[k] / wsum for k in keys}
+    quotas = {k: int(exact[k]) for k in keys}          # floor; exact is non-negative
+    left = total - sum(quotas.values())                # an exact integer
+    if left:
+        u = Fraction(int(_hmac_rank(nonce, f"{salt}:offset"), 16), 1 << 256)
+        # The walk order changes only the joint distribution, never a key's
+        # marginal; permute it with the nonce so no key is always adjacent to another.
+        order = sorted(keys, key=lambda k: _hmac_rank(nonce, f"{salt}:order:{k}"))
+        acc = Fraction(0)
+        point = u
+        for k in order:
+            lo, acc = acc, acc + (exact[k] - quotas[k])
+            while lo <= point < acc:
+                quotas[k] += 1
+                point += 1
+        assert sum(quotas.values()) == total
     return {k: quotas.get(k, 0) for k in weights}
 
 

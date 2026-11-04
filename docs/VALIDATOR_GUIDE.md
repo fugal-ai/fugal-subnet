@@ -199,10 +199,12 @@ run `sudo deploy/systemd/fugal-alert-telegram-setup.sh` on the host: it asks
 for the token without echo, finds the chat id, writes the three alert values
 into `/etc/fugal/watch.env` and posts a test message. Left empty, failures go
 to the journal only. A run waits until the current epoch is
-`FUGAL_WATCH_SETTLE_BLOCKS` (200) blocks old, then judges it: a validator
+`FUGAL_WATCH_SETTLE_BLOCKS` (340) blocks old, then judges it: a validator
 sets weights only after collection (boundary + 180 blocks on a 360-block
-epoch), so a check made earlier reports "did not set weights this epoch" for
-a healthy validator. One run lasts at most one epoch, 72 minutes on a 4320 s
+epoch) and may spend up to its 1800 s (150-block) post-collection budget
+first, so as late as about boundary + 330. A check made earlier reports "did
+not set weights this epoch" for a healthy validator; 340 is about four
+minutes before the next boundary. One run lasts at most one epoch, 72 minutes on a 4320 s
 epoch; systemd does not start a second instance while one is active, so the
 hourly tick simply skips. The alert URL (which carries the Telegram bot token)
 reaches curl on stdin, never on its command line.

@@ -12,12 +12,16 @@
 #   FUGAL_ALERT_URL          where failures go; empty means journal only
 #   FUGAL_ALERT_KIND         ntfy (plain text POST), discord (JSON webhook) or
 #                            telegram (bot sendMessage; needs FUGAL_ALERT_CHAT_ID)
-#   FUGAL_WATCH_SETTLE_BLOCKS  blocks into an epoch before it is judged (200).
+#   FUGAL_WATCH_SETTLE_BLOCKS  blocks into an epoch before it is judged (340).
 #                            A validator sets weights after collection, at
 #                            boundary + FUGAL_COLLECT_FRACTION x epoch (180 on a
-#                            360-block epoch), so judging earlier reports "did not
-#                            set weights this epoch" for a validator that simply
-#                            hasn't reached that point yet. 0 = no wait.
+#                            360-block epoch), and may use up to its 1800 s
+#                            (150-block) post-collection budget verifying and
+#                            scoring first, so a healthy validator can set
+#                            weights as late as ~boundary + 330. Judging earlier
+#                            reports "did not set weights this epoch" for one
+#                            that simply hasn't got there yet. 340 is ~4 min
+#                            before the next boundary. 0 = no wait.
 #
 # A run first waits until the current epoch is FUGAL_WATCH_SETTLE_BLOCKS old,
 # then judges that epoch and exits (at most one epoch, ~72 min). systemd never
@@ -34,7 +38,7 @@ tmp="$(mktemp)"
 # Wait until the epoch has settled. Best effort: if the chain is unreachable
 # the watch below reports that itself.
 .venv/bin/python - "${FUGAL_WATCH_NETWORK:-test}" "${FUGAL_WATCH_EPOCH_INTERVAL:-4320}" \
-  "${FUGAL_WATCH_SETTLE_BLOCKS:-200}" <<'PY' || true
+  "${FUGAL_WATCH_SETTLE_BLOCKS:-340}" <<'PY' || true
 import sys, time
 import bittensor as bt
 from fugal_subnet.benchmarks.slicer import blocks_per_epoch

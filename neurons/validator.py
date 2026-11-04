@@ -554,7 +554,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
         rebuilt = rebuild_v2_from_reveals(
             os.environ["FUGAL_FRAME_BOOTSTRAP"], window_size=CHAMPION_WINDOW_EPOCHS,
-            prices=prices, bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+            # The replayed window is v2 epochs, so it is priced at v2's table.
+            prices=epoch_inputs.get(2, epoch_inputs[1])[2],
+            bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
         )
         if rebuilt.newest_epoch_id is not None:
             v2_window, v2_seat, v2_owners = rebuilt.window, rebuilt.seat, rebuilt.owners

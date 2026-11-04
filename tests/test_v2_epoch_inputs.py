@@ -65,3 +65,10 @@ def test_v2_epoch_plan_uses_the_v2_categories():
     plan = exploration_plan(2, b"\x07" * 32, pool, {q["question_id"] for q in sl},
                             ["m/a", "m/b"], 15)
     assert len(plan) == 15 and not set(plan) & {q["question_id"] for q in sl}
+
+
+def test_the_startup_rebuild_prices_the_window_at_v2s_table():
+    start = SRC[SRC.index("rebuilt = rebuild_v2_from_reveals("):]
+    call = start[:start.index(")\n")]
+    assert "prices=epoch_inputs.get(2, epoch_inputs[1])[2]" in call
+    assert SRC.index("    epoch_inputs = {1:") < SRC.index("rebuilt = rebuild_v2_from_reveals(")

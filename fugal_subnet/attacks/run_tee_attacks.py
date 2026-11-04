@@ -245,6 +245,25 @@ def a_failed_but_correct():
     return _verify(_proof(results))
 
 
+def a_huge_token_count():
+    """Carry a token count no call can produce (10**400): attested or not, it
+    must be refused at verification, before any float conversion downstream
+    overflows and stops the epoch on every validator (I2)."""
+    results = [_qr(q) for q in SLICE]
+    results[0] = QuestionResult(SLICE[0], "deepseek/deepseek-v4-flash", True, 0.001,
+                                hashlib.sha256(SLICE[0].encode()).hexdigest(),
+                                prompt_tokens=500, completion_tokens=10**400)
+    return _verify(_proof(results))
+
+
+def a_negative_token_count():
+    results = [_qr(q) for q in SLICE]
+    results[1] = QuestionResult(SLICE[1], "deepseek/deepseek-v4-flash", True, 0.001,
+                                hashlib.sha256(SLICE[1].encode()).hexdigest(),
+                                prompt_tokens=-5, completion_tokens=300)
+    return _verify(_proof(results))
+
+
 def a_duplicate_results():
     """Pad the result list to inflate the scored count."""
     return _verify(_proof([_qr(q) for q in SLICE] + [_qr(SLICE[0])]))
@@ -465,6 +484,8 @@ ATTACKS = [
     ("bare base entry, miner-chosen application", "I8", a_bare_base_approves_any_app),
     ("rogue TPM intermediate carried in the proof", "I8", a_rogue_tpm_intermediate),
     ("supplied cert named as the pinned root", "I8", a_supplied_cert_named_as_the_root),
+    ("a token count no call can produce", "I2", a_huge_token_count),
+    ("a negative token count", "I2", a_negative_token_count),
 ]
 
 

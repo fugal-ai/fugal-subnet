@@ -23,6 +23,81 @@ All notable changes to this project will be documented here. Releases follow [Se
   `benchmark_costs_for(head, version)` and `identity_v2()` (a new namespace; v1's
   `identity()` is unchanged).
 
+### Fixed — protocol v2 payout: a ghost keeps seat 1
+
+During a champion's ghost window the payout seats shifted down a seat (the
+previous champion paid 5% instead of 10%, the third seat nothing), because the
+ghost is the newest entry in the champion history. Seat 1 is now the ghost's:
+its 85% burns and seats 2 and 3 keep paying the previous two champions.
+Found by the v2 flip rehearsal.
+
+### Added — protocol v2 state rebuilt from reveals (snapshot + replay)
+
+`fugal_subnet/v2_rebuild.py`: the seat, owners, serving UIDs, burn-in
+progress and any later v2 fields are read from the newest v2 reveal's
+`v2_state`; the comparison window is replayed from the last
+`CHAMPION_WINDOW_EPOCHS` v2 reveals. The frame rebuild applies the v2 mix
+weights. A validator with no local v2 state and `FUGAL_FRAME_BOOTSTRAP` set
+rebuilds at startup and restores burn-in counters. INVARIANTS: "I1 — v2 state
+is rebuilt from reveals: snapshot + replay", including the trust model.
+
+### Added — protocol v2: exploration weighted by the scored mix in the frame
+
+From the activation block each aggregated exploration observation is
+weighted by `slicer.mix_weights` (its benchmark's scored share over its
+exploration share this epoch). `ReferenceFrame` keeps weighted sums for
+accuracy and verbosity beside the raw ones; the raw trial count, which the
+frontier's confidence reads, is unweighted. v1 frames serialise unchanged.
+`aggregate_observations(..., with_question=True)` carries the question id.
+The weights are in the v2 reveal (`frame_mix_weights`). INVARIANTS: "I9 — v2:
+the frame is estimated on the scored mix".
+
+### Added — `epoch_plan`: the single, versioned question-selection entry point for both neurons
+
+`epoch_plan.scored_slice(version, nonce, pool, size)` and
+`exploration_plan(version, nonce, pool, scored_ids, models, size)`. v1 is byte-identical to
+`select_slice` and `expected_exploration`; v2 uses the category-first slicer with the v2
+targets, map and weights. The exploration model assignment moves to
+`exploration.assign_explore_models`, shared by both versions (v1 output unchanged).
+
+### Added — protocol v2 wired into the validator (from the activation block)
+
+`fugal_subnet/v2_epoch.py`: from `FUGAL_V2_ACTIVATION_BLOCK` the validator
+runs one v2 epoch after verification. It computes shared cells (grades and
+coldkey-median attested completion tokens) and the comparison window, steps
+the seat, and sets the 85/10/5 seat vector with `paid_fraction = 1`. Nothing
+that pays reads the frame: spend comes from cell tokens at pinned prices,
+and the frame-based quality floor and epsilon clause do not run in v2. The
+reveal carries the cells with tokens, per-UID failed questions and the seat
+decision. The seat, owners and window persist (window as an `.npz`) and are
+rebound only at the commit point. A failed call is graded 0 and costs 0 in v2.
+New determinism stage `v2_epoch`. INVARIANTS: "I3/I4 — v2 pays from the paired
+rule alone; the frame is informational".
+
+### Added — protocol v2 copy rule (module; wiring follows)
+
+`fugal_subnet/copy_rule.py`, from the activation block (v1 keeps
+`commitments.seniority_key` and every `dedup.py` clause unchanged):
+seniority is the block at which a head's exact weights hash was first
+committed by any hotkey (same-block ties by a coldkey digest); a hash belongs
+to the coldkey that first committed it, and the same hash under another
+coldkey is an exact copy (`classify`; wiring names `owner`,
+`first_commit_block`, `is_exact_copy`, `v2_seniority`); a retired head (its owner no longer
+commits it) stays in the comparison set, unpaid, for `CHAMPION_GHOST_RETIRE`
+epochs from its first retirement, and a head that missed for
+`CHAMPION_GHOST_OFF`. `champion.seat_step(senior_bars=...)`: a head takes a
+seat, first or by challenge, only by beating every senior SEAT HOLDER in that
+set (the paid seats 1-3 and the champion's ghosts, `seat_holders`) by
+`CHAMPION_MARGIN` on the same paired test; no second margin, no resemblance
+test. A chain coldkey swap keeps the author's head: ownership follows the
+first committer's hotkey. The state is a fold over boundary commitment snapshots, published as
+plain JSON (`CopyState.to_reveal` / `from_reveal`: `epoch`, `first_commit`,
+`ownership`, `first_hotkey`, `active`, `retired_at`) for the v2 reveal state block, rebuilt
+from the newest reveal or replayed from an archive node (`from_rebuild` reads it from
+`v2_rebuild.rebuild_v2_from_reveals`). New determinism stage
+`copy_rule`. INVARIANTS: "I3/I4 — the v2 copy rule", including the accepted
+front-running residual until commitments are bound to the coldkey.
+
 ### Added — protocol v2 benchmark pool: open licences only, category map and weights, its own manifest (lands with v2)
 
 - `fugal_subnet/benchmarks/v2_sets.py`: knowledge = MMLU-Pro + a 3,000-question MMLU subset;

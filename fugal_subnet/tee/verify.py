@@ -462,6 +462,23 @@ def verify_proof(
             f"(e.g. {unknown[:3]})",
         )
 
+    # 9a. Token counts are bounded (I2). They are attested, so an honest proof
+    #     never comes near the bound; a JSON integer is unbounded, and a huge
+    #     one overflows the first float conversion downstream (the frame, the
+    #     v2 spend) and stops the epoch on every validator at once.
+    from fugal_subnet.config import PROOF_MAX_TOKENS
+    bad_tokens = [
+        r.question_id for r in proof.results
+        if not (0 <= r.prompt_tokens <= PROOF_MAX_TOKENS
+                and 0 <= r.completion_tokens <= PROOF_MAX_TOKENS)
+    ]
+    if bad_tokens:
+        return VerifyResult(
+            False,
+            f"{len(bad_tokens)} results carry a token count outside 0..{PROOF_MAX_TOKENS} "
+            f"(e.g. {bad_tokens[:3]})",
+        )
+
     # 9b. A failed call is a wrong answer and nothing more. The harness
     #     records `failed` for a call that did not complete, and the frame
     #     drops such results rather than reading them as the model being

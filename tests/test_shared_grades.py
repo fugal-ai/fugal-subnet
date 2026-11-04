@@ -133,17 +133,34 @@ def test_a_v2_reveal_publishes_the_cells(tmp_path, monkeypatch):
     cells = cells_for_reveal(shared_cell_grades([
         A("q1", "a", "ck1", True), A("q1", "a", "ck2", False),
     ]))
-    revealed = _reveal(tmp_path, monkeypatch, protocol_version=2, shared_grades=cells)
+    revealed = _reveal(tmp_path, monkeypatch, protocol_version=2,
+                       v2_fields={"shared_grades": cells, "champion": {"event": "empty"}})
     assert revealed["protocol_version"] == 2
     assert revealed["shared_grades"] == [{"question_id": "q1", "model": "a", "grade": 0.5}]
+    assert revealed["champion"] == {"event": "empty"}
 
 
-def test_the_validator_computes_cells_only_under_v2():
-    # Structural: shared grades are built behind the boundary-keyed version
-    # and handed to the reveal, so v1 epochs are untouched.
+def test_the_validator_runs_v2_only_under_v2():
+    # Structural: the v2 epoch (cells, window, seat, payout) runs behind the
+    # boundary-keyed version, and its reveal fields reach the reveal.
     import pathlib
 
     src = pathlib.Path(__file__).resolve().parents[1].joinpath("neurons", "validator.py").read_text()
-    guard = src.index("if protocol_version >= 2:\n                shared_cells = shared_cell_grades(")
-    assert src.index("shared_cells = None") < guard
-    assert "shared_grades=(\n                    cells_for_reveal(shared_cells)" in src
+    guard = src.index("if protocol_version >= 2:\n                # --- PROTOCOL v2")
+    assert src.index("v2_result = None") < guard < src.index("v2_result = run_v2_epoch(")
+    assert "{**v2_result.reveal," in src and "if v2_result is not None else None" in src
+
+
+def test_cell_tokens_are_the_coldkey_median_of_attested_tokens():
+    from fugal_subnet.shared_grades import shared_cell_tokens
+
+    answers = [
+        ScoredAnswer("q1", "m", "a", True, False, completion_tokens=100),
+        ScoredAnswer("q1", "m", "a", True, False, completion_tokens=300),   # a: mean 200
+        ScoredAnswer("q1", "m", "b", True, False, completion_tokens=500),
+        ScoredAnswer("q1", "m", "c", False, False, completion_tokens=900),
+        ScoredAnswer("q1", "m", "d", False, True, completion_tokens=0),     # failed: no vote
+    ]
+    assert shared_cell_tokens(answers) == {("q1", "m"): 500.0}
+    out = cells_for_reveal(shared_cell_grades(answers), shared_cell_tokens(answers))
+    assert out == [{"question_id": "q1", "model": "m", "grade": 1.0, "completion_tokens": 500.0}]

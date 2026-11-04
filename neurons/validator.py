@@ -73,6 +73,7 @@ def _parse_state(raw: dict, records_cls) -> dict:
         # ignored on load: seniority is now derived from chain state at
         # the boundary block (commitments.seniority_key), not remembered.
         "frame": raw.get("frame"),
+        "v2": raw.get("v2"),
     }
 
 
@@ -111,9 +112,19 @@ def _empty_state() -> dict:
 
 
 def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
-               last_epoch_index: int, frame=None, path: str | None = None):
-    """Persist validator state: write, fsync, keep the previous copy, rename."""
+               last_epoch_index: int, frame=None, path: str | None = None,
+               v2: dict | None = None, v2_window=None):
+    """Persist validator state: write, fsync, keep the previous copy, rename.
+
+    The v2 window is written first, beside the JSON, so a crash between the
+    two leaves a window one epoch ahead at worst, never a state file pointing
+    at a window that does not exist.
+    """
     path = path or STATE_PATH
+    if v2_window is not None:
+        from fugal_subnet.v2_epoch import save_window
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        save_window(path + ".v2window.npz", v2_window)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     from fugal_subnet.routing_protocol import identity
     payload = {
@@ -123,6 +134,7 @@ def save_state(records: dict, prev_uids: list[int], prev_weights: list[float],
         "prev_weights": prev_weights,
         "last_epoch_index": last_epoch_index,
         "frame": frame.to_dict() if frame is not None else None,
+        "v2": v2,
     }
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -251,6 +263,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         validate_activation_block(V2_ACTIVATION_BLOCK, _bpe_for_activation(EPOCH_INTERVAL))
     except ValueError as e:
         raise click.ClickException(f"FUGAL_V2_ACTIVATION_BLOCK: {e}") from e
+    from fugal_subnet import config as _config_for_v2
+    if V2_ACTIVATION_BLOCK is not None and not getattr(
+        _config_for_v2, "BENCHMARK_CATEGORY_V2", None
+    ):
+        # Without the category map no question is "hard" and the hard weight
+        # silently never applies; a live validator refuses rather than score
+        # v2 differently from its peers.
+        msg = ("FUGAL_V2_ACTIVATION_BLOCK is set but config.BENCHMARK_CATEGORY_V2 is "
+               "missing: v2 cannot tell hard questions apart")
+        if live:
+            raise click.ClickException(msg)
+        logger.warning(msg)
     if V2_ACTIVATION_BLOCK is None:
         logger.info("Protocol v2 activation: not set; v1 rules apply to every epoch")
     else:
@@ -277,6 +301,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.logging_setup import configure_logging
     configure_logging(log_level)
 
+    from fugal_subnet import config as config_module
     from fugal_subnet.api import load_prices
     from fugal_subnet.benchmarks.loader import load_all, pool_hash
     from fugal_subnet.benchmarks.slicer import (
@@ -287,12 +312,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         derive_nonce,
         epoch_id_for_block,
         epoch_index_for_block,
+        mix_weights,
         protocol_version_for_boundary,
         select_slice,
     )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
     from fugal_subnet.commitments import seniority_key
-    from fugal_subnet.config import TEE_COLLATERAL_EPOCH_BUDGET
+    from fugal_subnet.config import (
+        BURN_IN_QUESTIONS,
+        PAYOUT_SEAT_SHARES,
+        TEE_COLLATERAL_EPOCH_BUDGET,
+    )
     from fugal_subnet.dedup import epsilon_disqualified, find_duplicates
     from fugal_subnet.epoch_logger import (
         EpochLog,
@@ -319,14 +349,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.rewards import cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
-    from fugal_subnet.shared_grades import (
-        ScoredAnswer,
-        cells_for_reveal,
-        shared_cell_grades,
-    )
     from fugal_subnet.tee.attestation import CollateralBudget, verification_order
     from fugal_subnet.tee.proof import BenchmarkProof
     from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
+    from fugal_subnet.v2_epoch import (
+        run_v2_epoch,
+        seat_params_from_config,
+        seat_to_dict,
+    )
 
     wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     from fugal_subnet.config import ARCHIVE_ENDPOINTS, FALLBACK_ENDPOINTS
@@ -420,6 +450,27 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
 
     state = load_state(MinerRecord)
+    # Protocol v2 state: the seat and head owners (in the JSON state) and the
+    # paired comparison window (an .npz beside it). Empty until the first v2
+    # epoch; rebuilt from reveals like the frame.
+    from fugal_subnet.config import CHAMPION_WINDOW_EPOCHS
+    from fugal_subnet.v2_epoch import load_window, seat_from_dict
+    v2_raw = state.get("v2") or {}
+    v2_seat = seat_from_dict(v2_raw.get("seat"))
+    v2_owners = dict(v2_raw.get("owners") or {})
+    v2_window = load_window(STATE_PATH + ".v2window.npz", CHAMPION_WINDOW_EPOCHS)
+    # A seat with no window to back it (the .npz lost, or never written) must
+    # not be judged on a partial window: hold, resume and ghosts continue, but
+    # no first or take decision is made until the window is rebuilt from
+    # reveals or has refilled itself (fail closed).
+    v2_window_degraded = bool(v2_raw.get("window_degraded")) or bool(
+        (v2_seat.champion is not None or v2_seat.ghosts) and not v2_window.slices
+    )
+    if v2_window_degraded:
+        logger.error(
+            "v2 seat state present but its comparison window is missing: no first or "
+            "take decisions until it is rebuilt (FUGAL_FRAME_BOOTSTRAP) or refills."
+        )
     scoring_state = ScoringState(records=state["records"])
     prev_uids: list[int] = state["prev_uids"]
     prev_weights: list[float] = state["prev_weights"]
@@ -454,6 +505,51 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             "differently until it catches up. Set FUGAL_FRAME_BOOTSTRAP to a "
             "directory of published reveals to rebuild instead."
         )
+
+    # Protocol v2 state, rebuilt the same way when this validator has none of
+    # its own, or has a seat but lost its window: the seat, owners and burn-in
+    # from the newest reveal's v2_state snapshot, the window replayed from the
+    # last CHAMPION_WINDOW_EPOCHS reveals (fugal_subnet/v2_rebuild.py, trust
+    # model in its docstring). Per-head v1 evidence is not rebuilt, as before;
+    # only the E'' burn-in counter is restored, into fresh records.
+    #
+    # Exact only if the reveals reach the epoch just before the one this
+    # validator resumes at. Published reveals lag by the commit-reveal hold,
+    # so a rebuild from a peer's may be a few epochs behind: then the window
+    # lacks those epochs and the seat is as of the newest reveal, and the
+    # validator stays DEGRADED (no first or take decision) until its window
+    # has refilled. Start a rebuilding validator after the hold has passed.
+    if ((not v2_raw or v2_window_degraded) and not v2_window.slices
+            and os.getenv("FUGAL_FRAME_BOOTSTRAP")):
+        from fugal_subnet.evidence import Evidence
+        from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
+        rebuilt = rebuild_v2_from_reveals(
+            os.environ["FUGAL_FRAME_BOOTSTRAP"], window_size=CHAMPION_WINDOW_EPOCHS,
+            prices=prices, bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+        )
+        if rebuilt.newest_epoch_id is not None:
+            v2_window, v2_seat, v2_owners = rebuilt.window, rebuilt.seat, rebuilt.owners
+            for h, uid in sorted(rebuilt.serving.items()):
+                if uid in scoring_state.records or h not in rebuilt.burn_in:
+                    continue
+                rec = MinerRecord(uid=uid, hotkey=rebuilt.owners.get(h, ""), current_head_hash=h)
+                rec.evidence = Evidence(weights_hash=h, burn_in_n=rebuilt.burn_in[h])
+                scoring_state.records[uid] = rec
+            resume_epoch = epoch_index_for_block(
+                subtensor.get_current_block(), blocks_per_epoch_fn(EPOCH_INTERVAL),
+            )
+            behind = resume_epoch - 1 - int(rebuilt.newest_epoch_id.lstrip("e"))
+            v2_window_degraded = behind > 0
+            if v2_window_degraded:
+                logger.error(
+                    "v2 state rebuilt from reveals that end %d epoch(s) before this "
+                    "validator resumes: no first or take decisions until the window has "
+                    "refilled. Restart after the commit-reveal hold to rebuild exactly.",
+                    behind,
+                )
+            else:
+                logger.info("v2 state rebuilt exactly from reveals up to %s",
+                            rebuilt.newest_epoch_id)
 
     blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 
@@ -727,8 +823,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 )
                 write_epoch_log(epoch_log)
                 last_epoch_index = epoch_index
+                # The v2 seat is not advanced on an epoch with no proofs at
+                # all: there is nothing to compare, and the champion's ghost
+                # window is counted in epochs, so it still expires on time.
                 save_state(scoring_state.records, prev_uids, prev_weights,
-                           last_epoch_index, frame)
+                           last_epoch_index, frame,
+                           v2={"seat": seat_to_dict(v2_seat), "owners": v2_owners,
+                               "window_degraded": v2_window_degraded},
+                           v2_window=v2_window)
                 if once:
                     break
                 time.sleep(60)
@@ -788,10 +890,26 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     "UID %d exploration excluded from the reference frame this "
                     "epoch: %s. Its score is untouched (I4).", uid, why,
                 )
-            samples = aggregate_observations(
+            keyed = aggregate_observations(
                 observations,
                 exclude_coldkeys={coldkey_of[uid] for uid in suspicious},
+                with_question=True,
             )
+            samples = [row[1:] for row in keyed]
+            # Protocol v2: weight each exploration observation by its
+            # benchmark's scored share over its exploration share this epoch
+            # (slicer.mix_weights), so the frame estimates every model on the
+            # scored mix. The raw trial count is not weighted (it is what the
+            # frontier's confidence reads). The frame is informational in v2;
+            # this keeps it honest for the detectors and the diagnostics.
+            mix: dict[str, float] = {}
+            bench_of: dict[str, str] = {}
+            sample_weights = None
+            if protocol_version >= 2:
+                explored_qs = [gold_answers[q] for q in sorted(explore_map) if q in gold_answers]
+                mix = mix_weights(questions, explored_qs)
+                bench_of = {q["question_id"]: str(q.get("benchmark", "")) for q in explored_qs}
+                sample_weights = [mix.get(bench_of.get(row[0], ""), 1.0) for row in keyed]
 
             # EPOCH-LOCAL from here to save_state. `frame`, `scoring_state`,
             # `prev_uids` and `prev_weights` are the validator's durable state
@@ -802,7 +920,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # applied every miss twice and decayed the frame twice — and then
             # persisted it (found 2026-11-02). tests/test_epoch_atomicity.py
             # holds this shape.
-            epoch_frame = accumulate_exploration(frame, samples)
+            epoch_frame = accumulate_exploration(frame, samples, weights=sample_weights)
             ref_model, acc_best = best_model(epoch_frame, prices)
             logger.info(
                 "Reference frame: %d samples this epoch, best model %s "
@@ -826,29 +944,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 len(frontier.models), list(frontier.models), frontier.max_accuracy,
                 frontier.confidence, frontier.least_trials,
             )
-
-            # --- SHARED GRADES (protocol v2) ---
-            # One coldkey-median grade per (question, model) cell of the
-            # scored slice: failed calls dropped, one vote per operator. From
-            # the activation boundary the paired champion comparison grades
-            # every head from these cells, so two heads that routed alike are
-            # not separated by a provider answering differently on the second
-            # call (docs/INVARIANTS.md, "I4 — shared grades").
-            shared_cells = None
-            if protocol_version >= 2:
-                shared_cells = shared_cell_grades(
-                    ScoredAnswer(
-                        question_id=r.question_id, model=r.routed_model,
-                        coldkey=coldkey_of[uid], correct=bool(r.correct),
-                        failed=bool(r.failed),
-                    )
-                    for uid, proof in verified_proofs.items()
-                    for r in proof.scored_results
-                )
-                logger.info(
-                    "Shared grades: %d (question, model) cells from %d coldkeys",
-                    len(shared_cells), len(set(coldkey_of.values())),
-                )
 
             # --- SCORE FROM PROOFS ---
             timer.start_phase("score")
@@ -937,27 +1032,89 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     )
             # Epsilon rule, now that this epoch's composite scores exist: a
             # head that routes like a senior one must beat it or it is a copy.
-            near_copies = epsilon_disqualified(
-                routing_decisions, commit_blocks,
-                {uid: epoch_state.records[uid].composite_score
-                 for uid in routing_decisions if uid in epoch_state.records},
-            )
-            if near_copies:
-                logger.info("Epsilon rule disqualified: %s", sorted(near_copies))
-                dupes = set(dupes) | near_copies
-            # The frontier's confidence is paid out and the rest burns. It is a
-            # factor common to every miner, so it has to be applied AFTER the
-            # scores are normalised — inside composite() it cancels.
             burn_uid = resolve_burn_uid(subtensor, netuid, boundary_block, metagraph, live)
-            uids, weights = compute_weights(
-                epoch_state.records, dedup_disqualified=dupes,
-                paid_fraction=frontier.confidence, burn_uid=burn_uid,
-            )
-            if frontier.confidence < 1.0:
-                logger.info(
-                    "Frontier confidence %.2f: %.0f%% of emission burns to UID %d this epoch",
-                    frontier.confidence, 100.0 * (1.0 - frontier.confidence), burn_uid,
+            v2_result = None
+            if protocol_version >= 2:
+                # --- PROTOCOL v2: the champion, its seats, and nothing else ---
+                # Shared coldkey-median cells (grades and attested tokens),
+                # the paired comparison window, the seat, and 85/10/5 across
+                # the last three champions. Nothing here reads the frame, and
+                # nothing burns for frame confidence: the payout is the paired
+                # head-vs-head rule (docs/INVARIANTS.md, the v2 I3/I4
+                # entries). The v1 composite above is still computed and
+                # published as a diagnostic; it decides nothing.
+                v2_result = run_v2_epoch(
+                    epoch_index=epoch_index, epoch_id=epoch_id, questions=questions,
+                    pool_models=pool_models, prices=prices,
+                    verified_proofs=verified_proofs, head_hashes=head_hashes,
+                    coldkey_of=coldkey_of,
+                    hotkey_of={uid: metagraph.hotkeys[uid] for uid in verified_proofs},
+                    commit_block={
+                        uid: chain_commitments[metagraph.hotkeys[uid]][1]
+                        for uid in verified_proofs
+                        if metagraph.hotkeys[uid] in chain_commitments
+                    },
+                    commit_epoch={
+                        uid: (
+                            chain_commitments[metagraph.hotkeys[uid]][1] // blocks_per_epoch
+                            if metagraph.hotkeys[uid] in chain_commitments else epoch_index
+                        )
+                        for uid in verified_proofs
+                    },
+                    # v1's routing-similarity dedup does NOT decide v2
+                    # eligibility: a near-constant mimic on an older hotkey
+                    # could flag the champion and unseat it. In v2 a copy is
+                    # an exact hash owned by someone else (first committer,
+                    # above) or a junior that fails the NV margin (the copy
+                    # rule).
+                    records=epoch_state.records, exact_copies=set(),
+                    commitments={hk: (c[0], int(c[1])) for hk, c in chain_commitments.items()},
+                    window=v2_window, seat=v2_seat, owners=v2_owners, burn_uid=burn_uid,
+                    params=seat_params_from_config(), shares=PAYOUT_SEAT_SHARES,
+                    burn_in_questions=BURN_IN_QUESTIONS,
+                    bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+                    allow_take=not v2_window_degraded,
                 )
+                if v2_window_degraded:
+                    logger.error(
+                        "v2 comparison window was lost and has not been rebuilt: holding "
+                        "the seat but making NO first or take decision this epoch. Set "
+                        "FUGAL_FRAME_BOOTSTRAP to a directory of reveals and restart to "
+                        "rebuild it (it also refills itself after %d epochs).",
+                        CHAMPION_WINDOW_EPOCHS,
+                    )
+                uids, weights = v2_result.uids, v2_result.weights
+                d = v2_result.decision
+                logger.info(
+                    "v2 seat: %s, champion %s, history %s, ghosts %d, high-water %.4f",
+                    d.event, (d.champion or "none")[:16],
+                    [h[:12] for h in d.state.history], len(d.state.ghosts),
+                    d.state.high_water,
+                )
+                for h, why in d.detail:
+                    logger.info("  v2 %s: %s", (h or "-")[:16], why)
+            else:
+                near_copies = epsilon_disqualified(
+                    routing_decisions, commit_blocks,
+                    {uid: epoch_state.records[uid].composite_score
+                     for uid in routing_decisions if uid in epoch_state.records},
+                )
+                if near_copies:
+                    logger.info("Epsilon rule disqualified: %s", sorted(near_copies))
+                    dupes = set(dupes) | near_copies
+                # The frontier's confidence is paid out and the rest burns. It
+                # is a factor common to every miner, so it has to be applied
+                # AFTER the scores are normalised — inside composite() it
+                # cancels.
+                uids, weights = compute_weights(
+                    epoch_state.records, dedup_disqualified=dupes,
+                    paid_fraction=frontier.confidence, burn_uid=burn_uid,
+                )
+                if frontier.confidence < 1.0:
+                    logger.info(
+                        "Frontier confidence %.2f: %.0f%% of emission burns to UID %d this epoch",
+                        frontier.confidence, 100.0 * (1.0 - frontier.confidence), burn_uid,
+                    )
 
             weight_capped = False
             if prev_uids:
@@ -1034,8 +1191,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 epoch_score_dicts, epoch_weight_map,
                 exploration=exploration_for_reveal,
                 protocol_version=protocol_version,
-                shared_grades=(
-                    cells_for_reveal(shared_cells) if shared_cells is not None else None
+                v2_fields=(
+                    {**v2_result.reveal,
+                     "frame_mix_weights": dict(sorted(mix.items())),
+                     "explore_benchmarks": dict(sorted(bench_of.items()))}
+                    if v2_result is not None else None
                 ),
             )
 
@@ -1136,13 +1296,25 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
             write_epoch_log(epoch_log)
 
+            next_v2 = (
+                (v2_result.window, v2_result.decision.state, v2_result.owners,
+                 v2_window_degraded
+                 and len(v2_result.window.slices) < CHAMPION_WINDOW_EPOCHS)
+                if v2_result is not None
+                else (v2_window, v2_seat, v2_owners, v2_window_degraded)
+            )
+
             # COMMIT. The epoch is complete; only now does it become the state
             # the next epoch (or a retry of this one) starts from.
             scoring_state, frame = epoch_state, epoch_frame
             prev_uids, prev_weights = next_prev_uids, next_prev_weights
             last_epoch_index = epoch_index
+            v2_window, v2_seat, v2_owners, v2_window_degraded = next_v2
             save_state(scoring_state.records, prev_uids, prev_weights,
-                       last_epoch_index, frame)
+                       last_epoch_index, frame,
+                       v2={"seat": seat_to_dict(v2_seat), "owners": v2_owners,
+                           "window_degraded": v2_window_degraded},
+                       v2_window=v2_window)
 
         except KeyboardInterrupt:
             logger.info("Validator stopped by user")

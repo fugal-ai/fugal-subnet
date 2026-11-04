@@ -15,6 +15,10 @@ Three clauses, any one of which marks a head a copy of a senior one:
    improvements.
 
 In every clause the senior head (lowest `commitments.seniority_key`) survives.
+
+Protocol v1 only. From the v2 activation block copies are handled by
+`copy_rule.py` (first-commit seniority, coldkey ownership, and a junior must
+beat every senior by the champion margin); these clauses do not apply.
 """
 from __future__ import annotations
 

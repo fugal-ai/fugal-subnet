@@ -794,6 +794,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # --- SCORE FROM PROOFS ---
             timer.start_phase("score")
             epoch_scores: dict[int, HeadScore] = {}
+            # Diagnostics only (epoch log + the line below): feeds no score.
+            epoch_n_failed: dict[int, int] = {}
             for uid, proof in verified_proofs.items():
                 scored = proof.scored_results
                 # Both sides of thrift from shared data, not from the miner.
@@ -822,13 +824,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 )
                 score = _proof_to_head_score(proof, ref_cost, head_cost)
                 epoch_scores[uid] = score
+                epoch_n_failed[uid] = count_failed_scored(proof)
                 cpq = score.total_head_cost / max(1, score.n_scored)
                 logger.info(
                     "  UID %d: acc=%.3f cost=$%.4f ($%.6f/q, frontier %.3f there) "
-                    "ref=$%.4f (%d/%d correct)",
+                    "ref=$%.4f (%d/%d correct, %d failed)",
                     uid, score.accuracy, score.total_head_cost, cpq,
                     frontier.accuracy_at(cpq), ref_cost,
-                    score.n_correct, score.n_scored,
+                    score.n_correct, score.n_scored, epoch_n_failed[uid],
                 )
 
             # --- DEDUP ---
@@ -1056,7 +1059,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 n_heads_unverifiable=n_unverifiable,
                 commit_hash=commitment.commit_hash,
                 reveal_verified=reveal_ok,
-                scores=epoch_score_dicts, weights=epoch_weight_map,
+                scores=epoch_score_dicts, n_failed=epoch_n_failed,
+                weights=epoch_weight_map,
                 dedup_disqualified=list(dupes),
                 weight_capped=weight_capped,
                 set_weights_success=success,
@@ -1471,6 +1475,16 @@ def confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights, tol=1e-3)
                 f"chain has {got.get(uid, 0.0):.4f}"
             )
     return True, f"{len(got)} weights match within {tol}"
+
+
+def count_failed_scored(proof) -> int:
+    """Scored calls the proof marks `failed`: upstream errors, not answers.
+
+    Diagnostics only. A failed call is already `correct=False` in the score;
+    this count is logged so a low accuracy can be read as "calls failed" or
+    "answers were wrong". Exploration is excluded, as it is from the score.
+    """
+    return sum(1 for r in proof.scored_results if r.failed)
 
 
 def _proof_to_head_score(proof, ref_cost, head_cost):

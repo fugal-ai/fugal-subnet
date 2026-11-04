@@ -258,6 +258,7 @@ def _call_model(
     proxy: MeteringProxy,
     model_id: str,
     question: dict,
+    reasoning: dict | None = None,
 ) -> str | None:
     """Call a model via the MeteringProxy.
 
@@ -271,6 +272,10 @@ def _call_model(
         "model": model_id,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": HARNESS_MAX_TOKENS,
+        # Protocol v2 pins exactly one OpenRouter `reasoning` setting per model
+        # (routing_protocol.reasoning_for). Sent only when given, so a v1 call is
+        # byte-identical to before.
+        **({"reasoning": reasoning} if reasoning else {}),
     }).encode()
 
     req = Request(

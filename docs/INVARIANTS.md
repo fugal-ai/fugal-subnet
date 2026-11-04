@@ -26,7 +26,7 @@ here, and a check that enforces it.**
 
 | | Invariant | Enforced by |
 |---|---|---|
-| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 10 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
+| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 11 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), the v2 champion rule (`champion.py`, `tests/test_champion.py`; constant policies are no longer zero by construction in v2, see its entry), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time, coldkey-median shared grades from v2 (`tests/test_shared_grades.py`) |
@@ -2377,6 +2377,63 @@ let a young head out-earn honest play by 6.3%. An isolated honest outage costs
 about 4.5 epochs. v1 epochs keep `apply_miss` unchanged.
 
 Enforced by `tests/test_miss_rule_v2.py`.
+
+### I3/I4 — v2 pays from the paired rule alone; the frame is informational (v2 release; from the activation block)
+
+From the activation boundary the validator runs one v2 epoch
+(`fugal_subnet/v2_epoch.run_v2_epoch`) after verification: shared cells,
+the comparison window, the seat (`champion.seat_step`) and the seat payout
+(`payout.seat_weights`). Three rules keep it independent of the reference
+frame, which in v2 has no paid bootstrap and fills at roughly 0.8 trials per
+model per epoch:
+
+1. **Nothing burns for frame confidence.** v2 passes `paid_fraction = 1`.
+   Under v1 the unconfident share of a cold frame burns; with an empty v2
+   frame that would burn most of the miner share for about a month. v2 burns
+   only when the seat is empty.
+2. **Eligibility does not read the frame.** v1's quality floor (a fraction of
+   the frontier's maximum accuracy) is replaced by `CHAMPION_MIN_ACCURACY` on
+   window shared-grade accuracy, and the v1 epsilon clause (which compares
+   frontier-based composites) does not run. Exact and behavioural copies are
+   still excluded by the dedup clauses until the v2 copy rule replaces them.
+3. **Spend is measured, not modelled (I4).** A head's spend on a question is
+   the pool's prompt tokens plus the cell's coldkey-median attested completion
+   tokens (`shared_grades.shared_cell_tokens`), at the pinned prices, not
+   the frame's per-model verbosity. Tokens are aggregated exactly like
+   grades: failed calls dropped, one vote per coldkey, the median across
+   coldkeys, so a coalition below half of a cell's voting coldkeys cannot
+   move its spend either. A failed call is graded 0 and costs 0.
+
+**What still reads the frame in v2, all informational:** the v1 composite,
+headroom, quality and thrift (computed and published as diagnostics, deciding
+nothing); the exploration detectors (they decide only which samples enter the
+frame); and `best_model` / `reference_cost` (they feed only the diagnostics).
+
+**One UID per head.** UIDs that serve the same head hash are one head, served
+by the most senior of them; the others earn nothing as it. A champion is
+*retired* (24-epoch ghost) when the hotkey that last served it now commits a
+different head at the boundary, and *missed* (3-epoch ghost) otherwise; a
+standing missed ghost is checked the same way every epoch and upgraded. Payout
+eligibility is the hold rule (live, not an exact copy, window accuracy at or
+above the floor), so a champion that resumes after a miss is paid at once.
+
+**The reveal.** From the activation boundary it carries `protocol_version`,
+`shared_grades` (each cell's grade and median completion tokens), each UID's
+failed questions, and the seat decision (event, champion, bar, seat state,
+and the comparison detail), so every head's grades, spends and NV, and the
+seat itself, can be recomputed from the reveal alone. The `v2_epoch` stage of
+`check_determinism.py` runs the whole v2 epoch on the synthetic proofs in
+reverse order.
+
+**State.** The seat and head owners are in the JSON state; the window is an
+`.npz` beside it (loaded with `allow_pickle=False`), written before the JSON.
+All three are durable names, rebound only at the commit point
+(`tests/test_epoch_atomicity.py`). On an epoch with no proofs at all the seat
+is not advanced; ghost windows are counted in epochs and still expire on
+time.
+
+Enforced by `tests/test_v2_epoch.py`, `tests/test_shared_grades.py` and the
+`v2_epoch` stage of `scripts/check_determinism.py`.
 
 ## Attack surface by actor
 

@@ -242,15 +242,17 @@ class Window:
         return Window(size=self.size, slices=slices, heads=heads)
 
     def head_vectors(self, head: str, epoch: int) -> tuple[np.ndarray, np.ndarray]:
-        """(grades, spends) of `head` on `epoch`'s slice. A failed call grades 0."""
+        """(grades, spends) of `head` on `epoch`'s slice. A failed call is 0 and 0."""
         sl = self.slices[epoch]
         he = self.heads[head][epoch]
         rows = np.arange(len(sl.question_ids))
         grades = sl.grades[rows, he.routed].astype(np.float64)
         grades = np.where(he.failed, 0.0, grades)
-        if np.isnan(grades).any():
+        # A failed call answered nothing and cost nothing: grade 0, spend 0.
+        spends = np.where(he.failed, 0.0, sl.spends[rows, he.routed].astype(np.float64))
+        if np.isnan(grades).any() or not np.isfinite(spends).all():
             raise ValueError(f"head {head[:12]} epoch {epoch}: an answered question has no cell")
-        return grades, sl.spends[rows, he.routed].astype(np.float64)
+        return grades, spends
 
     def epochs_of(self, head: str, since_epoch: int | None = None) -> list[int]:
         per = self.heads.get(head, {})

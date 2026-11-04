@@ -53,6 +53,7 @@ STAGES = (
     "frame",
     "scores",
     "weights",
+    "v2_epoch",
 )
 
 
@@ -294,6 +295,27 @@ def run_pipeline(seed: int) -> dict:
         for uid, rec in state.records.items()
     }
 
+    # Protocol v2: the whole v2 epoch (shared cells and tokens, the window, the
+    # seat and the 85/10/5 vector) on the same verified proofs, fed in
+    # reverse uid order. Burn-in 0 so the seat is exercised on one epoch.
+    from fugal_subnet.champion import SeatState, Window
+    from fugal_subnet.v2_epoch import run_v2_epoch, seat_params_from_config
+    v2_uids = sorted(proof_objs, reverse=True)
+    v2 = run_v2_epoch(
+        epoch_index=1, epoch_id="e00000001", questions=questions,
+        pool_models=sorted(prices), prices=prices,
+        verified_proofs={u: proof_objs[u] for u in v2_uids},
+        head_hashes={u: head_hashes[u] for u in v2_uids},
+        coldkey_of={u: f"coldkey-{u % 3}" for u in v2_uids},
+        hotkey_of={u: f"hk{u}" for u in v2_uids},
+        seniority={u: u for u in v2_uids}, commit_epoch={u: 0 for u in v2_uids},
+        records=state.records, exact_copies=set(), commitments={},
+        window=Window.empty(48), seat=SeatState(), owners={}, burn_uid=0,
+        params=seat_params_from_config(), shares=(0.85, 0.10, 0.05),
+        burn_in_questions=0,
+    )
+    v2_out = {"uids": v2.uids, "weights": v2.weights, "reveal": v2.reveal}
+
     return {
         "slice": _digest(question_ids),
         "exploration": _digest(explore_map),
@@ -305,6 +327,7 @@ def run_pipeline(seed: int) -> dict:
         "frame": _digest(frame.to_dict()),
         "scores": _digest(scores_out),
         "weights": _digest({"uids": uids, "weights": weight_values}),
+        "v2_epoch": _digest(v2_out),
     }
 
 

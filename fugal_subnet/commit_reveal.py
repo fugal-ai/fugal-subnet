@@ -74,7 +74,7 @@ def reveal_epoch(
     weights: dict[int, float],
     exploration: list[dict] | None = None,
     protocol_version: int = 1,
-    shared_grades: list[dict] | None = None,
+    v2_fields: dict | None = None,
 ) -> bool:
     """Verify the commitment and publish the full epoch artifact.
 
@@ -148,12 +148,17 @@ def reveal_epoch(
     }
     # Protocol v2 fields are added only from the activation boundary, so a v1
     # reveal is byte-for-byte what it was. `protocol_version` says which rules
-    # scored the epoch; `shared_grades` is every (question, model) cell's
-    # coldkey-median grade, so anyone can recompute each head's v2 grades from
-    # the reveal alone and a rebuild from reveals reproduces them exactly.
+    # scored the epoch. `v2_fields` (fugal_subnet/v2_epoch.run_v2_epoch) carry
+    # `shared_grades` (every (question, model) cell's coldkey-median grade and
+    # attested completion tokens), each UID's failed questions, and the seat
+    # decision, so anyone can recompute every head's v2 grades, spends and NV
+    # from the reveal alone and a rebuild from reveals reproduces them.
     if protocol_version >= 2:
         reveal["protocol_version"] = int(protocol_version)
-        reveal["shared_grades"] = list(shared_grades or [])
+        fields = dict(v2_fields or {})
+        reveal["shared_grades"] = list(fields.pop("shared_grades", []))
+        for key in sorted(fields):
+            reveal[key] = fields[key]
 
     reveal_path = os.path.join(epoch_dir, "reveal.json")
     with open(reveal_path, "w") as f:

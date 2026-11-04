@@ -26,7 +26,7 @@ here, and a check that enforces it.**
 
 | | Invariant | Enforced by |
 |---|---|---|
-| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 9 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, TEE proof verification (all validators verify the same attested proof) |
+| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 9 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time |
@@ -2103,6 +2103,49 @@ cause and otherwise retries a transient failure while the epoch has blocks
 left. Finney at runtime 486 (2026-11-02): `CommitRevealWeightsVersion` 4, a
 fresh subnet's `weights_version` 0, `min_allowed_weights` 1,
 `max_weights_limit` 65535. `tests/test_validator_chain_guards.py`.
+
+### I1 — protocol v2 activates at one named boundary (v2 release; not yet active)
+
+v2 changes how the miner share is decided (a champion chosen by a paired
+net-value comparison, seats for the last three champions, a new copy rule, a
+new miss rule). Old and new rules cannot be mixed within one epoch, or across
+validators in one epoch, without splitting weights. So the switch is a single
+block, `FUGAL_V2_ACTIVATION_BLOCK`, and three properties hold:
+
+1. **The epoch's boundary block decides, not the validator's current
+   block.** `slicer.protocol_version_for_boundary(boundary_block,
+   activation_block)` is the only place the version is computed. Every block
+   inside an epoch maps to the same boundary, so a retried epoch (I1/I6, "an
+   epoch is applied once") and a validator that reaches the epoch late apply
+   the same rules as every peer. v2 applies from the activation boundary
+   itself.
+2. **The activation block is a boundary.** `validate_activation_block`
+   refuses, at validator startup and before any chain connection, a block that
+   is not a multiple of `blocks_per_epoch`, rather than rounding it: a block
+   inside an epoch would give that epoch rules that depend on where a
+   validator looked.
+3. **It is in the consensus digest.** The value sits in the fingerprint's
+   `epoch` block. It is a consensus *input* (`CONSENSUS_ENV_INPUTS`, like the
+   epoch length), so it is set per deployment and recorded, not refused, but a
+   validator configured to flip at a different block, or never, shows a
+   different digest from its first epoch.
+
+Unset means v2 never activates: a validator running the v2 code without the
+variable scores every epoch under v1. That is the safe failure for code
+deployed ahead of the flip, and the dangerous one after it, so the activation
+block is part of the release instructions and the digest is what makes a
+missing value visible.
+
+The v2 scoring constants (`CHAMPION_*`, `PAYOUT_SEAT_SHARES`) are ordinary
+consensus constants from the start: in `CONSENSUS_ENV_VARS`, in the
+fingerprint's `scoring` block, and refused as live overrides on finney like
+every other. They have no effect before the activation block. The promotion
+margin, `CHAMPION_MARGIN` (0.2 net-value points at 90% paired-bootstrap
+confidence), is the single margin of v2: it replaces the absolute headroom
+margin (0.004) an earlier draft used, both for a challenger taking the seat
+and for a junior head beating a senior one.
+
+Enforced by `tests/test_v2_activation.py`.
 
 ## Attack surface by actor
 

@@ -140,6 +140,42 @@ def epoch_index_for_block(block: int, blocks_per_epoch: int) -> int:
     return int(block) // max(1, int(blocks_per_epoch))
 
 
+def validate_activation_block(activation_block: int | None, blocks_per_epoch: int) -> None:
+    """Refuse a v2 activation block that is not an epoch boundary.
+
+    Unset (None) is valid and means v2 never activates. A block inside an
+    epoch would make that epoch's rules depend on which side of it a
+    validator looked, which is the divergence a boundary-keyed version exists
+    to prevent, so it is refused at startup rather than rounded.
+    """
+    if activation_block is None:
+        return
+    bpe = max(1, int(blocks_per_epoch))
+    if isinstance(activation_block, bool) or not isinstance(activation_block, int):
+        raise ValueError(f"v2 activation block must be an integer, got {activation_block!r}")
+    if activation_block < 0:
+        raise ValueError(f"v2 activation block must not be negative, got {activation_block}")
+    if activation_block % bpe != 0:
+        raise ValueError(
+            f"v2 activation block {activation_block} is not an epoch boundary "
+            f"(a multiple of {bpe} blocks); the nearest are "
+            f"{activation_block // bpe * bpe} and {(activation_block // bpe + 1) * bpe}"
+        )
+
+
+def protocol_version_for_boundary(boundary_block: int, activation_block: int | None) -> int:
+    """The protocol version an epoch is scored under: 1 or 2.
+
+    Consensus-critical, and deliberately keyed on the epoch's BOUNDARY block:
+    every block inside one epoch maps to the same boundary, so a retried
+    epoch, or a validator that reaches it late, applies the same rules as
+    every peer. v2 applies from the activation boundary itself onward.
+    """
+    if activation_block is None:
+        return 1
+    return 2 if int(boundary_block) >= int(activation_block) else 1
+
+
 def derive_nonce(epoch_id: str, block_hash: str) -> bytes:
     """Derive the epoch nonce from the epoch identifier and a block hash.
 

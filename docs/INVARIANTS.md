@@ -2529,10 +2529,19 @@ ordered by epoch id and never by filesystem order:
   applies the same v2 mix weights (`frame_mix_weights`,
   `explore_benchmarks`).
 
-The validator uses it at startup when it has no local v2 state and
-`FUGAL_FRAME_BOOTSTRAP` names a directory of reveals. Per-head v1 evidence is
-not rebuilt (as before); only the burn-in counter is restored, into fresh
-records.
+The validator uses it at startup when it has no local v2 state, or has a
+seat but lost its window, and `FUGAL_FRAME_BOOTSTRAP` names a directory of
+reveals. Per-head v1 evidence is not rebuilt (as before); only the burn-in
+counter is restored, into fresh records.
+
+**Exact only when the reveals are current.** Published reveals lag by the
+commit-reveal hold. A rebuild is exact when the newest reveal is the epoch
+just before the one the validator resumes at (its own reveals after a lost
+state, or a peer's once the hold has passed). If they lag by k epochs, the
+window lacks those epochs and the seat is as of the newest reveal; the
+validator then stays degraded (hold, resume and ghosts only; no first or take
+decision) until its window has refilled, and says so. Start a rebuilding
+validator after the hold.
 
 **The trust model, stated plainly.** A validator that rebuilds trusts the
 publishing validator's snapshot, as it trusts a frame rebuilt from someone

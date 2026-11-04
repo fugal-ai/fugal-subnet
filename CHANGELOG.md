@@ -4,6 +4,19 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — proofs can carry their own TPM intermediates (validator half)
+
+`verify_ak_chain` accepted `extra_certs` and INVARIANTS said a proof could
+carry its own intermediates, but `unwrap_attestation` never passed any, so only
+the vendored us-central1 intermediate could chain: a Google rotation, or a
+miner in another region, would have failed every proof at once.
+`BenchmarkProof.tpm_intermediates` (optional DER list, bounded at 4 x 8 KB) is
+now passed through. It is outside `content_hash`, so no `report_data`,
+`proof_hash` or existing proof changes, and it is omitted when empty. A supplied
+certificate still has to chain to the pinned Google root by signature; two new
+`run_tee_attacks` cases pin that. The miner half (the harness embedding its
+chain) needs an image change and is not part of this.
+
 ### Docs — MINER_GUIDE: failed model calls score as wrong answers
 
 New section under Scoring. `mistral-large-2512` is rate-limited upstream with a

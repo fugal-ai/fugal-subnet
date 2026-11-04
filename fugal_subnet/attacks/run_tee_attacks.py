@@ -367,6 +367,75 @@ def a_bare_base_approves_any_app():
     return _verify(proof, approved_measurements={BASE}, event_log=None)
 
 
+
+def _rogue_chain(ca_name):
+    """A CA the attacker made, named however they like, and an AK leaf it signed."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    def cert(subject, issuer, key, signer, ca):
+        return (x509.CertificateBuilder()
+                .subject_name(subject).issuer_name(issuer)
+                .public_key(key.public_key()).serial_number(1)
+                .not_valid_before(now - datetime.timedelta(days=1))
+                .not_valid_after(now + datetime.timedelta(days=365))
+                .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+                .sign(signer, hashes.SHA256())
+                .public_bytes(serialization.Encoding.DER))
+
+    ca_key, ak_key = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
+    leaf_name = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, "attacker AK")])
+    return (cert(leaf_name, ca_name, ak_key, ca_key, ca=False),
+            cert(ca_name, ca_name, ca_key, ca_key, ca=True))
+
+
+def _chain_verdict(leaf, intermediates):
+    """What a proof carrying these intermediates gets from the chain check that
+    verify_proof runs inside unwrap_attestation (tpm.verify_ak_chain)."""
+    from fugal_subnet.tee.tpm import TpmError, verify_ak_chain
+
+    try:
+        ok = verify_ak_chain(leaf, extra_certs=intermediates)
+    except TpmError as e:
+        return verify_mod.VerifyResult(False, f"TpmError: {e}")
+    return verify_mod.VerifyResult(ok, "chained to the pinned root" if ok
+                                   else "did not chain to the pinned root")
+
+
+def a_rogue_tpm_intermediate():
+    """Carry your own CA in the proof's tpm_intermediates, named exactly like
+    Google's EK/AK intermediate, and an AK certificate it signed.
+
+    Proof-carried intermediates exist so an unvendored region verifies; they
+    must not become a way to bring your own trust anchor. The chain walk has to
+    reach the pinned root by signature, not by name.
+    """
+    from cryptography import x509
+
+    from fugal_subnet.tee.tpm import _load_pinned
+
+    _root, vendored = _load_pinned()
+    name = vendored[0].subject if vendored else x509.Name(
+        [x509.NameAttribute(x509.NameOID.COMMON_NAME, "EK/AK CA Intermediate")])
+    leaf, rogue_ca = _rogue_chain(name)
+    return _chain_verdict(leaf, [rogue_ca])
+
+
+def a_supplied_cert_named_as_the_root():
+    """Carry a self-signed CA whose subject is the pinned ROOT's name. A walker
+    that resolved issuers by name alone would stop at it and call it the root."""
+    from fugal_subnet.tee.tpm import _load_pinned
+
+    root, _ = _load_pinned()
+    leaf, rogue_root = _rogue_chain(root.subject)
+    return _chain_verdict(leaf, [rogue_root])
+
+
 ATTACKS = [
     ("modified harness in a real TDX VM", "I8", a_modified_image),
     ("answer easy questions, claim the slice", "I3", a_substituted_questions),
@@ -394,6 +463,8 @@ ATTACKS = [
     ("20k-entry event log", "I2", a_oversized_event_log),
     ("single-extend identity mismatch", "I8", a_single_extend_identity_mismatch),
     ("bare base entry, miner-chosen application", "I8", a_bare_base_approves_any_app),
+    ("rogue TPM intermediate carried in the proof", "I8", a_rogue_tpm_intermediate),
+    ("supplied cert named as the pinned root", "I8", a_supplied_cert_named_as_the_root),
 ]
 
 

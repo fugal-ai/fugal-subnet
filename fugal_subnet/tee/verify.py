@@ -151,7 +151,8 @@ def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
 _TDX_QUOTE_VERSIONS = (4, 5)
 
 
-def unwrap_attestation(blob: bytes) -> tuple[bytes, list | None]:
+def unwrap_attestation(blob: bytes, extra_certs: "list[bytes] | None" = None
+                       ) -> tuple[bytes, list | None]:
     """Return (tdx_quote, event_log) for either a bare quote or a dstack blob.
 
     A miner running under dstack sends the whole attestation — TDX quote, event
@@ -182,7 +183,11 @@ def unwrap_attestation(blob: bytes) -> tuple[bytes, list | None]:
     from fugal_subnet.tee.tpm import TpmError, parse_attest, verify_tpm_quote
 
     try:
-        ok = verify_tpm_quote(att["tpm"])
+        # extra_certs: intermediates the proof carries (BenchmarkProof.
+        # tpm_intermediates). Safe to accept from the miner: they only help if
+        # they chain to the pinned root, and they are in the proof bytes, so
+        # every validator sees the same ones (I1).
+        ok = verify_tpm_quote(att["tpm"], extra_certs=extra_certs)
     except TpmError as e:
         raise ValueError(f"TPM quote rejected: {e}") from e
     if not ok:
@@ -308,7 +313,8 @@ def verify_proof(
     #    the TPM half inside it is verified as part of unwrapping — see
     #    unwrap_attestation for why that is not optional.
     try:
-        attestation_quote, embedded_events = unwrap_attestation(proof.attestation_quote)
+        attestation_quote, embedded_events = unwrap_attestation(
+            proof.attestation_quote, extra_certs=proof.tpm_intermediates)
     except ValueError as e:
         return VerifyResult(False, str(e))
     if event_log is None:

@@ -4,6 +4,22 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 model list: a second pinned price table, selected by protocol version (lands with v2)
+
+- `data/models_v2.json` (identical copy in `fugal_subnet/routing_data/`): 19 models, prices
+  from the public OpenRouter catalogue of 2026-11-04, each with at least three endpoints. Each
+  pins exactly one OpenRouter `reasoning` setting: `effort` for OpenAI and xAI, a `max_tokens`
+  budget for Anthropic, Google and Qwen, `enabled` otherwise. The unified parameter accepts
+  `effort` or `max_tokens`, not both. Hash-pinned in `check_safety_invariants.py` like
+  `data/models.json`.
+- `routing_protocol.price_table(version)`, `models_for_protocol(version)` (the global model
+  index space) and `reasoning_for(version, model)` serve the table of the epoch being scored,
+  keyed on `slicer.protocol_version_for_boundary`. A release/v2 validator scores v1 epochs until
+  the activation block, so the v1 table and `routing_protocol.identity()` are unchanged. The
+  v2 table's hash is in the consensus fingerprint's epoch block.
+- Not yet: the harness sending the per-model `reasoning` object and the output-length
+  self-test, and the v2 token manifest (pending a decision).
+
 ### Added — protocol v2 shared grades (from the activation block)
 
 `fugal_subnet/shared_grades.py`: one coldkey-median grade per (question,

@@ -24,6 +24,13 @@ IMMUTABLE_V1_GRADER_SHA256 = (
 PINNED_PRICE_TABLE_SHA256 = (
     "7bc8e332a43833bb4eaccef21e784f57ffde9e49e343275f822f35d9a6d19b27"
 )
+# Protocol v2's price table (data/models_v2.json; identical copy in
+# fugal_subnet/routing_data/). 19 models, prices from the public OpenRouter
+# catalogue of 2026-11-04, one pinned `reasoning` object each. Consensus from
+# V2_ACTIVATION_BLOCK; a change re-scores every v2 miner.
+PINNED_PRICE_TABLE_V2_SHA256 = (
+    "a375f95e76766da5b8635df16eb1785887ee47b4d4c71336ece3d7dafea32922"
+)
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM
 # quote means trusting this CA in addition to Intel's — see docs/INVARIANTS.md.
@@ -545,6 +552,35 @@ def check_one_accuracy_definition_on_the_consensus_path(errors: list[str]) -> No
                 )
 
 
+def check_price_table_v2_pinned(errors: list[str]) -> None:
+    """The v2 table matches its pin, both copies are identical, ids are unique,
+    and every entry pins exactly one valid reasoning setting."""
+    a = ROOT / "data" / "models_v2.json"
+    b = ROOT / "fugal_subnet" / "routing_data" / "models_v2.json"
+    for path in (a, b):
+        if not path.exists():
+            errors.append(f"{path.relative_to(ROOT)} is missing")
+            return
+    if a.read_bytes() != b.read_bytes():
+        errors.append("data/models_v2.json and fugal_subnet/routing_data/models_v2.json differ")
+    actual = hashlib.sha256(a.read_bytes()).hexdigest()
+    if actual != PINNED_PRICE_TABLE_V2_SHA256:
+        errors.append(f"data/models_v2.json: hash {actual[:16]}... does not match pin "
+                      f"{PINNED_PRICE_TABLE_V2_SHA256[:16]}... (a v2 price change re-scores every v2 miner)")
+    rows = json.loads(a.read_text())
+    ids = [r.get("id") for r in rows]
+    if len(ids) != len(set(ids)):
+        errors.append("data/models_v2.json: duplicate model id")
+    for r in rows:
+        rs = r.get("reasoning")
+        if not isinstance(rs, dict) or len(rs) != 1 or not (
+            rs.get("effort") in ("minimal", "low", "medium", "high")
+            or (isinstance(rs.get("max_tokens"), int) and 0 < rs["max_tokens"] < 16384)
+            or rs.get("enabled") is True
+        ):
+            errors.append(f"data/models_v2.json: {r.get('id')!r} must pin exactly one valid reasoning setting")
+
+
 def check_price_table_pinned(errors: list[str]) -> None:
     """The consensus price table must match its pin, and be well-formed."""
     path = ROOT / "data" / "models.json"
@@ -893,6 +929,7 @@ def main() -> None:
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
     check_price_table_pinned(errors)
+    check_price_table_v2_pinned(errors)
     check_collateral_endpoint_explicit(errors)
     check_external_calls_bounded(errors)
     check_measured_registers_documented(errors)

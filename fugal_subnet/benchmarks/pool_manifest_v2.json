@@ -1,0 +1,86 @@
+{
+ "category_targets": {
+  "hard": 0.3,
+  "instruction": 0.15,
+  "knowledge": 0.3,
+  "math": 0.25
+ },
+ "content_hash": "fc383e3b87020ab6b25331640767b17bfa49346f2a2f8ecb1e39c0c172983278",
+ "dataset_revisions": {
+  "ByteDance-Seed/BeyondAIME": "c705198ae1043810b1e1693bd879250b51a7a523",
+  "EleutherAI/hendrycks_math": "21a5633873b6a120296cce3e2df9d5550074f4a3",
+  "KbsdJames/Omni-MATH": "40ba231d8f16e29ecd40e6407e2c8640145a8f62",
+  "TIGER-Lab/MMLU-Pro": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+  "cais/mmlu": "c30699e8356da336a370243923dbaf21066bb9fe",
+  "google/IFEval": "966cd89545d6b6acfd7638bc708b98261ca58e84",
+  "m-a-p/SuperGPQA": "4430d4458112c7d4497fdcf94d7cc223313d6acf",
+  "opencompass/AIME2025": "a6ad95f611d72cf628a80b58bd0432ef6638f958",
+  "qq8933/AIME_1983_2024": "3e2cc86390666c5c756622afc0eeb9e6194496bc"
+ },
+ "gated_datasets": [],
+ "n_questions": 29036,
+ "per_benchmark": {
+  "aime": {
+   "category": "hard",
+   "licence": "MIT (qq8933/AIME_1983_2024)",
+   "n": 933,
+   "weight": 0.244369
+  },
+  "aime25": {
+   "category": "hard",
+   "licence": "MIT (opencompass/AIME2025)",
+   "n": 30,
+   "weight": 0.007858
+  },
+  "beyondaime": {
+   "category": "hard",
+   "licence": "CC0-1.0 (ByteDance-Seed/BeyondAIME)",
+   "n": 100,
+   "weight": 0.026192
+  },
+  "ifeval": {
+   "category": "instruction",
+   "licence": "Apache-2.0 (google/IFEval)",
+   "n": 259,
+   "weight": null
+  },
+  "math_l35": {
+   "category": "math",
+   "licence": "MIT (EleutherAI/hendrycks_math)",
+   "n": 3669,
+   "weight": null
+  },
+  "mmlu": {
+   "category": "knowledge",
+   "licence": "MIT (cais/mmlu)",
+   "n": 3000,
+   "weight": null
+  },
+  "mmlupro": {
+   "category": "knowledge",
+   "licence": "MIT (TIGER-Lab/MMLU-Pro)",
+   "n": 12032,
+   "weight": null
+  },
+  "omnimath_hard": {
+   "category": "hard",
+   "licence": "Apache-2.0 (KbsdJames/Omni-MATH)",
+   "n": 846,
+   "weight": 0.221582
+  },
+  "omnimath_mid": {
+   "category": "math",
+   "licence": "Apache-2.0 (KbsdJames/Omni-MATH)",
+   "n": 1117,
+   "weight": null
+  },
+  "supergpqa_hard": {
+   "category": "hard",
+   "licence": "ODC-BY (m-a-p/SuperGPQA)",
+   "n": 7050,
+   "weight": 0.5
+  }
+ },
+ "pool_hash": "db183a6b09778953d921ae25f997535539a7982fce46e74ecbb5629ce3626939",
+ "protocol": 2
+}

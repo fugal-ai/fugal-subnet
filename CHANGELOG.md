@@ -4,6 +4,24 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 benchmark pool: open licences only, category map and weights, its own manifest (lands with v2)
+
+- `fugal_subnet/benchmarks/v2_sets.py`: knowledge = MMLU-Pro + a 3,000-question MMLU subset;
+  math = MATH levels 3–5 + Omni-MATH integer items below difficulty 5; hard = SuperGPQA "hard"
+  (all 7,050) + AIME 1983–2025 + BeyondAIME + Omni-MATH integer items at difficulty ≥ 5;
+  instruction = IFEval (the mapped subset). **No gated datasets:** every miner embeds and every
+  validator rebuilds the pool, and reveals publish its text. Licences per benchmark: MIT,
+  Apache-2.0, ODC-BY, CC0-1.0. Subsets are chosen in sha256 order of a stable id, never load
+  order. Revisions are pinned in `DATASET_REVISIONS`.
+- `BENCHMARK_CATEGORY_V2`, `BENCHMARK_WEIGHT_V2` (hard: 50% the multiple-choice set, 50% integer
+  olympiad math by pool size), `CATEGORY_TARGETS_V2` (30/25/30/15).
+- `loader.load_all_v2` / `load_pool(protocol_version)`: a separate pool, file
+  (`data/benchmarks/pool_v2.json.gz`, `FUGAL_BENCHMARK_POOL_V2`) and manifest
+  (`pool_manifest_v2.json`, with licences, categories and weights), verified the same way as v1.
+  `scripts/build_pool_manifest.py --protocol 2` and `scripts/export_pool.py --protocol 2`. The v1
+  pool is unchanged.
+- No grader change: the new sets use `letter_mcq` (A–J) and `integer_exact` as pinned.
+
 ### Added — v2 slicer: explicit benchmark weights inside a category
 
 `select_slice_v2` and `select_explore_set_v2` take an optional `bench_weight` map. Within a

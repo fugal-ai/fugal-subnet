@@ -32,6 +32,12 @@ DATASET_REVISIONS: dict[str, str] = {
     "Idavidrein/gpqa": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
     "google/IFEval": "966cd89545d6b6acfd7638bc708b98261ca58e84",
     "qq8933/AIME_1983_2024": "3e2cc86390666c5c756622afc0eeb9e6194496bc",
+    # Protocol v2 (open licences, non-gated; resolved 2026-11-04).
+    "TIGER-Lab/MMLU-Pro": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+    "m-a-p/SuperGPQA": "4430d4458112c7d4497fdcf94d7cc223313d6acf",
+    "opencompass/AIME2025": "a6ad95f611d72cf628a80b58bd0432ef6638f958",
+    "ByteDance-Seed/BeyondAIME": "c705198ae1043810b1e1693bd879250b51a7a523",
+    "KbsdJames/Omni-MATH": "40ba231d8f16e29ecd40e6407e2c8640145a8f62",
 }
 
 _BENCHMARKS: dict[str, str] = {
@@ -425,3 +431,84 @@ def _verify_against_manifest(pool: list[dict], skip: set, strict: bool) -> None:
             "intended, and say why in the commit."
         )
     logger.warning("Benchmark pool does not match the pinned manifest: %s", detail)
+
+
+# --- Protocol v2 pool --------------------------------------------------------
+# A separate pool, registry, manifest and pool file, selected by protocol
+# version: a release/v2 neuron still scores v1 epochs on the v1 pool until the
+# activation block, so nothing above changes. Same guarantees as v1: strict
+# load, no silent empty benchmark, verified against a pinned manifest, and the
+# size floor.
+
+DEFAULT_POOL_FILE_V2 = os.path.join("data", "benchmarks", "pool_v2.json.gz")
+_MANIFEST_NAME_V2 = "pool_manifest_v2.json"
+
+
+def manifest_path_v2() -> str:
+    from importlib.resources import files
+    return str(files("fugal_subnet.benchmarks") / _MANIFEST_NAME_V2)
+
+
+def build_pool_v2(strict: bool = True) -> list[dict]:
+    """Load every v2 benchmark from its pinned revision (needs Hugging Face)."""
+    from fugal_subnet.benchmarks.v2_sets import LOADERS_V2
+
+    pool: list[dict] = []
+    for name in sorted(LOADERS_V2):
+        try:
+            items = LOADERS_V2[name]()
+        except Exception as e:
+            if strict:
+                raise RuntimeError(f"v2 benchmark {name!r} failed to load: {e}") from e
+            logger.warning("Skipping v2 benchmark %s: %s", name, e)
+            continue
+        if not items and strict:
+            raise RuntimeError(f"v2 benchmark {name!r} loaded 0 questions: a silent pool divergence")
+        pool.extend(items)
+    return _drop_unscoreable(pool)
+
+
+def _verify_against_manifest_v2(pool: list[dict], strict: bool) -> None:
+    path = manifest_path_v2()
+    if not os.path.exists(path):
+        msg = f"No v2 pool manifest at {path}: nothing verifies this v2 pool."
+        if strict:
+            raise RuntimeError(msg)
+        logger.warning("%s", msg)
+        return
+    with open(path, encoding="utf-8") as f:
+        pinned = json.load(f)
+    if pool_hash(pool) == pinned.get("pool_hash") and content_hash(pool) == pinned.get("content_hash"):
+        logger.info("v2 pool matches the pinned manifest (content_hash=%s)", pinned["content_hash"][:16])
+        return
+    msg = (f"v2 benchmark pool does not match the pinned manifest: pinned n={pinned.get('n_questions')} "
+           f"pool_hash={str(pinned.get('pool_hash'))[:16]}, loaded n={len(pool)} pool_hash={pool_hash(pool)[:16]}")
+    if strict:
+        raise RuntimeError(msg)
+    logger.warning("%s", msg)
+
+
+def load_all_v2(strict: bool = True) -> list[dict]:
+    """The v2 pool: from FUGAL_BENCHMARK_POOL_V2 or data/benchmarks/pool_v2.json.gz when an
+    operator has placed one (scripts/export_pool.py --protocol 2), else built from the pinned
+    revisions. Verified against pool_manifest_v2.json either way."""
+    path = os.getenv("FUGAL_BENCHMARK_POOL_V2", "").strip()
+    if not path and os.path.isfile(os.getenv("FUGAL_POOL_FILE_V2", DEFAULT_POOL_FILE_V2)):
+        path = os.getenv("FUGAL_POOL_FILE_V2", DEFAULT_POOL_FILE_V2)
+    pool = _drop_unscoreable(_read_pool_file(path)) if path else build_pool_v2(strict)
+    if path and _unpinned_pool_declared():
+        logger.warning("FUGAL_POOL_UNPINNED is set: the v2 pool is not verified against its manifest")
+        return pool
+    _verify_against_manifest_v2(pool, strict)
+    _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict)
+    return pool
+
+
+def load_pool(protocol_version: int, strict: bool = True) -> list[dict]:
+    """The pool of the epoch being served or scored, keyed on the one version switch
+    (slicer.protocol_version_for_boundary)."""
+    if protocol_version == 1:
+        return load_all(strict=strict)
+    if protocol_version == 2:
+        return load_all_v2(strict=strict)
+    raise ValueError(f"unknown protocol version {protocol_version!r}")

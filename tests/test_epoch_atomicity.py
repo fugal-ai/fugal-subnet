@@ -30,7 +30,8 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "neurons" / "validator.py"
-DURABLE = {"scoring_state", "frame", "prev_uids", "prev_weights", "last_epoch_index"}
+DURABLE = {"scoring_state", "frame", "prev_uids", "prev_weights", "last_epoch_index",
+           "v2_window", "v2_seat", "v2_owners", "v2_window_degraded"}
 
 
 # ---------------------------------------------------------------- scoring --

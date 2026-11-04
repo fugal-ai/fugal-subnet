@@ -50,6 +50,9 @@ class ScoredAnswer:
     coldkey: str
     correct: bool
     failed: bool
+    # Attested completion tokens of the call (hash-bound in the proof). Used
+    # for the cell's spend, aggregated exactly like the grade.
+    completion_tokens: int = 0
 
 
 Cell = tuple[str, str]  # (question_id, model)
@@ -66,6 +69,28 @@ def shared_cell_grades(answers: Iterable[ScoredAnswer]) -> dict[Cell, float]:
             continue
         by_cell.setdefault((a.question_id, a.model), {}).setdefault(a.coldkey, []).append(
             bool(a.correct)
+        )
+    return {
+        cell: float(median(sum(v) / len(v) for _, v in sorted(votes.items())))
+        for cell, votes in by_cell.items()
+    }
+
+
+def shared_cell_tokens(answers: Iterable[ScoredAnswer]) -> dict[Cell, float]:
+    """The coldkey-median completion tokens of every (question, model) cell.
+
+    Aggregated exactly like the grade: failed calls dropped, one vote per
+    coldkey (the mean over its hotkeys), the median across coldkeys. From
+    protocol v2 a head's spend on a question is the pool's prompt tokens and
+    this, at the pinned prices: measured and shared, never read from the
+    frame, and the same for every head that routed there (I4).
+    """
+    by_cell: dict[Cell, dict[str, list[int]]] = {}
+    for a in answers:
+        if a.failed:
+            continue
+        by_cell.setdefault((a.question_id, a.model), {}).setdefault(a.coldkey, []).append(
+            int(a.completion_tokens)
         )
     return {
         cell: float(median(sum(v) / len(v) for _, v in sorted(votes.items())))
@@ -99,13 +124,19 @@ def head_grades(
     return out
 
 
-def cells_for_reveal(cells: Mapping[Cell, float]) -> list[dict]:
+def cells_for_reveal(
+    cells: Mapping[Cell, float], tokens: Mapping[Cell, float] | None = None,
+) -> list[dict]:
     """The cells as a sorted list, for the published reveal.
 
-    Published so anyone can recompute every head's v2 grades from the reveal
-    alone, and so a rebuild from reveals reproduces them exactly.
+    Published so anyone can recompute every head's v2 grades, and with the
+    token medians every head's v2 spend, from the reveal alone, and so a
+    rebuild from reveals reproduces them exactly.
     """
-    return [
-        {"question_id": q, "model": m, "grade": g}
-        for (q, m), g in sorted(cells.items())
-    ]
+    out = []
+    for (q, m), g in sorted(cells.items()):
+        entry = {"question_id": q, "model": m, "grade": g}
+        if tokens is not None:
+            entry["completion_tokens"] = tokens.get((q, m), 0.0)
+        out.append(entry)
+    return out

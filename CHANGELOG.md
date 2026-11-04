@@ -4,6 +4,20 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 wired into the validator (from the activation block)
+
+`fugal_subnet/v2_epoch.py`: from `FUGAL_V2_ACTIVATION_BLOCK` the validator
+runs one v2 epoch after verification. It computes shared cells (grades and
+coldkey-median attested completion tokens) and the comparison window, steps
+the seat, and sets the 85/10/5 seat vector with `paid_fraction = 1`. Nothing
+that pays reads the frame: spend comes from cell tokens at pinned prices,
+and the frame-based quality floor and epsilon clause do not run in v2. The
+reveal carries the cells with tokens, per-UID failed questions and the seat
+decision. The seat, owners and window persist (window as an `.npz`) and are
+rebound only at the commit point. A failed call is graded 0 and costs 0 in v2.
+New determinism stage `v2_epoch`. INVARIANTS: "I3/I4 — v2 pays from the paired
+rule alone; the frame is informational".
+
 ### Added — protocol v2 benchmark pool: open licences only, category map and weights, its own manifest (lands with v2)
 
 - `fugal_subnet/benchmarks/v2_sets.py`: knowledge = MMLU-Pro + a 3,000-question MMLU subset;

@@ -218,10 +218,12 @@ class Window:
         """A new window with this epoch added and anything older than `size` dropped.
 
         Copy-on-write, like the rest of the epoch state (I1/I6: an epoch is
-        applied once or not at all).
+        applied once or not at all). Idempotent: adding an epoch that is
+        already present REPLACES it (its slice and every head's answers in it),
+        so a retry of the same epoch after a crash between writing the window
+        and the JSON state, or a `--once` re-run, reaches the same window
+        rather than failing the epoch.
         """
-        if sl.epoch in self.slices:
-            raise ValueError(f"epoch {sl.epoch} is already in the window")
         q = len(sl.question_ids)
         m = sl.grades.shape[1]
         for h, he in answers.items():
@@ -230,11 +232,11 @@ class Window:
             if q and (int(he.routed.min()) < 0 or int(he.routed.max()) >= m):
                 raise ValueError(f"head {h[:12]}: a routed model index is outside 0..{m - 1}")
         oldest = sl.epoch - self.size + 1
-        slices = {e: s for e, s in self.slices.items() if e >= oldest}
+        slices = {e: s for e, s in self.slices.items() if e >= oldest and e != sl.epoch}
         slices[sl.epoch] = sl
         heads: dict[str, dict[int, HeadEpoch]] = {}
         for h, per in self.heads.items():
-            kept = {e: he for e, he in per.items() if e >= oldest}
+            kept = {e: he for e, he in per.items() if e >= oldest and e != sl.epoch}
             if kept:
                 heads[h] = kept
         for h, he in answers.items():
@@ -242,15 +244,17 @@ class Window:
         return Window(size=self.size, slices=slices, heads=heads)
 
     def head_vectors(self, head: str, epoch: int) -> tuple[np.ndarray, np.ndarray]:
-        """(grades, spends) of `head` on `epoch`'s slice. A failed call grades 0."""
+        """(grades, spends) of `head` on `epoch`'s slice. A failed call is 0 and 0."""
         sl = self.slices[epoch]
         he = self.heads[head][epoch]
         rows = np.arange(len(sl.question_ids))
         grades = sl.grades[rows, he.routed].astype(np.float64)
         grades = np.where(he.failed, 0.0, grades)
-        if np.isnan(grades).any():
+        # A failed call answered nothing and cost nothing: grade 0, spend 0.
+        spends = np.where(he.failed, 0.0, sl.spends[rows, he.routed].astype(np.float64))
+        if np.isnan(grades).any() or not np.isfinite(spends).all():
             raise ValueError(f"head {head[:12]} epoch {epoch}: an answered question has no cell")
-        return grades, sl.spends[rows, he.routed].astype(np.float64)
+        return grades, spends
 
     def epochs_of(self, head: str, since_epoch: int | None = None) -> list[int]:
         per = self.heads.get(head, {})
@@ -507,12 +511,15 @@ def seat_step(
     *,
     retired: frozenset[str] | set[str] = frozenset(),
     params: SeatParams,
+    allow_take: bool = True,
 ) -> SeatDecision:
     """Advance the seat by one epoch. Pure and deterministic.
 
     `candidates` are this epoch's verified heads by hash; `retired` the hashes
     whose owner now serves a different head. The window must already include
-    this epoch.
+    this epoch. `allow_take=False` (a validator whose window was lost and not
+    yet rebuilt) keeps hold, resume and ghost logic but makes no first or take
+    decision: it fails closed rather than judging on a partial window.
     """
     detail: list[tuple[str, str]] = []
     ghosts = tuple(g for g in state.ghosts if g.last_epoch >= epoch)
@@ -581,7 +588,9 @@ def seat_step(
         c for c in ordered
         if c.eligible and c.burned_in
         and c.head_hash != champion and c.head_hash not in ghost_hashes
-    ]
+    ] if allow_take else []
+    if not allow_take:
+        detail.append(("", "window not trusted: no first or take decision this epoch"))
 
     if champion is None and not ghosts:
         # FIRST: an empty seat with nothing barring it goes to the most senior

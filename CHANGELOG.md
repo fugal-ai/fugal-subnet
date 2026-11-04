@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 epoch inputs chosen by version in the validator
+
+From `FUGAL_V2_ACTIVATION_BLOCK` the validator selects the scored slice and
+exploration with `epoch_plan.scored_slice` / `exploration_plan`, and scores on
+the v2 pool (`loader.load_pool(2)`), price table and model index space
+(`routing_protocol.price_table(2)` / `models_for_protocol(2)`), all picked per
+epoch by the boundary-keyed version; v1 is byte-identical. v2 inputs load at
+startup when an activation block is set; live refuses to start without them.
+New determinism stage `epoch_plan_v2`. INVARIANTS: "I1 — every epoch input is
+chosen by the boundary-keyed version".
+
 ### Changed — protocol v2 wiring uses the copy rule for ownership and seniority
 
 `run_v2_epoch` replaces its interim per-hotkey ownership with the copy rule
@@ -85,6 +96,25 @@ decision. The seat, owners and window persist (window as an `.npz`) and are
 rebound only at the commit point. A failed call is graded 0 and costs 0 in v2.
 New determinism stage `v2_epoch`. INVARIANTS: "I3/I4 — v2 pays from the paired
 rule alone; the frame is informational".
+
+### Added — protocol v2 model list: a second pinned price table, selected by protocol version (lands with v2)
+
+- `data/models_v2.json` (identical copy in `fugal_subnet/routing_data/`): 19 models, prices
+  from the public OpenRouter catalogue of 2026-11-04, each with at least three endpoints. Each
+  pins exactly one OpenRouter `reasoning` setting: `effort` for OpenAI and xAI, a `max_tokens`
+  budget for Anthropic, Google and Qwen, `enabled` otherwise. The unified parameter accepts
+  `effort` or `max_tokens`, not both. Hash-pinned in `check_safety_invariants.py` like
+  `data/models.json`.
+- `routing_protocol.price_table(version)`, `models_for_protocol(version)` (the global model
+  index space) and `reasoning_for(version, model)` serve the table of the epoch being scored,
+  keyed on `slicer.protocol_version_for_boundary`. A release/v2 validator scores v1 epochs until
+  the activation block, so the v1 table and `routing_protocol.identity()` are unchanged. The
+  v2 table's hash is in the consensus fingerprint's epoch block.
+- The v2 token manifest **candidate** (`data/benchmark_tokens_protocol_v2.json`, mirrored),
+  built from 757 metered calls through the v2 harness. Review findings are in
+  `docs/SUCCESS_CONTRACT.md`. Also: `routing_protocol.manifest_path(version)`,
+  `benchmark_costs_for(head, version)` and `identity_v2()` (a new namespace; v1's
+  `identity()` is unchanged).
 
 ### Added — protocol v2 copy rule (module; wiring follows)
 

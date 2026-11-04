@@ -242,6 +242,7 @@ def verify_proof(
     event_log: list | None = None,
     mock: bool = False,
     collateral_budget=None,
+    protocol_version: int = 1,
 ) -> VerifyResult:
     """Verify a miner's TEE-attested benchmark proof.
 
@@ -262,14 +263,22 @@ def verify_proof(
         expected_proof_hash: content_hash the miner advertised over the axon.
         head_bytes: The head artifact shipped in the bundle.
         mock: If True, skip hardware-trust checks (DCAP, measurement).
+        protocol_version: the epoch's version (slicer.protocol_version_for_boundary).
+            The proof's routing evidence namespace and the head's cost profile
+            are checked against that version's (identity() / identity_v2(),
+            benchmark_costs_for(head, version)); the harness stamps the same.
 
     Returns:
         VerifyResult with pass/fail and reason.
     """
     warnings: list[str] = []
-    from fugal_subnet.routing_protocol import identity
-    if proof.routing_protocol != identity():
-        return VerifyResult(False, "Incompatible routing protocol evidence namespace")
+    from fugal_subnet.routing_protocol import identity, identity_v2
+    expected_namespace = identity_v2() if int(protocol_version) >= 2 else identity()
+    if proof.routing_protocol != expected_namespace:
+        return VerifyResult(
+            False,
+            f"Incompatible routing protocol evidence namespace for protocol v{int(protocol_version)}",
+        )
 
     # 1. DCAP attestation — proves the quote is genuine Intel-signed hardware.
     #    It does NOT prove the code was unmodified; check 3 does that.
@@ -436,11 +445,11 @@ def verify_proof(
 
     if not mock:
         from fugal_subnet.head_eval import load_head_from_npz
-        from fugal_subnet.routing_protocol import benchmark_costs
+        from fugal_subnet.routing_protocol import benchmark_costs_for
         try:
             if head_bytes is None:
                 raise ValueError("missing success head bytes")
-            benchmark_costs(load_head_from_npz(head_bytes))
+            benchmark_costs_for(load_head_from_npz(head_bytes), int(protocol_version))
         except (ValueError, KeyError, TypeError) as e:
             return VerifyResult(False, f"Incompatible success head: {e}")
 

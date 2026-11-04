@@ -26,7 +26,7 @@ here, and a check that enforces it.**
 
 | | Invariant | Enforced by |
 |---|---|---|
-| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 12 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
+| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 13 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), the v2 copy rule (`copy_rule.py`, `tests/test_copy_rule.py`), the v2 champion rule (`champion.py`, `tests/test_champion.py`; constant policies are no longer zero by construction in v2, see its entry), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time, coldkey-median shared grades from v2 (`tests/test_shared_grades.py`) |
@@ -2503,6 +2503,37 @@ activation block set and no category map refuses to start.
 Enforced by `tests/test_v2_epoch.py`, `tests/test_shared_grades.py`,
 `tests/test_champion.py` (re-adding an epoch, no take on an untrusted window)
 and the `v2_epoch` stage of `scripts/check_determinism.py`.
+
+### I1 — every epoch input is chosen by the boundary-keyed version (v2 release; from the activation block)
+
+A v2 epoch must be scored on v2's questions, v2's prices and v2's model index
+space, by the miner and every validator alike, or every proof fails on
+`questions_hash` and the v2 window is indexed in the wrong model space. So
+every epoch input that differs by version is chosen by the epoch's
+`protocol_version` (the boundary block, I1 above), in one place each:
+
+- **Questions:** `fugal_subnet/epoch_plan.scored_slice(version, …)` and
+  `exploration_plan(version, …)`, the only selection functions either neuron
+  calls; v1 delegates to the v1 functions byte for byte.
+- **Pool:** `loader.load_pool(version)`, v1 and v2 each with its own pinned
+  manifest and pool file.
+- **Prices and model space:** `routing_protocol.price_table(version)` and
+  `models_for_protocol(version)`.
+- **Proof namespace and head cost profile:** `verify_proof(...,
+  protocol_version=)` requires the proof's `routing_protocol` to be the
+  version's (`identity()` for v1, `identity_v2()` for v2, which the harness
+  stamps per version) and checks the head with
+  `benchmark_costs_for(head, version)`; a v1 proof does not verify in a v2
+  epoch, nor the reverse.
+
+The validator loads v1's inputs as before and, when an activation block is
+set, v2's as well, at startup; a live validator that cannot load v2's refuses
+to start rather than fail at the flip. Each epoch it picks one set by version
+before selecting anything. The v2 comparison window starts empty at the flip,
+so the two model spaces never meet in one window.
+
+Enforced by `tests/test_v2_epoch_inputs.py` and the `epoch_plan_v2` stage of
+`scripts/check_determinism.py`.
 
 ### I3/I4 — the v2 copy rule: a head must beat every senior seat holder by the margin (v2 release; from the activation block)
 

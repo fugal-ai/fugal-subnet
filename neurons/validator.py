@@ -314,7 +314,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         epoch_index_for_block,
         mix_weights,
         protocol_version_for_boundary,
-        select_slice,
     )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
     from fugal_subnet.commitments import seniority_key
@@ -330,7 +329,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         detect_anomalies,
         write_epoch_log,
     )
-    from fugal_subnet.exploration import expected_exploration as expected_exploration_map
+    from fugal_subnet.epoch_plan import exploration_plan, scored_slice
     from fugal_subnet.frontier import build_frontier
     from fugal_subnet.head_eval import HeadScore, load_head_from_npz
     from fugal_subnet.pricing import policy_cost_total, question_input_tokens
@@ -448,6 +447,36 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     logger.info("Price table: %d models; exploration quota %d questions/epoch",
                 len(prices), explore_size)
 
+    # Every epoch input that differs by protocol version, loaded once at
+    # startup and picked per epoch by the boundary-keyed version
+    # (slicer.protocol_version_for_boundary): the pool and its gold, the price
+    # table and the global model index space. v1 is exactly what was loaded
+    # above. v2 is its own pool (loader.load_pool(2), pool_manifest_v2.json)
+    # and its own price table and model list (routing_protocol, #142), so
+    # from the flip every slice, exploration target, price and model index is
+    # v2's, and the v2 comparison window is in the v2 model space from its
+    # first epoch. Loaded only when an activation block is set, and refused at
+    # startup in live if it cannot be, rather than at the flip.
+    epoch_inputs = {1: (benchmark_pool, gold_answers, prices, pool_models, model_index)}
+    if V2_ACTIVATION_BLOCK is not None:
+        from fugal_subnet.benchmarks.loader import load_pool
+        from fugal_subnet.routing_protocol import models_for_protocol, price_table
+        try:
+            pool_v2 = load_pool(2, strict=live)
+            prices_v2 = price_table(2)
+        except Exception as e:  # noqa: BLE001 - any failure here is a startup refusal
+            if live:
+                raise click.ClickException(f"protocol v2 inputs could not be loaded: {e}") from e
+            logger.warning("protocol v2 inputs could not be loaded (mock): %s", e)
+        else:
+            models_v2 = models_for_protocol(2)
+            epoch_inputs[2] = (
+                pool_v2, {q["question_id"]: q for q in pool_v2}, prices_v2,
+                models_v2, {m: i for i, m in enumerate(models_v2)},
+            )
+            logger.info("Protocol v2 inputs: pool %d questions (pool_hash=%s), %d models",
+                        len(pool_v2), pool_hash(pool_v2)[:16], len(models_v2))
+
 
     state = load_state(MinerRecord)
     # Protocol v2 state: the seat and head owners (in the JSON state) and the
@@ -529,7 +558,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
         rebuilt = rebuild_v2_from_reveals(
             os.environ["FUGAL_FRAME_BOOTSTRAP"], window_size=CHAMPION_WINDOW_EPOCHS,
-            prices=prices, bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+            # The replayed window is v2 epochs, so it is priced at v2's table.
+            prices=epoch_inputs.get(2, epoch_inputs[1])[2],
+            bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
         )
         if rebuilt.newest_epoch_id is not None:
             v2_window, v2_seat = rebuilt.window, rebuilt.seat
@@ -600,14 +631,25 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
 
             # --- SLICE ---
+            # This epoch's inputs, by the boundary-keyed version. The miner
+            # selects with the same epoch_plan functions on the same versioned
+            # pool and model list, or every proof fails on questions_hash.
             timer.start_phase("slice")
+            if protocol_version not in epoch_inputs:
+                raise RuntimeError(
+                    f"epoch {epoch_id} is protocol v{protocol_version} but its inputs "
+                    "were not loaded at startup"
+                )
+            benchmark_pool, gold_answers, prices, pool_models, model_index = (
+                epoch_inputs[protocol_version]
+            )
             nonce = derive_nonce(epoch_id, block_hash)
-            questions = select_slice(nonce, benchmark_pool, SLICE_SIZE)
+            questions = scored_slice(protocol_version, nonce, benchmark_pool, SLICE_SIZE)
             question_ids = [q["question_id"] for q in questions]
             expected_questions_hash = compute_questions_hash(question_ids)
             expected_question_ids = set(question_ids)
-            explore_map = expected_exploration_map(
-                nonce, benchmark_pool, expected_question_ids,
+            explore_map = exploration_plan(
+                protocol_version, nonce, benchmark_pool, expected_question_ids,
                 pool_models, explore_size,
             )
             # Gold for the assigned slice only. Handing over the whole pool
@@ -760,6 +802,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         head_bytes=head_bytes,
                         mock=mock,
                         collateral_budget=collateral_budget,
+                        protocol_version=protocol_version,
                     )
                 except ImportError:
                     raise

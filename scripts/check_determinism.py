@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # guarding code that no longer runs in production.
 STAGES = (
     "slice",
+    "epoch_plan_v2",
     "exploration",
     "synthetic_hidden",
     "routing_decisions",
@@ -350,8 +351,21 @@ def run_pipeline(seed: int) -> dict:
     )
     v2_out = {"uids": v2.uids, "weights": v2.weights, "reveal": v2.reveal}
 
+    # Protocol v2 question selection (fugal_subnet/epoch_plan): the scored
+    # slice by category and the exploration plan on a synthetic pool of the v2
+    # benchmarks, so the miner and every validator select the same v2 questions.
+    from fugal_subnet.config import BENCHMARK_CATEGORY_V2
+    from fugal_subnet.epoch_plan import exploration_plan, scored_slice
+    pool_v2 = [{"question_id": f"{b}-{i:04d}", "benchmark": b, "prompt": f"q {b} {i}"}
+               for b in sorted(BENCHMARK_CATEGORY_V2) for i in range(300)]
+    plan_nonce = hashlib.sha256(f"v2-plan-{seed}".encode()).digest()
+    v2_slice = [q["question_id"] for q in scored_slice(2, plan_nonce, pool_v2, 300)]
+    v2_plan = exploration_plan(2, plan_nonce, pool_v2, set(v2_slice),
+                               [f"vendor/model-{i}" for i in range(19)], 15)
+
     return {
         "slice": _digest(question_ids),
+        "epoch_plan_v2": _digest({"slice": v2_slice, "plan": sorted(v2_plan.items())}),
         "exploration": _digest(explore_map),
         "synthetic_hidden": _digest(hidden),
         "routing_decisions": _digest(routing),

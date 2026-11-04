@@ -4,6 +4,19 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — a private archive of verified miner heads on the validator (diagnostics only, opt-in)
+
+Every axon response carries the miner's head; the validator checked it
+against `weights_hash` and the on-chain commitment and then discarded it.
+With `FUGAL_HEAD_ARCHIVE_DIR` set, heads that verified are kept as raw bytes
+at `<dir>/<sha256>.npz` (written once per hash) with one `index.jsonl` row
+per (epoch, uid): hotkey, coldkey, weights_hash, `first_seen` or `repeat`.
+The directory is 0700 and files 0600; nothing is uploaded. Heads are never
+parsed by the archive, a hash the bytes don't match is skipped (so no miner
+string becomes a path), and a disk error is logged, not fatal. Unset (the
+default), behaviour is unchanged. No change to scoring, any hash, the reveal
+or the fingerprint.
+
 ### Added — per-UID failed-call counts in the epoch log (diagnostics only)
 
 A failed upstream call is scored `correct=False`, so from the score alone a

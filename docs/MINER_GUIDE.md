@@ -607,6 +607,34 @@ from the epoch nonce, so it is identical on every validator and no miner can
 influence it, and the cost rotates. Do not read a skipped epoch as a signal
 about your head.
 
+### A failed model call scores as a wrong answer
+
+Your head is judged on whether the question got answered. A scored question
+whose model call still fails after the proxy's retries is recorded `failed` and
+scored `correct=False`, exactly like a wrong answer. Two causes are common
+enough to plan for.
+
+**`mistralai/mistral-large-2512` is rate-limited upstream.** OpenRouter serves
+it from a single provider, so a 429 there has no fallback. Measured:
+
+- 2026-11-03, direct calls at concurrency 2: 42 of 275 answered.
+- Mainnet e00026193 (2026-11-04), a head that routes ~17% of questions to it,
+  on `image-v2026.11.03b` (no retries): 39 of 300 scored calls failed (13%).
+  The two other heads scored that epoch never route to it and had 0 failed calls.
+- `image-v2026.11.03c` retries 429s with backoff, which cuts the failures but
+  does not remove them.
+
+Treat the model's availability as part of its accuracy. If your training labels
+come from calls that succeeded, they overstate it. Either train on labels that
+count failures, or keep your head off the model.
+
+**Your OpenRouter account is part of your miner.** A key with a total spend
+limit returns 403 once the limit is reached, and an exhausted account balance
+returns 402. Neither is retried, and both are logged as `OPERATOR ACTION
+REQUIRED`. On 2026-11-03 an exhausted balance failed about 55% of one epoch's
+calls. Set no total limit on the miner's key, and set a low-balance alert on the
+account.
+
 ## Anti-Gaming
 
 - **TEE attestation** — results are hardware-attested. You cannot fabricate or

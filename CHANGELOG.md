@@ -4,6 +4,14 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Docs — MINER_GUIDE: failed model calls score as wrong answers
+
+New section under Scoring. `mistral-large-2512` is rate-limited upstream with a
+single OpenRouter provider; the section gives the mainnet failure measurements,
+says to treat availability as part of accuracy, and covers the OpenRouter
+account itself (no total key limit, a low-balance alert: 403/402 are not
+retried).
+
 ### Added — a private archive of verified miner heads on the validator (diagnostics only, opt-in)
 
 Every axon response carries the miner's head; the validator checked it

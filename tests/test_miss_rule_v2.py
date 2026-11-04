@@ -114,3 +114,27 @@ def test_update_scores_applies_e2_only_under_v2():
     v2 = update_scores(s, {}, {}, frontier=frontier, n_questions=300, protocol_version=2)
     assert v1.records[1].evidence.n_total > young.n_total          # phantom zeros
     assert v2.records[1].evidence.n_total == 0.0                   # young: reset
+
+
+def test_v2_burn_in_is_its_own_1500_and_v1_keeps_3000():
+    from fugal_subnet.config import BURN_IN_QUESTIONS as V1
+    from fugal_subnet.config import V2_BURN_IN_QUESTIONS as V2
+    assert (V1, V2) == (3000, 1500)
+
+
+def test_update_scores_uses_the_v2_burn_in_in_v2_epochs():
+    # Six epochs of 300 (1,800 questions) is past v2's 1,500 burn-in but short
+    # of v1's 3,000: a v2 miss decays the record (mature), it does not reset.
+    from fugal_subnet.scoring import ScoringState, update_scores
+    from tests.frame_fixtures import frame_from_truth, frontier_of
+
+    frontier = frontier_of(frame_from_truth(400))
+    s = ScoringState()
+    for _ in range(6):
+        s = update_scores(s, {1: _score()}, {1: "h"}, frontier=frontier,
+                          n_questions=300, protocol_version=2)
+    before = s.records[1].evidence
+    assert before.burn_in_n == 1800.0
+    after = update_scores(s, {}, {}, frontier=frontier, n_questions=300,
+                          protocol_version=2).records[1].evidence
+    assert after.n_total > 0 and after.burn_in_n == 0.0

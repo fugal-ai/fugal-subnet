@@ -318,9 +318,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
     from fugal_subnet.commitments import seniority_key
     from fugal_subnet.config import (
-        BURN_IN_QUESTIONS,
         PAYOUT_SEAT_SHARES,
         TEE_COLLATERAL_EPOCH_BUDGET,
+        V2_BURN_IN_QUESTIONS,
     )
     from fugal_subnet.dedup import epsilon_disqualified, find_duplicates
     from fugal_subnet.epoch_logger import (
@@ -1116,7 +1116,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     records=epoch_state.records, commitments=snapshot,
                     window=v2_window, seat=v2_seat, copy_state=v2_copy, burn_uid=burn_uid,
                     params=seat_params_from_config(), shares=PAYOUT_SEAT_SHARES,
-                    burn_in_questions=BURN_IN_QUESTIONS,
+                    burn_in_questions=V2_BURN_IN_QUESTIONS,
                     bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
                     allow_take=not v2_window_degraded,
                 )

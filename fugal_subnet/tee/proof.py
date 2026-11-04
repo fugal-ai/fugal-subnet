@@ -114,6 +114,28 @@ def _json_number(value, name: str):
     return value
 
 
+# Bounds on proof-carried TPM intermediates (I2: every miner-controlled input
+# is bounded before it is parsed). A real chain needs one or two; a Google
+# intermediate is ~1.5 KB DER.
+TPM_INTERMEDIATES_MAX = 4
+TPM_INTERMEDIATE_MAX_BYTES = 8192
+
+
+def _parse_tpm_intermediates(raw) -> list[bytes]:
+    """Hex strings -> DER bytes, bounded. Anything else is a malformed proof."""
+    if not isinstance(raw, list):
+        raise ValueError("tpm_intermediates must be a list")
+    if len(raw) > TPM_INTERMEDIATES_MAX:
+        raise ValueError(f"tpm_intermediates carries {len(raw)} certificates "
+                         f"(max {TPM_INTERMEDIATES_MAX})")
+    out = []
+    for c in raw:
+        if not isinstance(c, str) or len(c) > 2 * TPM_INTERMEDIATE_MAX_BYTES:
+            raise ValueError("tpm_intermediates entry is not a bounded hex string")
+        out.append(bytes.fromhex(c))
+    return out
+
+
 @dataclass
 class BenchmarkProof:
     epoch_id: str
@@ -137,6 +159,18 @@ class BenchmarkProof:
     # commit-block seniority — statistical, not cryptographic.
     hotkey: str = ""
     routing_protocol: str = field(default_factory=identity)
+    # DER intermediates for the TPM attestation key's certificate chain, carried
+    # so a miner whose region (or whose rotated intermediate) is not vendored
+    # still verifies. Untrusted and unattested on purpose: a supplied
+    # certificate is worthless unless it chains to the pinned Google root
+    # (tpm.verify_ak_chain), exactly as in TLS. It is NOT in content_hash, which
+    # keeps report_data, proof_hash and every existing proof unchanged; the
+    # cost is that it is unbound, so a miner can serve different intermediates
+    # to different validators under one proof_hash (INVARIANTS, TPM section).
+    # The harness half should add it to content_hash, only when non-empty so
+    # proofs without it keep their hash. Omitted from to_dict when empty so
+    # old proofs serialise byte-identically. Bounded in from_dict (I2).
+    tpm_intermediates: list[bytes] = field(default_factory=list)
 
     @property
     def scored_results(self) -> list[QuestionResult]:
@@ -211,6 +245,8 @@ class BenchmarkProof:
             "per_model_costs": self.per_model_costs,
             "attestation_quote": self.attestation_quote.hex(),
             "timestamp": self.timestamp,
+            **({"tpm_intermediates": [c.hex() for c in self.tpm_intermediates]}
+               if self.tpm_intermediates else {}),
         }
 
     @classmethod
@@ -232,4 +268,5 @@ class BenchmarkProof:
             per_model_costs=d["per_model_costs"],
             attestation_quote=bytes.fromhex(d["attestation_quote"]),
             timestamp=d["timestamp"],
+            tpm_intermediates=_parse_tpm_intermediates(d.get("tpm_intermediates", [])),
         )

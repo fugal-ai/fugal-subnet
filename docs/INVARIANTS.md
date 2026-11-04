@@ -2498,6 +2498,31 @@ Enforced by `tests/test_v2_epoch.py`, `tests/test_shared_grades.py`,
 `tests/test_champion.py` (re-adding an epoch, no take on an untrusted window)
 and the `v2_epoch` stage of `scripts/check_determinism.py`.
 
+### I9 — v2: the frame is estimated on the scored mix (v2 release; from the activation block)
+
+Exploration draws a handful of slots an epoch, so its benchmark mix rounds
+away from the scored slice's (measured on v1: one benchmark was 6.7% of
+exploration against 1.7% of the scored slice), and the frame's per-model
+accuracy and verbosity were estimates of the wrong mix. From protocol v2 each
+aggregated exploration observation (one per (question, model), I9) is
+weighted by its benchmark's scored share over its exploration share that
+epoch (`slicer.mix_weights`, the same epoch's scored slice and exploration
+set), and the frame keeps **weighted sums** (`successes_w`, `trials_w`,
+`prompt_tokens_w`, `completion_tokens_w`) beside the raw ones. Accuracy and
+verbosity read the weighted sums; the **raw trial count is never weighted**,
+because it counts how much has been measured, and that is what the
+frontier's confidence reads. A v1 frame has no weighted sums and serialises
+byte for byte as before; once a frame is weighted every later epoch keeps
+the weighted sums current.
+
+In v2 the frame is informational (I3/I4, "v2 pays from the paired rule
+alone"): this keeps the exploration detectors and the published diagnostics
+honest, and nothing that pays reads it. The weights are published in the v2
+reveal (`frame_mix_weights`, and `explore_benchmarks` for each explored
+question), so a rebuild from reveals reproduces them.
+
+Enforced by `tests/test_frame_mix_v2.py`.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

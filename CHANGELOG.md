@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2: exploration weighted by the scored mix in the frame
+
+From the activation block each aggregated exploration observation is
+weighted by `slicer.mix_weights` (its benchmark's scored share over its
+exploration share this epoch). `ReferenceFrame` keeps weighted sums for
+accuracy and verbosity beside the raw ones; the raw trial count, which the
+frontier's confidence reads, is unweighted. v1 frames serialise unchanged.
+`aggregate_observations(..., with_question=True)` carries the question id.
+The weights are in the v2 reveal (`frame_mix_weights`). INVARIANTS: "I9 — v2:
+the frame is estimated on the scored mix".
+
 ### Added — `epoch_plan`: the single, versioned question-selection entry point for both neurons
 
 `epoch_plan.scored_slice(version, nonce, pool, size)` and

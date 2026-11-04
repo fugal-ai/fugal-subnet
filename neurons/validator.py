@@ -312,6 +312,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         derive_nonce,
         epoch_id_for_block,
         epoch_index_for_block,
+        mix_weights,
         protocol_version_for_boundary,
         select_slice,
     )
@@ -844,10 +845,26 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     "UID %d exploration excluded from the reference frame this "
                     "epoch: %s. Its score is untouched (I4).", uid, why,
                 )
-            samples = aggregate_observations(
+            keyed = aggregate_observations(
                 observations,
                 exclude_coldkeys={coldkey_of[uid] for uid in suspicious},
+                with_question=True,
             )
+            samples = [row[1:] for row in keyed]
+            # Protocol v2: weight each exploration observation by its
+            # benchmark's scored share over its exploration share this epoch
+            # (slicer.mix_weights), so the frame estimates every model on the
+            # scored mix. The raw trial count is not weighted (it is what the
+            # frontier's confidence reads). The frame is informational in v2;
+            # this keeps it honest for the detectors and the diagnostics.
+            mix: dict[str, float] = {}
+            bench_of: dict[str, str] = {}
+            sample_weights = None
+            if protocol_version >= 2:
+                explored_qs = [gold_answers[q] for q in sorted(explore_map) if q in gold_answers]
+                mix = mix_weights(questions, explored_qs)
+                bench_of = {q["question_id"]: str(q.get("benchmark", "")) for q in explored_qs}
+                sample_weights = [mix.get(bench_of.get(row[0], ""), 1.0) for row in keyed]
 
             # EPOCH-LOCAL from here to save_state. `frame`, `scoring_state`,
             # `prev_uids` and `prev_weights` are the validator's durable state
@@ -858,7 +875,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # applied every miss twice and decayed the frame twice — and then
             # persisted it (found 2026-11-02). tests/test_epoch_atomicity.py
             # holds this shape.
-            epoch_frame = accumulate_exploration(frame, samples)
+            epoch_frame = accumulate_exploration(frame, samples, weights=sample_weights)
             ref_model, acc_best = best_model(epoch_frame, prices)
             logger.info(
                 "Reference frame: %d samples this epoch, best model %s "
@@ -1129,7 +1146,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 epoch_score_dicts, epoch_weight_map,
                 exploration=exploration_for_reveal,
                 protocol_version=protocol_version,
-                v2_fields=v2_result.reveal if v2_result is not None else None,
+                v2_fields=(
+                    {**v2_result.reveal,
+                     "frame_mix_weights": dict(sorted(mix.items())),
+                     "explore_benchmarks": dict(sorted(bench_of.items()))}
+                    if v2_result is not None else None
+                ),
             )
 
             # --- SET WEIGHTS ---

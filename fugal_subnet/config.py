@@ -84,6 +84,30 @@ HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "",
 # a stalled call cost one worker rather than the epoch.
 HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "8")))
 
+# --- Protocol v2 benchmark pool (approved scope, 2026-11-04) ---
+# Consensus constants from V2_ACTIVATION_BLOCK, written into the v2 pool
+# manifest and checked against it (scripts/check_safety_invariants.py).
+# Targets apply to the scored slice and to exploration alike
+# (slicer.select_slice_v2 / select_explore_set_v2).
+# Jack, 2026-11-04: instruction is 5% in v2.0 (only 259 IFEval items are checkable
+# by the pinned constraint kinds; at 15 a slice they repeat every ~17 epochs).
+# The generated instruction set that lets it grow again is v2.1.
+CATEGORY_TARGETS_V2 = {"knowledge": 0.40, "math": 0.25, "hard": 0.30, "instruction": 0.05}
+BENCHMARK_CATEGORY_V2 = {
+    "mmlupro": "knowledge", "mmlu": "knowledge",
+    "math_l35": "math", "omnimath_mid": "math",
+    "supergpqa_hard": "hard", "aime": "hard", "aime25": "hard", "beyondaime": "hard", "omnimath_hard": "hard",
+    "ifeval": "instruction",
+}
+# Within-category weights; only the hard category is weighted: 50% the open
+# multiple-choice set, 50% integer olympiad math split by pool size
+# (aime 933, aime25 30, beyondaime 100, omnimath_hard 846 of 1,909). Every
+# other category splits by pool share.
+BENCHMARK_WEIGHT_V2 = {
+    "supergpqa_hard": 0.5,
+    "aime": 0.244369, "aime25": 0.007858, "beyondaime": 0.026192, "omnimath_hard": 0.221582,
+}
+
 # --- Harness answer budget and call deadlines (image constants, protocol v2) ---
 # Part of the measured image, not env-overridable: exploration (the reference
 # frame's source) runs on the same harness, so a miner and the frame ask for the

@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 slicer: category-first allocation; exploration matches the scored mix (not yet wired; lands with v2)
+
+- `select_slice_v2` allocates the scored slice by category at published targets (largest
+  remainder, no floor; ties keyed on the nonce), then by pool share within each category under
+  the existing share cap (diligence finding 6), applied within the category.
+- `select_explore_set_v2` allocates exploration the same way by category, and draws each slot's
+  benchmark by a nonce-keyed weighted draw on pool share within the category. A benchmark's
+  expected exploration share now equals its expected scored share at any size. Measured on
+  mainnet with the v1 sampler: 15 exploration slots split five benchmarks 1:1:1:5:7, putting a
+  benchmark that is 1.7% of the scored slice at 6.7% of exploration and over-weighting it ~4x
+  in the reference frame.
+- `mix_weights(scored, explored)` returns the per-benchmark correction (scored share ÷
+  exploration share) for an epoch, so the frame can weight what 15 slots observed back to the
+  scored mix.
+- The v1 `select_slice` is unchanged. Dispatch by protocol version, and the benchmark→category
+  map and targets, arrive with the v2 benchmark list.
+
 ### Fixed — proofs can carry their own TPM intermediates (validator half)
 
 `verify_ak_chain` accepted `extra_certs` and INVARIANTS said a proof could

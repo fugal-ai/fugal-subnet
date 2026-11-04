@@ -2384,7 +2384,7 @@ its own grades before it serves and could withhold a bad epoch. From protocol v2
 protocol_version=2)`):
 
 - **Before burn-in is complete** (`Evidence.burn_in_progress` <
-  `BURN_IN_QUESTIONS`, counted in scored questions since the last reset or
+  `V2_BURN_IN_QUESTIONS`, 1,500, counted in scored questions since the last reset or
   miss, undecayed), a miss **resets the evidence fully**
   (`evidence.apply_miss_v2`). A young head cannot shape its record by
   withholding, because withholding restarts it.
@@ -2709,6 +2709,25 @@ after 30 epochs with intermittent misses, a validator continuing from a
 rebuild produces the same next epoch (weights and reveal) as one continuing
 from its own state, reveal order does not matter, later v2 fields are carried
 verbatim, and the frame rebuild reproduces the weighted frame.
+
+### I3 — v2 burn-in is 1,500 questions, and the flip starts with an empty seat (v2 release; from the activation block)
+
+Every miner serves a new head at the flip, so every evidence record starts
+from zero and no head can take a seat until it has completed v2 burn-in:
+`V2_BURN_IN_QUESTIONS`, 1,500 scored questions (five epochs of a
+300-question slice) in an unbroken run since its last reset or miss. Until
+then the seat is empty and the miner share burns, for about six hours after
+the flip. v1 epochs keep `BURN_IN_QUESTIONS` (3,000).
+
+The shorter burn-in does not shorten what a seat demands. The first seat goes
+to the most senior eligible head by first commit (the copy rule), not to
+whichever head looks best on its first epochs; and a challenger still needs
+`CHAMPION_MIN_PAIRED_QUESTIONS` (1,500) paired questions from its unbroken run
+against the champion and every senior seat holder, at the margin, before it
+can take a seat. Holding or resuming a seat needs no burn-in.
+
+Enforced by `tests/test_miss_rule_v2.py` (the v2 constant is used in v2 epochs,
+v1 keeps its own) and `tests/test_v2_activation.py` (in the digest).
 
 ## Attack surface by actor
 

@@ -479,7 +479,7 @@ class SimValidator:
         if "protocol_version" in inspect.signature(scoring.update_scores).parameters:
             kwargs["protocol_version"] = pv
         hotkeys = {m.uid: m.hotkey for m in MINERS}
-        with patched(scoring, BURN_IN_QUESTIONS=BURN_IN):
+        with patched(scoring, BURN_IN_QUESTIONS=BURN_IN, V2_BURN_IN_QUESTIONS=BURN_IN):
             state = scoring.update_scores(
                 self.scoring, epoch_scores, {u: p.weights_hash for u, p in proofs.items()},
                 frontier=frontier, hotkeys=hotkeys, n_questions=len(questions),

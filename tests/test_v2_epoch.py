@@ -374,3 +374,4 @@ def test_the_validator_reads_the_v2_category_map_and_the_copy_rule():
     assert "commitments=snapshot" in call and "copy_state=v2_copy" in call
     assert "exact_copies" not in call
     assert "allow_take=not v2_window_degraded" in call
+    assert "burn_in_questions=V2_BURN_IN_QUESTIONS" in call

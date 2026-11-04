@@ -15,6 +15,9 @@ All notable changes to this project will be documented here. Releases follow [Se
   ≤ the proxy's per-call deadline (`PROXY_CALL_DEADLINE_S` 420 s, was 180 s) < the harness's
   wait (`HARNESS_CALL_TIMEOUT_S` 450 s, was 200 s); no new retry after
   `PROXY_RETRY_BUDGET_S` (300 s, was 120 s). A 16k answer from a slow model takes ~330 s.
+- Each result carries `latency_ms`: the harness's wall time for the call, retries included,
+  attested and hashed. It's present only when set, so v1 proofs hash unchanged. The v2 time
+  gate needs it.
 - 403 joins 401/402 in `PROXY_OPERATOR_STATUS`: never retried, logged as
   `OPERATOR ACTION REQUIRED` (a key's total spend limit returns 403 on every call).
 - Not yet in this change: the per-model reasoning setting (`reasoning.effort` or

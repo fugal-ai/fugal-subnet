@@ -136,13 +136,13 @@ def run_benchmark(
         nonce_bytes, f"order:{item[0]['question_id']}".encode("utf-8"), hashlib.sha256,
     ).digest())
     outcomes = {
-        (q["question_id"], is_explore): (response_text, failed, cost, p_tok, c_tok)
-        for q, _model, is_explore, response_text, failed, cost, p_tok, c_tok
+        (q["question_id"], is_explore): (response_text, failed, cost, p_tok, c_tok, lat)
+        for q, _model, is_explore, response_text, failed, cost, p_tok, c_tok, lat
         in _call_all(proxy, call_order, epoch_id)
     }
 
     for q, model_id, is_explore in scheduled:
-        response_text, failed, cost, prompt_tokens, completion_tokens = outcomes[
+        response_text, failed, cost, prompt_tokens, completion_tokens, latency_ms = outcomes[
             (q["question_id"], is_explore)
         ]
         # grade() needs a grader task dict, not a raw loader question: it reads
@@ -171,6 +171,7 @@ def run_benchmark(
             completion_tokens=int(completion_tokens),
             is_exploration=is_explore,
             failed=failed,
+            latency_ms=int(latency_ms),
         ))
 
     proof = BenchmarkProof(
@@ -228,25 +229,28 @@ def _call_all(proxy, scheduled, epoch_id):
         q, model_id, _explore = item
         rid = f"{epoch_id}:{q['question_id']}:{model_id}"
         _request_ctx.request_id = rid
+        started = time.monotonic()
         try:
             text = _call_model(proxy, model_id, q)
         finally:
             _request_ctx.request_id = ""
+        latency_ms = int(round((time.monotonic() - started) * 1000))
         # A reply that is not text is a wrong answer, never an abort. One
         # aborted question used to take the whole proof.
-        return rid, (text is None), ("" if text is None else text)
+        return rid, (text is None), ("" if text is None else text), latency_ms
 
     if not scheduled:
         return
     with ThreadPoolExecutor(max_workers=HARNESS_CONCURRENCY) as pool:
         outcomes = list(pool.map(one, scheduled))
-    for (q, model_id, explore), (rid, failed, text) in zip(scheduled, outcomes):
+    for (q, model_id, explore), (rid, failed, text, latency_ms) in zip(scheduled, outcomes):
         mine = [r for r in proxy.records if r.request_id == rid]
         yield (
             q, model_id, explore, text, failed,
             sum(r.cost_usd for r in mine),
             sum(r.prompt_tokens for r in mine),
             sum(r.completion_tokens for r in mine),
+            latency_ms,
         )
 
 

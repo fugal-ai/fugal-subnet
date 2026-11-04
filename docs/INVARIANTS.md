@@ -682,6 +682,18 @@ to all validators together, and no honest dstack blob changes outcome.
 measured fact; `::test_a_tpm_quote_from_another_machine_cannot_be_stapled_onto_a_tdx_quote`
 holds the refusal and was checked to fail against the previous code.
 
+### I8 — per-call latency is attested (protocol v2)
+
+The v2 time gate compares a router's per-call time with the anchor's, so the time has to be
+a fact the miner cannot choose. `QuestionResult.latency_ms` is the harness's own monotonic
+wall time for the call, retries included, written inside the TD and covered by
+`content_hash` like every other result field. It follows the `failed` precedent: present
+only when set, so a proof without it hashes exactly as before and v1 miners and validators
+keep agreeing on every honest proof. `from_dict` keeps the integer exactly as carried and
+rejects a bool, float, string or negative value (the #120 lesson: re-typing a number changes
+the hash). A validator treats a missing field as "time gate not applied". Enforced by
+`tests/test_proof_latency.py`.
+
 ### I8 — a proof names the miner it was produced for
 
 `content_hash` covers the epoch, the slice, the head and the runtime — and,

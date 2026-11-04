@@ -85,10 +85,17 @@ down is a worse failure than one that needs an operator to run step 5.
 | `12a1f2f5…9141:12d945d2…3910` | `59039d01…692a` | `45729c2` | 2026-09-06 | 2026-09-07 (never verified; TDs recreated) |
 | `12a1f2f5…9141:00354525…ab0d` | `9d7916c3…e0a9` | `d9fa3a5` | 2026-09-07 | 2026-11-03 (private-registry image; pre-success-contract protocol; testnet only) |
 | `12a1f2f5…9141:41de1e4c…9e10` | `e4c2deff…6ca4` | `37495ae` | 2026-09-07 | 2026-11-03 (same) |
-| `f4be9383…aa427:dcd0dd8d…2d7f` (**test / 552**, warm-up; compose sets `FUGAL_EXPLORE_FRACTION=0.5`) | `3f6e3e2d…fda12` (`image-v2026.11.03b`, public ghcr) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | — |
-| `f4be9383…aa427:ed2be85f…85c4` (**finney / 70**, mainnet) | `3f6e3e2d…fda12` (same image) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | — |
+| `f4be9383…aa427:dcd0dd8d…2d7f` (**test / 552**, warm-up; compose sets `FUGAL_EXPLORE_FRACTION=0.5`) | `3f6e3e2d…fda12` (`image-v2026.11.03b`, public ghcr) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
+| `f4be9383…aa427:ed2be85f…85c4` (**finney / 70**, mainnet) | `3f6e3e2d…fda12` (same image) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
 | `f4be9383…aa427:c9b5c43b…0dad8` (**test / 552**, warm-up twin) | `843460e6…4a6f8` (`image-v2026.11.03c`, public ghcr; #121 retries) | `1a0bce0` (image), this PR's merge (compose) | 2026-11-03 | — |
 | `f4be9383…aa427:9ab870cf…f166` (**finney / 70**, mainnet) | `843460e6…4a6f8` (same image) | `1a0bce0` (image), this PR's merge (compose) | 2026-11-03 (base re-measured on the first 03c TD, 23:16 UTC: unchanged) | — ; the 03b entry stays approved beside it for the 48 h window |
+
+**03b retirement is a hard date.** The two `image-v2026.11.03b` entries retire at
+**2026-11-06 00:00 UTC**, published 2026-11-04, 48 h after the 03c release plus
+margin. Operators on 03b should be on 03c by **2026-11-05 00:00 UTC**. For this
+rotation the published date overrides the "no verified proof for a full day"
+condition in step 3 of the transition window: a miner still on 03b at the date
+stops verifying, which is the notice this date gives.
 
 **The base moved between September and November without the image changing.**
 Measured 2026-11-03 on two fresh `c3-standard-4` TDs booted from the

@@ -308,7 +308,7 @@ def run_pipeline(seed: int) -> dict:
         head_hashes={u: head_hashes[u] for u in v2_uids},
         coldkey_of={u: f"coldkey-{u % 3}" for u in v2_uids},
         hotkey_of={u: f"hk{u}" for u in v2_uids},
-        seniority={u: u for u in v2_uids}, commit_epoch={u: 0 for u in v2_uids},
+        commit_block={u: u for u in v2_uids}, commit_epoch={u: 0 for u in v2_uids},
         records=state.records, exact_copies=set(), commitments={},
         window=Window.empty(48), seat=SeatState(), owners={}, burn_uid=0,
         params=seat_params_from_config(), shares=(0.85, 0.10, 0.05),

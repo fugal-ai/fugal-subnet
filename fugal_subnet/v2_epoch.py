@@ -222,9 +222,10 @@ def v2_state_for_reveal(
     """The post-epoch snapshot of everything the next v2 epoch reads.
 
     Published in every v2 reveal as `v2_state`, so a validator that lost its
-    state, or has just joined, rebuilds it from the newest reveal (the window
-    itself is replayed from the last CHAMPION_WINDOW_EPOCHS reveals, not read
-    from here). `extra` is where later v2 state (the copy rule's first-commit
+    state, or has just joined, can rebuild it from the newest reveal, with the
+    window replayed from the last CHAMPION_WINDOW_EPOCHS reveals (the rebuild
+    from reveals); until it does, a validator whose window was lost fails
+    closed (no first or take decisions). `extra` is where later v2 state (the copy rule's first-commit
     seniority, ownership and ghosts) is published: one block, one channel, so
     the rebuild reads one place. Keys are sorted for byte-identical reveals.
     """
@@ -272,11 +273,11 @@ def run_v2_epoch(
     head_hashes: Mapping[int, str],
     coldkey_of: Mapping[int, str],
     hotkey_of: Mapping[int, str],
-    seniority: Mapping[int, object],
+    commit_block: Mapping[int, int],
     commit_epoch: Mapping[int, int],
     records: Mapping[int, object],
     exact_copies: set[int] | frozenset[int],
-    commitments: Mapping[str, str],
+    commitments: Mapping[str, tuple[str, int]],
     window: Window,
     seat: SeatState,
     owners: Mapping[str, str],
@@ -285,13 +286,24 @@ def run_v2_epoch(
     shares: tuple[float, ...],
     burn_in_questions: int,
     bench_category: Mapping[str, str] | None = None,
+    allow_take: bool = True,
 ) -> V2EpochResult:
     """One v2 epoch, from verified proofs to the weight vector. Pure.
 
-    `commitments` is {hotkey: committed head hash} at the boundary, used to
-    tell a champion whose owner moved to a different head (retired) from one
-    that simply missed. `owners` is {head hash: hotkey that last served it},
-    carried between epochs. Nothing here reads the frame (the frame is
+    `commitments` is {hotkey: (committed head hash, block)} at the boundary,
+    read from chain. It decides ownership and is used to
+    tell a champion whose OWNER moved to a different head (retired) from one
+    that simply missed. `owners` is {head hash: owning hotkey}, carried
+    between epochs: a hash is owned by the first hotkey seen committing it
+    (earliest commitment block, then lowest UID), and that never changes while
+    the hash is remembered. The first committer is read from chain, over EVERY
+    hotkey committing the hash, not only those that served it this epoch, so
+    an author whose proof failed on the hash's first epoch still owns it.
+    Only the owner's UID serves the hash; any other
+    UID serving the same bytes is a copy and is neither paid as it, nor
+    measured as it, nor able to retire it. `commit_block` is each UID's
+    commitment block at the boundary; it orders first committers and is the
+    seniority among heads. Nothing here reads the frame (the frame is
     informational in v2), and `paid_fraction` is 1: the payout is the paired
     head-vs-head rule, not the frontier.
     """
@@ -320,12 +332,29 @@ def run_v2_epoch(
                            bench_category)
     model_index = {m: i for i, m in enumerate(pool_models)}
 
-    # One UID per head hash: the most senior one serving it. Other UIDs that
-    # serve the same bytes are the same head and earn nothing as it.
+    # One owner per head hash, and only the owner serves it. A hash seen for
+    # the first time is owned by the earliest committer among the UIDs serving
+    # it now; a known hash keeps its owner, so a copier on another hotkey can
+    # never become the owner, collect the seat's pay, or retire it by
+    # committing something else.
+    new_owners = {h: hk for h, hk in owners.items()}
+    by_hash: dict[str, list[int]] = {}
+    for uid in sorted(verified_proofs):
+        by_hash.setdefault(head_hashes[uid], []).append(uid)
     serving: dict[str, int] = {}
-    for uid in sorted(verified_proofs, key=lambda u: (seniority[u], u)):
-        h = head_hashes[uid]
-        serving.setdefault(h, uid)
+    for h, uids in sorted(by_hash.items()):
+        if h not in new_owners:
+            committers = sorted(
+                (int(block), hk) for hk, (ch, block) in commitments.items() if ch == h
+            )
+            if committers:
+                new_owners[h] = committers[0][1]
+            else:  # no commitment requirement (local chains): earliest serving UID
+                first = min(uids, key=lambda u: (int(commit_block.get(u, 1 << 62)), u))
+                new_owners[h] = hotkey_of[first]
+        owner_uids = [u for u in uids if hotkey_of[u] == new_owners[h]]
+        if owner_uids:
+            serving[h] = min(owner_uids)
 
     answers_by_head: dict[str, HeadEpoch] = {}
     for h, uid in sorted(serving.items()):
@@ -341,15 +370,12 @@ def run_v2_epoch(
         rec = records.get(uid)
         candidates[h] = Candidate(
             head_hash=h,
-            seniority=(seniority[uid], h),
+            seniority=(int(commit_block.get(uid, 1 << 62)), h),
             eligible=uid not in exact_copies,
             since_epoch=int(commit_epoch[uid]),
             burned_in=burn_in_complete(getattr(rec, "evidence", None), burn_in_questions),
         )
 
-    new_owners = {h: hk for h, hk in owners.items()}
-    for h, uid in serving.items():
-        new_owners[h] = hotkey_of[uid]
     # Retired: the champion, or a standing ghost, whose last serving hotkey now
     # commits a different head. A missed ghost that becomes retired is
     # upgraded to the retire window by seat_step.
@@ -359,16 +385,20 @@ def run_v2_epoch(
         watched.add(seat.champion)
     for h in sorted(watched - set(candidates)):
         hk = new_owners.get(h)
-        if hk is not None and commitments.get(hk) not in (None, "", h):
+        committed = commitments.get(hk, ("", 0))[0] if hk is not None else ""
+        if committed not in ("", h):
             retired.add(h)
 
     decision = seat_step(seat, epoch_index, epoch_id, new_window, candidates,
-                         retired=retired, params=params)
+                         retired=retired, params=params, allow_take=allow_take)
 
-    # Heads still worth remembering: anything in the window or in the seat.
+    # Heads still worth remembering: anything in the window or the seat, and
+    # anything committed on chain now (bounded by the number of hotkeys), so
+    # a hash's first committer stays its owner even through epochs in which
+    # nobody served it.
     keep = set(new_window.heads) | set(decision.state.history) | {
         g.head_hash for g in decision.state.ghosts
-    }
+    } | {h for h, _ in commitments.values() if h}
     if decision.state.champion:
         keep.add(decision.state.champion)
     new_owners = {h: hk for h, hk in sorted(new_owners.items()) if h in keep}

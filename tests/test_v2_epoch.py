@@ -80,11 +80,12 @@ def run(epoch, policies, *, window=None, seat=None, owners=None, commitments=Non
         verified_proofs={u: proof(epoch, policies[u]) for u in uids},
         head_hashes=hashes, coldkey_of={u: f"ck{u}" for u in uids},
         hotkey_of={u: f"hk{u}" for u in uids},
-        seniority=seniority or {u: u for u in uids},
+        commit_block=seniority or {u: u for u in uids},
         commit_epoch={u: 0 for u in uids},
         records=records if records is not None else {u: burned(hashes[u]) for u in uids},
         exact_copies=set(exact),
-        commitments=commitments if commitments is not None else {f"hk{u}": hashes[u] for u in uids},
+        commitments=(commitments if commitments is not None
+                     else {f"hk{u}": (hashes[u], u) for u in uids}),
         window=window or Window.empty(48), seat=seat, owners=owners or {}, burn_uid=0,
         params=seat_params_from_config(), shares=(0.85, 0.10, 0.05),
         burn_in_questions=burn_in, bench_category=CATEGORY,
@@ -136,15 +137,15 @@ def test_a_better_router_takes_the_seat_and_the_old_champion_keeps_a_seat():
     assert w[6] == pytest.approx(0.90) and w[5] == pytest.approx(0.10)
 
 
-def test_one_uid_per_head_hash_the_most_senior():
+def test_one_uid_per_head_hash_the_first_committer():
     r = run_v2_epoch(
         epoch_index=0, epoch_id="e0", questions=questions(0), pool_models=MODELS,
         prices=PRICES,
         verified_proofs={7: proof(0, oracle), 8: proof(0, oracle)},
         head_hashes={7: "same", 8: "same"}, coldkey_of={7: "a", 8: "b"},
-        hotkey_of={7: "hk7", 8: "hk8"}, seniority={7: 5, 8: 3}, commit_epoch={7: 0, 8: 0},
+        hotkey_of={7: "hk7", 8: "hk8"}, commit_block={7: 5, 8: 3}, commit_epoch={7: 0, 8: 0},
         records={7: burned("same"), 8: burned("same")}, exact_copies=set(),
-        commitments={"hk7": "same", "hk8": "same"}, window=Window.empty(48),
+        commitments={"hk7": ("same", 5), "hk8": ("same", 3)}, window=Window.empty(48),
         seat=SeatState(), owners={}, burn_uid=0, params=seat_params_from_config(),
         shares=(0.85, 0.10, 0.05), burn_in_questions=0, bench_category=CATEGORY,
     )
@@ -154,11 +155,11 @@ def test_one_uid_per_head_hash_the_most_senior():
 def test_a_champion_whose_owner_committed_another_head_is_retired():
     first = run(0, {5: oracle})
     r = run(1, {}, window=first.window, seat=first.decision.state, owners=first.owners,
-            commitments={"hk5": "a-new-head"})
+            commitments={"hk5": ("a-new-head", 50)})
     (g,) = r.decision.state.ghosts
     assert g.reason == "retired"
     missed = run(1, {}, window=first.window, seat=first.decision.state, owners=first.owners,
-                 commitments={"hk5": "h5"})
+                 commitments={"hk5": ("h5", 5)})
     assert missed.decision.state.ghosts[0].reason == "missed"
 
 
@@ -226,10 +227,10 @@ def test_a_resumed_champion_with_restarted_burn_in_is_paid_at_once():
 def test_a_missed_ghost_is_upgraded_when_its_owner_commits_a_new_head():
     first = run(0, {5: oracle})
     lost = run(1, {}, window=first.window, seat=first.decision.state, owners=first.owners,
-               commitments={"hk5": "h5"})
+               commitments={"hk5": ("h5", 5)})
     assert lost.decision.state.ghosts[0].reason == "missed"
     moved = run(2, {}, window=lost.window, seat=lost.decision.state, owners=lost.owners,
-                commitments={"hk5": "a-new-head"})
+                commitments={"hk5": ("a-new-head", 50)})
     assert moved.decision.state.ghosts[0].reason == "retired"
 
 
@@ -242,3 +243,92 @@ def test_v2_state_takes_extra_fields_but_not_reserved_ones():
     with pytest.raises(ValueError):
         v2_state_for_reveal(seat=SeatState(), owners={}, serving={}, burn_in={},
                             extra={"seat": {}})
+
+
+def _copier_epoch(epoch, proofs, *, window, seat, owners, commitments):
+    """Author on hk5/uid 5 owns h5; a copier on hk3/uid 3 (a lower uid, so
+    it would win any uid-order tie) serves the same bytes."""
+    return run_v2_epoch(
+        epoch_index=epoch, epoch_id=f"e{epoch:08d}", questions=questions(epoch),
+        pool_models=MODELS, prices=PRICES, verified_proofs=proofs,
+        head_hashes={u: "h5" for u in proofs}, coldkey_of={u: f"ck{u}" for u in proofs},
+        hotkey_of={u: f"hk{u}" for u in proofs}, commit_block={5: 100, 3: 200},
+        commit_epoch={u: 0 for u in proofs}, records={u: burned("h5") for u in proofs},
+        exact_copies=set(), commitments=commitments, window=window, seat=seat,
+        owners=owners, burn_uid=0, params=seat_params_from_config(),
+        shares=(0.85, 0.10, 0.05), burn_in_questions=0, bench_category=CATEGORY,
+    )
+
+
+def test_a_copier_of_the_champions_bytes_is_never_paid_never_owner_never_retires_it():
+    commits = {"hk5": ("h5", 100), "hk3": ("h5", 200)}
+    first = _copier_epoch(0, {5: proof(0, oracle), 3: proof(0, oracle)}, window=Window.empty(48),
+                          seat=SeatState(), owners={}, commitments=commits)
+    assert first.owners["h5"] == "hk5"                       # first committer, not lowest uid
+    assert dict(zip(first.uids, first.weights)) == {5: 1.0}  # the copier earns nothing
+    # The author's proof fails; only the copier serves h5. h5 is not live.
+    gone = _copier_epoch(1, {3: proof(1, oracle)}, window=first.window,
+                         seat=first.decision.state, owners=first.owners, commitments=commits)
+    assert gone.decision.event == "ghost" and gone.owners["h5"] == "hk5"
+    assert 3 not in gone.uids
+    # The copier commits something else: that does NOT retire the author's head.
+    moved = _copier_epoch(2, {}, window=gone.window, seat=gone.decision.state,
+                          owners=gone.owners,
+                          commitments={"hk5": ("h5", 100), "hk3": ("other", 300)})
+    assert moved.decision.state.ghosts[0].reason == "missed"
+    # The author returns inside the ghost window and resumes.
+    back = _copier_epoch(3, {5: proof(3, oracle)}, window=moved.window,
+                         seat=moved.decision.state, owners=moved.owners, commitments=commits)
+    assert back.decision.event == "hold" and dict(zip(back.uids, back.weights)) == {5: 1.0}
+
+
+def test_a_new_hash_is_owned_by_its_first_committer_even_if_its_proof_failed():
+    commits = {"hk5": ("h5", 100), "hk3": ("h5", 200)}
+    r = _copier_epoch(0, {3: proof(0, oracle)}, window=Window.empty(48), seat=SeatState(),
+                      owners={}, commitments=commits)
+    assert r.owners["h5"] == "hk5" and r.decision.champion is None
+
+
+def test_a_retried_epoch_reaches_the_same_result():
+    # Crash between writing the window and the JSON state: the retry runs the
+    # SAME epoch against the old seat but a window that already holds it.
+    first = run(0, {5: oracle, 6: always("m/mid")})
+    retry = run(0, {5: oracle, 6: always("m/mid")}, window=first.window)
+    assert (retry.uids, retry.weights) == (first.uids, first.weights)
+    assert retry.reveal == first.reveal
+    assert sorted(retry.window.slices) == sorted(first.window.slices)
+
+
+def test_a_once_rerun_of_a_processed_epoch_does_not_fail():
+    first = run(0, {5: oracle})
+    rerun = run(0, {5: oracle}, window=first.window, seat=first.decision.state,
+                owners=first.owners)
+    assert rerun.decision.champion == "h5" and dict(zip(rerun.uids, rerun.weights)) == {5: 1.0}
+
+
+def test_hard_questions_get_the_hard_weight():
+    from fugal_subnet.champion import pair_units
+
+    w = run(0, {5: oracle, 6: always("m/strong")}).window
+    on = pair_units(w, "h5", "h6", accuracy_value=1e300, hard_weight=2.0)
+    off = pair_units(w, "h5", "h6", accuracy_value=1e300, hard_weight=1.0)
+    assert np.array_equal(on.by_category["hard"], 2 * off.by_category["hard"])
+    assert np.array_equal(on.by_category["math"], off.by_category["math"])
+
+
+def test_the_validator_reads_the_v2_category_map_and_not_v1_dedup():
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[1].joinpath("neurons", "validator.py").read_text()
+    call = src[src.index("v2_result = run_v2_epoch("):]
+    call = call[:call.index("uids, weights = v2_result.uids")]
+    assert 'getattr(config_module, "BENCHMARK_CATEGORY_V2", None)' in call
+    assert "exact_copies=set()," in call
+    assert "allow_take=not v2_window_degraded" in call
+
+
+def test_the_window_survives_a_crash_between_its_write_and_the_json(tmp_path):
+    first = run(0, {5: oracle})
+    save_window(str(tmp_path / "w.npz"), first.window)       # JSON never written
+    retry = run(0, {5: oracle}, window=load_window(str(tmp_path / "w.npz"), 48))
+    assert (retry.uids, retry.weights) == (first.uids, first.weights)

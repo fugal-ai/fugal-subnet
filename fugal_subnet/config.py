@@ -108,6 +108,15 @@ HARNESS_CALL_TIMEOUT_S = 450.0     # the harness's wait on the proxy; > PROXY_CA
 # hash-pinned and must stay byte-identical.
 EXECUTION_CHECKERS = frozenset({"exec_io", "exec_unittest"})
 
+# --- Proof bounds (I2) ---
+# The largest token count a proof result may carry, prompt or completion. Not
+# env-overridable: it decides which proofs verify. Honest calls are bounded by
+# the harness's answer budget and the pool's prompts, orders of magnitude
+# below this; the bound exists because a JSON integer is unbounded, and a
+# count like 10**400 overflows the first float conversion downstream and
+# would stop the epoch on every validator at once.
+PROOF_MAX_TOKENS = 10_000_000
+
 # --- Head constraints ---
 HEAD_MAX_BYTES = int(os.getenv("FUGAL_HEAD_MAX_BYTES", str(1 * 1024 * 1024)))  # 1 MB
 # Decompressed cap: a valid head is ~130 KB even at 64 models; 8 MB blocks zip bombs.

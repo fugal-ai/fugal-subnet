@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — per-UID failed-call counts in the epoch log (diagnostics only)
+
+A failed upstream call is scored `correct=False`, so from the score alone a
+miner whose calls failed looked identical to one whose answers were wrong, and
+the validator kept nothing that could tell them apart (proofs are not stored;
+the reveal's matrix records 0/1). `epochs.jsonl` now carries `n_failed`
+(UID → scored calls the proof marks `failed`; exploration excluded, as from the
+score), and the per-UID score line ends `(N/M correct, K failed)`. No change to
+scoring, any hash, the reveal or the consensus digest; logs written earlier
+read `n_failed` as absent.
+
 ### Added — approved entries for image-v2026.11.03c (the retry image), one per network
 
 `image-v2026.11.03c` (signed, commit `1a0bce0`) built

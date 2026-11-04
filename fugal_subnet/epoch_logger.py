@@ -36,6 +36,14 @@ class EpochLog:
     commit_hash: str = ""
     reveal_verified: bool = False
     scores: dict = field(default_factory=dict)
+    # Per-UID count of SCORED calls the miner's proof marks `failed` (an
+    # upstream error, not an answer). Diagnostics only: failed calls are
+    # already scored `correct=False`, and this number feeds no score, no
+    # hash and no reveal. It is here so an operator can tell a miner whose
+    # accuracy is low because its calls failed from one whose answers were
+    # wrong, which `scores` alone cannot show. Empty in logs written before
+    # it existed.
+    n_failed: dict = field(default_factory=dict)
     weights: dict = field(default_factory=dict)
     dedup_disqualified: list = field(default_factory=list)
     weight_capped: bool = False

@@ -49,13 +49,26 @@ def test_scored_slice_hits_the_category_targets_exactly():
 
 
 def test_exploration_categories_follow_the_targets_with_no_floor():
-    """15 slots -> 4.5/3.75/4.5/2.25: floors 4/3/4/2 and two remainder slots, never a
-    per-benchmark floor."""
-    for i in range(50):
+    """15 slots -> 4.5/3.75/4.5/2.25: every category gets its floor or its ceiling, never a
+    per-benchmark floor, and the total is exact."""
+    for i in range(200):
         q = category_quotas(15, TARGETS, set(TARGETS), _nonce(i), "explore")
         assert sum(q.values()) == 15
-        assert q["math"] == 4 and q["instruction"] == 2          # .75 always rounds up; .25 never does
-        assert sorted((q["knowledge"], q["hard"])) == [4, 5]     # the .5 tie breaks on the nonce
+        assert q["knowledge"] in (4, 5) and q["hard"] in (4, 5)
+        assert q["math"] in (3, 4) and q["instruction"] in (2, 3)
+
+
+def test_category_quotas_are_unbiased_in_expectation_at_any_targets():
+    """The regression: largest remainder gave leftover slots to the largest fractions EVERY
+    epoch, so at 40/25/30/5 exploration always split 6/4/4/1 instead of 6/3.75/4.5/0.75 on
+    average. Systematic sampling makes each expectation exact."""
+    for targets in (TARGETS, {"knowledge": 0.40, "math": 0.25, "hard": 0.30, "instruction": 0.05}):
+        acc = Counter()
+        n = 4000
+        for i in range(n):
+            acc.update(category_quotas(15, targets, set(targets), _nonce(50_000 + i), "explore"))
+        for c, t in targets.items():
+            assert abs(acc[c] / n - 15 * t) < 0.03, (targets, c, acc[c] / n)
 
 
 def test_exploration_tie_rotates_with_the_nonce():

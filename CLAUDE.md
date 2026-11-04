@@ -57,6 +57,10 @@ python scripts/check_safety_invariants.py
 
 # Shipped neurons against a real local chain (Docker, no spend)
 python scripts/dress_rehearsal.py --scenario all
+
+# Protocol v2 flip rehearsal: on the local chain, and in process (no Docker)
+python scripts/dress_rehearsal.py --scenario v2_flip
+python scripts/rehearsal_v2.py
 ```
 
 ## Project Layout

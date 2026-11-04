@@ -4,6 +4,14 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — protocol v2 payout: a ghost keeps seat 1
+
+During a champion's ghost window the payout seats shifted down a seat (the
+previous champion paid 5% instead of 10%, the third seat nothing), because the
+ghost is the newest entry in the champion history. Seat 1 is now the ghost's:
+its 85% burns and seats 2 and 3 keep paying the previous two champions.
+Found by the v2 flip rehearsal.
+
 ### Added — protocol v2 state rebuilt from reveals (snapshot + replay)
 
 `fugal_subnet/v2_rebuild.py`: the seat, owners, serving UIDs, burn-in

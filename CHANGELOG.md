@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 epoch inputs chosen by version in the validator
+
+From `FUGAL_V2_ACTIVATION_BLOCK` the validator selects the scored slice and
+exploration with `epoch_plan.scored_slice` / `exploration_plan`, and scores on
+the v2 pool (`loader.load_pool(2)`), price table and model index space
+(`routing_protocol.price_table(2)` / `models_for_protocol(2)`), all picked per
+epoch by the boundary-keyed version; v1 is byte-identical. v2 inputs load at
+startup when an activation block is set; live refuses to start without them.
+New determinism stage `epoch_plan_v2`. INVARIANTS: "I1 — every epoch input is
+chosen by the boundary-keyed version".
+
 ### Added — `epoch_plan`: the single, versioned question-selection entry point for both neurons
 
 `epoch_plan.scored_slice(version, nonce, pool, size)` and

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -378,7 +378,9 @@ def window_accuracy(
 #          a champion that only missed resumes its seat if it returns.
 #
 # The bar is never "the best of the field": what a challenger has to beat is
-# the champion or its ghost, and no other head's presence moves it (I4).
+# the champion or its ghost and, under the copy rule (copy_rule.py), every
+# head SENIOR to it in the comparison set. No junior head's presence moves it
+# (I4).
 # ---------------------------------------------------------------------------
 
 
@@ -502,6 +504,32 @@ def _seated(state: SeatState, window: Window, winner: Candidate, epoch: int,
     )
 
 
+def _challenge(
+    window: Window, c: Candidate, bar: str, epoch_id: str, params: SeatParams,
+    detail: list[tuple[str, str]], label: str = "",
+) -> int | None:
+    """The paired test of `c` over `bar`: its mean NV units if it beats the bar
+    by the margin on at least the minimum paired questions, else None."""
+    pu = pair_units(window, c.head_hash, bar, accuracy_value=params.accuracy_value,
+                    hard_weight=params.hard_weight, since_epoch=c.since_epoch)
+    res = paired_test(
+        pu.by_category, margin_points=params.margin_points,
+        confidence=params.confidence, resamples=params.resamples,
+        seed=pair_seed(epoch_id, bar, c.head_hash),
+    )
+    v = "none" if pu.value_per_correct is None else f"{pu.value_per_correct:.6f}"
+    prefix = f"vs {label} " if label else "vs "
+    detail.append((c.head_hash, f"{prefix}{bar[:16]}: n={res.n_questions} V={v} "
+                                f"NV={res.mean_points:+.3f} LCB={res.lcb_points:+.3f}"))
+    if res.n_questions < params.min_paired_questions:
+        detail.append((c.head_hash, f"only {res.n_questions} paired questions; "
+                                    f"{params.min_paired_questions} needed"))
+        return None
+    if not res.takes_seat:
+        return None
+    return res.mean_units
+
+
 def seat_step(
     state: SeatState,
     epoch: int,
@@ -512,6 +540,7 @@ def seat_step(
     retired: frozenset[str] | set[str] = frozenset(),
     params: SeatParams,
     allow_take: bool = True,
+    senior_bars: Mapping[str, Sequence[str]] | None = None,
 ) -> SeatDecision:
     """Advance the seat by one epoch. Pure and deterministic.
 
@@ -520,6 +549,11 @@ def seat_step(
     this epoch. `allow_take=False` (a validator whose window was lost and not
     yet rebuilt) keeps hold, resume and ghost logic but makes no first or take
     decision: it fails closed rather than judging on a partial window.
+
+    `senior_bars` (protocol v2 copy rule, `copy_rule.senior_bars`) lists, per
+    head, the senior heads it must ALSO beat by the margin before it can take
+    a seat, first or by challenge. None (or a head with no entry) adds no bar,
+    which is this function's behaviour before the copy rule.
     """
     detail: list[tuple[str, str]] = []
     ghosts = tuple(g for g in state.ghosts if g.last_epoch >= epoch)
@@ -592,11 +626,24 @@ def seat_step(
     if not allow_take:
         detail.append(("", "window not trusted: no first or take decision this epoch"))
 
+    def beats_seniors(c: Candidate, already: Sequence[str] = ()) -> bool:
+        # The copy rule: a head must beat every senior head in the comparison
+        # set by the same margin, on the same paired test, before it may take
+        # a seat. A copy of a senior never does.
+        for k in (senior_bars or {}).get(c.head_hash, ()):
+            if k == c.head_hash or k in already:
+                continue
+            if _challenge(window, c, k, epoch_id, params, detail, "senior") is None:
+                detail.append((c.head_hash, f"does not beat senior {k[:16]} by the margin"))
+                return False
+        return True
+
     if champion is None and not ghosts:
         # FIRST: an empty seat with nothing barring it goes to the most senior
-        # eligible head that passes the gates.
+        # eligible head that passes the gates (and, under the copy rule, beats
+        # every senior head in the comparison set).
         for c in challengers:
-            if _passes_gates(state, window, c, params, detail):
+            if _passes_gates(state, window, c, params, detail) and beats_seniors(c):
                 new = _seated(state, window, c, epoch, history, params)
                 detail.append((c.head_hash, "took the empty seat"))
                 return SeatDecision(new, c.head_hash, "first", None, tuple(detail))
@@ -610,26 +657,14 @@ def seat_step(
             continue
         worst_mean: int | None = None
         for bar in bars:
-            pu = pair_units(window, c.head_hash, bar, accuracy_value=params.accuracy_value,
-                            hard_weight=params.hard_weight, since_epoch=c.since_epoch)
-            res = paired_test(
-                pu.by_category, margin_points=params.margin_points,
-                confidence=params.confidence, resamples=params.resamples,
-                seed=pair_seed(epoch_id, bar, c.head_hash),
-            )
-            v = "none" if pu.value_per_correct is None else f"{pu.value_per_correct:.6f}"
-            detail.append((c.head_hash, f"vs {bar[:16]}: n={res.n_questions} V={v} "
-                                        f"NV={res.mean_points:+.3f} LCB={res.lcb_points:+.3f}"))
-            if res.n_questions < params.min_paired_questions:
-                detail.append((c.head_hash, f"only {res.n_questions} paired questions; "
-                                            f"{params.min_paired_questions} needed"))
+            mean = _challenge(window, c, bar, epoch_id, params, detail)
+            if mean is None:
                 worst_mean = None
                 break
-            if not res.takes_seat:
-                worst_mean = None
-                break
-            worst_mean = res.mean_units if worst_mean is None else min(worst_mean, res.mean_units)
-        if worst_mean is not None:
+            worst_mean = mean if worst_mean is None else min(worst_mean, mean)
+        # The copy rule is pass/fail; the ranking among qualifiers stays the
+        # margin over the champion or its ghost.
+        if worst_mean is not None and beats_seniors(c, bars):
             qualifying.append((worst_mean, c.seniority, c.head_hash))
 
     if qualifying:

@@ -52,6 +52,17 @@ class Evidence:
     # miner look CHEAPER for skipping — and cheaper reads the frontier lower.
     # Cost per question therefore divides by this, not by n_total.
     n_priced: float = 0.0
+    # Protocol v2 (the E'' miss rule): scored questions since the last reset
+    # or miss, NOT decayed, separate from n_total. Burn-in is complete when it
+    # reaches BURN_IN_QUESTIONS. -1 marks a record written before the field
+    # existed; it reads as n_total (burn_in_progress), which is the migration:
+    # at the flip every head keeps the burn-in its evidence already shows.
+    burn_in_n: float = -1.0
+
+    @property
+    def burn_in_progress(self) -> float:
+        """Questions toward burn-in under v2; n_total for a pre-v2 record."""
+        return self.n_total if self.burn_in_n < 0 else self.burn_in_n
 
     @property
     def effective_n(self) -> float:
@@ -183,6 +194,75 @@ def apply_miss(
         # a miss — the questions went unanswered, not cheaper.
         n_priced=evidence.priced_n * alpha,
     )
+
+
+# --- Protocol v2: the E'' miss rule -------------------------------------------
+#
+# v1 scored a missed epoch as a full slice of wrong answers (apply_miss), with
+# a 200-epoch half-life, so a six-hour outage took about 250 epochs to recover
+# from while a new head hash recovered in ten: the rule only punished
+# operators who did not know to reset. A miss cannot be free either, because
+# an operator sees its own grades before serving and could withhold a bad
+# epoch. E'' splits on burn-in:
+#
+#   * a miss BEFORE burn-in is complete resets the evidence fully: a young head
+#     cannot shape its record by withholding, because withholding restarts it;
+#   * a miss AFTER burn-in decays the evidence with no phantom zeros and
+#     restarts the burn-in counter, so the record survives an honest outage
+#     and the head must re-earn burn-in before it can take a seat.
+#
+# Simulated (400 runs x 300 epochs): withholding below-mean epochs earns 3.07
+# against honest play's 3.19 under E'', where plain decay let it out-earn
+# honest play by 6.3%. An isolated honest outage costs about 4.5 epochs.
+
+
+def accumulate_epoch_v2(
+    evidence: Evidence | None,
+    weights_hash: str,
+    n_correct: int,
+    n_total: int,
+    cost: float,
+    ref_cost: float,
+    half_life: int,
+    pool_size: float = 0.0,
+) -> Evidence:
+    """accumulate_epoch, plus the v2 burn-in counter (undecayed, since the last reset or miss)."""
+    same = evidence is not None and evidence.weights_hash == weights_hash
+    before = evidence.burn_in_progress if same else 0.0
+    ev = accumulate_epoch(evidence, weights_hash, n_correct, n_total, cost, ref_cost,
+                          half_life, pool_size)
+    ev.burn_in_n = float(before) + float(n_total)
+    return ev
+
+
+def apply_miss_v2(evidence: Evidence, half_life: int, burn_in_questions: int) -> Evidence:
+    """The E'' miss: reset before burn-in, decay without phantom zeros after it."""
+    if evidence.burn_in_progress < burn_in_questions:
+        return Evidence(
+            weights_hash=evidence.weights_hash,
+            epochs_accumulated=0,
+            epochs_missed=evidence.epochs_missed + 1,
+            pool_size=evidence.pool_size,
+            burn_in_n=0.0,
+        )
+    alpha = decay_factor(half_life)
+    return Evidence(
+        weights_hash=evidence.weights_hash,
+        n_correct=evidence.n_correct * alpha,
+        n_total=evidence.n_total * alpha,
+        cost_sum=evidence.cost_sum * alpha,
+        ref_cost_sum=evidence.ref_cost_sum * alpha,
+        epochs_accumulated=evidence.epochs_accumulated,
+        epochs_missed=evidence.epochs_missed + 1,
+        pool_size=evidence.pool_size,
+        n_priced=evidence.priced_n * alpha,
+        burn_in_n=0.0,
+    )
+
+
+def burn_in_complete(evidence: Evidence | None, burn_in_questions: int) -> bool:
+    """Has this head scored BURN_IN_QUESTIONS since its last reset or miss (v2)?"""
+    return evidence is not None and evidence.burn_in_progress >= burn_in_questions
 
 
 def _wilson_lower_bound(p: float, n: float, confidence: float) -> float:

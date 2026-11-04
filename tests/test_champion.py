@@ -420,3 +420,119 @@ def test_window_accuracy_is_exactly_summed():
     acc, n = window_accuracy(w, "a")
     flat = [float(x) for e in w.epochs_of("a") for x in w.head_vectors("a", e)[0]]
     assert n == len(flat) and acc == math.fsum(flat) / len(flat)
+
+
+# --- review fixes ------------------------------------------------------------------
+
+
+def run_window(schedule, policies, size=48):
+    """A window over len(schedule) epochs; schedule[e] is the set of heads scored in e."""
+    w = Window.empty(size)
+    for e, present in enumerate(schedule):
+        sl, diff = make_slice(e)
+        w = w.add_epoch(sl, {
+            h: HeadEpoch(np.asarray(policies[h](diff), dtype=np.int64), np.zeros(Q, bool))
+            for h in present
+        })
+    return w
+
+
+def test_a_withheld_epoch_never_enters_the_pairing_and_a_miss_restarts_it():
+    pols = {"champ": oracle_router, "c": oracle_router}
+    both = {"champ", "c"}
+    # c serves 0-3, sits out 4, serves 5-9.
+    sched = [both] * 4 + [{"champ"}] + [both] * 5
+    w = run_window(sched, pols)
+    assert w.current_run("c") == [5, 6, 7, 8, 9]
+    assert units(w, "c", "champ").n_questions == 5 * Q     # epochs 0-3 are gone
+    # A champion's own gaps do not break the challenger's run.
+    sched2 = [both] * 4 + [{"c"}] + [both] * 5
+    assert run_window(sched2, pols).current_run("c") == list(range(10))
+    assert units(run_window(sched2, pols), "c", "champ").n_questions == 9 * Q
+
+
+def test_the_take_gates_read_only_the_current_run():
+    # c was terrible before its miss and is good after it; only "after" counts.
+    pols = {"champ": noisy(oracle_router, 0.6, 5), "c": constant(0), "c2": oracle_router}
+    w = Window.empty(48)
+    for e in range(10):
+        sl, diff = make_slice(e)
+        ans = {"champ": HeadEpoch(np.asarray(pols["champ"](diff)), np.zeros(Q, bool))}
+        if e < 4:
+            ans["c"] = HeadEpoch(np.asarray(pols["c"](diff)), np.zeros(Q, bool))
+        elif e > 4:
+            ans["c"] = HeadEpoch(np.asarray(pols["c2"](diff)), np.zeros(Q, bool))
+        w = w.add_epoch(sl, ans)
+    full, _ = window_accuracy(w, "c")
+    run, n = window_accuracy(w, "c", run_only=True)
+    assert n == 5 * Q and run > full
+
+
+def test_a_missed_ghost_whose_owner_commits_a_new_head_becomes_a_retire_ghost():
+    w = build_window({"champ": oracle_router})
+    lost = seat_step(seated("champ"), 9, "e9", w, {}, params=PARAMS)
+    (g,) = lost.state.ghosts
+    assert g.reason == "missed" and g.last_epoch == 9 + PARAMS.ghost_off - 1
+    up = seat_step(lost.state, 10, "e10", w, {}, retired={"champ"}, params=PARAMS)
+    (g2,) = up.state.ghosts
+    assert g2.reason == "retired" and g2.last_epoch == 9 + PARAMS.ghost_retire - 1
+    # ... and it no longer resumes.
+    back = seat_step(up.state, 11, "e11", w, {"champ": cand("champ")}, params=PARAMS)
+    assert back.champion is None
+
+
+def test_a_take_needs_the_minimum_paired_questions():
+    import dataclasses
+
+    w = build_window({"champ": noisy(oracle_router, 0.6, 5), "better": oracle_router})
+    strict = dataclasses.replace(PARAMS, min_paired_questions=10 * Q + 1)
+    d = seat_step(seated("champ"), 9, "e9", w,
+                  {"champ": cand("champ", 0), "better": cand("better", 1)}, params=strict)
+    assert d.event == "hold"
+    ok = dataclasses.replace(PARAMS, min_paired_questions=10 * Q)
+    assert seat_step(seated("champ"), 9, "e9", w,
+                     {"champ": cand("champ", 0), "better": cand("better", 1)},
+                     params=ok).event == "take"
+
+
+def test_shipped_min_paired_questions_is_1500():
+    from fugal_subnet.config import CHAMPION_MIN_PAIRED_QUESTIONS
+    assert CHAMPION_MIN_PAIRED_QUESTIONS == 1500
+
+
+def test_can_hold_fails_closed_with_no_window_records():
+    w = build_window({"other": oracle_router})
+    d = seat_step(seated("champ"), 9, "e9", w, {"champ": cand("champ")}, params=PARAMS)
+    assert d.champion is None and d.event == "ghost"
+
+
+def test_out_of_range_routed_indices_are_refused():
+    sl, _ = make_slice(0)
+    for bad in (-1, M):
+        r = np.zeros(Q, np.int64)
+        r[3] = bad
+        with pytest.raises(ValueError, match="outside"):
+            Window.empty(4).add_epoch(sl, {"a": HeadEpoch(r, np.zeros(Q, bool))})
+
+
+def test_history_is_bounded():
+    from fugal_subnet.champion import HISTORY_KEEP
+    s = SeatState(history=tuple(f"h{i}" for i in range(50)))
+    assert len(s.history) == HISTORY_KEEP and s.history[0] == "h0"
+
+
+def test_per_question_units_are_clipped():
+    from fugal_subnet.champion import UNIT_CLIP
+    u = question_nv_units(0.0, 0.0, 1e300, 0.0, hard=False, value_per_correct=1e-300,
+                          hard_weight=2.0)
+    assert u == -UNIT_CLIP
+
+
+def test_the_lower_bound_index_rounds():
+    # (1 - 0.9) * 2000 is 199.99999999999997; the bound is the 200th order
+    # statistic (0-based), not the 199th.
+    assert round((1 - 0.9) * 2000) == 200 and int((1 - 0.9) * 2000) == 199
+    import inspect
+
+    from fugal_subnet import champion
+    assert "k = min(round(" in inspect.getsource(champion.paired_test)

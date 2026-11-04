@@ -46,6 +46,13 @@ import numpy as np
 NV_UNITS_PER_POINT = 1_000_000
 # Resamples are drawn in blocks of this many to bound memory.
 _BLOCK = 100
+# Per-question NV is clipped to +/- this many units (a million points) before
+# it becomes an integer. Real values are within a few hundred points; the clip
+# only stops a pathological spend ratio from overflowing int64 in a sum.
+UNIT_CLIP = 10**12
+# Former champions kept in the seat state, most recent first. The payout reads
+# two; a few more keep the record readable without letting it grow.
+HISTORY_KEEP = 4
 
 
 def question_nv_units(
@@ -65,7 +72,10 @@ def question_nv_units(
     nv = u * (float(g_challenger) - float(g_champion)) - (
         float(s_challenger) - float(s_champion)
     ) / float(value_per_correct)
-    return int(round(100.0 * nv * NV_UNITS_PER_POINT))
+    x = 100.0 * nv * NV_UNITS_PER_POINT
+    if x != x:
+        raise ValueError("NV is not a number")
+    return int(round(max(-UNIT_CLIP, min(UNIT_CLIP, x))))
 
 
 def pair_seed(epoch_id: str, champion_hash: str, challenger_hash: str) -> int:
@@ -135,8 +145,9 @@ def paired_test(
             sums[start:stop] += x[idx].sum(axis=1)
     sums.sort(kind="stable")
     # One-sided lower bound at `confidence`: the k-th smallest resample sum,
-    # k = floor((1 - confidence) * resamples), 0-based.
-    k = min(int((1.0 - float(confidence)) * int(resamples)), int(resamples) - 1)
+    # k = round((1 - confidence) * resamples), 0-based (200 of 2,000 at 90%).
+    # round, not int: (1 - 0.9) * 2000 is 199.99999999999997 in floating point.
+    k = min(round((1.0 - float(confidence)) * int(resamples)), int(resamples) - 1)
     lcb_sum = int(sums[k])
     return PairedResult(n, mean_units, lcb_sum // n, lcb_sum > margin_sum)
 
@@ -212,9 +223,12 @@ class Window:
         if sl.epoch in self.slices:
             raise ValueError(f"epoch {sl.epoch} is already in the window")
         q = len(sl.question_ids)
+        m = sl.grades.shape[1]
         for h, he in answers.items():
             if he.routed.shape != (q,) or he.failed.shape != (q,):
                 raise ValueError(f"head {h[:12]}: answers do not align with the slice")
+            if q and (int(he.routed.min()) < 0 or int(he.routed.max()) >= m):
+                raise ValueError(f"head {h[:12]}: a routed model index is outside 0..{m - 1}")
         oldest = sl.epoch - self.size + 1
         slices = {e: s for e, s in self.slices.items() if e >= oldest}
         slices[sl.epoch] = sl
@@ -242,6 +256,23 @@ class Window:
         per = self.heads.get(head, {})
         return sorted(e for e in per if since_epoch is None or e >= since_epoch)
 
+    def current_run(self, head: str, since_epoch: int | None = None) -> list[int]:
+        """The head's current unbroken run: the window epochs it was scored in,
+        back from the newest epoch to the first one it missed.
+
+        A challenger is measured only on this run. Otherwise it could sit out
+        epochs it did badly on (unpaid, so free) and then serve a burn-in's
+        worth in a row, and be compared on epochs it chose. An epoch with no
+        proofs at all is not in the window and does not break a run.
+        """
+        per = self.heads.get(head, {})
+        run: list[int] = []
+        for e in sorted(self.slices, reverse=True):
+            if e not in per or (since_epoch is not None and e < since_epoch):
+                break
+            run.append(e)
+        return sorted(run)
+
 
 def _units(
     g_a: np.ndarray, g_b: np.ndarray, s_a: np.ndarray, s_b: np.ndarray,
@@ -256,7 +287,10 @@ def _units(
     nv = u * (g_a - g_b)
     if value_per_correct is not None:
         nv = nv - (s_a - s_b) / float(value_per_correct)
-    return np.rint(100.0 * nv * NV_UNITS_PER_POINT).astype(np.int64)
+    x = 100.0 * nv * NV_UNITS_PER_POINT
+    if np.isnan(x).any():
+        raise ValueError("NV is not a number")
+    return np.rint(np.clip(x, -UNIT_CLIP, UNIT_CLIP)).astype(np.int64)
 
 
 @dataclass(frozen=True)
@@ -274,15 +308,17 @@ def pair_units(
 ) -> PairUnits:
     """Per-category NV units of `challenger` over `champion`, paired by question.
 
-    Only epochs in the window in which both were scored count, and only from
-    `since_epoch` (the challenger's first commit) on. V is
+    Only epochs in the challenger's current unbroken run (Window.current_run,
+    from `since_epoch`, its first commit) in which the champion was also
+    scored count. The champion's own missed epochs are simply absent (see the
+    withholding residual in INVARIANTS). V is
     `accuracy_value` times the champion's mean spend per question on exactly
     these questions.
     """
     import math
 
     both = sorted(
-        set(window.epochs_of(challenger, since_epoch)) & set(window.epochs_of(champion))
+        set(window.current_run(challenger, since_epoch)) & set(window.epochs_of(champion))
     )
     parts = []
     for e in both:
@@ -304,12 +340,14 @@ def pair_units(
 
 def window_accuracy(
     window: Window, head: str, since_epoch: int | None = None, hard_only: bool = False,
+    run_only: bool = False,
 ) -> tuple[float, int]:
     """(mean shared grade, questions) of `head` over the window, exactly summed."""
     import math
 
     total: list[float] = []
-    for e in window.epochs_of(head, since_epoch):
+    epochs = window.current_run(head, since_epoch) if run_only else window.epochs_of(head, since_epoch)
+    for e in epochs:
         g, _ = window.head_vectors(head, e)
         if hard_only:
             g = g[np.asarray(window.slices[e].hard, dtype=bool)]
@@ -361,6 +399,12 @@ class SeatState:
     high_water: float = 0.0
     high_water_hard: float = 0.0
 
+    def __post_init__(self):
+        # Bounded: the payout reads two former champions; HISTORY_KEEP keep
+        # the record readable without letting it grow for the life of the
+        # subnet.
+        object.__setattr__(self, "history", tuple(self.history)[:HISTORY_KEEP])
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -394,6 +438,8 @@ class SeatParams:
     wilson_confidence: float
     # Absolute floor on window accuracy, for taking and holding the seat.
     min_accuracy: float = 0.0
+    # A take needs at least this many paired questions against the bar.
+    min_paired_questions: int = 0
 
 
 @dataclass(frozen=True)
@@ -416,7 +462,7 @@ def _passes_gates(
     detail: list[tuple[str, str]],
 ) -> bool:
     h = cand.head_hash
-    acc, n = window_accuracy(window, h, cand.since_epoch)
+    acc, n = window_accuracy(window, h, cand.since_epoch, run_only=True)
     if n == 0:
         detail.append((h, "no scored questions in the window"))
         return False
@@ -426,7 +472,8 @@ def _passes_gates(
     if acc < state.high_water:
         detail.append((h, f"accuracy {acc:.4f} below the high-water mark {state.high_water:.4f}"))
         return False
-    acc_hard, n_hard = window_accuracy(window, h, cand.since_epoch, hard_only=True)
+    acc_hard, n_hard = window_accuracy(window, h, cand.since_epoch, hard_only=True,
+                                       run_only=True)
     if n_hard >= params.hard_gate_min_questions and acc_hard < state.high_water_hard:
         detail.append((h, f"hard accuracy {acc_hard:.4f} below {state.high_water_hard:.4f}"))
         return False
@@ -436,8 +483,9 @@ def _passes_gates(
 def _seated(state: SeatState, window: Window, winner: Candidate, epoch: int,
             history: tuple[str, ...], params: SeatParams) -> SeatState:
     """The state with `winner` newly seated and the high-water marks raised."""
-    acc, n = window_accuracy(window, winner.head_hash, winner.since_epoch)
-    acc_h, n_h = window_accuracy(window, winner.head_hash, winner.since_epoch, hard_only=True)
+    acc, n = window_accuracy(window, winner.head_hash, winner.since_epoch, run_only=True)
+    acc_h, n_h = window_accuracy(window, winner.head_hash, winner.since_epoch, hard_only=True,
+                                 run_only=True)
     hw = max(state.high_water, _wilson_lower(acc, n, params.wilson_confidence))
     hw_h = state.high_water_hard
     if n_h >= params.hard_gate_min_questions:
@@ -479,12 +527,27 @@ def seat_step(
     since = state.champion_since
     history = state.history
 
+    # A champion that went offline (a "missed" ghost) and whose owner then
+    # commits a different head is retired: its ghost bar is extended to the
+    # retire window, counted from when it first stood.
+    upgraded = []
+    for g in ghosts:
+        if g.reason == "missed" and g.head_hash in retired:
+            first = g.last_epoch - params.ghost_off + 1
+            g = Ghost(g.head_hash, first + params.ghost_retire - 1, "retired")
+            detail.append((g.head_hash, f"ghost upgraded to retired; bars until epoch {g.last_epoch}"))
+        upgraded.append(g)
+    ghosts = tuple(upgraded)
+
     def can_hold(h: str) -> bool:
         c = candidates.get(h)
         if c is None or not c.eligible:
             return False
         acc, n = window_accuracy(window, h)
-        if n and acc < params.min_accuracy:
+        if n == 0:
+            detail.append((h, "no scored questions in the window"))
+            return False
+        if acc < params.min_accuracy:
             detail.append((h, f"champion accuracy {acc:.4f} below the floor "
                               f"{params.min_accuracy:.4f}"))
             return False
@@ -548,6 +611,11 @@ def seat_step(
             v = "none" if pu.value_per_correct is None else f"{pu.value_per_correct:.6f}"
             detail.append((c.head_hash, f"vs {bar[:16]}: n={res.n_questions} V={v} "
                                         f"NV={res.mean_points:+.3f} LCB={res.lcb_points:+.3f}"))
+            if res.n_questions < params.min_paired_questions:
+                detail.append((c.head_hash, f"only {res.n_questions} paired questions; "
+                                            f"{params.min_paired_questions} needed"))
+                worst_mean = None
+                break
             if not res.takes_seat:
                 worst_mean = None
                 break

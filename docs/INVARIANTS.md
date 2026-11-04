@@ -2210,7 +2210,9 @@ the seat changes hands by a paired test (`fugal_subnet/champion.py`):
   one-sided paired-bootstrap lower bound (`CHAMPION_CONFIDENCE`,
   `CHAMPION_BOOTSTRAP_RESAMPLES` resamples within category, both heads'
   answers to a question kept together) exceed `CHAMPION_MARGIN` points, and it
-  passes the accuracy gates: overall accuracy at or above a high-water mark,
+  has at least `CHAMPION_MIN_PAIRED_QUESTIONS` (1,500) paired questions
+  against the bar, and passes the accuracy gates: overall accuracy at or above
+  a high-water mark,
   and the same on the hard subset once it has
   `CHAMPION_HARD_GATE_MIN_QUESTIONS` questions. The marks are zero until the
   first champion, then that champion's lower bound (Wilson, at
@@ -2246,6 +2248,8 @@ the seat changes hands by a paired test (`fugal_subnet/champion.py`):
   owner serves a different head). While it stands, a challenger must beat the
   ghost by the margin, the seat is otherwise empty and its share burns, and a
   champion that only missed resumes its seat if it returns inside the window.
+  A missed ghost whose owner then commits a different head is upgraded to the
+  retire window, counted from when it first stood, and no longer resumes.
   The windows are as short as the copy rule allows, because an empty seat
   burns.
 
@@ -2270,9 +2274,19 @@ epoch as wrong answers in the pairing was considered and rejected: axons are
 public addresses, so knocking the champion offline for one collection would
 then be cheaper than building a better router.
 
+**The challenger is measured on its current run.** A challenger's paired
+epochs are only its current unbroken run of served epochs (back from the
+newest epoch to the first one it missed, and from its first commit). An
+unseated head is not paid, so sitting out a bad epoch would otherwise be free:
+it could withhold its bad epochs and then serve a burn-in's worth in a row,
+and be compared on epochs it chose. A miss restarts both its burn-in (E'')
+and its pairing, and its take gates read the same run. The champion's side is
+every window epoch it was scored in (its withholding is the accepted residual
+above). An epoch with no proofs at all is not in the window and breaks no run.
+
 **The window.** The comparison reads the last `CHAMPION_WINDOW_EPOCHS`
 epochs by calendar, only epochs in which both heads were scored, and for the
-challenger only from its first commit. Per epoch the window holds what is
+challenger only its current run. Per epoch the window holds what is
 common to every head (slice, categories, hard flags, every cell's grade and
 spend) and per head only its routing and its failed calls, so it is bounded
 and reconstructable from the published reveals.
@@ -2284,8 +2298,12 @@ or its ghost. No other head's presence moves it (I4).
 integer number of `NV_UNITS_PER_POINT` units, so every sum is exact on any
 CPU; V is a `math.fsum` mean. The resampling stream is numpy's PCG64 seeded
 from sha256(epoch id, bar, challenger). The lower bound is an order statistic
-of integer sums, and the margin comparison is done in the same integer units.
-Candidates are visited in seniority order and ties go to the most senior, so
+of integer sums (the k-th smallest, k = round((1 − confidence) × resamples),
+0-based: 200 of 2,000 at 90%), and the margin comparison is done in the same
+integer units. Per-question NV is clipped to ±`UNIT_CLIP` before it becomes an
+integer, so no sum can overflow, and a NaN is refused. Former champions kept
+in the seat state are bounded (`HISTORY_KEEP`). Candidates are visited in
+seniority order and ties go to the most senior, so
 the decision does not depend on the order proofs arrived.
 
 **Superseded margin.** An earlier draft used an absolute headroom margin

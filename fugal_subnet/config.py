@@ -514,6 +514,12 @@ CHAMPION_BOOTSTRAP_RESAMPLES = int(os.getenv("FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES
 # but it is UNMEASURED on the v2 benchmarks and is to be revisited after the
 # first v2 week.
 CHAMPION_MIN_ACCURACY = float(os.getenv("FUGAL_CHAMPION_MIN_ACCURACY", "0.30"))
+# Insurance on the paired test: a take needs at least this many paired
+# questions against the bar, whatever the bootstrap says. Burn-in (3,000
+# questions in an unbroken run) normally guarantees it; this keeps a short
+# overlap with a ghost or a champion that only just appeared from deciding
+# the seat on a few hundred questions.
+CHAMPION_MIN_PAIRED_QUESTIONS = int(os.getenv("FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS", "1500"))
 CHAMPION_HARD_GATE_MIN_QUESTIONS = int(os.getenv("FUGAL_CHAMPION_HARD_GATE_MIN_QUESTIONS", "100"))
 CHAMPION_TIME_GATE_FACTOR = float(os.getenv("FUGAL_CHAMPION_TIME_GATE_FACTOR", "2"))
 # A champion that stops being eligible leaves a ghost bar: for this many
@@ -690,6 +696,7 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_CHAMPION_GHOST_RETIRE",
     "FUGAL_CHAMPION_WINDOW_EPOCHS",
     "FUGAL_CHAMPION_MIN_ACCURACY",
+    "FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS",
     "FUGAL_PAYOUT_SEAT_SHARES",
 )
 CONSENSUS_ENV_INPUTS = (

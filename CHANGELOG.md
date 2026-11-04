@@ -4,6 +4,13 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — the metering proxy names any reply over the answer budget (protocol v2 image)
+
+Some providers bound reasoning tokens loosely. Measured 2026-11-04: one model returned 17,763
+completion tokens against `max_tokens` 16,384. The proxy now logs the model and the overrun on
+every such call. Nothing is refused: the call happened and is attested and billed either way.
+This logs from every call rather than a one-off startup probe, and spends nothing.
+
 ### Changed — protocol v2 image wiring: the miner serves v2 only, holds until the flip, and skips epochs it cannot finish
 
 - The harness takes `protocol_version`:

@@ -39,3 +39,15 @@ def test_the_miner_holds_until_the_target_block(monkeypatch):
     monkeypatch.setattr(miner.time, "sleep", lambda s: None)
     miner._wait_for_block(_Sub(), 200, "serve the axon")
     assert next(blocks) == 201          # returned exactly when the chain reached 200
+
+
+def test_the_miner_never_prices_a_head_with_the_v1_only_function():
+    """Structural: the miner must price/validate heads with benchmark_costs_for(head, version).
+    A bare v1 benchmark_costs() call refused every genuine v2 head at startup (caught by the v2
+    flip rehearsal, missed by unit tests that never start a v2 miner with a v2 head)."""
+    import ast
+    import pathlib
+    tree = ast.parse((pathlib.Path(__file__).resolve().parent.parent / "neurons" / "miner.py").read_text())
+    names = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "benchmark_costs" not in names
+    assert "benchmark_costs_for" in names

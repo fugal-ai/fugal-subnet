@@ -182,3 +182,16 @@ def test_failed_results_carry_canonical_number_types(monkeypatch):
     wire = json.loads(json.dumps(proof.to_dict()))
     from fugal_subnet.tee.proof import BenchmarkProof
     assert BenchmarkProof.from_dict(wire).content_hash() == proof.content_hash()
+
+
+def test_a_reply_over_the_answer_budget_is_named(caplog):
+    """Measured: a provider returned 17,763 completion tokens against max_tokens 16,384. The proxy
+    names the model and the overrun on every such call; within the budget it stays quiet."""
+    import logging
+
+    from fugal_subnet.config import HARNESS_MAX_TOKENS
+    with caplog.at_level(logging.WARNING, logger="fugal_subnet.tee.runtime"):
+        rt._log_cap_overrun("x/model", HARNESS_MAX_TOKENS)
+        assert not caplog.records
+        rt._log_cap_overrun("x/model", 17763)
+    assert any("x/model" in r.getMessage() and "17763" in r.getMessage() for r in caplog.records)

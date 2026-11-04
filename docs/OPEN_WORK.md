@@ -498,9 +498,9 @@ rediscovered:
   with a total spend cap returns 403 once it is reached; an exhausted account
   balance returns 402 (mainnet day one, 2026-11-03: ~55% of an epoch's calls,
   scored as wrong answers, 41% accuracy where the previous epoch had 79%). The
-  proxy never retries either; it logs 401/402 as OPERATOR ACTION, but a 403
-  only as an ordinary upstream error (`PROXY_OPERATOR_STATUS` has no 403; adding
-  it is an image change). MINER_GUIDE now says: no total limit on the miner's
+  proxy never retries either. v1 images log 401/402 as OPERATOR ACTION and a
+  403 only as an ordinary upstream error; the v2 harness adds 403 to
+  `PROXY_OPERATOR_STATUS` (an image change, lands with protocol v2). MINER_GUIDE now says: no total limit on the miner's
   key and a balance alert. Still to add there: budget ~$0.65–0.80 per epoch for
   a head that routes at ~$0.002/question.
 - **Retry on 429 ships with the next image** (`PROXY_*` in `tee/runtime.py`);

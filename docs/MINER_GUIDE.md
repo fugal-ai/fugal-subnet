@@ -622,8 +622,8 @@ it from a single provider, so a 429 there has no fallback. Measured:
   on `image-v2026.11.03b` (no retries): 39 of 300 scored calls failed (13%).
   The two other heads scored that epoch never route to it and had 0 failed calls.
 - Mainnet e00026194 (2026-11-04), the same head on `image-v2026.11.03c`,
-  which retries 429s with backoff: 24 of 315 calls failed (7.6%), every one to
-  this model. Retries cut the failures; they do not remove them.
+  which retries 429s with backoff: 23 of 300 scored calls failed (7.7%), every one
+  to this model. Retries cut the failures; they do not remove them.
 
 Treat the model's availability as part of its accuracy. If your training labels
 come from calls that succeeded, they overstate it. Either train on labels that
@@ -631,8 +631,9 @@ count failures, or keep your head off the model.
 
 **Your OpenRouter account is part of your miner.** A key with a total spend
 limit returns 403 once the limit is reached, and an exhausted account balance
-returns 402. Neither is retried, and both are logged as `OPERATOR ACTION
-REQUIRED`. On 2026-11-03 an exhausted balance failed about 55% of one epoch's
+returns 402. Neither is retried. A 402 (and a 401, an invalid key) is logged
+as `OPERATOR ACTION REQUIRED`; a 403 is logged as an ordinary upstream error,
+so watch for it. On 2026-11-03 an exhausted balance failed about 55% of one epoch's
 calls. Set no total limit on the miner's key, and set a low-balance alert on the
 account.
 

@@ -53,3 +53,30 @@ def test_the_two_shipped_copies_are_identical():
     root = rp.ROOT.parent
     assert (root / "data" / "models_v2.json").read_bytes() == rp.PRICES_PATH_V2.read_bytes()
     json.loads(rp.PRICES_PATH_V2.read_text())
+
+
+def test_the_harness_sends_the_pinned_reasoning_setting_only_when_given(monkeypatch):
+    """A v2 call carries exactly the model's one `reasoning` object; a v1 call carries none."""
+    import json as _json
+
+    from fugal_subnet.tee import harness as hm
+    seen = []
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return _json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(req, timeout):
+        seen.append(_json.loads(req.data))
+        return _Resp()
+
+    monkeypatch.setattr(hm, "urlopen", fake_urlopen)
+
+    class _P:
+        port = 1
+
+    hm._call_model(_P(), "openai/gpt-6.1-sol", {"prompt": "q"}, reasoning=rp.reasoning_for(2, "openai/gpt-6.1-sol"))
+    hm._call_model(_P(), "openai/gpt-5.5", {"prompt": "q"})
+    assert seen[0]["reasoning"] == {"effort": "medium"}
+    assert "reasoning" not in seen[1]

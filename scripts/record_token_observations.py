@@ -63,7 +63,9 @@ def _git_commit() -> str:
         return ""
 
 
-def plan(pool: list[dict], models: list[str], per_model: int, seed: str) -> list[tuple[str, dict]]:
+def plan(pool: list[dict], models: list[str], per_model: int, seed: str,
+         categories: dict[str, str] | None = None,
+         targets: dict[str, float] | None = None) -> list[tuple[str, dict]]:
     """A deterministic, benchmark-stratified sample per model.
 
     Same nonce machinery as an epoch slice, so the sample has the pool's shape
@@ -71,13 +73,17 @@ def plan(pool: list[dict], models: list[str], per_model: int, seed: str) -> list
     K rows happen to be. Different models get different questions, which is
     what the live benchmark does too.
     """
-    from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
+    from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice, select_slice_v2
 
     seed_hash = "0x" + hashlib.sha256(seed.encode()).hexdigest()
     out = []
     for model in models:
         nonce = derive_nonce(f"obs:{model}", seed_hash)
-        for q in select_slice(nonce, pool, per_model):
+        # Protocol v2: the sample has the v2 slice's category mix (category-first,
+        # largest remainder), so the token means describe what a v2 epoch asks.
+        sample = (select_slice_v2(nonce, pool, per_model, targets, categories)
+                  if categories else select_slice(nonce, pool, per_model))
+        for q in sample:
             out.append((model, q))
     return out
 
@@ -95,7 +101,7 @@ def already_recorded(path: str) -> set[tuple[str, str]]:
 
 
 def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
-           provenance: dict) -> dict:
+           provenance: dict, reasoning: dict | None = None) -> dict:
     """Make the calls through the proxy, append one JSONL row per completed call."""
     import threading
 
@@ -123,7 +129,7 @@ def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
         rid = f"obs:{model}:{q['question_id']}"
         _request_ctx.request_id = rid
         try:
-            text = _call_model(proxy, model, q)
+            text = _call_model(proxy, model, q, reasoning=(reasoning or {}).get(model))
         finally:
             _request_ctx.request_id = ""
         mine = [r for r in proxy.records if r.request_id == rid]
@@ -194,6 +200,13 @@ def main(argv=None) -> int:
                     help="Call the real upstream [PAID]. Default is --mock, which requires "
                          "FUGAL_OPENROUTER_BASE to name a stub and refuses the real endpoint.")
     ap.add_argument("--mock", action="store_true", help="(default)")
+    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2),
+                    help="2: send each model's pinned `reasoning` setting (from --models) and price "
+                         "with that table, as a v2 miner does")
+    ap.add_argument("--pool-file", default="",
+                    help="JSON list of questions to sample from instead of the pinned pool")
+    ap.add_argument("--categories", default="",
+                    help="JSON {benchmark: category}; sample each model at the v2 category targets")
     args = ap.parse_args(argv)
 
     if args.live:
@@ -223,9 +236,14 @@ def main(argv=None) -> int:
     from fugal_subnet.config import HARNESS_CONCURRENCY
     from fugal_subnet.tee.runtime import MeteringProxy
 
-    models = [r["id"] for r in json.load(open(args.models, encoding="utf-8"))]
-    pool = load_all(strict=True)
-    scheduled = plan(pool, models, args.per_model, args.seed)
+    table = json.load(open(args.models, encoding="utf-8"))
+    models = [r["id"] for r in table]
+    reasoning = {r["id"]: r["reasoning"] for r in table if r.get("reasoning")} if args.protocol == 2 else None
+    pool = (json.load(open(args.pool_file, encoding="utf-8")) if args.pool_file else load_all(strict=True))
+    categories = json.load(open(args.categories, encoding="utf-8")) if args.categories else None
+    from fugal_subnet.config import CATEGORY_TARGETS_V2
+    scheduled = plan(pool, models, args.per_model, args.seed,
+                     categories=categories, targets=CATEGORY_TARGETS_V2 if categories else None)
     seen = already_recorded(args.out)
     scheduled = [(m, q) for m, q in scheduled if (m, q["question_id"]) not in seen]
     print(f"{len(models)} models x {args.per_model} questions = {len(models) * args.per_model} "
@@ -241,11 +259,15 @@ def main(argv=None) -> int:
         "script_commit": _git_commit(),
         "upstream": "openrouter" if args.live else os.environ.get("FUGAL_OPENROUTER_BASE", ""),
         "seed": args.seed,
+        "protocol": args.protocol,
     }
     proxy = MeteringProxy()
+    from fugal_subnet.api import load_prices
+    proxy.prices = load_prices(args.models)     # price with the table being measured, not the v1 default
     proxy.start()
     try:
-        totals = record(proxy, scheduled, args.out, args.max_usd, HARNESS_CONCURRENCY, provenance)
+        totals = record(proxy, scheduled, args.out, args.max_usd, HARNESS_CONCURRENCY, provenance,
+                        reasoning=reasoning)
     finally:
         proxy.stop()
     print(f"recorded {totals['rows']} rows ({totals['failed']} failed calls), table cost "

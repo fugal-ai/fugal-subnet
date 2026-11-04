@@ -825,15 +825,12 @@ how fast the weights move.
 take a seat, first or by challenge. A seated champion that has to re-earn
 burn-in after a miss keeps its seat and its pay while it does.
 
-**Missed epochs (the E″ rule).** A missed epoch is no longer scored as a slice
-of wrong answers:
+**Missed epochs (the E″ rule; changed in v2).**
 
-- **Before burn-in**, a miss resets your evidence to zero. A young head cannot
-  shape its record by withholding a bad epoch, because withholding restarts it.
+- **Before burn-in**, a miss resets your evidence to zero.
 - **After burn-in**, a miss decays your evidence by one epoch of the evidence
   half-life (`FUGAL_EVIDENCE_HALF_LIFE`, 200 epochs), with no zeros added, and
-  restarts the burn-in counter. An honest outage costs a
-  few epochs, not hundreds.
+  restarts the burn-in counter.
 - **A champion that misses** leaves a ghost bar for `CHAMPION_GHOST_OFF` (3)
   epochs. While it stands, a challenger must beat the ghost by the margin, and
   the champion's share burns. A champion that returns inside the window

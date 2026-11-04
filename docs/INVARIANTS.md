@@ -682,6 +682,19 @@ to all validators together, and no honest dstack blob changes outcome.
 measured fact; `::test_a_tpm_quote_from_another_machine_cannot_be_stapled_onto_a_tdx_quote`
 holds the refusal and was checked to fail against the previous code.
 
+### I1 — one entry point selects an epoch's questions (protocol v2)
+
+The scored slice and the exploration targets are consensus inputs. A miner and a validator that
+compute them differently disagree on every proof, and the failure names `questions_hash`, not
+the cause. Both neurons therefore call `fugal_subnet.epoch_plan.scored_slice(version, ...)` and
+`exploration_plan(version, ...)` with the epoch's protocol version
+(`slicer.protocol_version_for_boundary`), and nothing else selects questions.
+- v1 delegates byte for byte to the functions v1 always used (`tests/test_epoch_plan.py` pins it).
+- v2 selects by category with unbiased apportionment.
+- The model list is an argument, so both sides pass the same versioned list
+  (`routing_protocol.models_for_protocol`).
+- The round-robin model assignment exists once (`exploration.assign_explore_models`).
+
 ### I8 — per-call latency is attested (protocol v2)
 
 The v2 time gate compares a router's per-call time with the anchor's, so the time has to be

@@ -9,8 +9,8 @@ All notable changes to this project will be documented here. Releases follow [Se
 - The harness asks for `max_tokens` = `HARNESS_MAX_TOKENS` (16384; was 2048). Measured on a
   320-question × 17-model matrix: at 2048 most long-reasoning models' wrong answers were
   cut-off answers; at 8192, 4.1% of all answers still stopped at the cap, nearly all graded
-  wrong. The reference frame is rebuilt with this harness, so miners and the frame ask for
-  the same answer.
+  wrong. Exploration (the reference frame's only source in v2) runs on this same harness,
+  so miners and the frame ask for the same answer.
 - Call deadlines nest so each layer reports before the next gives up: one upstream attempt
   ≤ the proxy's per-call deadline (`PROXY_CALL_DEADLINE_S` 420 s, was 180 s) < the harness's
   wait (`HARNESS_CALL_TIMEOUT_S` 450 s, was 200 s); no new retry after
@@ -23,6 +23,29 @@ All notable changes to this project will be documented here. Releases follow [Se
 - Not yet in this change: the per-model reasoning setting (`reasoning.effort` or
   `reasoning.max_tokens`, one per model) and the startup output-length self-test. Both need
   the v2 model list (`data/models.json` is hash-pinned) and follow in that PR.
+
+### Added — protocol v2 shared grades (from the activation block)
+
+`fugal_subnet/shared_grades.py`: one coldkey-median grade per (question,
+model) cell of the scored slice, with failed calls dropped. A head's own failed
+call stays wrong. From `FUGAL_V2_ACTIVATION_BLOCK` the validator computes the
+cells each epoch and the reveal carries `protocol_version` and
+`shared_grades`; v1 reveals are unchanged. Nothing scores from them yet: the
+paired champion comparison reads them in the next change. New determinism
+stage `shared_grades`. INVARIANTS: "I4 — shared grades: a cell is a vote of
+operators".
+
+### Added — protocol v2 activation block and v2 constants (no behaviour change yet)
+
+`FUGAL_V2_ACTIVATION_BLOCK` names the epoch boundary at which validators switch
+to the v2 rules. The version an epoch is scored under is a function of its
+boundary block (`slicer.protocol_version_for_boundary`), so retries and late
+validators agree; a block that is not an epoch boundary is refused at startup;
+the value is a consensus input in the digest's `epoch` block. Unset means v1
+for every epoch. The v2 champion and payout constants (`CHAMPION_*`,
+`PAYOUT_SEAT_SHARES`) are added as consensus constants. Nothing reads them yet;
+the v2 rules land behind the activation block in later changes. INVARIANTS:
+"I1 — protocol v2 activates at one named boundary".
 
 ### Fixed — proofs can carry their own TPM intermediates (validator half)
 

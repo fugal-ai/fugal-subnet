@@ -85,8 +85,9 @@ HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "",
 HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "8")))
 
 # --- Harness answer budget and call deadlines (image constants, protocol v2) ---
-# Part of the measured image, not env-overridable: the reference frame is built
-# with the same harness, so a miner and the frame must ask for the same answer.
+# Part of the measured image, not env-overridable: exploration (the reference
+# frame's source) runs on the same harness, so a miner and the frame ask for the
+# same answer.
 #
 # HARNESS_MAX_TOKENS bounds the whole completion, reasoning included (reasoning
 # tokens count inside max_tokens on most providers). v1 asked for 2048, and
@@ -469,6 +470,72 @@ ROUTER_SYSTEM_PROMPT = (
 # --- Weight stability ---
 MAX_WEIGHT_DELTA = float(os.getenv("FUGAL_MAX_WEIGHT_DELTA", "0.3"))
 
+# --- Protocol v2: activation ---
+# The block at which every validator switches from the v1 rules to the v2
+# rules. It must be an epoch boundary (a multiple of blocks_per_epoch), and the
+# rules an epoch is scored under are decided by that epoch's BOUNDARY block
+# (slicer.protocol_version_for_boundary), never by the block a validator
+# happens to be at. So a retried epoch, or a validator that reaches an epoch
+# late, applies the same rules as every peer. Unset means v2 never activates
+# and the v1 rules apply for good. A consensus input, like the epoch length:
+# set once per deployment, identical on every neuron, and in the consensus
+# digest's epoch block, so a validator with a different or missing value
+# shows a different digest from the first epoch. The miner image reads the
+# same variable to hold its axon until the flip. docs/INVARIANTS.md, "I1 —
+# protocol v2 activates at one named boundary".
+_v2_activation = os.getenv("FUGAL_V2_ACTIVATION_BLOCK", "").strip()
+V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
+
+# --- Protocol v2: champion scoring (paired net value) ---
+# From the activation block, a challenger is compared with the current
+# champion on the SAME questions, by net value per question:
+#
+#     NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
+#     V    = CHAMPION_ACCURACY_VALUE * anchor spend per question
+#     u_i  = CHAMPION_HARD_WEIGHT on a hard question (one no frame model solved), else 1
+#     NV   = 100 * mean_i NV_i                       (percentage points)
+#
+# The challenger takes the seat when the one-sided paired-bootstrap lower
+# bound of NV, at CHAMPION_CONFIDENCE over CHAMPION_BOOTSTRAP_RESAMPLES
+# resamples, exceeds CHAMPION_MARGIN points. The champion keeps the seat with
+# no margin, so two near-equal heads cannot trade it on noise. This margin
+# also replaces the earlier draft's absolute headroom margin (0.004) wherever
+# a head must beat a senior or the champion: there is one margin in v2, in NV
+# points.
+#
+# CHAMPION_ACCURACY_VALUE (m) prices one extra correct answer at m questions'
+# worth of the anchor's spend. At 30, accuracy dominates and cost decides
+# between heads of near-equal accuracy. It is a published policy constant.
+CHAMPION_ACCURACY_VALUE = float(os.getenv("FUGAL_CHAMPION_ACCURACY_VALUE", "30"))
+CHAMPION_HARD_WEIGHT = float(os.getenv("FUGAL_CHAMPION_HARD_WEIGHT", "2"))
+CHAMPION_MARGIN = float(os.getenv("FUGAL_CHAMPION_MARGIN", "0.2"))
+# 90% rather than a lower confidence because a slice is 300 questions an epoch.
+CHAMPION_CONFIDENCE = float(os.getenv("FUGAL_CHAMPION_CONFIDENCE", "0.90"))
+CHAMPION_BOOTSTRAP_RESAMPLES = int(os.getenv("FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES", "2000"))
+# Quality gates on a challenger, besides the margin: accuracy at or above the
+# high-water mark (overall, and on the hard subset once the comparison holds
+# at least CHAMPION_HARD_GATE_MIN_QUESTIONS hard questions), and per-call time
+# within CHAMPION_TIME_GATE_FACTOR of the anchor's. Time is a gate only; it is
+# not priced into NV.
+CHAMPION_HARD_GATE_MIN_QUESTIONS = int(os.getenv("FUGAL_CHAMPION_HARD_GATE_MIN_QUESTIONS", "100"))
+CHAMPION_TIME_GATE_FACTOR = float(os.getenv("FUGAL_CHAMPION_TIME_GATE_FACTOR", "2"))
+# A champion that stops being eligible leaves a ghost bar: for this many
+# epochs a head takes the seat only by beating the ghost by the margin, and
+# otherwise the miner share burns. GHOST_OFF when it simply missed proofs,
+# GHOST_RETIRE when its owner committed a different head. Kept as short as
+# the copy rule allows, because every ghost epoch with no qualifying head
+# burns.
+CHAMPION_GHOST_OFF = int(os.getenv("FUGAL_CHAMPION_GHOST_OFF", "3"))
+CHAMPION_GHOST_RETIRE = int(os.getenv("FUGAL_CHAMPION_GHOST_RETIRE", "24"))
+
+# --- Protocol v2: payout ---
+# The miner share is split across the last three champions: current, previous,
+# the one before. A seat pays only while its head is live and passes the
+# gates; an empty seat's share goes to the current champion.
+PAYOUT_SEAT_SHARES = tuple(
+    float(x) for x in os.getenv("FUGAL_PAYOUT_SEAT_SHARES", "0.85,0.10,0.05").split(",")
+)
+
 # --- Validator budget ---
 # Deliberately absent. Under the TEE architecture the validator never calls a
 # model, so it has no API budget to cap and no shared model pool to bound.
@@ -609,10 +676,21 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_HEAD_MAX_DECOMPRESSED",
     "FUGAL_HEAD_MAX_MODEL_ID_LEN",
     "FUGAL_MODEL_PRICES",
+    "FUGAL_CHAMPION_ACCURACY_VALUE",
+    "FUGAL_CHAMPION_HARD_WEIGHT",
+    "FUGAL_CHAMPION_MARGIN",
+    "FUGAL_CHAMPION_CONFIDENCE",
+    "FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES",
+    "FUGAL_CHAMPION_HARD_GATE_MIN_QUESTIONS",
+    "FUGAL_CHAMPION_TIME_GATE_FACTOR",
+    "FUGAL_CHAMPION_GHOST_OFF",
+    "FUGAL_CHAMPION_GHOST_RETIRE",
+    "FUGAL_PAYOUT_SEAT_SHARES",
 )
 CONSENSUS_ENV_INPUTS = (
     "FUGAL_EPOCH_INTERVAL",
     "FUGAL_TEE_MEASUREMENTS",
+    "FUGAL_V2_ACTIVATION_BLOCK",
 )
 OPERATIONAL_ENV_VARS = (
     "FUGAL_HARNESS_CONCURRENCY",

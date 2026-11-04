@@ -39,12 +39,17 @@ NO_POOL_FILE = os.path.join(os.devnull, "no-pool-file")
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", default=os.path.join(ROOT, "data", "benchmarks", "pool.json.gz"))
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2),
+                    help="2: export the v2 pool (data/benchmarks/pool_v2.json.gz by default)")
     args = ap.parse_args()
+    args.out = args.out or os.path.join(ROOT, "data", "benchmarks",
+                                        "pool_v2.json.gz" if args.protocol == 2 else "pool.json.gz")
 
     # Build from the pinned revisions, never from an existing file: the point
     # is to produce the file, and reading one back would only copy it.
-    for var in ("FUGAL_BENCHMARK_POOL", "FUGAL_POOL_FILE", "FUGAL_POOL_UNPINNED"):
+    for var in ("FUGAL_BENCHMARK_POOL", "FUGAL_POOL_FILE", "FUGAL_POOL_UNPINNED",
+                "FUGAL_BENCHMARK_POOL_V2", "FUGAL_POOL_FILE_V2"):
         os.environ.pop(var, None)
     # A path that cannot name a file, so the loader falls through to the pinned
     # revisions. This used to be os.devnull, which EXISTS: the loader handed
@@ -52,10 +57,11 @@ def main() -> int:
     # with "Expecting value: line 1 column 1" (found 2026-11-02). The loader
     # now also ignores anything that is not a regular file.
     os.environ["FUGAL_POOL_FILE"] = NO_POOL_FILE
+    os.environ["FUGAL_POOL_FILE_V2"] = NO_POOL_FILE
 
-    from fugal_subnet.benchmarks.loader import content_hash, load_all, pool_hash
+    from fugal_subnet.benchmarks.loader import content_hash, load_all, load_all_v2, pool_hash
 
-    pool = load_all(strict=True)
+    pool = load_all_v2(strict=True) if args.protocol == 2 else load_all(strict=True)
     pool = sorted(pool, key=lambda q: q["question_id"])
     payload = json.dumps(pool, sort_keys=True, separators=(",", ":")).encode("utf-8")
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)

@@ -246,9 +246,8 @@ def a_failed_but_correct():
 
 
 def a_huge_token_count():
-    """Carry a token count no call can produce (10**400): attested or not, it
-    must be refused at verification, before any float conversion downstream
-    overflows and stops the epoch on every validator (I2)."""
+    """Carry a token count no call can produce: attested or not, it is refused
+    at verification, before anything downstream computes with it (I2)."""
     results = [_qr(q) for q in SLICE]
     results[0] = QuestionResult(SLICE[0], "deepseek/deepseek-v4-flash", True, 0.001,
                                 hashlib.sha256(SLICE[0].encode()).hexdigest(),

@@ -1,21 +1,18 @@
 """Protocol v2 copy rule: who is senior, who owns a head, and ghost incumbents.
 
 From the activation block, a head that is a copy of an older head must not
-earn. v1 tried to RECOGNISE copies (routing agreement, weight distance, the
-epsilon clause in `dedup.py`), and measured offline that cannot work: a lightly
-perturbed copy sits further from its source than two honest refits on the
-same data sit from each other, so no threshold separates
-them. v2 stops recognising copies and asks one question instead: is this head
-measurably BETTER than every head older than it? A copy is not, so it never
-takes the seat, whatever it looks like.
+earn. v1 recognised copies by resemblance (`dedup.py`); v2 stops recognising
+copies and asks one question instead: is this head measurably BETTER than
+every head older than it? A copy is not, so it never takes the seat, whatever
+it looks like.
 
 Three rules, all v2-only (v1 keeps `commitments.seniority_key` and `dedup.py`
 unchanged):
 
 1. **Seniority is the head's first commit.** A head's age is the block at
-   which its exact weights hash was first committed by any hotkey, not the
-   registration block of whoever serves it now. An older hotkey that copies a
-   newer head is junior to it. Ties inside one block are broken by
+   which its exact weights hash was first committed by any hotkey. v1 ordered
+   seniority by registration; v2 orders by the first commit of the head. Ties
+   inside one block are broken by
    sha256("fugal-v2-owner:" || head hash || ":" || coldkey), lowest first:
    deterministic and not chosen by the committer's hotkey address.
 2. **A head belongs to the coldkey that first committed it.** The same hash

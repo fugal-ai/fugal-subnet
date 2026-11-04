@@ -1,7 +1,8 @@
 """Protocol v2 payout: the miner share split across the last three champions.
 
-From the activation block the miner share (the frame-confidence fraction of
-emission, as in v1) is split across SEATS, not across the field:
+From the activation block the miner share is split across SEATS, not across
+the field. The validator passes paid_fraction = 1 in v2: the payout is the
+paired head-vs-head rule and does not read the frame.
 
     seat 0  the current champion          PAYOUT_SEAT_SHARES[0]  (0.85)
     seat 1  the previous champion         PAYOUT_SEAT_SHARES[1]  (0.10)
@@ -9,11 +10,14 @@ emission, as in v1) is split across SEATS, not across the field:
 
 Two rules:
 
-1. A seat pays only while its head is live this epoch and eligible (it
-   verified, passes the quality floor and burn-in, and is not an exact copy).
-   Otherwise its share goes to the current champion. With no current
-   champion (a ghost bar stands, or nothing beats the virtual champion) the
-   champion's share and any share that would have gone to it burn.
+1. A seat pays only while its head is live this epoch and can HOLD a seat:
+   it verified, its window accuracy is at or above CHAMPION_MIN_ACCURACY, and
+   it is not an exact copy. Burn-in is NOT required, so a champion that
+   resumes after a miss (its burn-in counter restarted under E'') is paid at
+   once. Otherwise the seat's share goes to the current champion. With no
+   current champion (a ghost bar stands, or no head is eligible yet) the
+   champion's share and any share that would have gone to it burn. The caller
+   computes `eligible` by exactly this rule (fugal_subnet/v2_epoch.py).
 2. Seats are paid to the UID serving the seat's head. A hotkey keeps every
    seat it holds; one operator can hold several only by having won each in
    turn, so extra registrations buy nothing.

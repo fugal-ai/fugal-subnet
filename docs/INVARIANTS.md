@@ -2318,13 +2318,14 @@ Enforced by `tests/test_champion.py`.
 
 ### I3 — seats, not shares: the v2 payout (v2 release; from the activation block)
 
-From protocol v2 the miner share (the frame-confidence fraction of emission,
-as in v1) is split across **seats** held by the last three champions
+From protocol v2 the miner share is split across **seats** held by the last three champions
 (`fugal_subnet/payout.py`, `PAYOUT_SEAT_SHARES` 0.85 / 0.10 / 0.05: current,
 previous, the one before), never across the field.
 
 - **A seat pays only while its head is live and eligible** this epoch
-  (verified, quality floor, burn-in, not an exact copy). An unpaid seat's
+  (verified, window accuracy at or above `CHAMPION_MIN_ACCURACY`, not an exact
+  copy: the hold rule, so burn-in is not required and a champion that resumes
+  after a miss is paid at once). An unpaid seat's
   share goes to the current champion; with no current champion it burns,
   along with the champion's own share. A seat no champion has filled yet is
   an empty seat and pays the champion.

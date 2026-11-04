@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — protocol v2 burn-in is 1,500 questions (v2 only)
+
+`V2_BURN_IN_QUESTIONS` (1,500, about five epochs) is the E'' burn-in a head
+needs before it can take a v2 seat; the validator and `update_scores` use it in
+v2 epochs, v1 keeps `BURN_IN_QUESTIONS` (3,000). Every head is new at the flip,
+so the seat is empty, and the miner share burns, for about six hours after it.
+Challengers still need `CHAMPION_MIN_PAIRED_QUESTIONS` (1,500) from an unbroken
+run. Consensus constant, in the digest. Both rehearsals override it alongside
+the v1 one.
+
 ### Added — the metering proxy names any reply over the answer budget (protocol v2 image)
 
 Some providers bound reasoning tokens loosely. Measured 2026-11-04: one model returned 17,763

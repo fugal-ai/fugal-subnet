@@ -52,6 +52,7 @@ from fugal_subnet.config import (
     EVIDENCE_HALF_LIFE,
     SCORE_QUALITY_FLOOR,
     SLICE_SIZE,
+    V2_BURN_IN_QUESTIONS,
 )
 from fugal_subnet.evidence import (
     Evidence,
@@ -141,7 +142,7 @@ def update_scores(
             if rec.evidence is not None:
                 if protocol_version >= 2:
                     rec.evidence = apply_miss_v2(rec.evidence, EVIDENCE_HALF_LIFE,
-                                                 BURN_IN_QUESTIONS)
+                                                 V2_BURN_IN_QUESTIONS)
                 else:
                     rec.evidence = apply_miss(rec.evidence, n_expected, EVIDENCE_HALF_LIFE)
                 _refresh(rec, frontier)

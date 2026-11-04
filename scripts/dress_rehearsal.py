@@ -896,6 +896,7 @@ def scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub):
 # SHORTENED FOR THE REHEARSAL (consensus overrides, which mock validators on a
 # non-finney chain accept with a warning), and said so in the output:
 #   FUGAL_BURN_IN_QUESTIONS             2 slices (80)    shipped 3000
+#   FUGAL_V2_BURN_IN_QUESTIONS          2 slices (80)    shipped 1500
 #   FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS 1 slice  (40)    shipped 1500
 #   FUGAL_CHAMPION_GHOST_OFF            6 epochs         shipped 3 (a restarted
 #                                       miner re-embeds, which can take two
@@ -985,6 +986,7 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
     slice_n = int(miner_env()["FUGAL_SLICE_SIZE"])
     shortened = {
         "FUGAL_BURN_IN_QUESTIONS": str(2 * slice_n),
+        "FUGAL_V2_BURN_IN_QUESTIONS": str(2 * slice_n),
         "FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS": str(slice_n),
         "FUGAL_CHAMPION_GHOST_OFF": "6",
         "FUGAL_MAX_WEIGHT_DELTA": "1.0",

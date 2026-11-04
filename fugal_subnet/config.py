@@ -212,6 +212,14 @@ FRONTIER_MIN_TRIALS = float(os.getenv("FUGAL_FRONTIER_MIN_TRIALS", "300"))
 # bad record by flipping one weight bit. With it, climbing back costs exactly
 # what earning the position cost in the first place.
 BURN_IN_QUESTIONS = int(os.getenv("FUGAL_BURN_IN_QUESTIONS", "3000"))
+# Protocol v2's burn-in (the E'' counter, evidence.burn_in_complete): scored
+# questions in an unbroken run before a head can TAKE a seat, first or by
+# challenge. 1,500 = five epochs of a 300-question slice. Every head is new at
+# the flip, so the seat stays empty and the miner share burns for this long
+# after it: about six hours, chosen 2026-11-04 over v1's 3,000 (~12 h). v2-only: v1
+# epochs keep BURN_IN_QUESTIONS. Holding or resuming a seat needs no burn-in;
+# a challenger also needs CHAMPION_MIN_PAIRED_QUESTIONS from its unbroken run.
+V2_BURN_IN_QUESTIONS = int(os.getenv("FUGAL_V2_BURN_IN_QUESTIONS", "1500"))
 
 # --- Soft targets ---
 SOFT_TARGET_TAU = float(os.getenv("FUGAL_TAU", "1.0"))
@@ -720,6 +728,7 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_SCORE_QUALITY_FLOOR",
     "FUGAL_FRONTIER_MIN_TRIALS",
     "FUGAL_BURN_IN_QUESTIONS",
+    "FUGAL_V2_BURN_IN_QUESTIONS",
     "FUGAL_EXPLORE_FAIL_MARGIN",
     "FUGAL_EXPLORE_DISAGREE_MAX",
     "FUGAL_EXPLORE_DISAGREE_MIN_SAMPLES",

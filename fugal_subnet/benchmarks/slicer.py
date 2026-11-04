@@ -185,3 +185,212 @@ def derive_nonce(epoch_id: str, block_hash: str) -> bytes:
     """
     payload = f"{epoch_id}:{block_hash}".encode("utf-8")
     return hashlib.sha256(payload).digest()
+
+
+# ---------------------------------------------------------------------------
+# Protocol v2: category-first allocation, scored and exploration slices alike.
+#
+# v1 above caps each benchmark at max(1, int(share_factor * size * share)) and
+# fills round-robin. At the scored size (300) that is fine; at the exploration
+# size (15) the floor of 1 dominates. Measured on mainnet: five benchmarks got
+# exploration 1:1:1:5:7, so a benchmark that was 1.7% of the scored slice was
+# 6.7% of exploration and 4x over-represented in the reference frame. With
+# more, smaller benchmarks the distortion grows: most of 15 slots would be
+# floor-allocated whatever the scored mix.
+#
+# v2 allocates by CATEGORY first, at published targets, by largest remainder
+# with no floor; then, inside a category:
+#   * the scored slice splits across benchmarks by largest remainder on pool
+#     share, under the same share_factor cap (diligence finding 6), now applied
+#     within the category so a small pool still cannot dominate it;
+#   * each exploration slot draws its benchmark by a nonce-keyed weighted draw
+#     over the category's benchmarks, weighted by pool share within the
+#     category, so a benchmark's EXPECTED exploration share equals its expected
+#     scored share, with no floor at any size.
+# Ties in largest remainder break on HMAC(nonce, key), so no category or
+# benchmark is systematically favoured and the expected mix is exact over
+# epochs. Exact per-epoch agreement between the two shares is impossible at 15
+# slots; `mix_weights` gives the validator the per-benchmark correction factor
+# (scored share / exploration share) so the frame can weight what it observed.
+# ---------------------------------------------------------------------------
+
+
+def _hmac_rank(nonce: bytes, key: str) -> str:
+    return hmac.new(nonce, key.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _largest_remainder(total: int, weights: dict[str, float], nonce: bytes, salt: str) -> dict[str, int]:
+    """Integer quotas summing to `total`, proportional to `weights`, no floor.
+
+    Floors first, then the leftover units go to the largest fractional parts;
+    equal fractions are ordered by HMAC(nonce, salt:key) so ties rotate with the
+    nonce instead of always favouring the same key. Deterministic.
+    """
+    keys = sorted(k for k, w in weights.items() if w > 0)
+    if total <= 0 or not keys:
+        return {k: 0 for k in weights}
+    wsum = float(sum(weights[k] for k in keys))
+    exact = {k: total * weights[k] / wsum for k in keys}
+    quotas = {k: int(exact[k]) for k in keys}
+    left = total - sum(quotas.values())
+    order = sorted(keys, key=lambda k: (-(exact[k] - quotas[k]), _hmac_rank(nonce, f"{salt}:{k}")))
+    for k in order[:left]:
+        quotas[k] += 1
+    return {k: quotas.get(k, 0) for k in weights}
+
+
+def _ranked_by_bench(nonce: bytes, pool: list[dict]) -> dict[str, list[dict]]:
+    by: dict[str, list[dict]] = {}
+    for item in pool:
+        by.setdefault(item.get("benchmark", ""), []).append(item)
+    return {b: sorted(items, key=lambda it: _hmac_rank(nonce, it["question_id"])) for b, items in by.items()}
+
+
+def _categories_of(ranked: dict[str, list[dict]], bench_category: dict[str, str]) -> dict[str, list[str]]:
+    missing = sorted(b for b in ranked if b not in bench_category)
+    if missing:
+        raise ValueError(f"benchmarks with no category: {missing}")
+    cats: dict[str, list[str]] = {}
+    for b in sorted(ranked):
+        cats.setdefault(bench_category[b], []).append(b)
+    return cats
+
+
+def category_quotas(size: int, targets: dict[str, float], present: set[str], nonce: bytes, salt: str) -> dict[str, int]:
+    """Slots per category: largest remainder on the published targets, over the
+    categories actually present in the pool (targets renormalised over them)."""
+    return _largest_remainder(size, {c: targets.get(c, 0.0) for c in sorted(present)}, nonce, salt)
+
+
+def select_slice_v2(
+    nonce: bytes,
+    pool: list[dict],
+    size: int,
+    targets: dict[str, float],
+    bench_category: dict[str, str],
+    share_factor: float = SLICE_SHARE_FACTOR,
+) -> list[dict]:
+    """The v2 scored slice: category quotas at `targets`, then benchmark quotas
+    by pool share within each category under the share_factor cap. A quota a
+    benchmark cannot fill (pool exhausted, or capped) passes to the others in
+    its category; a category that cannot fill passes its remainder to the
+    other categories in proportion to their targets. Deterministic in
+    (nonce, pool, size, targets, bench_category)."""
+    if not pool:
+        return []
+    size = min(size, len(pool))
+    ranked = _ranked_by_bench(nonce, pool)
+    cats = _categories_of(ranked, bench_category)
+    cq = category_quotas(size, targets, set(cats), nonce, "scored")
+
+    take: dict[str, int] = {b: 0 for b in ranked}
+    unfilled = 0
+    for c in sorted(cats):
+        benches = cats[c]
+        csize = sum(len(ranked[b]) for b in benches)
+        want = min(cq[c], csize)
+        unfilled += cq[c] - want
+        share = {b: len(ranked[b]) / csize for b in benches}
+        caps = {b: min(len(ranked[b]), max(1, int(share_factor * want * share[b]))) for b in benches}
+        q = _largest_remainder(want, share, nonce, f"scored:{c}")
+        q = {b: min(q[b], caps[b]) for b in benches}
+        # Redistribute what the caps cut, inside the category: first under the caps, then ignoring them.
+        for limit in (caps, {b: len(ranked[b]) for b in benches}):
+            short = want - sum(q.values())
+            while short > 0:
+                room = sorted((b for b in benches if q[b] < limit[b]),
+                              key=lambda b: (-(share[b] * want - q[b]), _hmac_rank(nonce, f"fill:{c}:{b}")))
+                if not room:
+                    break
+                q[room[0]] += 1
+                short -= 1
+        for b in benches:
+            take[b] = q[b]
+    # A category whose pool ran out: hand its slots to the others, in proportion to their targets.
+    while unfilled > 0:
+        room = {c: targets.get(c, 0.0) for c in cats
+                if sum(take[b] for b in cats[c]) < sum(len(ranked[b]) for b in cats[c])}
+        if not room:
+            break
+        extra = _largest_remainder(unfilled, room, nonce, "overflow")
+        moved = 0
+        for c in sorted(extra):
+            for _ in range(extra[c]):
+                free = [b for b in cats[c] if take[b] < len(ranked[b])]
+                if not free:
+                    break
+                b = max(free, key=lambda b: (len(ranked[b]) - take[b], b))
+                take[b] += 1
+                moved += 1
+        if moved == 0:
+            break
+        unfilled -= moved
+
+    out: list[dict] = []
+    for b in sorted(ranked):
+        out.extend(ranked[b][:take[b]])
+    return out
+
+
+def _weighted_pick(nonce: bytes, key: str, weights: list[tuple[str, float]]) -> str:
+    """One deterministic weighted draw: a uniform from HMAC(nonce, key) against
+    the cumulative weights, in sorted key order."""
+    total = sum(w for _, w in weights)
+    u = int(_hmac_rank(nonce, key), 16) / float(1 << 256) * total
+    acc = 0.0
+    for name, w in weights:
+        acc += w
+        if u < acc:
+            return name
+    return weights[-1][0]
+
+
+def select_explore_set_v2(
+    nonce: bytes,
+    pool: list[dict],
+    scored_ids: set[str],
+    size: int,
+    targets: dict[str, float],
+    bench_category: dict[str, str],
+) -> list[dict]:
+    """The v2 exploration set, disjoint from the scored slice: category quotas
+    at `targets` by largest remainder (no floor), then each slot's benchmark by
+    a nonce-keyed draw weighted by pool share within the category. Expected
+    exploration share per benchmark therefore equals its expected scored share.
+    `nonce` is the exploration nonce (exploration.explore_nonce)."""
+    remaining = [q for q in pool if q["question_id"] not in scored_ids]
+    if not remaining or size <= 0:
+        return []
+    ranked = _ranked_by_bench(nonce, remaining)
+    full = _ranked_by_bench(nonce, pool)         # weights use the WHOLE pool's shares, like the scored slice
+    cats = _categories_of(ranked, bench_category)
+    cq = category_quotas(min(size, len(remaining)), targets, set(cats), nonce, "explore")
+    used = {b: 0 for b in ranked}
+    out: list[dict] = []
+    for c in sorted(cats):
+        weights = [(b, float(len(full[b]))) for b in cats[c]]
+        for slot in range(cq[c]):
+            live = [(b, w) for b, w in weights if used[b] < len(ranked[b])]
+            if not live:
+                break
+            b = _weighted_pick(nonce, f"explore:{c}:{slot}", live)
+            out.append(ranked[b][used[b]])
+            used[b] += 1
+    return out
+
+
+def mix_weights(scored: list[dict], explored: list[dict]) -> dict[str, float]:
+    """Per-benchmark correction for the reference frame: scored share ÷
+    exploration share in this epoch. An exploration observation of benchmark b
+    is weighted by mix_weights[b], so the frame estimates each model on the
+    scored mix even when one epoch's 15 slots round away from it. Benchmarks
+    not explored this epoch are absent (nothing to weight)."""
+    if not scored or not explored:
+        return {}
+    sc: dict[str, int] = {}
+    ex: dict[str, int] = {}
+    for q in scored:
+        sc[q.get("benchmark", "")] = sc.get(q.get("benchmark", ""), 0) + 1
+    for q in explored:
+        ex[q.get("benchmark", "")] = ex.get(q.get("benchmark", ""), 0) + 1
+    return {b: (sc.get(b, 0) / len(scored)) / (n / len(explored)) for b, n in sorted(ex.items())}

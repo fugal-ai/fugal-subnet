@@ -108,6 +108,53 @@ def test_402_is_never_retried_and_names_the_operator(monkeypatch, fast, caplog):
     assert any("OPERATOR ACTION" in r.getMessage() and "402" in r.getMessage() for r in caplog.records)
 
 
+def test_403_is_never_retried_and_names_the_operator(monkeypatch, fast, caplog):
+    """A key with a total spend limit returns 403 on every call once the limit is
+    reached: an operator problem like 402, so never retried and named as one."""
+    import logging
+    with caplog.at_level(logging.ERROR, logger="fugal_subnet.tee.runtime"):
+        status, data, hits, records = _run(monkeypatch, [(403, None)])
+    assert status == 502 and hits == 1 and records == []
+    assert any("OPERATOR ACTION" in r.getMessage() and "403" in r.getMessage() for r in caplog.records)
+
+
+def test_call_deadlines_nest_so_each_layer_reports_before_the_next_gives_up():
+    """One upstream attempt <= the proxy's per-call deadline < the harness's wait,
+    and the retry budget ends inside the deadline. If the harness gave up first,
+    the proxy would write its 502 into a closed socket and the failure would be
+    logged twice as two different errors."""
+    from fugal_subnet.config import HARNESS_CALL_TIMEOUT_S, PROXY_CALL_DEADLINE_S
+    assert rt.PROXY_RETRY_BUDGET_S < PROXY_CALL_DEADLINE_S < HARNESS_CALL_TIMEOUT_S
+    # A 16k answer from a ~50 tok/s model (~330 s) must fit one attempt.
+    assert PROXY_CALL_DEADLINE_S >= 330
+
+
+def test_harness_asks_for_the_v2_answer_budget(monkeypatch):
+    """The harness's request carries HARNESS_MAX_TOKENS (16384): exploration runs on
+    the same harness, so a miner and the reference frame ask for the same answer."""
+    import json as _json
+
+    from fugal_subnet.config import HARNESS_MAX_TOKENS
+    from fugal_subnet.tee import harness as hm
+    seen = {}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return _json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(req, timeout):
+        seen["payload"] = _json.loads(req.data); seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(hm, "urlopen", fake_urlopen)
+    class _P: port = 1
+    assert hm._call_model(_P(), "provider/model", {"prompt": "q"}) == "ok"
+    assert HARNESS_MAX_TOKENS == 16384
+    assert seen["payload"]["max_tokens"] == HARNESS_MAX_TOKENS
+    assert seen["timeout"] == hm.HARNESS_CALL_TIMEOUT_S
+
+
 def test_retry_wait_honours_retry_after_and_the_cap():
     assert 1.0 <= rt._retry_wait(1, None) <= 2.0
     assert rt._retry_wait(1, "7") >= 7.0

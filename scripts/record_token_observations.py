@@ -129,7 +129,9 @@ def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
         rid = f"obs:{model}:{q['question_id']}"
         _request_ctx.request_id = rid
         try:
-            text = _call_model(proxy, model, q, reasoning=(reasoning or {}).get(model))
+            setting = (reasoning or {}).get(model)
+            # v1 runs call exactly as before; v2 adds the model's pinned reasoning setting.
+            text = _call_model(proxy, model, q, reasoning=setting) if setting else _call_model(proxy, model, q)
         finally:
             _request_ctx.request_id = ""
         mine = [r for r in proxy.records if r.request_id == rid]

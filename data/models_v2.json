@@ -7,15 +7,15 @@
   {"id": "qwen/qwen3.8-2.4t-a95b", "in": 2.0, "out": 6.0, "reasoning": {"max_tokens": 8192}},
   {"id": "anthropic/claude-sonnet-5.5", "in": 2.0, "out": 10.0, "reasoning": {"max_tokens": 8192}},
   {"id": "openai/gpt-6.1-terra", "in": 1.0, "out": 5.0, "reasoning": {"effort": "medium"}},
-  {"id": "deepseek/deepseek-v4-pro-0813", "in": 0.115, "out": 4.6, "reasoning": {"enabled": true}},
-  {"id": "z-ai/glm-5.3", "in": 0.08, "out": 3.6, "reasoning": {"enabled": true}},
+  {"id": "deepseek/deepseek-v4-pro-0813", "in": 0.091759, "out": 3.67034, "reasoning": {"enabled": true}},
+  {"id": "z-ai/glm-5.3", "in": 0.038864, "out": 1.74888, "reasoning": {"enabled": true}},
   {"id": "google/gemini-3.8-flash", "in": 0.825, "out": 4.125, "reasoning": {"max_tokens": 8192}},
   {"id": "xiaomi/mimo-v2.6-pro", "in": 0.435, "out": 0.87, "reasoning": {"enabled": true}},
-  {"id": "qwen/qwen3.8-27b", "in": 0.15, "out": 1.875, "reasoning": {"max_tokens": 8192}},
+  {"id": "qwen/qwen3.8-27b", "in": 0.162855, "out": 2.035688, "reasoning": {"max_tokens": 8192}},
   {"id": "deepseek/deepseek-v4.1-flash", "in": 0.045, "out": 0.5, "reasoning": {"enabled": true}},
-  {"id": "minimax/minimax-m3.1-flash", "in": 0.075, "out": 0.3, "reasoning": {"enabled": true}},
+  {"id": "minimax/minimax-m3.1-flash", "in": 0.086415, "out": 0.34566, "reasoning": {"enabled": true}},
   {"id": "xiaomi/mimo-v2.6-flash", "in": 0.14, "out": 0.28, "reasoning": {"enabled": true}},
   {"id": "anthropic/claude-haiku-5.5", "in": 0.1, "out": 0.5, "reasoning": {"max_tokens": 8192}},
   {"id": "openai/gpt-6-luna", "in": 0.1, "out": 0.5, "reasoning": {"effort": "medium"}},
-  {"id": "z-ai/glm-5.3-flash", "in": 0.0269, "out": 0.0996, "reasoning": {"enabled": true}}
+  {"id": "z-ai/glm-5.3-flash", "in": 0.076918, "out": 0.284796, "reasoning": {"enabled": true}}
 ]

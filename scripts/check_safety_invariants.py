@@ -26,10 +26,15 @@ PINNED_PRICE_TABLE_SHA256 = (
 )
 # Protocol v2's price table (data/models_v2.json; identical copy in
 # fugal_subnet/routing_data/). 19 models, prices from the public OpenRouter
-# catalogue of 2026-11-04, one pinned `reasoning` object each. Consensus from
-# V2_ACTIVATION_BLOCK; a change re-scores every v2 miner.
+# catalogue of 2026-11-04, one pinned `reasoning` object each. Five rates were
+# then re-pinned from MEASURED effective prices (the v2 token measurement of
+# 2026-11-04, 757 metered calls): OpenRouter routed those models to endpoints
+# priced differently from the catalogue default, billed/table = glm-5.3-flash
+# 2.8594, glm-5.3 0.4858, deepseek-v4-pro-0813 0.7979, minimax-m3.1-flash
+# 1.1522, qwen3.8-27b 1.0857; input and output scaled by that ratio. Consensus
+# from V2_ACTIVATION_BLOCK; a change re-scores every v2 miner.
 PINNED_PRICE_TABLE_V2_SHA256 = (
-    "a375f95e76766da5b8635df16eb1785887ee47b4d4c71336ece3d7dafea32922"
+    "e16ed3a4a65b65e5bdcc319c80001dea97e9543cf03d25b48b754df8b3c63856"
 )
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM

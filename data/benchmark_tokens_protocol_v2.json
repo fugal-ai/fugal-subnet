@@ -1,126 +1,185 @@
 {
-  "version": "fugal-token-statistics-v1",
-  "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
-  "status": "candidate",
-  "sources": {
-    "benchmark_tokens_protocol_v2.jsonl": "9eac627d9d3831a4bfffbeb3a20df77f4ce000dfdfc2c12ebe2719df51a7cdd4"
+ "models": [
+  {
+   "id": "anthropic/claude-fable-5.1",
+   "mean_in_tokens": 132.75,
+   "mean_out_tokens": 489.625,
+   "samples": 40
   },
-  "worker_profile": "Protocol v2: direct metered OpenRouter calls through the v2 benchmark harness path (MeteringProxy + harness._call_model, max_tokens 16384, each model's single pinned reasoning setting from data/models_v2.json, full benchmark prompt), on a deterministic sample of 40 questions per model at the v2 category mix (knowledge MMLU-Pro/MMLU, math MATH, hard AIME 2025 + historical AIME standing in for the hard category, instruction IFEval), recorded 2026-11-04. 757 completed calls, 3 failed. Provider-billed and table-priced cost kept per row; no response text, no key material.",
-  "omitted_missing_or_zero_input": 0,
-  "models": [
-    {
-      "id": "anthropic/claude-fable-5.1",
-      "samples": 40,
-      "mean_in_tokens": 132.75,
-      "mean_out_tokens": 489.625
+  {
+   "id": "anthropic/claude-opus-5.5",
+   "mean_in_tokens": 161.325,
+   "mean_out_tokens": 497.8,
+   "samples": 40
+  },
+  {
+   "id": "google/gemini-4-argon",
+   "mean_in_tokens": 142.575,
+   "mean_out_tokens": 931.5,
+   "samples": 40
+  },
+  {
+   "id": "openai/gpt-6.1-sol",
+   "mean_in_tokens": 109.8,
+   "mean_out_tokens": 300.775,
+   "samples": 40
+  },
+  {
+   "id": "x-ai/grok-4.7",
+   "mean_in_tokens": 1340.4473684210527,
+   "mean_out_tokens": 3728.8947368421054,
+   "samples": 38
+  },
+  {
+   "id": "qwen/qwen3.8-2.4t-a95b",
+   "mean_in_tokens": 148.55,
+   "mean_out_tokens": 1956.9,
+   "samples": 40
+  },
+  {
+   "id": "anthropic/claude-sonnet-5.5",
+   "mean_in_tokens": 155.1,
+   "mean_out_tokens": 542.4,
+   "samples": 40
+  },
+  {
+   "id": "openai/gpt-6.1-terra",
+   "mean_in_tokens": 97.4,
+   "mean_out_tokens": 394.325,
+   "samples": 40
+  },
+  {
+   "id": "deepseek/deepseek-v4-pro-0813",
+   "mean_in_tokens": 148.45,
+   "mean_out_tokens": 2192.775,
+   "samples": 40
+  },
+  {
+   "id": "z-ai/glm-5.3",
+   "mean_in_tokens": 120.5,
+   "mean_out_tokens": 4756.225,
+   "samples": 40
+  },
+  {
+   "id": "google/gemini-3.8-flash",
+   "mean_in_tokens": 105.0,
+   "mean_out_tokens": 2183.575,
+   "samples": 40
+  },
+  {
+   "id": "xiaomi/mimo-v2.6-pro",
+   "mean_in_tokens": 113.94871794871794,
+   "mean_out_tokens": 4710.589743589743,
+   "samples": 39
+  },
+  {
+   "id": "qwen/qwen3.8-27b",
+   "mean_in_tokens": 136.075,
+   "mean_out_tokens": 2001.875,
+   "samples": 40
+  },
+  {
+   "id": "deepseek/deepseek-v4.1-flash",
+   "mean_in_tokens": 128.325,
+   "mean_out_tokens": 3630.425,
+   "samples": 40
+  },
+  {
+   "id": "minimax/minimax-m3.1-flash",
+   "mean_in_tokens": 298.675,
+   "mean_out_tokens": 1887.4,
+   "samples": 40
+  },
+  {
+   "id": "xiaomi/mimo-v2.6-flash",
+   "mean_in_tokens": 97.35,
+   "mean_out_tokens": 3792.225,
+   "samples": 40
+  },
+  {
+   "id": "anthropic/claude-haiku-5.5",
+   "mean_in_tokens": 157.65,
+   "mean_out_tokens": 1159.675,
+   "samples": 40
+  },
+  {
+   "id": "openai/gpt-6-luna",
+   "mean_in_tokens": 103.6,
+   "mean_out_tokens": 853.625,
+   "samples": 40
+  },
+  {
+   "id": "z-ai/glm-5.3-flash",
+   "mean_in_tokens": 93.55,
+   "mean_out_tokens": 3350.425,
+   "samples": 40
+  }
+ ],
+ "omitted_missing_or_zero_input": 0,
+ "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
+ "review": {
+  "billing_check": {
+   "provider_billed_usd": 5.183,
+   "repinned_from_measured_effective_price": {
+    "deepseek/deepseek-v4-pro-0813": {
+     "billed_over_table": 0.7979
     },
-    {
-      "id": "anthropic/claude-opus-5.5",
-      "samples": 40,
-      "mean_in_tokens": 161.325,
-      "mean_out_tokens": 497.8
+    "minimax/minimax-m3.1-flash": {
+     "billed_over_table": 1.1522
     },
-    {
-      "id": "google/gemini-4-argon",
-      "samples": 40,
-      "mean_in_tokens": 142.575,
-      "mean_out_tokens": 931.5
+    "qwen/qwen3.8-27b": {
+     "billed_over_table": 1.0857
     },
-    {
-      "id": "openai/gpt-6.1-sol",
-      "samples": 40,
-      "mean_in_tokens": 109.8,
-      "mean_out_tokens": 300.775
+    "z-ai/glm-5.3": {
+     "billed_over_table": 0.4858
     },
-    {
-      "id": "x-ai/grok-4.7",
-      "samples": 38,
-      "mean_in_tokens": 1340.4473684210527,
-      "mean_out_tokens": 3728.8947368421054
-    },
-    {
-      "id": "qwen/qwen3.8-2.4t-a95b",
-      "samples": 40,
-      "mean_in_tokens": 148.55,
-      "mean_out_tokens": 1956.9
-    },
-    {
-      "id": "anthropic/claude-sonnet-5.5",
-      "samples": 40,
-      "mean_in_tokens": 155.1,
-      "mean_out_tokens": 542.4
-    },
-    {
-      "id": "openai/gpt-6.1-terra",
-      "samples": 40,
-      "mean_in_tokens": 97.4,
-      "mean_out_tokens": 394.325
-    },
-    {
-      "id": "deepseek/deepseek-v4-pro-0813",
-      "samples": 40,
-      "mean_in_tokens": 148.45,
-      "mean_out_tokens": 2192.775
-    },
-    {
-      "id": "z-ai/glm-5.3",
-      "samples": 40,
-      "mean_in_tokens": 120.5,
-      "mean_out_tokens": 4756.225
-    },
-    {
-      "id": "google/gemini-3.8-flash",
-      "samples": 40,
-      "mean_in_tokens": 105.0,
-      "mean_out_tokens": 2183.575
-    },
-    {
-      "id": "xiaomi/mimo-v2.6-pro",
-      "samples": 39,
-      "mean_in_tokens": 113.94871794871794,
-      "mean_out_tokens": 4710.589743589743
-    },
-    {
-      "id": "qwen/qwen3.8-27b",
-      "samples": 40,
-      "mean_in_tokens": 136.075,
-      "mean_out_tokens": 2001.875
-    },
-    {
-      "id": "deepseek/deepseek-v4.1-flash",
-      "samples": 40,
-      "mean_in_tokens": 128.325,
-      "mean_out_tokens": 3630.425
-    },
-    {
-      "id": "minimax/minimax-m3.1-flash",
-      "samples": 40,
-      "mean_in_tokens": 298.675,
-      "mean_out_tokens": 1887.4
-    },
-    {
-      "id": "xiaomi/mimo-v2.6-flash",
-      "samples": 40,
-      "mean_in_tokens": 97.35,
-      "mean_out_tokens": 3792.225
-    },
-    {
-      "id": "anthropic/claude-haiku-5.5",
-      "samples": 40,
-      "mean_in_tokens": 157.65,
-      "mean_out_tokens": 1159.675
-    },
-    {
-      "id": "openai/gpt-6-luna",
-      "samples": 40,
-      "mean_in_tokens": 103.6,
-      "mean_out_tokens": 853.625
-    },
-    {
-      "id": "z-ai/glm-5.3-flash",
-      "samples": 40,
-      "mean_in_tokens": 93.55,
-      "mean_out_tokens": 3350.425
+    "z-ai/glm-5.3-flash": {
+     "billed_over_table": 2.8594
     }
-  ]
+   },
+   "table_priced_usd": 5.6753
+  },
+  "date": "2026-11-04",
+  "limitations": [
+   "40 samples per model (38 for grok-4.7, 39 for mimo-v2.6-pro) is a cost interface, not a workload study.",
+   "The hard category was sampled from AIME 2025 and historical AIME only, standing in for SuperGPQA and Omni-MATH; means for long-reasoning models on those sets are an extrapolation.",
+   "Completion means for several long-reasoning models sit at or near the 16,384 cap."
+  ],
+  "method": "757 metered calls (3 more failed) recorded through the v2 harness path (max_tokens 16384, each model's single pinned reasoning setting) on a deterministic sample of 40 questions per model at the v2 category mix; means of provider-reported prompt and completion tokens per model.",
+  "notes": [
+   "x-ai/grok-4.7 returned 17,763 completion tokens on 1 of 38 calls against max_tokens 16,384 (reasoning.effort medium; xAI accepts effort only). Kept; the harness self-test logs overruns.",
+   "x-ai/grok-4.7 reports 1,267-1,575 prompt tokens on every call (others 25-750): the provider adds about 1.2k tokens per call, included in its mean_in_tokens."
+  ],
+  "reviewed_by": [
+   "Agent 1 (Claude Opus 5.5, Fugal leader agent), 2026-11-04",
+   "Jack Doherty (Fugal Labs; merging the promotion PR on their approval is the human review)"
+  ],
+  "samples": {
+   "anthropic/claude-fable-5.1": 40,
+   "anthropic/claude-haiku-5.5": 40,
+   "anthropic/claude-opus-5.5": 40,
+   "anthropic/claude-sonnet-5.5": 40,
+   "deepseek/deepseek-v4-pro-0813": 40,
+   "deepseek/deepseek-v4.1-flash": 40,
+   "google/gemini-3.8-flash": 40,
+   "google/gemini-4-argon": 40,
+   "minimax/minimax-m3.1-flash": 40,
+   "openai/gpt-6-luna": 40,
+   "openai/gpt-6.1-sol": 40,
+   "openai/gpt-6.1-terra": 40,
+   "qwen/qwen3.8-2.4t-a95b": 40,
+   "qwen/qwen3.8-27b": 40,
+   "x-ai/grok-4.7": 38,
+   "xiaomi/mimo-v2.6-flash": 40,
+   "xiaomi/mimo-v2.6-pro": 39,
+   "z-ai/glm-5.3": 40,
+   "z-ai/glm-5.3-flash": 40
+  }
+ },
+ "sources": {
+  "benchmark_tokens_protocol_v2.jsonl": "9eac627d9d3831a4bfffbeb3a20df77f4ce000dfdfc2c12ebe2719df51a7cdd4"
+ },
+ "status": "reviewed",
+ "version": "fugal-token-statistics-v1",
+ "worker_profile": "Protocol v2: direct metered OpenRouter calls through the v2 benchmark harness path (MeteringProxy + harness._call_model, max_tokens 16384, each model's single pinned reasoning setting from data/models_v2.json, full benchmark prompt), on a deterministic sample of 40 questions per model at the v2 category mix (knowledge MMLU-Pro/MMLU, math MATH, hard AIME 2025 + historical AIME standing in for the hard category, instruction IFEval), recorded 2026-11-04. 757 completed calls, 3 failed. Provider-billed and table-priced cost kept per row; no response text, no key material."
 }

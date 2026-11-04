@@ -89,11 +89,12 @@ period; the next revision is a flag day run as the runbook below describes.
 that output plus exactly `status` and `review`. A candidate manifest still refuses
 `--live` startup and deployable export (`tests/test_success_contract.py`).
 
-## Protocol v2 token manifest: CANDIDATE (2026-11-04), awaiting review
+## Protocol v2 token manifest: REVIEWED (2026-11-04)
 
 `data/benchmark_tokens_protocol_v2.json` (mirrored at `fugal_subnet/routing_data/`) is
-`status: candidate`. A reviewer promotes it by adding `status: reviewed` and a `review` block,
-as for v1. Until then it refuses `--live` startup and deployable export, like any candidate.
+`status: reviewed`. The review record travels inside the file as its `review` block. Reviewer:
+Agent 1 (Claude Opus 5.5, Fugal leader agent), 2026-11-04. Merging the promotion PR on Jack's
+approval is the human review, as for v1.
 
 **Source.** `data/observations/benchmark_tokens_protocol_v2.jsonl`: 757 metered calls (3 more
 failed), 2026-11-04, by `scripts/record_token_observations.py --protocol 2` through the v2
@@ -115,14 +116,15 @@ the catalogue default the table pins:
 | minimax/minimax-m3.1-flash | 1.15 |
 | qwen/qwen3.8-27b | 1.09 |
 
-**For the reviewer:**
-1. **Cap overrun:** x-ai/grok-4.7 returned 17,763 completion tokens on 1 of 38 calls, against
+**Review decisions (2026-11-04):**
+1. **Cap overrun (kept; the self-test logs overruns):** x-ai/grok-4.7 returned 17,763 completion tokens on 1 of 38 calls, against
    `max_tokens` 16,384 (`reasoning.effort: medium`; xAI accepts only `effort`). Every other model
    stayed at or under 16,384, and several hit it exactly (cut off as designed).
-2. **Hidden prompt:** grok-4.7's prompt tokens are 1,267–1,575 on every call (others 25–750), so
+2. **Hidden prompt (kept, stated in the manifest):** grok-4.7's prompt tokens are 1,267–1,575 on every call (others 25–750), so
    the provider adds ~1.2k tokens per call, and the manifest's mean includes them.
-3. **Pinned rates:** whether to re-pin the five diverging models' rates from measured effective
-   prices before the v2 freeze (a `data/models_v2.json` change; the hash pin moves).
+3. **Pinned rates: re-pinned.** The five diverging models' rates were scaled by their measured
+   billed÷table ratio (input and output together) in `data/models_v2.json`; the hash pin and its
+   comment record why.
 4. Hard-category questions were AIME only, so the means of long-reasoning models on SuperGPQA and
    Omni-MATH are an extrapolation.
 

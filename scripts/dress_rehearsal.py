@@ -56,6 +56,8 @@ RESULTS = os.path.join(os.path.dirname(__file__), "..", "results", "rehearsal")
 # was already asking about e00000045.
 EPOCH_INTERVAL_S = "3600"
 TARGET_EPOCH_SECONDS = 90
+# Scenario v2_flip runs longer epochs: the v2 miner's late-start guard (see main).
+V2_FLIP_EPOCH_SECONDS = 180
 
 
 # ── assertions ────────────────────────────────────────────────────────────────
@@ -1454,8 +1456,15 @@ def main() -> int:
         subtensor0 = wait_for_chain()
         from scripts.setup_local_testnet import calibrate_epoch_interval
         global EPOCH_INTERVAL_S
+        # The v2 image's miner polls about every 30 s and refuses to start an
+        # epoch with fewer than LATE_START_MARGIN_BLOCKS (60) to its collection
+        # block. On this devnet 30 s is ~100 blocks, so at 90 s epochs (a
+        # ~150-block collection offset) a miner whose poll lands at an unlucky
+        # phase skips EVERY epoch and the scenario stalls. 180 s epochs keep
+        # the poll lag well inside the margin, as mainnet's 12 s blocks do.
+        target = V2_FLIP_EPOCH_SECONDS if args.scenario == "v2_flip" else TARGET_EPOCH_SECONDS
         EPOCH_INTERVAL_S = calibrate_epoch_interval(
-            subtensor0, TARGET_EPOCH_SECONDS, EPOCH_INTERVAL_S,
+            subtensor0, target, EPOCH_INTERVAL_S,
         )
         print("\nScenario harness ready.\n", flush=True)
         # Scenario bodies are added below; see run_scenarios().

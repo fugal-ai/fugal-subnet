@@ -334,16 +334,18 @@ def run_pipeline(seed: int) -> dict:
     from fugal_subnet.champion import SeatState, Window
     from fugal_subnet.v2_epoch import run_v2_epoch, seat_params_from_config
     v2_uids = sorted(proof_objs, reverse=True)
+    from fugal_subnet.copy_rule import Commitment, CopyState
     v2 = run_v2_epoch(
-        epoch_index=1, epoch_id="e00000001", questions=questions,
-        pool_models=sorted(prices), prices=prices,
+        epoch_index=1, epoch_id="e00000001", boundary_block=300, blocks_per_epoch=300,
+        questions=questions, pool_models=sorted(prices), prices=prices,
         verified_proofs={u: proof_objs[u] for u in v2_uids},
         head_hashes={u: head_hashes[u] for u in v2_uids},
         coldkey_of={u: f"coldkey-{u % 3}" for u in v2_uids},
         hotkey_of={u: f"hk{u}" for u in v2_uids},
-        commit_block={u: u for u in v2_uids}, commit_epoch={u: 0 for u in v2_uids},
-        records=state.records, exact_copies=set(), commitments={},
-        window=Window.empty(48), seat=SeatState(), owners={}, burn_uid=0,
+        records=state.records,
+        commitments=[Commitment(f"hk{u}", f"coldkey-{u % 3}", head_hashes[u], u + 1)
+                     for u in sorted(v2_uids)],
+        window=Window.empty(48), seat=SeatState(), copy_state=CopyState(), burn_uid=0,
         params=seat_params_from_config(), shares=(0.85, 0.10, 0.05),
         burn_in_questions=0,
     )

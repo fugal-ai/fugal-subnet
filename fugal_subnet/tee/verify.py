@@ -472,9 +472,8 @@ def verify_proof(
         )
 
     # 9a. Token counts are bounded (I2). They are attested, so an honest proof
-    #     never comes near the bound; a JSON integer is unbounded, and a huge
-    #     one overflows the first float conversion downstream (the frame, the
-    #     v2 spend) and stops the epoch on every validator at once.
+    #     never comes near the bound; a JSON integer is unbounded, and every
+    #     value used downstream (the frame, the v2 spend) must be bounded.
     from fugal_subnet.config import PROOF_MAX_TOKENS
     bad_tokens = [
         r.question_id for r in proof.results

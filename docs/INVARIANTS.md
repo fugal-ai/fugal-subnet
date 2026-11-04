@@ -2378,12 +2378,9 @@ Enforced by `tests/test_payout.py`.
 
 ### I3 — the v2 miss rule (E'') (v2 release; from the activation block)
 
-Under v1 a missed epoch adds a full slice of wrong answers to the head's
-evidence (`apply_miss`) with a 200-epoch half-life: a six-hour outage took
-about 250 epochs to recover from, while publishing a new head hash recovered
-in ten, so the rule punished only operators who did not know to reset. A miss
-cannot be free either: an operator sees its own grades before it serves and
-could withhold a bad epoch. From protocol v2 (`update_scores(...,
+v1's miss rule (`apply_miss`) is replaced from protocol v2: it recovers too
+slowly from an honest outage. A miss cannot be free either: an operator sees
+its own grades before it serves and could withhold a bad epoch. From protocol v2 (`update_scores(...,
 protocol_version=2)`):
 
 - **Before burn-in is complete** (`Evidence.burn_in_progress` <
@@ -2425,13 +2422,11 @@ model per epoch:
    only when the seat is empty.
 2. **Eligibility does not read the frame, nor v1 dedup.** v1's quality floor (a
    fraction of the frontier's maximum accuracy) is replaced by
-   `CHAMPION_MIN_ACCURACY` on window shared-grade accuracy, and the v1
-   epsilon clause (which compares frontier-based composites) does not run.
-   v1's routing-similarity dedup does not decide v2 eligibility either: it
-   keeps the head on the senior *registration*, so a near-constant mimic on an
-   older hotkey could flag the champion and unseat it. In v2 a copy is an
-   exact hash owned by someone else (below) or a junior that fails the NV
-   margin (the copy rule).
+   `CHAMPION_MIN_ACCURACY` on window shared-grade accuracy, and v1's dedup
+   clauses (routing similarity, parameter distance, the epsilon clause) do not
+   decide v2 eligibility. In v2 a copy is decided by the copy rule
+   (`copy_rule.py`): an exact hash owned by another coldkey, or a junior head
+   that fails the margin against a senior seat holder.
 3. **Spend is measured, not modelled (I4).** A head's spend on a question is
    the pool's prompt tokens plus the cell's coldkey-median attested completion
    tokens (`shared_grades.shared_cell_tokens`), at the pinned prices, not
@@ -2445,18 +2440,22 @@ headroom, quality and thrift (computed and published as diagnostics, deciding
 nothing); the exploration detectors (they decide only which samples enter the
 frame); and `best_model` / `reference_cost` (they feed only the diagnostics).
 
-**A head hash has one owner, its first committer.** A hash is owned by the
-hotkey with the earliest on-chain commitment of it among every hotkey
-committing it at the boundary (not only those serving it that epoch), and
-keeps that owner while it is remembered. Only the owner's UID serves it: any
-other UID serving the same bytes is a copy and is not paid as it, not
-measured as it, and cannot become its owner when the author's proof fails. A
-champion is *retired* (24-epoch ghost) only when its OWNER now commits a
-different head, never because a copier did, and *missed* (3-epoch ghost)
-otherwise; a standing missed ghost is checked the same way every epoch and
-upgraded. Payout
-eligibility is the hold rule (live, not an exact copy, window accuracy at or
-above the floor), so a champion that resumes after a miss is paid at once.
+**Ownership, seniority and retirement are the copy rule's.** Each epoch the
+validator folds the boundary snapshot of commitments (every committed hotkey
+with its owning coldkey, read pinned at the boundary) into the copy rule's
+state (`copy_rule.observe`). A hash belongs to the coldkey that first
+committed it; only its canonical owner UID serves it (`copy_rule.classify`),
+so a UID serving another coldkey's bytes is a copy and is not paid as it, not
+measured as it, and cannot retire it. A head's seniority and the first epoch
+of its comparison are its first commit (`v2_seniority`, `first_epoch`), never
+a registration block. A champion is *retired* (24-epoch ghost) only when its
+owner stops committing it (`retired_hashes`), and *missed* (3-epoch ghost)
+otherwise; a standing missed ghost is checked every epoch and upgraded. A
+head takes a seat only by also beating every senior seat holder in the
+comparison set by the margin (`senior_bars`, holders from `seat_holders`).
+The fold is idempotent across a retried epoch. Payout eligibility is the hold
+rule (live, canonical owner, window accuracy at or above the floor), so a
+champion that resumes after a miss is paid at once.
 
 **The reveal.** From the activation boundary it carries `protocol_version`,
 `shared_grades` (each cell's grade and median completion tokens), each UID's
@@ -2492,8 +2491,8 @@ between old and new during the ramp. The seat itself changes at once.
 
 **Bounded token counts (I2).** `verify_proof` refuses a result whose prompt or
 completion token count is outside `0..PROOF_MAX_TOKENS` (ten million): a JSON
-integer is unbounded, and a huge one would overflow the first float
-conversion in the frame or the v2 spend and stop the epoch on every validator.
+integer is unbounded, and every value a validator computes with must be
+bounded before it is used (I2).
 `run_tee_attacks.py` cases "a token count no call can produce" and "a negative
 token count".
 
@@ -2538,15 +2537,11 @@ Enforced by `tests/test_v2_epoch_inputs.py` and the `epoch_plan_v2` stage of
 
 ### I3/I4 — the v2 copy rule: a head must beat every senior seat holder by the margin (v2 release; from the activation block)
 
-v1 recognised copies by resemblance (`dedup.py`: routing agreement ≥ 0.99,
-relative weight distance < 0.2, and the epsilon clause at 95% agreement and
-0.5% of composite) and ranked seniority by registration block
-(`commitments.seniority_key`). Measured offline, neither holds up. A lightly
-perturbed copy keeps its source's quality while sitting further from it (agreement ~0.87, distance ~0.29) than two
-honest refits on the same data sit from each other (0.74–0.83), so no
-threshold separates them; the epsilon is far below the sampling noise
-between two miners; and registration-first seniority makes an older hotkey
-that copies a newer head the senior one. From protocol v2
+v1 recognised copies by resemblance (`dedup.py`) and ordered seniority by
+registration (`commitments.seniority_key`). v2 replaces both: seniority is
+the first commit of the head, and a junior head must be measurably better
+than every senior seat holder rather than look different from it. From
+protocol v2
 (`fugal_subnet/copy_rule.py`, enforced inside `champion.seat_step`):
 
 - **Seniority is the head's first commit.** A head's age is the block at

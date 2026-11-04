@@ -21,6 +21,8 @@ Scenarios
   c  two validators on the same proofs; byte-identical weights and frames
   d  many epochs; evidence, burn-in, frame convergence, weight capping
   e  the real backbone path end to end
+  v2_flip  protocol v2 across an activation block (not part of "all"; see
+           scenario_v2_flip, and scripts/rehearsal_v2.py for the in-process half)
 
 No API spend is possible: model replies are stubbed deterministically and
 priced through the real pinned table.
@@ -59,8 +61,11 @@ TARGET_EPOCH_SECONDS = 90
 # ── assertions ────────────────────────────────────────────────────────────────
 
 class Report:
-    def __init__(self) -> None:
-        self.rows: list[tuple[str, str, bool, str]] = []
+    def __init__(self, pass_message: str = "the shipped binaries work against a real chain.") -> None:
+        self.pass_message = pass_message
+        # ok is True (pass), False (fail) or None (skipped: the code it checks
+        # is not on this branch yet; never a failure).
+        self.rows: list[tuple[str, str, bool | None, str]] = []
 
     def check(self, scenario: str, name: str, ok: bool, detail: str = "") -> bool:
         self.rows.append((scenario, name, bool(ok), detail))
@@ -68,22 +73,33 @@ class Report:
         print(f"    [{mark}] {name}" + (f" — {detail}" if detail else ""), flush=True)
         return bool(ok)
 
+    def skip(self, scenario: str, name: str, why: str) -> None:
+        self.rows.append((scenario, name, None, why))
+        print(f"    [SKIP] {name} — {why}", flush=True)
+
+    @property
+    def failed(self) -> list:
+        return [r for r in self.rows if r[2] is False]
+
     def summary(self) -> int:
         print("\n" + "=" * 78)
         print(f"{'DRESS REHEARSAL':<52}{'SCENARIO':<12}{'RESULT':>8}")
         print("-" * 78)
         for scenario, name, ok, detail in self.rows:
-            print(f"{'OK ' if ok else '!! '}{name[:48]:<49}{scenario:<12}"
-                  f"{'PASS' if ok else 'FAIL':>8}")
-            if not ok and detail:
+            word = "SKIP" if ok is None else ("PASS" if ok else "FAIL")
+            print(f"{'!! ' if ok is False else '-- ' if ok is None else 'OK '}"
+                  f"{name[:48]:<49}{scenario:<12}{word:>8}")
+            if ok is not True and detail:
                 print(f"     ↳ {detail}")
         print("-" * 78)
-        failed = [r for r in self.rows if not r[2]]
-        print(f"{len(self.rows) - len(failed)} passed, {len(failed)} failed")
+        failed = self.failed
+        skipped = [r for r in self.rows if r[2] is None]
+        passed = len(self.rows) - len(failed) - len(skipped)
+        print(f"{passed} passed, {len(failed)} failed, {len(skipped)} skipped")
         if failed:
             print("\nFAIL — the subnet is not ready.")
             return 1
-        print("\nPASS — the shipped binaries work against a real chain.")
+        print(f"\nPASS — {self.pass_message}")
         return 0
 
 
@@ -234,17 +250,24 @@ def miner_env(extra=None):
     # loader refuses it (manifest mismatch, below the size floor) — correctly.
     env["FUGAL_POOL_UNPINNED"] = "1"
     env.pop("OPENROUTER_API_KEY", None)
+    # The neurons import fugal_subnet from THIS checkout, not from whatever
+    # tree the environment's editable install happens to point at. A shared
+    # venv's editable mapping follows the last `uv sync`, which may be another
+    # worktree; the rehearsal would then test code it was not run from.
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    env["PYTHONPATH"] = os.pathsep.join(
+        [root] + [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p])
     env.update(extra or {})
     return env
 
 
 def start_miner(coldkey: str, netuid: int, head: str, pool: str,
-                port: int, log_path: str) -> subprocess.Popen:
+                port: int, log_path: str, extra_env=None) -> subprocess.Popen:
     log = open(log_path, "w", encoding="utf-8")
     # Each miner needs its own metering-proxy port: several miners on one host
     # would otherwise race to bind the same one. In production a miner has its
     # own TEE VM, so the default is fine there.
-    env = miner_env({"FUGAL_TEE_PROXY_PORT": str(port + 1000)})
+    env = miner_env({"FUGAL_TEE_PROXY_PORT": str(port + 1000), **(extra_env or {})})
     return subprocess.Popen(
         [sys.executable, "neurons/miner.py",
          "--network", ENDPOINT, "--netuid", str(netuid),
@@ -258,14 +281,19 @@ def start_miner(coldkey: str, netuid: int, head: str, pool: str,
     )
 
 
-def run_validator_once(coldkey: str, netuid: int, state_path: str,
-                       log_path: str, timeout: int = 300) -> dict:
-    """Run one real validator epoch; return its parsed epoch-log entry."""
-    env = miner_env({
+def validator_env(state_path: str, extra_env=None) -> dict:
+    return miner_env({
         "FUGAL_STATE_PATH": state_path,
         "FUGAL_EPOCH_LOG_DIR": os.path.dirname(state_path),
         "FUGAL_EPOCH_DIR": os.path.join(os.path.dirname(state_path), "epochs"),
+        **(extra_env or {}),
     })
+
+
+def run_validator_once(coldkey: str, netuid: int, state_path: str,
+                       log_path: str, timeout: int = 300, extra_env=None) -> dict:
+    """Run one real validator epoch; return its parsed epoch-log entry."""
+    env = validator_env(state_path, extra_env)
     with open(log_path, "a", encoding="utf-8") as log:
         subprocess.run(
             [sys.executable, "neurons/validator.py",
@@ -425,6 +453,11 @@ def run_scenarios(args, report: Report) -> int:
     subtensor = bt.Subtensor(network=ENDPOINT)
 
     coldkeys = ["dr_val1", "dr_val2", "dr_m1", "dr_m2", "dr_m3"]
+    if "v2_flip" in want:
+        # A control validator with no activation block. Registered last so
+        # every other wallet keeps the UID it has in scenarios a-e; unstaked,
+        # so its set_weights is refused, but it scores and reveals like a peer.
+        coldkeys.append("dr_ctl")
     netuid, wallets = setup_subnet(subtensor, coldkeys)
 
     scenarios = {
@@ -435,6 +468,8 @@ def run_scenarios(args, report: Report) -> int:
                                   args.epochs),
         "e": lambda p: scenario_e(report, subtensor, netuid, wallets, pool_path, p,
                                   stub),
+        "v2_flip": lambda p: scenario_v2_flip(report, subtensor, netuid, wallets,
+                                              pool_path, p, args.v2_epochs),
     }
 
     try:
@@ -470,14 +505,14 @@ def _stop(procs) -> None:
         time.sleep(5)
 
 
-def _launch(procs, coldkey, netuid, head, pool_path, port, tag):
+def _launch(procs, coldkey, netuid, head, pool_path, port, tag, extra_env=None):
     log = os.path.join(RESULTS, f"miner_{tag}.log")
-    proc = start_miner(coldkey, netuid, head, pool_path, port, log)
+    proc = start_miner(coldkey, netuid, head, pool_path, port, log, extra_env)
     procs.append((proc, log))
     return proc, log
 
 
-def _launch_sequential(procs, netuid, pool_path, specs, timeout=300):
+def _launch_sequential(procs, netuid, pool_path, specs, timeout=300, extra_env=None):
     """Start miners one at a time, each waiting for the previous to embed.
 
     Every miner loads Qwen3-0.6B (~2.4GB) at startup. Three at once exceeds
@@ -488,7 +523,7 @@ def _launch_sequential(procs, netuid, pool_path, specs, timeout=300):
     """
     started = []
     for coldkey, head, port, tag in specs:
-        proc, log = _launch(procs, coldkey, netuid, head, pool_path, port, tag)
+        proc, log = _launch(procs, coldkey, netuid, head, pool_path, port, tag, extra_env)
         started.append((proc, log))
         if not _wait([(proc, log)], "backbone released", timeout, quiet=True):
             raise RuntimeError(f"miner {tag} did not finish embedding in {timeout}s")
@@ -522,16 +557,20 @@ def _headroom(scores: dict, uid) -> float:
 
 
 def _run_validators_together(netuid: int, specs) -> list[dict]:
-    """One real validator epoch each, started at the same moment."""
+    """One real validator epoch each, started at the same moment.
+
+    A spec is (coldkey, name) or (coldkey, name, extra_env).
+    """
     from concurrent.futures import ThreadPoolExecutor
 
     def one(spec):
-        coldkey, name = spec
+        coldkey, name, extra = (tuple(spec) + (None,))[:3]
         state = os.path.join(RESULTS, name)
         os.makedirs(state, exist_ok=True)
         return run_validator_once(coldkey, netuid,
                                   os.path.join(state, "state.json"),
-                                  os.path.join(RESULTS, f"{name}.log"))
+                                  os.path.join(RESULTS, f"{name}.log"),
+                                  extra_env=extra)
 
     with ThreadPoolExecutor(max_workers=len(specs)) as pool:
         return list(pool.map(one, specs))
@@ -846,15 +885,387 @@ def scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub):
                  else "miner never served a bundle")
 
 
+# ── scenario v2_flip: protocol v2 across an activation block ──────────────────
+#
+# The shipped neurons, on the local chain, across FUGAL_V2_ACTIVATION_BLOCK:
+# V2_FLIP_V1_EPOCHS v1 epochs, the flip at a named boundary, then v2 epochs
+# until the seat has been taken, lost to a miss and resumed (or --v2-epochs).
+# Three validators score every epoch together: val1 and val2 with the block,
+# and a control with none (the rules an operator who forgot to set it runs).
+#
+# SHORTENED FOR THE REHEARSAL (consensus overrides, which mock validators on a
+# non-finney chain accept with a warning), and said so in the output:
+#   FUGAL_BURN_IN_QUESTIONS             2 slices (80)    shipped 3000
+#   FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS 1 slice  (40)    shipped 1500
+#   FUGAL_CHAMPION_GHOST_OFF            6 epochs         shipped 3 (a restarted
+#                                       miner re-embeds, which can take two
+#                                       rehearsal epochs)
+#   FUGAL_MAX_WEIGHT_DELTA              1.0              shipped 0.3 (so the
+#                                       epoch log shows the seat split itself,
+#                                       not a capped step towards it)
+#
+# What it needs from the branch, probed at start (scripts/rehearsal_v2.py,
+# probe_features); anything absent is SKIPPED with the reason, never failed:
+#   activation, shared grades       on release/v2
+#   the validator's v2 epoch wiring  seat, payout and resume checks
+#   the E'' miss rule                the evidence checks on a miss
+#   the miner holding its axon       the parallel handover; without it the
+#                                    v1 miners are swapped for v2 ones in the
+#                                    last v1 epoch (one VM per hotkey)
+
+V2_FLIP_V1_EPOCHS = 2
+
+
+def _epoch_index_now(subtensor) -> int:
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch, epoch_index_for_block
+
+    return epoch_index_for_block(subtensor.get_current_block(),
+                                 blocks_per_epoch(int(EPOCH_INTERVAL_S)))
+
+
+def _read_json(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _reveal(name: str, epoch_id: str) -> dict:
+    return _read_json(os.path.join(RESULTS, name, "epochs", epoch_id, "reveal.json"))
+
+
+def _state(name: str) -> dict:
+    return _read_json(os.path.join(RESULTS, name, "state.json"))
+
+
+def _kill_mid_epoch(coldkey: str, netuid: int, name: str, extra_env: dict,
+                    timeout: int = 120) -> bool:
+    """Start a real validator, SIGKILL it once it has begun an epoch, before it commits."""
+    state = os.path.join(RESULTS, name)
+    os.makedirs(state, exist_ok=True)
+    log_path = os.path.join(RESULTS, f"{name}.log")
+    start = os.path.getsize(log_path) if os.path.exists(log_path) else 0
+    with open(log_path, "a", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "neurons/validator.py", "--network", ENDPOINT,
+             "--netuid", str(netuid), "--coldkey", coldkey, "--hotkey", "default",
+             "--once", "--mock"],
+            stdout=log, stderr=subprocess.STDOUT, text=True,
+            env=validator_env(os.path.join(state, "state.json"), extra_env),
+        )
+    deadline = time.time() + timeout
+    began = False
+    while time.time() < deadline and proc.poll() is None:
+        with open(log_path, encoding="utf-8") as f:
+            f.seek(start)
+            if "=== Epoch" in f.read():
+                began = True
+                break
+        time.sleep(0.5)
+    proc.kill()
+    proc.wait(timeout=30)
+    return began
+
+
+def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v2_epochs):
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch, epoch_id_for_block
+    from scripts.rehearsal_v2 import comparable_reveal, missing, probe_features, reveal_v2_keys
+
+    S = "v2_flip"
+    print("\n[Scenario v2_flip] protocol v2 across an activation block", flush=True)
+    f = probe_features()
+    for p in f.values():
+        print(f"    {'present' if p.present else 'absent '}  {p.name:<14} {p.source}", flush=True)
+    if not f["activation"].present:
+        report.skip(S, "the v2 flip on a real chain", missing(f, "activation"))
+        return
+
+    bpe = blocks_per_epoch(int(EPOCH_INTERVAL_S))
+    slice_n = int(miner_env()["FUGAL_SLICE_SIZE"])
+    shortened = {
+        "FUGAL_BURN_IN_QUESTIONS": str(2 * slice_n),
+        "FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS": str(slice_n),
+        "FUGAL_CHAMPION_GHOST_OFF": "6",
+        "FUGAL_MAX_WEIGHT_DELTA": "1.0",
+    }
+    print(f"    rehearsal-only overrides: {shortened}", flush=True)
+
+    # --- v1: three miners on v1 heads -------------------------------------
+    v1 = [("dr_m1", write_head(os.path.join(RESULTS, "head_v2f_v1_1.npz"), seed=21), 8151),
+          ("dr_m2", write_head(os.path.join(RESULTS, "head_v2f_v1_2.npz"), seed=22), 8152),
+          ("dr_m3", write_head(os.path.join(RESULTS, "head_v2f_v1_3.npz"), seed=23), 8153)]
+    _launch_sequential(procs, netuid, pool_path,
+                       [(ck, h, port, f"v2f_{ck}_v1") for ck, h, port in v1])
+    v1_procs = list(procs[-3:])
+    if not wait_for_proof(v1_procs) or not wait_for_epoch(v1_procs, subtensor):
+        report.check(S, "v1 miners produced proofs for the current epoch", False)
+        return
+
+    act_idx = _epoch_index_now(subtensor) + V2_FLIP_V1_EPOCHS + 1
+    act = act_idx * bpe
+    with_block = {**shortened, "FUGAL_V2_ACTIVATION_BLOCK": str(act)}
+    control = {**shortened, "FUGAL_V2_ACTIVATION_BLOCK": ""}
+    print(f"    activation block {act} = boundary of epoch {epoch_id_for_block(act_idx)}",
+          flush=True)
+
+    # v2 heads: m1 always the middle model, m2 always the strongest (it must
+    # beat m1 by the margin), m3 an ordinary router (eligible, never seated).
+    v2_heads = {
+        "dr_m1": biased_head(os.path.join(RESULTS, "head_v2f_v2_1.npz"), 1),
+        "dr_m2": biased_head(os.path.join(RESULTS, "head_v2f_v2_2.npz"), 2),
+        "dr_m3": write_head(os.path.join(RESULTS, "head_v2f_v2_3.npz"), seed=24),
+    }
+    uid = {ck: uid_of(subtensor, netuid, wallets[ck]) for ck in ("dr_m1", "dr_m2", "dr_m3")}
+    serving: dict[str, tuple] = {ck: procs[-3 + i] for i, (ck, _, _) in enumerate(v1)}
+    handed_over = False
+
+    if f["miner_hold"].present:
+        # Parallel handover: the v2 miner, started now beside the v1 one with
+        # the same hotkey, embeds and holds its axon; it commits in the epoch
+        # before the flip and serves from it.
+        _launch_sequential(procs, netuid, pool_path,
+                           [(ck, v2_heads[ck], port + 10, f"v2f_{ck}_v2")
+                            for ck, _, port in v1],
+                           extra_env={"FUGAL_V2_ACTIVATION_BLOCK": str(act)})
+        v2_parallel = {ck: procs[-3 + i] for i, (ck, _, _) in enumerate(v1)}
+    else:
+        report.skip(S, "parallel handover: the v2 miner holds its axon until the flip",
+                    missing(f, "miner_hold") + " (the rehearsal swaps miners in the last "
+                    "v1 epoch instead)")
+        v2_parallel = {}
+
+    rows: dict[int, dict] = {}
+    last = None
+    killed_at = None
+    miss: dict = {}
+    wired = f["wiring"].present
+    while True:
+        live = list(serving.values())
+        ep = wait_for_epoch(live, subtensor, after=last) if live else None
+        if ep is None:
+            report.check(S, "the miners kept up with the chain", False, f"after {last}")
+            break
+        last = ep
+        if int(ep[1:]) - act_idx >= max_v2_epochs:
+            break
+
+        if int(ep[1:]) >= act_idx + 1 and killed_at is None:
+            # Restart mid-epoch: val2 dies after starting this epoch and
+            # before committing it; the run below is its restart.
+            if _kill_mid_epoch("dr_val2", netuid, "v2f_val2", with_block):
+                killed_at = int(ep[1:])
+
+        specs = [("dr_val1", "v2f_val1", with_block), ("dr_val2", "v2f_val2", with_block)]
+        if int(ep[1:]) <= act_idx:
+            specs.append(("dr_ctl", "v2f_ctl", control))
+        entries = _run_validators_together(netuid, specs)
+        # Keyed by the epoch the validators actually scored, which can be one
+        # later than the miners' if the chain rolled while they ran.
+        scored = entries[0].get("epoch_id") or ep
+        idx = int(scored[1:])
+        last = max(last, scored)  # never score the same epoch twice
+        if killed_at is not None and killed_at == int(ep[1:]):
+            killed_at = idx
+        rows[idx] = {"epoch_id": scored, "entries": entries,
+                     "reveals": [_reveal(s[1], scored) for s in specs],
+                     "states": [_state(s[1]) for s in specs[:2]]}
+        r1 = rows[idx]["reveals"][0]
+        champ = (r1.get("champion") or {}).get("champion")
+        print(f"    {scored} (v{r1.get('protocol_version', 1)}): "
+              f"valid={entries[0].get('n_heads_valid')} "
+              f"seat={(r1.get('champion') or {}).get('event', '-')} "
+              f"weights={entries[0].get('weights')}", flush=True)
+
+        # Handover in the last v1 epoch.
+        if idx >= act_idx - 1 and not handed_over:
+            _stop(list(serving.values()))
+            if v2_parallel:
+                serving = dict(v2_parallel)
+            else:
+                _launch_sequential(procs, netuid, pool_path,
+                                   [(ck, v2_heads[ck], port, f"v2f_{ck}_v2")
+                                    for ck, _, port in v1])
+                serving = {ck: procs[-3 + i] for i, (ck, _, _) in enumerate(v1)}
+            handed_over = True
+            continue
+        if idx < act_idx:
+            continue
+
+        # E'': take m2 offline for one scored epoch once it is burned in --
+        # with the wiring, once it has held the seat for two epochs.
+        m2_head = (r1.get("head_hashes") or {}).get(str(uid["dr_m2"]))
+        prev = ((rows.get(idx - 1) or {}).get("reveals") or [{}])[0]
+        held = bool(champ) and champ == m2_head and (
+            (prev.get("champion") or {}).get("champion") == m2_head)
+        if "stopped" not in miss and (held if wired else idx >= act_idx + 3):
+            _stop([serving.pop("dr_m2")])
+            miss.update(stopped=idx, head=m2_head)
+            continue
+        if "stopped" in miss and "first_missed" not in miss:
+            miss["first_missed"] = idx
+            port = 8162 if v2_parallel else 8152
+            serving["dr_m2"] = _launch(procs, "dr_m2", netuid, v2_heads["dr_m2"], pool_path,
+                                       port, "v2f_dr_m2_back")
+            continue
+        if "first_missed" in miss and "back" not in miss:
+            miss["back"] = idx              # m2 served again
+        if "back" in miss and "resumed" not in miss and champ == miss.get("head"):
+            miss["resumed"] = idx
+        done_miss = ("resumed" in miss) if wired else ("back" in miss)
+        if done_miss and killed_at is not None:
+            break
+
+
+    _v2_flip_checks(report, S, f, rows, act_idx, uid, killed_at, miss, comparable_reveal,
+                    reveal_v2_keys)
+
+
+def _v2_flip_checks(report, S, f, rows, act_idx, uid, killed_at, miss, comparable_reveal,
+                    reveal_v2_keys):
+    from scripts.rehearsal_v2 import close, missing
+
+    if not rows:
+        report.check(S, "validators scored epochs across the flip", False, "no epochs")
+        return
+    v1e = sorted(i for i in rows if i < act_idx)
+    v2e = sorted(i for i in rows if i >= act_idx)
+    report.check(S, "epochs were scored on both sides of the flip", bool(v1e) and bool(v2e),
+                 f"v1={len(v1e)} v2={len(v2e)} (flip at e{act_idx:08d})")
+
+    pv = {i: rows[i]["reveals"][0].get("protocol_version", 1) for i in rows}
+    report.check(S, "v1 rules before the activation boundary, v2 from it",
+                 all(pv[i] == 1 for i in v1e) and all(pv[i] == 2 for i in v2e),
+                 str({rows[i]["epoch_id"]: pv[i] for i in sorted(pv)}))
+
+    def same_epoch(i):
+        return len({e.get("epoch_id") for e in rows[i]["entries"]}) == 1
+
+    agree = [i for i in rows if same_epoch(i)]
+    digests = {i: [r.get("consensus_digest") for r in rows[i]["reveals"]] for i in agree}
+    report.check(S, "val1 and val2 publish the same consensus digest every epoch",
+                 bool(agree) and all(d[0] and d[0] == d[1] for d in digests.values()))
+    report.check(S, "the control (no activation block) shows a different digest",
+                 any(len(d) > 2 and d[2] and d[2] != d[0] for d in digests.values()))
+    diverged = [rows[i]["epoch_id"] for i in agree
+                if comparable_reveal(rows[i]["reveals"][0]) != comparable_reveal(rows[i]["reveals"][1])
+                or rows[i]["entries"][0].get("weights") != rows[i]["entries"][1].get("weights")]
+    report.check(S, "val1 and val2 agree byte for byte on every epoch across the flip",
+                 bool(agree) and not diverged,
+                 f"diverged: {diverged}" if diverged else f"{len(agree)} epochs identical")
+
+    ctl = [i for i in v1e if len(rows[i]["entries"]) > 2 and same_epoch(i)]
+    unchanged = all(
+        rows[i]["entries"][2].get("scores") == rows[i]["entries"][0].get("scores")
+        and rows[i]["entries"][2].get("weights") == rows[i]["entries"][0].get("weights")
+        and not reveal_v2_keys(rows[i]["reveals"][0])
+        for i in ctl
+    )
+    report.check(S, "v1 epochs are unchanged by setting the block (control agrees, no v2 fields)",
+                 bool(ctl) and unchanged, f"{len(ctl)} v1 epochs compared")
+    report.check(S, "v2 epochs publish shared grades",
+                 all(rows[i]["reveals"][0].get("shared_grades") for i in v2e))
+
+    if killed_at is None or killed_at not in rows:
+        report.check(S, "a validator killed mid-epoch resumes identically", False,
+                     "val2 was never caught mid-epoch")
+    else:
+        st = rows[killed_at]["states"]
+        same_state = (st[0].get("records") == st[1].get("records")
+                      and st[0].get("v2") == st[1].get("v2"))
+        report.check(S, "a validator killed mid-epoch resumes identically",
+                     killed_at in agree and rows[killed_at]["epoch_id"] not in diverged
+                     and same_state, f"killed in e{killed_at:08d}")
+
+    why = missing(f, "wiring")
+    names = ("the seat burns until a head completes burn-in",
+             "the first seat goes to the most senior eligible head",
+             "a challenger takes the seat by the margin",
+             "payout: weights sum to 1; two champions split 90/10",
+             "a champion that misses leaves a ghost and its share burns",
+             "the champion resumes on return and is paid at once")
+    if why:
+        for n in names:
+            report.skip(S, n, why)
+    else:
+        _v2_flip_seat_checks(report, S, rows, v2e, uid, miss, names, close)
+
+    if missing(f, "miss_rule"):
+        report.skip(S, "E'': a miss after burn-in decays and restarts burn-in",
+                    missing(f, "miss_rule"))
+    elif miss.get("first_missed") is None:
+        report.check(S, "E'': a miss after burn-in decays and restarts burn-in", False,
+                     "the champion was never taken offline")
+    else:
+        rec = (rows[miss["first_missed"]]["states"][0].get("records") or {}).get(
+            str(uid["dr_m2"])) or {}
+        ev = rec.get("evidence") or {}
+        report.check(S, "E'': a miss after burn-in decays and restarts burn-in",
+                     ev.get("burn_in_n") == 0.0 and float(ev.get("n_total", 0)) > 0
+                     and rec.get("epochs_missed", 0) >= 1,
+                     f"m2 after its miss: n_total={ev.get('n_total')} "
+                     f"burn_in_n={ev.get('burn_in_n')} epochs_missed={rec.get('epochs_missed')}")
+
+
+def _v2_flip_seat_checks(report, S, rows, v2e, uid, miss, names, close):
+    seats = {i: rows[i]["reveals"][0].get("champion") or {} for i in v2e}
+    heads = {i: rows[i]["reveals"][0].get("head_hashes") or {} for i in v2e}
+    weights = {i: {int(k): float(v) for k, v in (rows[i]["entries"][0].get("weights") or {}).items()}
+               for i in v2e}
+    miners = set(uid.values())
+
+    def burn(i):
+        return sum(w for u, w in weights[i].items() if u not in miners)
+
+    first = next((i for i in v2e if seats[i].get("event") == "first"), None)
+    before = [i for i in v2e if first is None or i < first]
+    report.check(S, names[0],
+                 first is not None and first >= v2e[0] + 1
+                 and all(seats[i].get("event") == "empty" and close(burn(i), 1.0, 1e-6)
+                         for i in before),
+                 f"first seat in e{first:08d}" if first else "no head was ever seated")
+    if first is None:
+        return
+    m1h = heads[first].get(str(uid["dr_m1"]))
+    report.check(S, names[1], seats[first].get("champion") == m1h,
+                 f"seated {str(seats[first].get('champion'))[:12]}, m1 serves {str(m1h)[:12]}")
+    take = next((i for i in v2e if i > first and seats[i].get("event") == "take"), None)
+    m2h = heads[take].get(str(uid["dr_m2"])) if take else None
+    report.check(S, names[2], take is not None and seats[take].get("champion") == m2h,
+                 f"take in e{take:08d}" if take else "no take")
+    sums = [round(sum(weights[i].values()), 9) for i in v2e]
+    two = weights[take] if take else {}
+    report.check(S, names[3],
+                 all(close(s, 1.0, 1e-6) for s in sums) and take is not None
+                 and close(two.get(uid["dr_m2"], 0), 0.90, 1e-6)
+                 and close(two.get(uid["dr_m1"], 0), 0.10, 1e-6),
+                 f"after the take: m2={two.get(uid['dr_m2'])} m1={two.get(uid['dr_m1'])}")
+    gone = miss.get("first_missed")
+    if gone is None:
+        report.check(S, names[4], False, "the champion was never taken offline")
+        report.check(S, names[5], False, "the champion was never taken offline")
+        return
+    report.check(S, names[4],
+                 seats[gone].get("event") == "ghost" and burn(gone) >= 0.85 - 1e-6,
+                 f"e{gone:08d}: event={seats[gone].get('event')} burn={burn(gone):.2f}")
+    back = miss.get("resumed")
+    report.check(S, names[5],
+                 back is not None and close(weights[back].get(uid["dr_m2"], 0), 0.90, 1e-6),
+                 f"resumed in e{back:08d}: m2={weights[back].get(uid['dr_m2'])}" if back
+                 else "the champion did not resume within --v2-epochs")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scenario", default="all",
-                    choices=["a", "b", "c", "d", "e", "all"])
+                    choices=["a", "b", "c", "d", "e", "v2_flip", "all"])
     ap.add_argument("--keep-chain", action="store_true",
                     help="Leave the chain container running afterwards")
     ap.add_argument("--epochs", type=int, default=12,
                     help="Epochs for scenario d (default 12)")
+    ap.add_argument("--v2-epochs", type=int, default=16,
+                    help="Most v2 epochs scenario v2_flip runs after the flip (default 16)")
     args = ap.parse_args()
 
     report = Report()

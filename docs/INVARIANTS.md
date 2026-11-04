@@ -2360,6 +2360,11 @@ previous, the one before), never across the field.
   operator with eight passing heads took eight shares, and under seats it
   takes at most the seats it has won.
 - **The burn UID is never a paid seat.** Its share goes to the champion.
+- **A ghost keeps seat 1.** While the champion is gone but its ghost bar
+  stands, seat 1 is the ghost's: its share burns, and seats 2 and 3 keep
+  paying the two champions before it. The seats do not shift down for the
+  ghost window (`v2_epoch.run_v2_epoch`,
+  `test_a_ghost_keeps_seat_one_and_the_other_seats_do_not_shift`).
 - The weight-change cap (`MAX_WEIGHT_DELTA`) still applies to the vector
   afterwards, as in v1, so a change of champion takes several epochs to
   complete.

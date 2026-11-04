@@ -332,3 +332,21 @@ def test_the_window_survives_a_crash_between_its_write_and_the_json(tmp_path):
     save_window(str(tmp_path / "w.npz"), first.window)       # JSON never written
     retry = run(0, {5: oracle}, window=load_window(str(tmp_path / "w.npz"), 48))
     assert (retry.uids, retry.weights) == (first.uids, first.weights)
+
+
+def test_a_ghost_keeps_seat_one_and_the_other_seats_do_not_shift():
+    # Three champions in turn: h5, then h6, then h7. Then h7 goes missing.
+    # During its ghost window seat 1 (85%) burns and seats 2-3 still pay h6
+    # 10% and h5 5%, not h6 5% and nothing for h5.
+    from fugal_subnet.champion import Ghost
+
+    seat = SeatState(champion="h7", champion_since=10, history=("h6", "h5"))
+    w = None
+    for e in range(3):
+        w = run(e, {5: oracle, 6: oracle, 7: oracle}, window=w).window
+    ghost = run(3, {5: oracle, 6: oracle}, window=w, seat=seat,
+                owners={"h5": "hk5", "h6": "hk6", "h7": "hk7"})
+    assert ghost.decision.event == "ghost"
+    assert ghost.decision.state.ghosts == (Ghost("h7", 3 + 3 - 1, "missed"),)
+    weights = dict(zip(ghost.uids, ghost.weights))
+    assert weights == pytest.approx({6: 0.10, 5: 0.05, 0: 0.85})

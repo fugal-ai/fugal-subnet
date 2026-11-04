@@ -198,6 +198,90 @@ def write_head(path: str, seed: int, models=None) -> str:
     return path
 
 
+# Protocol v2 fixtures. The v2 validator scores v2 epochs on the v2 pool, the
+# v2 model list and the v2 token manifest (epoch_plan, routing_protocol), so the
+# flip rehearsal needs all three to be v2's: v2 benchmark names (so
+# select_slice_v2 fills its categories), and heads over three v2 models of
+# different price, built against the v2 manifest.
+def v2_models() -> list[str]:
+    """Three v2 models from the cheap end of the table, rising in price.
+
+    Within a few times of each other in price, so the stub's skill ladder
+    (0.30 / 0.60 / 0.85) decides net value the way a router's accuracy should.
+    Across the whole table (a hundredfold in price) the dearest model's spend,
+    priced at CHAMPION_ACCURACY_VALUE x the champion's own spend, outweighs
+    its accuracy, and no always-dearest challenger could ever take the seat:
+    the rule working, the rehearsal measuring nothing.
+    """
+    from fugal_subnet.routing_protocol import price_table
+
+    table = price_table(2)
+    ranked = sorted(table, key=lambda m: (table[m][1], table[m][0], m))
+    return [ranked[0], ranked[len(ranked) // 6], ranked[len(ranked) // 3]]
+
+
+def write_pool_v2(path: str, per_benchmark: int = 20) -> str:
+    """A v2-shaped fixture pool: every v2 benchmark, prompts distinct from v1's."""
+    import random
+
+    from fugal_subnet.config import BENCHMARK_CATEGORY_V2
+
+    rng = random.Random(20261104)
+    pool = []
+    for bench in sorted(BENCHMARK_CATEGORY_V2):
+        for i in range(per_benchmark):
+            a, b = rng.randint(100, 999), rng.randint(100, 999)
+            pool.append({
+                "question_id": f"dr2_{bench}_{i:03d}",
+                "prompt": f"[v2 {bench}] What is {a} + {b}?",
+                "gold": str(a + b),
+                "grader_id": "numeric_final",
+                "benchmark": bench,
+                "metadata": {},
+            })
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pool, f)
+    return path
+
+
+def _v2_head(path: str, W, b, models) -> str:
+    import numpy as np
+
+    from fugal_subnet.routing_protocol import manifest_path
+    from fugal_subnet.vendor import success_contract as contract
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    np.savez(path, **contract.make_head(W, b, models, json.loads(manifest_path(2).read_text()),
+                                        "synthetic-test-only rehearsal (v2)"))
+    return path
+
+
+def write_head_v2(path: str, seed: int) -> str:
+    """A v2 router head over the three v2 rehearsal models."""
+    import numpy as np
+
+    from fugal_subnet.config import HEAD_HIDDEN_DIM
+
+    models = v2_models()
+    rng = np.random.RandomState(seed)
+    W = (rng.randn(len(models), HEAD_HIDDEN_DIM) * 0.02).astype(np.float32)
+    b = rng.randn(len(models)).astype(np.float32)
+    return _v2_head(path, W, b, models)
+
+
+def biased_head_v2(path: str, model_index: int) -> str:
+    """A v2 head that always routes to one of the three v2 rehearsal models."""
+    import numpy as np
+
+    from fugal_subnet.config import HEAD_HIDDEN_DIM
+
+    models = v2_models()
+    W = np.zeros((len(models), HEAD_HIDDEN_DIM), dtype=np.float32)
+    b = np.full(len(models), -10.0, dtype=np.float32)
+    b[model_index] = 10.0
+    return _v2_head(path, W, b, models)
+
+
 def biased_head(path: str, model_index: int) -> str:
     """A head that always routes to one model — the degenerate strategies."""
     import numpy as np
@@ -245,6 +329,11 @@ def miner_env(extra=None):
     # One pool, one source, both neurons. Also keeps the run off HuggingFace.
     env["FUGAL_BENCHMARK_POOL"] = os.path.abspath(
         os.path.join(RESULTS, "pool.json")
+    )
+    # The v2 pool, for validators scoring v2 epochs (loader.load_pool(2)) and
+    # v2 miners. Written only by scenario v2_flip; unused otherwise.
+    env["FUGAL_BENCHMARK_POOL_V2"] = os.path.abspath(
+        os.path.join(RESULTS, "pool_v2.json")
     )
     # A 120-question fixture is not the pinned pool and must say so, or the
     # loader refuses it (manifest mismatch, below the size floor) — correctly.
@@ -444,12 +533,19 @@ def run_scenarios(args, report: Report) -> int:
     with open(pool_path, encoding="utf-8") as f:
         pool = json.load(f)
     gold_by_prompt = {q["prompt"]: q["gold"] for q in pool}
+    want = ["a", "b", "c", "d", "e"] if args.scenario == "all" else [args.scenario]
+    skill = dict(SKILL)
+    if "v2_flip" in want:
+        # v2 epochs ask v2 questions of v2 models; the stub answers both, with
+        # the same cheap/mid/dear skill ladder.
+        with open(write_pool_v2(os.path.join(RESULTS, "pool_v2.json")), encoding="utf-8") as f:
+            gold_by_prompt.update({q["prompt"]: q["gold"] for q in json.load(f)})
+        skill.update(dict(zip(v2_models(), (0.30, 0.60, 0.85))))
 
     from scripts.setup_local_testnet import StubUpstream
-    stub = StubUpstream(gold_by_prompt, SKILL)
+    stub = StubUpstream(gold_by_prompt, skill)
     stub.start()
 
-    want = ["a", "b", "c", "d", "e"] if args.scenario == "all" else [args.scenario]
     subtensor = bt.Subtensor(network=ENDPOINT)
 
     coldkeys = ["dr_val1", "dr_val2", "dr_m1", "dr_m2", "dr_m3"]
@@ -913,8 +1009,42 @@ def scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub):
 #   the miner holding its axon       the parallel handover; without it the
 #                                    v1 miners are swapped for v2 ones in the
 #                                    last v1 epoch (one VM per hotkey)
+#
+# v2-VALID FIXTURES. v2 epochs are scored on the v2 pool, models and token
+# manifest, so the v2 miners serve a v2 fixture pool (every v2 benchmark,
+# FUGAL_BENCHMARK_POOL_V2) and v2 heads over three v2 models built against the
+# v2 manifest; the stub answers both v1 and v2 models. The embedding cache for
+# the v2 pool is warmed before the activation block is chosen.
+#
+# DETERMINISTIC SENIORITY. v2 seniority is the head's first commit (the copy
+# rule), and v2 miners holding for the flip commit in the same window. So m1
+# and m3's v2 miners start beside the v1 ones, and m2's starts only in the
+# last v1 epoch, after they have committed: m2 is the junior head, and the
+# challenger, every run. Which of m1 and m3 is senior is the chain's call; the
+# first-seat check reads it from the reveal's published copy-rule state.
 
 V2_FLIP_V1_EPOCHS = 2
+
+
+def _warm_v2_embeddings(timeout: int = 2400) -> float:
+    """Fill the miner's embedding cache for the v2 fixture pool, before the
+    activation block is chosen.
+
+    The cache is keyed on the pool's hash, so one warm-up serves every v2
+    miner. Without it the first v2 miner embeds 200 fresh questions on one CPU
+    thread (several minutes) while the clock runs towards an activation block
+    already fixed, and the parallel handover becomes a race against the
+    backbone instead of a test of the hold. Same code path as the miner
+    (neurons.miner._compute_hidden_states on loader.load_pool(2)).
+    """
+    t0 = time.time()
+    code = ("import sys; sys.path.insert(0, '.'); "
+            "from fugal_subnet.benchmarks.loader import load_pool; "
+            "import neurons.miner as m; "
+            "print(m._compute_hidden_states(load_pool(2)).shape)")
+    subprocess.run([sys.executable, "-c", code], env=miner_env(), check=True,
+                   timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return time.time() - t0
 
 
 def _epoch_index_now(subtensor) -> int:
@@ -1004,6 +1134,7 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
         report.check(S, "v1 miners produced proofs for the current epoch", False)
         return
 
+    print(f"    v2 embedding cache warm in {_warm_v2_embeddings():.0f}s", flush=True)
     act_idx = _epoch_index_now(subtensor) + V2_FLIP_V1_EPOCHS + 1
     act = act_idx * bpe
     with_block = {**shortened, "FUGAL_V2_ACTIVATION_BLOCK": str(act)}
@@ -1011,26 +1142,32 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
     print(f"    activation block {act} = boundary of epoch {epoch_id_for_block(act_idx)}",
           flush=True)
 
-    # v2 heads: m1 always the middle model, m2 always the strongest (it must
-    # beat m1 by the margin), m3 an ordinary router (eligible, never seated).
+    # v2 heads, over three v2 models against the v2 manifest: m1 always the
+    # middle model, m2 always the strongest (it must beat the first champion
+    # by the margin), m3 an ordinary router.
+    pool_v2 = os.path.join(RESULTS, "pool_v2.json")
     v2_heads = {
-        "dr_m1": biased_head(os.path.join(RESULTS, "head_v2f_v2_1.npz"), 1),
-        "dr_m2": biased_head(os.path.join(RESULTS, "head_v2f_v2_2.npz"), 2),
-        "dr_m3": write_head(os.path.join(RESULTS, "head_v2f_v2_3.npz"), seed=24),
+        "dr_m1": biased_head_v2(os.path.join(RESULTS, "head_v2f_v2_1.npz"), 1),
+        "dr_m2": biased_head_v2(os.path.join(RESULTS, "head_v2f_v2_2.npz"), 2),
+        "dr_m3": write_head_v2(os.path.join(RESULTS, "head_v2f_v2_3.npz"), seed=24),
     }
     uid = {ck: uid_of(subtensor, netuid, wallets[ck]) for ck in ("dr_m1", "dr_m2", "dr_m3")}
     serving: dict[str, tuple] = {ck: procs[-3 + i] for i, (ck, _, _) in enumerate(v1)}
     handed_over = False
 
+    hold_env = {"FUGAL_V2_ACTIVATION_BLOCK": str(act)}
+    ports = {ck: port for ck, _, port in v1}
     if f["miner_hold"].present:
-        # Parallel handover: the v2 miner, started now beside the v1 one with
-        # the same hotkey, embeds and holds its axon; it commits in the epoch
-        # before the flip and serves from it.
-        _launch_sequential(procs, netuid, pool_path,
-                           [(ck, v2_heads[ck], port + 10, f"v2f_{ck}_v2")
-                            for ck, _, port in v1],
-                           extra_env={"FUGAL_V2_ACTIVATION_BLOCK": str(act)})
-        v2_parallel = {ck: procs[-3 + i] for i, (ck, _, _) in enumerate(v1)}
+        # Parallel handover: each v2 miner, started beside the v1 one with the
+        # same hotkey, embeds and holds its axon; it commits after the last v1
+        # boundary and serves from the flip. m1 and m3 start now; m2 starts in
+        # the last v1 epoch, after they have committed, so its head is the
+        # junior one by first commit (v2 seniority) and it is the challenger.
+        _launch_sequential(procs, netuid, pool_v2,
+                           [(ck, v2_heads[ck], ports[ck] + 10, f"v2f_{ck}_v2")
+                            for ck in ("dr_m1", "dr_m3")],
+                           extra_env=hold_env)
+        v2_parallel = {"dr_m1": procs[-2], "dr_m3": procs[-1]}
     else:
         report.skip(S, "parallel handover: the v2 miner holds its axon until the flip",
                     missing(f, "miner_hold") + " (the rehearsal swaps miners in the last "
@@ -1079,16 +1216,23 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
               f"seat={(r1.get('champion') or {}).get('event', '-')} "
               f"weights={entries[0].get('weights')}", flush=True)
 
-        # Handover in the last v1 epoch.
+        # Handover in the last v1 epoch. That epoch has been scored above, with
+        # every v1 miner, before any v1 miner stops: no v1 epoch is lost.
         if idx >= act_idx - 1 and not handed_over:
-            _stop(list(serving.values()))
             if v2_parallel:
+                _launch_sequential(procs, netuid, pool_v2,
+                                   [("dr_m2", v2_heads["dr_m2"], ports["dr_m2"] + 10,
+                                     "v2f_dr_m2_v2")], extra_env=hold_env)
+                v2_parallel["dr_m2"] = procs[-1]
+                _stop(list(serving.values()))
                 serving = dict(v2_parallel)
             else:
-                _launch_sequential(procs, netuid, pool_path,
-                                   [(ck, v2_heads[ck], port, f"v2f_{ck}_v2")
-                                    for ck, _, port in v1])
-                serving = {ck: procs[-3 + i] for i, (ck, _, _) in enumerate(v1)}
+                _stop(list(serving.values()))
+                _launch_sequential(procs, netuid, pool_v2,
+                                   [(ck, v2_heads[ck], ports[ck], f"v2f_{ck}_v2")
+                                    for ck in ("dr_m1", "dr_m3", "dr_m2")],
+                                   extra_env=hold_env)
+                serving = {"dr_m1": procs[-3], "dr_m3": procs[-2], "dr_m2": procs[-1]}
             handed_over = True
             continue
         if idx < act_idx:
@@ -1107,8 +1251,8 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
         if "stopped" in miss and "first_missed" not in miss:
             miss["first_missed"] = idx
             port = 8162 if v2_parallel else 8152
-            serving["dr_m2"] = _launch(procs, "dr_m2", netuid, v2_heads["dr_m2"], pool_path,
-                                       port, "v2f_dr_m2_back")
+            serving["dr_m2"] = _launch(procs, "dr_m2", netuid, v2_heads["dr_m2"], pool_v2,
+                                       port, "v2f_dr_m2_back", extra_env=hold_env)
             continue
         if "first_missed" in miss and "back" not in miss:
             miss["back"] = idx              # m2 served again
@@ -1167,6 +1311,13 @@ def _v2_flip_checks(report, S, f, rows, act_idx, uid, killed_at, miss, comparabl
                  bool(ctl) and unchanged, f"{len(ctl)} v1 epochs compared")
     report.check(S, "v2 epochs publish shared grades",
                  all(rows[i]["reveals"][0].get("shared_grades") for i in v2e))
+    last_v1 = act_idx - 1
+    lv = (rows.get(last_v1) or {}).get("entries") or [{}]
+    report.check(S, "no v1 epoch is lost in the handover (the last v1 epoch verifies every v1 miner)",
+                 last_v1 in rows and lv[0].get("n_heads_valid") == 3
+                 and not lv[0].get("n_heads_invalid"),
+                 f"e{last_v1:08d}: valid={lv[0].get('n_heads_valid')} "
+                 f"invalid={lv[0].get('n_heads_invalid')}")
 
     if killed_at is None or killed_at not in rows:
         report.check(S, "a validator killed mid-epoch resumes identically", False,
@@ -1181,7 +1332,7 @@ def _v2_flip_checks(report, S, f, rows, act_idx, uid, killed_at, miss, comparabl
 
     why = missing(f, "wiring")
     names = ("the seat burns until a head completes burn-in",
-             "the first seat goes to the most senior eligible head",
+             "the first seat goes to the most senior eligible head (by first commit)",
              "a challenger takes the seat by the margin",
              "payout: weights sum to 1; two champions split 90/10",
              "a champion that misses leaves a ghost and its share burns",
@@ -1228,9 +1379,28 @@ def _v2_flip_seat_checks(report, S, rows, v2e, uid, miss, names, close):
                  f"first seat in e{first:08d}" if first else "no head was ever seated")
     if first is None:
         return
-    m1h = heads[first].get(str(uid["dr_m1"]))
-    report.check(S, names[1], seats[first].get("champion") == m1h,
-                 f"seated {str(seats[first].get('champion'))[:12]}, m1 serves {str(m1h)[:12]}")
+    # Seniority is the head's first commit (copy rule). m1 and m3 commit in the
+    # same hold window, so which of them is senior is decided by the chain; the
+    # expectation is read from the copy-rule state the reveal publishes, among
+    # the heads served by their owners that epoch.
+    from fugal_subnet import copy_rule
+    r_first = rows[first]["reveals"][0]
+    block = (r_first.get("v2_state") or {}).get(copy_rule.REVEAL_KEY)
+    if block is None:
+        report.check(S, names[1], False,
+                     f"e{first:08d}'s reveal carries no v2_state['{copy_rule.REVEAL_KEY}']: "
+                     "cannot tell which head is senior by first commit")
+        return
+    state = copy_rule.CopyState.from_reveal(block)
+    owners_now = [heads[first].get(u) for u, v in (r_first.get("copy_verdicts") or {}).items()
+                  if v == "owner" and heads[first].get(u)]
+    expected = min(owners_now, key=lambda h: (copy_rule.v2_seniority(state, h), h),
+                   default=None)
+    report.check(S, names[1], expected is not None and seats[first].get("champion") == expected,
+                 f"seated {str(seats[first].get('champion'))[:12]}, most senior owner "
+                 f"{str(expected)[:12]}")
+    first_uid = next((int(u) for u, h in heads[first].items()
+                      if h == seats[first].get("champion")), None)
     take = next((i for i in v2e if i > first and seats[i].get("event") == "take"), None)
     m2h = heads[take].get(str(uid["dr_m2"])) if take else None
     report.check(S, names[2], take is not None and seats[take].get("champion") == m2h,
@@ -1240,8 +1410,9 @@ def _v2_flip_seat_checks(report, S, rows, v2e, uid, miss, names, close):
     report.check(S, names[3],
                  all(close(s, 1.0, 1e-6) for s in sums) and take is not None
                  and close(two.get(uid["dr_m2"], 0), 0.90, 1e-6)
-                 and close(two.get(uid["dr_m1"], 0), 0.10, 1e-6),
-                 f"after the take: m2={two.get(uid['dr_m2'])} m1={two.get(uid['dr_m1'])}")
+                 and first_uid is not None and close(two.get(first_uid, 0), 0.10, 1e-6),
+                 f"after the take: m2={two.get(uid['dr_m2'])} "
+                 f"first champion (uid {first_uid})={two.get(first_uid)}")
     gone = miss.get("first_missed")
     if gone is None:
         report.check(S, names[4], False, "the champion was never taken offline")

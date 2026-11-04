@@ -39,6 +39,52 @@ restarts burn-in (`apply_miss_v2`, `accumulate_epoch_v2`, `burn_in_complete`).
 Pre-existing records migrate lazily (the counter reads as `n_total`). v1
 epochs are unchanged. INVARIANTS: "I3 — the v2 miss rule (E'')".
 
+### Added — v2 slicer: explicit benchmark weights inside a category
+
+`select_slice_v2` and `select_explore_set_v2` take an optional `bench_weight` map. Within a
+category a benchmark's share is its weight over the category total (default: pool size, as
+before). The approved v2 hard category weights an open multiple-choice set and integer
+olympiad math 50/50, rather than by raw pool size. A category that weights any benchmark must
+weight all of them (a partial map is refused). The share cap and the exploration draw use the
+same weighted shares, so expected exploration share still equals expected scored share.
+
+### Added — protocol v2 slicer: category-first allocation; exploration matches the scored mix (not yet wired; lands with v2)
+
+- `select_slice_v2` allocates the scored slice by category at published targets (largest
+  remainder, no floor; ties keyed on the nonce), then by pool share within each category under
+  the existing share cap (diligence finding 6), applied within the category.
+- `select_explore_set_v2` allocates exploration the same way by category, and draws each slot's
+  benchmark by a nonce-keyed weighted draw on pool share within the category. A benchmark's
+  expected exploration share now equals its expected scored share at any size. Measured on
+  mainnet with the v1 sampler: 15 exploration slots split five benchmarks 1:1:1:5:7, putting a
+  benchmark that is 1.7% of the scored slice at 6.7% of exploration and over-weighting it ~4x
+  in the reference frame.
+- `mix_weights(scored, explored)` returns the per-benchmark correction (scored share ÷
+  exploration share) for an epoch, so the frame can weight what 15 slots observed back to the
+  scored mix.
+- The v1 `select_slice` is unchanged. Dispatch by protocol version, and the benchmark→category
+  map and targets, arrive with the v2 benchmark list.
+
+### Changed — protocol v2 harness: a 16k answer budget, nested call deadlines, 403 as an operator status (image change; lands with v2)
+
+- The harness asks for `max_tokens` = `HARNESS_MAX_TOKENS` (16384; was 2048). Measured on a
+  320-question × 17-model matrix: at 2048 most long-reasoning models' wrong answers were
+  cut-off answers; at 8192, 4.1% of all answers still stopped at the cap, nearly all graded
+  wrong. Exploration (the reference frame's only source in v2) runs on this same harness,
+  so miners and the frame ask for the same answer.
+- Call deadlines nest so each layer reports before the next gives up: one upstream attempt
+  ≤ the proxy's per-call deadline (`PROXY_CALL_DEADLINE_S` 420 s, was 180 s) < the harness's
+  wait (`HARNESS_CALL_TIMEOUT_S` 450 s, was 200 s); no new retry after
+  `PROXY_RETRY_BUDGET_S` (300 s, was 120 s). A 16k answer from a slow model takes ~330 s.
+- Each result carries `latency_ms`: the harness's wall time for the call, retries included,
+  attested and hashed. It's present only when set, so v1 proofs hash unchanged. The v2 time
+  gate needs it.
+- 403 joins 401/402 in `PROXY_OPERATOR_STATUS`: never retried, logged as
+  `OPERATOR ACTION REQUIRED` (a key's total spend limit returns 403 on every call).
+- Not yet in this change: the per-model reasoning setting (`reasoning.effort` or
+  `reasoning.max_tokens`, one per model) and the startup output-length self-test. Both need
+  the v2 model list (`data/models.json` is hash-pinned) and follow in that PR.
+
 ### Added — protocol v2 shared grades (from the activation block)
 
 `fugal_subnet/shared_grades.py`: one coldkey-median grade per (question,

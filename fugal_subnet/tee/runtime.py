@@ -22,6 +22,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from threading import Thread
 from urllib.request import Request, urlopen
 
+from fugal_subnet.config import PROXY_CALL_DEADLINE_S
+
 logger = logging.getLogger(__name__)
 
 # Upstream the metering proxy forwards to. Configurable because operators
@@ -43,9 +45,15 @@ _OPENROUTER_BASE = os.getenv(
 # 401/402 are never retried: they mean the operator's key or balance, and
 # they are logged as such so a payment problem is never read as model quality.
 PROXY_RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
-PROXY_OPERATOR_STATUS = {401: "unauthorized key", 402: "payment required: the account balance is exhausted"}
+PROXY_OPERATOR_STATUS = {
+    401: "unauthorized key",
+    402: "payment required: the account balance is exhausted",
+    # A key with a total spend limit returns 403 once the limit is reached, on
+    # every call: an operator problem exactly like 402, never transient.
+    403: "forbidden: the key's spend limit is reached or the key is disabled",
+}
 PROXY_MAX_ATTEMPTS = 3
-PROXY_RETRY_BUDGET_S = 120.0
+PROXY_RETRY_BUDGET_S = 300.0   # no new attempt after this; the call itself ends by PROXY_CALL_DEADLINE_S
 PROXY_MAX_WAIT_S = 20.0
 
 
@@ -69,9 +77,9 @@ def _fetch_upstream(req, model_id: str) -> bytes:
     attempt = 0
     while True:
         attempt += 1
-        remaining = 180.0 - (time.time() - started)
+        remaining = PROXY_CALL_DEADLINE_S - (time.time() - started)
         try:
-            with urlopen(req, timeout=max(20.0, min(180.0, remaining))) as resp:
+            with urlopen(req, timeout=max(20.0, min(PROXY_CALL_DEADLINE_S, remaining))) as resp:
                 return resp.read()
         except HTTPError as e:
             code = e.code

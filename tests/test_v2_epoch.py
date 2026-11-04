@@ -165,7 +165,11 @@ def test_a_champion_whose_owner_committed_another_head_is_retired():
 def test_the_reveal_carries_cells_tokens_failures_and_the_seat():
     r = run(0, {5: oracle})
     rv = r.reveal
-    assert {"shared_grades", "failed", "champion"} <= set(rv)
+    assert {"shared_grades", "failed", "champion", "v2_state"} <= set(rv)
+    st = rv["v2_state"]
+    assert set(st) == {"seat", "owners", "serving", "burn_in"}
+    assert st["serving"] == {"h5": 5} and st["owners"] == {"h5": "hk5"}
+    assert st["burn_in"] == {"h5": 10_000.0} and st["seat"]["champion"] == "h5"
     assert all({"question_id", "model", "grade", "completion_tokens"} <= set(c)
                for c in rv["shared_grades"])
     assert rv["champion"]["champion"] == "h5" and rv["failed"] == {"5": []}
@@ -227,3 +231,14 @@ def test_a_missed_ghost_is_upgraded_when_its_owner_commits_a_new_head():
     moved = run(2, {}, window=lost.window, seat=lost.decision.state, owners=lost.owners,
                 commitments={"hk5": "a-new-head"})
     assert moved.decision.state.ghosts[0].reason == "retired"
+
+
+def test_v2_state_takes_extra_fields_but_not_reserved_ones():
+    from fugal_subnet.v2_epoch import v2_state_for_reveal
+
+    block = v2_state_for_reveal(seat=SeatState(), owners={}, serving={}, burn_in={},
+                                extra={"first_commit": {"h": 7}})
+    assert block["first_commit"] == {"h": 7}
+    with pytest.raises(ValueError):
+        v2_state_for_reveal(seat=SeatState(), owners={}, serving={}, burn_in={},
+                            extra={"seat": {}})

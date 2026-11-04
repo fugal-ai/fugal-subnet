@@ -621,8 +621,9 @@ it from a single provider, so a 429 there has no fallback. Measured:
 - Mainnet e00026193 (2026-11-04), a head that routes ~17% of questions to it,
   on `image-v2026.11.03b` (no retries): 39 of 300 scored calls failed (13%).
   The two other heads scored that epoch never route to it and had 0 failed calls.
-- `image-v2026.11.03c` retries 429s with backoff, which cuts the failures but
-  does not remove them.
+- Mainnet e00026194 (2026-11-04), the same head on `image-v2026.11.03c`,
+  which retries 429s with backoff: 24 of 315 calls failed (7.6%), every one to
+  this model. Retries cut the failures; they do not remove them.
 
 Treat the model's availability as part of its accuracy. If your training labels
 come from calls that succeeded, they overstate it. Either train on labels that

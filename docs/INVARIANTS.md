@@ -28,7 +28,7 @@ here, and a check that enforces it.**
 |---|---|---|
 | **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 12 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
-| **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), the v2 champion rule (`champion.py`, `tests/test_champion.py`; constant policies are no longer zero by construction in v2, see its entry), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
+| **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), the v2 copy rule (`copy_rule.py`, `tests/test_copy_rule.py`), the v2 champion rule (`champion.py`, `tests/test_champion.py`; constant policies are no longer zero by construction in v2, see its entry), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time, coldkey-median shared grades from v2 (`tests/test_shared_grades.py`) |
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior **and no external dependency** can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. Every call that leaves the process on the epoch path is bounded. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py`, `tests/test_collateral_timeout.py`, `check_safety_invariants.check_external_calls_bounded` |
@@ -1859,9 +1859,10 @@ Residual: a small subnet gathers distinct observations no more slowly than a
 large one now — exploration slots per epoch are fixed — but a field below a
 handful of honest operators per question loses the median's protection (I9).
 
-### I4 — seniority squatting (residual, accepted)
+### I4 — seniority squatting (residual, accepted; v1 only)
 
-Dedup seniority is `commitments.seniority_key(registration block, commitment
+Superseded from protocol v2 by first-commit seniority (the v2 copy rule).
+Under v1, dedup seniority is `commitments.seniority_key(registration block, commitment
 block)`, both read from chain state at the epoch boundary. A squatter who
 registered *before* its victim therefore still holds earlier seniority. This is
 far weaker than the copy-and-outrank bug it replaced — it requires predicting
@@ -2317,7 +2318,8 @@ spend) and per head only its routing and its failed calls, so it is bounded
 and reconstructable from the published reveals.
 
 **The bar is never the field.** What a challenger must beat is the champion
-or its ghost. No other head's presence moves it (I4).
+or its ghost and, under the copy rule (next entry), the senior seat holders.
+No junior head's presence moves it (I4).
 
 **Determinism (I1).** Each NV_i is computed elementwise and quantised to an
 integer number of `NV_UNITS_PER_POINT` units, so every sum is exact on any
@@ -2360,6 +2362,11 @@ previous, the one before), never across the field.
   operator with eight passing heads took eight shares, and under seats it
   takes at most the seats it has won.
 - **The burn UID is never a paid seat.** Its share goes to the champion.
+- **A ghost keeps seat 1.** While the champion is gone but its ghost bar
+  stands, seat 1 is the ghost's: its share burns, and seats 2 and 3 keep
+  paying the two champions before it. The seats do not shift down for the
+  ghost window (`v2_epoch.run_v2_epoch`,
+  `test_a_ghost_keeps_seat_one_and_the_other_seats_do_not_shift`).
 - The weight-change cap (`MAX_WEIGHT_DELTA`) still applies to the vector
   afterwards, as in v1, so a change of champion takes several epochs to
   complete.
@@ -2522,6 +2529,185 @@ so the two model spaces never meet in one window.
 
 Enforced by `tests/test_v2_epoch_inputs.py` and the `epoch_plan_v2` stage of
 `scripts/check_determinism.py`.
+
+### I3/I4 — the v2 copy rule: a head must beat every senior seat holder by the margin (v2 release; from the activation block)
+
+v1 recognised copies by resemblance (`dedup.py`: routing agreement ≥ 0.99,
+relative weight distance < 0.2, and the epsilon clause at 95% agreement and
+0.5% of composite) and ranked seniority by registration block
+(`commitments.seniority_key`). Measured offline, neither holds up. A lightly
+perturbed copy keeps its source's quality while sitting further from it (agreement ~0.87, distance ~0.29) than two
+honest refits on the same data sit from each other (0.74–0.83), so no
+threshold separates them; the epsilon is far below the sampling noise
+between two miners; and registration-first seniority makes an older hotkey
+that copies a newer head the senior one. From protocol v2
+(`fugal_subnet/copy_rule.py`, enforced inside `champion.seat_step`):
+
+- **Seniority is the head's first commit.** A head's age is the block at
+  which its exact weights hash was first committed by any hotkey on the
+  subnet, read from the commitments pinned at each boundary. Ties inside one
+  block go to the lowest sha256("fugal-v2-owner:" ‖ hash ‖ ":" ‖ coldkey),
+  which no hotkey address steers. A head never seen committed is junior to
+  every head that was.
+- **A hash belongs to the coldkey that first committed it** (`classify`).
+  The same hash under another coldkey is an exact copy and is ineligible; a
+  hash a copier still commits stays on record as the author's, so a copier
+  never inherits its age. Ownership is by coldkey, so an operator whose
+  hotkey is pruned and re-registers keeps its head. A chain coldkey swap
+  moves the first committer's hotkey to a new coldkey; ownership follows that
+  hotkey (`is_exact_copy` is False for it, and `observe` moves the record),
+  while any other hotkey serving the hash under a coldkey that is not the
+  owner is still a copy. Two hotkeys of the owner
+  serving one hash are one head: the earliest commitment (then hotkey, then
+  UID) is canonical and the other earns nothing.
+- **A junior must beat every senior seat holder by the champion margin.**
+  To take a seat, first or by challenge, a head must beat each senior SEAT
+  HOLDER in the comparison set by `CHAMPION_MARGIN` on the same paired test
+  (`paired_test`, at least `CHAMPION_MIN_PAIRED_QUESTIONS` paired questions).
+  There is no second margin and no resemblance test: a copy is simply a head
+  that is not measurably better than its source, whatever it looks like. The
+  ranking among heads that qualify is still their margin over the champion or
+  its ghost; the copy rule is pass/fail. The v1 clauses stay v1-only.
+  **Seat holders** (`seat_holders`) are the heads the payout pays: the
+  champion and the former champions in seats 2–3, plus the champion's
+  ghosts. Only seats pay, so a copy of a head that holds no seat earns
+  nothing anyway; barring it against every older head would turn one 90%
+  test into many and let noise against weak seniors block a genuinely better
+  head.
+- **The comparison set** (from which the seat holders are taken) is every
+  head with answers in the champion
+  window that is live this epoch; or that its owner still commits and that
+  was scored within `CHAMPION_GHOST_OFF` epochs; or that is **retired** (its
+  owner no longer commits it: it committed a different head, or its hotkey
+  left the subnet) within `CHAMPION_GHOST_RETIRE` epochs of its FIRST
+  retirement. These ghost incumbents are unpaid. They exist so that perturbed
+  copies of a retired seat holder cannot become incumbents the epoch its
+  author moves on: a
+  copy that served alongside the head has to beat it on that pairing, and a
+  copy that only started after it retired has no pairing and is barred until
+  the ghost expires. After that a copy can win, if it is then the best live
+  router; that is accepted.
+
+**What the copy rule costs honest miners, stated plainly.** A head that only
+ties a senior seat holder earns nothing, even if it is independent. Rewarding ties
+is what made copying pay.
+
+**I4: a senior seat holder can delay a junior, and only one can.** The bar
+now includes seats 2–3 as well as the champion, so their presence can stop a
+junior taking a seat. It is bounded. Only seat holders committed before the
+junior count; a head never scored has no evidence and bars nobody, so committing a
+hash early buys nothing; a head that misses bars for at most
+`CHAMPION_GHOST_OFF` epochs after its last scored epoch, and every epoch it
+does serve adds to the pairing, after which a worse senior is beaten; and a
+retired head bars for at most `CHAMPION_GHOST_RETIRE` epochs over its
+lifetime, because the retirement epoch is the first one and re-committing the
+hash does not restart it. A head that retires must have been scored, so each
+such delay costs its operator a served epoch.
+
+**Accepted residual: front-running a commitment (until commitments are bound
+to the coldkey).** A commitment is the plain public weights hash. Whoever
+gets a hash on chain first is its first committer and its owner, so an
+operator who sees an author's commitment before it lands (or lands in the
+same block) can claim the hash. Bounded: the claimant cannot serve the head
+until the author serves it, and the author can re-commit a retrained head.
+A commitment bound to the coldkey (`sha256(weights_hash ‖ coldkey)`) closes
+it and is planned for a later release.
+
+**State and rebuild (I1, I2).** First-commit blocks, owners and retirements
+are history, so every validator must hold the same record. The state is a
+fold (`observe`) over the boundary snapshots the validator already reads
+pinned at the boundary block (hotkeys registered at the boundary, each with
+its owning coldkey), so it depends only on chain state. It is published
+after every epoch as plain JSON (`CopyState.to_reveal`: `epoch`,
+`first_commit`, `ownership`, `first_hotkey`, `active`, `retired_at`) in the reveal's single
+v2 state block, and a validator that loses its state loads the newest
+reveal's (`rebuild_from_reveals`, or `from_rebuild` on the result of
+`v2_rebuild.rebuild_v2_from_reveals`, which carries it verbatim) or re-derives
+it from an archive node (`replay`). Bounds: a commitment is accepted only as 64 lowercase hex
+characters with ss58-length hotkey and coldkey and a block in
+(0, boundary]; a snapshot is capped at `MAX_COMMITMENTS` entries in
+(block, hotkey) order; a record is kept only while some hotkey commits the
+hash or while it is a ghost, so the state is bounded by hotkeys ×
+(`CHAMPION_GHOST_RETIRE` + 1); and a loaded state is validated field by field
+and refused above `MAX_STATE_HEADS`. Every function is order-independent, and
+the `copy_rule` stage of `scripts/check_determinism.py` feeds the snapshot in
+reverse under `--perturb`.
+
+Enforced by `tests/test_copy_rule.py` and the `copy_rule` stage of
+`scripts/check_determinism.py`.
+
+### I9 — v2: the frame is estimated on the scored mix (v2 release; from the activation block)
+
+Exploration draws a handful of slots an epoch, so its benchmark mix rounds
+away from the scored slice's (measured on v1: one benchmark was 6.7% of
+exploration against 1.7% of the scored slice), and the frame's per-model
+accuracy and verbosity were estimates of the wrong mix. From protocol v2 each
+aggregated exploration observation (one per (question, model), I9) is
+weighted by its benchmark's scored share over its exploration share that
+epoch (`slicer.mix_weights`, the same epoch's scored slice and exploration
+set), and the frame keeps **weighted sums** (`successes_w`, `trials_w`,
+`prompt_tokens_w`, `completion_tokens_w`) beside the raw ones. Accuracy and
+verbosity read the weighted sums; the **raw trial count is never weighted**,
+because it counts how much has been measured, and that is what the
+frontier's confidence reads. A v1 frame has no weighted sums and serialises
+byte for byte as before; once a frame is weighted every later epoch keeps
+the weighted sums current.
+
+In v2 the frame is informational (I3/I4, "v2 pays from the paired rule
+alone"): this keeps the exploration detectors and the published diagnostics
+honest, and nothing that pays reads it. The weights are published in the v2
+reveal (`frame_mix_weights`, and `explore_benchmarks` for each explored
+question), so a rebuild from reveals reproduces them.
+
+Enforced by `tests/test_frame_mix_v2.py`.
+
+### I1 — v2 state is rebuilt from reveals: snapshot + replay (v2 release; from the activation block)
+
+A validator that lost its state, or has just joined, must reach the v2 state
+its peers hold, or it seats a different champion (I1). The v2 decision state
+cannot be replayed from reveals alone: some of what decided it (dedup
+verdicts, per-head evidence, chain commitments, seniority) is not in them. So
+`fugal_subnet/v2_rebuild.rebuild_v2_from_reveals` rebuilds it in two parts,
+ordered by epoch id and never by filesystem order:
+
+- **Snapshot.** The seat, head owners, the UID chosen for each head, each
+  head's E'' burn-in progress, and every later v2 field (the copy rule's
+  state) are read from the `v2_state` block of the newest v2 reveal.
+- **Replay.** The comparison window is re-derived from the last
+  `CHAMPION_WINDOW_EPOCHS` v2 reveals: each epoch's questions, its
+  `shared_grades` (grades and median tokens) at the pinned prices, and each
+  served head's routing and failed calls. The reference frame's rebuild
+  applies the same v2 mix weights (`frame_mix_weights`,
+  `explore_benchmarks`).
+
+The validator uses it at startup when it has no local v2 state, or has a
+seat but lost its window, and `FUGAL_FRAME_BOOTSTRAP` names a directory of
+reveals. Per-head v1 evidence is not rebuilt (as before); only the burn-in
+counter is restored, into fresh records.
+
+**Exact only when the reveals are current.** Published reveals lag by the
+commit-reveal hold. A rebuild is exact when the newest reveal is the epoch
+just before the one the validator resumes at (its own reveals after a lost
+state, or a peer's once the hold has passed). If they lag by k epochs, the
+window lacks those epochs and the seat is as of the newest reveal; the
+validator then stays degraded (hold, resume and ghosts only; no first or take
+decision) until its window has refilled, and says so. Start a rebuilding
+validator after the hold.
+
+**The trust model, stated plainly.** A validator that rebuilds trusts the
+publishing validator's snapshot, as it trusts a frame rebuilt from someone
+else's reveals. That trust is bounded: every reveal's sha256 is committed on
+chain by the validator that published it, so a rebuilt snapshot is pinned to
+a specific, attributable artifact that cannot be altered after the fact; and
+the window part is not trusted at all, because anyone can re-derive it from
+the cells and routing every reveal carries. Rebuilding from your own reveals
+after a lost disk is self-trust.
+
+Enforced by `tests/test_v2_rebuild.py`: the rebuild equals the live state
+after 30 epochs with intermittent misses, a validator continuing from a
+rebuild produces the same next epoch (weights and reveal) as one continuing
+from its own state, reveal order does not matter, later v2 fields are carried
+verbatim, and the frame rebuild reproduces the weighted frame.
 
 ## Attack surface by actor
 

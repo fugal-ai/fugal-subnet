@@ -411,8 +411,18 @@ def run_v2_epoch(
         acc, n = window_accuracy(new_window, h)
         if c.eligible and n > 0 and acc >= params.min_accuracy:
             payable.add(h)
+    # Seat 1 is the champion's, and a champion that is gone but still barring
+    # (a ghost) keeps it: its share burns, and seats 2 and 3 keep paying the
+    # two champions before it. The ghost is the most recent former champion,
+    # so without this the history would shift down a seat for the ghost window
+    # (the previous champion dropping from 10% to 5%, the third seat to 0).
+    ghost_hashes = {g.head_hash for g in decision.state.ghosts}
+    seat_one = decision.champion
+    history = tuple(decision.state.history)
+    if seat_one is None and history and history[0] in ghost_hashes:
+        seat_one, history = history[0], history[1:]
     uids, weights = seat_weights(
-        decision.champion, decision.state.history, serving, payable,
+        seat_one, history, serving, payable,
         shares=shares, paid_fraction=1.0, burn_uid=burn_uid,
     )
     reveal = {

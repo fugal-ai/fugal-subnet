@@ -50,6 +50,7 @@ STAGES = (
     "routing_decisions",
     "proof",
     "verification",
+    "copy_rule",
     "shared_grades",
     "frame",
     "scores",
@@ -221,6 +222,37 @@ def run_pipeline(seed: int) -> dict:
         routing[uid] = [r.routed_model for r in proof.scored_results]
         head_hashes[uid] = proof.weights_hash
 
+    # Protocol v2's copy rule: first-commit seniority and coldkey ownership,
+    # folded over two boundary snapshots. Under --perturb the snapshot is fed
+    # in reverse, so a state that depended on chain-read order would show.
+    # Includes an exact copy under another coldkey, a same-block tie between
+    # two coldkeys, and a retirement.
+    from fugal_subnet import copy_rule
+
+    def _snapshot(epoch_n):
+        out = [
+            copy_rule.Commitment(f"hk{uid}", f"coldkey-{uid % 3}", head_hashes[uid], 100 + uid)
+            for uid in sorted(head_hashes)
+            if not (epoch_n == 2 and uid == 2)
+        ]
+        out.append(copy_rule.Commitment("hk-copy", "coldkey-x", head_hashes[1], 150))
+        out.append(copy_rule.Commitment("hk-tie", "coldkey-y", head_hashes[3], 103))
+        if epoch_n == 2:
+            out.append(copy_rule.Commitment(
+                "hk2", "coldkey-2", hashlib.sha256(b"retrained").hexdigest(), 900))
+        return list(reversed(out)) if os.environ.get("FUGAL_PERTURB") else out
+
+    copy_state = copy_rule.CopyState()
+    for epoch_n in (1, 2):
+        copy_state = copy_rule.observe(copy_state, epoch_n, 1000 * epoch_n,
+                                       _snapshot(epoch_n), ghost_retire=24)
+    copy_out = {
+        "state": copy_state.to_reveal(),
+        "classify": copy_rule.classify(copy_state, {
+            i: c for i, c in enumerate(sorted(_snapshot(2), key=lambda c: c.hotkey))
+        }),
+    }
+
     # Protocol v2's shared grades: one coldkey-median grade per (question,
     # model) cell of the scored slice. Fed in REVERSE uid order, the opposite
     # of the frame below, so a result that depended on proof order would show.
@@ -337,6 +369,7 @@ def run_pipeline(seed: int) -> dict:
         "routing_decisions": _digest(routing),
         "proof": _digest(proofs),
         "verification": _digest(verdicts),
+        "copy_rule": _digest(copy_out),
         "shared_grades": _digest(shared),
         "frame": _digest(frame.to_dict()),
         "scores": _digest(scores_out),

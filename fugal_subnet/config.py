@@ -558,6 +558,14 @@ V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
 # head takes the empty seat.
 CHAMPION_ACCURACY_VALUE = float(os.getenv("FUGAL_CHAMPION_ACCURACY_VALUE", "30"))
 CHAMPION_HARD_WEIGHT = float(os.getenv("FUGAL_CHAMPION_HARD_WEIGHT", "2"))
+# The anchor that prices one extra correct answer: V = CHAMPION_ACCURACY_VALUE
+# x this model's expected spend per question, from the reviewed v2 token
+# manifest (mean input and output tokens) at the pinned v2 prices
+# (v2_epoch.anchor_spend_per_question). Pinned, so the exchange rate between
+# accuracy and cost does not depend on who holds the seat: with the
+# champion's own spend as the anchor, a cheap champion made every pricier,
+# more accurate router pay for its spend at the cheap champion's rate.
+CHAMPION_ANCHOR_MODEL = os.getenv("FUGAL_CHAMPION_ANCHOR_MODEL", "anthropic/claude-fable-5.1")
 CHAMPION_MARGIN = float(os.getenv("FUGAL_CHAMPION_MARGIN", "0.2"))
 # 90% rather than a lower confidence because a slice is 300 questions an epoch.
 CHAMPION_CONFIDENCE = float(os.getenv("FUGAL_CHAMPION_CONFIDENCE", "0.90"))
@@ -754,6 +762,7 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_MODEL_PRICES",
     "FUGAL_CHAMPION_ACCURACY_VALUE",
     "FUGAL_CHAMPION_HARD_WEIGHT",
+    "FUGAL_CHAMPION_ANCHOR_MODEL",
     "FUGAL_CHAMPION_MARGIN",
     "FUGAL_CHAMPION_CONFIDENCE",
     "FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES",

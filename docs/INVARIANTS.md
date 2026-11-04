@@ -2225,10 +2225,22 @@ the seat changes hands by a paired test (`fugal_subnet/champion.py`):
   `NV_i = u_i·(g_challenger − g_champion) − (s_challenger − s_champion)/V`,
   in points. g is the shared cell grade (I4, shared grades) and s the policy
   spend from pinned prices and the frame's verbosity, so neither side is a
-  miner's self-report. `V = CHAMPION_ACCURACY_VALUE ×` the champion's own
-  mean spend per question over the same paired questions: one extra correct
-  answer is worth that many of the champion's questions. V is measured from
-  the window, so nothing is pinned for it and it is rebuilt from reveals.
+  miner's self-report. `V = CHAMPION_ACCURACY_VALUE ×` a pinned anchor's
+  expected spend per question: `CHAMPION_ANCHOR_MODEL` (Claude Fable 5.1) at
+  the reviewed v2 token manifest's mean input and output tokens and the
+  pinned v2 prices (`v2_epoch.anchor_spend_per_question`, about $0.026, so V
+  is about $0.77 at m = 30), recorded in the digest as
+  `CHAMPION_ANCHOR_SPEND_PER_Q`. One extra correct answer is worth m of the
+  anchor's questions, whoever holds the seat.
+  **Why pinned.** With the champion's own spend as the anchor, the champion
+  set the exchange rate between accuracy and cost: a cheap champion (about
+  $0.0004 a question) priced every pricier, more accurate router's spend at
+  its own rate, and a router five points more accurate at $0.01 a question
+  lost about 80 points of NV to spend and could never take the seat. The rate
+  depended on history, and it ran against accuracy first. **What it costs:**
+  a router that only spends less, at the champion's accuracy, now gains a
+  fraction of a point (saving $0.0015 a question is 0.2 points), so cost
+  decides between heads of near-equal accuracy and rarely on its own.
   `u_i = CHAMPION_HARD_WEIGHT` on the hard-reasoning category, fixed by the
   benchmark's category and therefore the same for every head and active from
   the first epoch.

@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — protocol v2 NV: V is pinned to an anchor, not the champion
+
+`V = CHAMPION_ACCURACY_VALUE x anchor_spend_per_question(CHAMPION_ANCHOR_MODEL)`,
+the anchor (Claude Fable 5.1) priced from the reviewed v2 token manifest and the
+pinned v2 prices (about $0.026 a question, V about $0.77 at m = 30), instead of
+the champion's own mean spend. The exchange rate between accuracy and cost no
+longer depends on who holds the seat; a cheap champion no longer blocks a more
+accurate, pricier router. `CHAMPION_ANCHOR_MODEL` is a consensus constant and
+the derived `CHAMPION_ANCHOR_SPEND_PER_Q` is in the digest. Validator-only.
+
 ### Changed — protocol v2 burn-in is 1,500 questions (v2 only)
 
 `V2_BURN_IN_QUESTIONS` (1,500, about five epochs) is the E'' burn-in a head

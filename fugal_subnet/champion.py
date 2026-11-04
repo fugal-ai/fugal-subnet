@@ -309,15 +309,17 @@ class PairUnits:
 def pair_units(
     window: Window, challenger: str, champion: str, *,
     accuracy_value: float, hard_weight: float, since_epoch: int | None = None,
+    anchor_spend: float | None = None,
 ) -> PairUnits:
     """Per-category NV units of `challenger` over `champion`, paired by question.
 
     Only epochs in the challenger's current unbroken run (Window.current_run,
     from `since_epoch`, its first commit) in which the champion was also
     scored count. The champion's own missed epochs are simply absent (see the
-    withholding residual in INVARIANTS). V is
-    `accuracy_value` times the champion's mean spend per question on exactly
-    these questions.
+    withholding residual in INVARIANTS). V is `accuracy_value` times
+    `anchor_spend`, a pinned anchor's expected spend per question, when given
+    (protocol v2 passes it); without one it falls back to the champion's own
+    mean spend on exactly these questions.
     """
     import math
 
@@ -334,8 +336,13 @@ def pair_units(
     if not parts:
         return PairUnits({}, None, 0)
     g_a, g_b, s_a, s_b, hard, cats = (np.concatenate(x) for x in zip(*parts))
-    mean_spend = math.fsum(float(x) for x in s_b) / len(s_b)
-    value = float(accuracy_value) * mean_spend if mean_spend > 0 else None
+    if anchor_spend is not None:
+        if not anchor_spend > 0:
+            raise ValueError(f"anchor_spend must be positive, got {anchor_spend!r}")
+        value = float(accuracy_value) * float(anchor_spend)
+    else:
+        mean_spend = math.fsum(float(x) for x in s_b) / len(s_b)
+        value = float(accuracy_value) * mean_spend if mean_spend > 0 else None
     units = _units(g_a, g_b, s_a, s_b, hard, value, hard_weight)
     return PairUnits(
         {c: units[cats == c] for c in sorted(set(cats.tolist()))}, value, int(units.size),
@@ -446,6 +453,8 @@ class SeatParams:
     min_accuracy: float = 0.0
     # A take needs at least this many paired questions against the bar.
     min_paired_questions: int = 0
+    # Pinned anchor spend per question for V (v2); None = the champion's own.
+    anchor_spend: float | None = None
 
 
 @dataclass(frozen=True)
@@ -511,7 +520,8 @@ def _challenge(
     """The paired test of `c` over `bar`: its mean NV units if it beats the bar
     by the margin on at least the minimum paired questions, else None."""
     pu = pair_units(window, c.head_hash, bar, accuracy_value=params.accuracy_value,
-                    hard_weight=params.hard_weight, since_epoch=c.since_epoch)
+                    hard_weight=params.hard_weight, since_epoch=c.since_epoch,
+                    anchor_spend=params.anchor_spend)
     res = paired_test(
         pu.by_category, margin_points=params.margin_points,
         confidence=params.confidence, resamples=params.resamples,

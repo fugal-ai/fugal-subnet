@@ -193,6 +193,28 @@ def seat_from_dict(raw: Mapping | None) -> SeatState:
     )
 
 
+def anchor_spend_per_question(model: str) -> float:
+    """The anchor's expected spend per question: the reviewed v2 token
+    manifest's mean input and output tokens for `model`, at the pinned v2
+    prices. Pure function of pinned files, so every validator agrees."""
+    import math
+
+    from fugal_subnet.routing_protocol import manifest_path, price_table
+
+    manifest = json.loads(manifest_path(2).read_text())
+    rows = {r["id"]: r for r in manifest.get("models", [])}
+    prices = price_table(2)
+    if model not in rows or model not in prices:
+        raise KeyError(f"anchor model {model!r} is not in the v2 token manifest and price table")
+    r = rows[model]
+    rate_in, rate_out = prices[model]
+    spend = math.fsum([float(r["mean_in_tokens"]) * rate_in,
+                       float(r["mean_out_tokens"]) * rate_out])
+    if not spend > 0:
+        raise ValueError(f"anchor model {model!r} has no positive expected spend")
+    return spend
+
+
 def seat_params_from_config() -> SeatParams:
     from fugal_subnet import config
 
@@ -208,6 +230,7 @@ def seat_params_from_config() -> SeatParams:
         wilson_confidence=config.WILSON_CONFIDENCE,
         min_accuracy=config.CHAMPION_MIN_ACCURACY,
         min_paired_questions=config.CHAMPION_MIN_PAIRED_QUESTIONS,
+        anchor_spend=anchor_spend_per_question(config.CHAMPION_ANCHOR_MODEL),
     )
 
 

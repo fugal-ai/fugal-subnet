@@ -561,3 +561,67 @@ def test_the_lower_bound_index_rounds():
 
     from fugal_subnet import champion
     assert "k = min(round(" in inspect.getsource(champion.paired_test)
+
+
+# --- the pinned anchor (V independent of the champion) ---------------------------
+
+
+def _cheap_vs_accurate_window(epochs=10):
+    """Champion: always the cheap model ($0.0004/q). Challenger: 5 points more
+    accurate, at $0.01/q (25x the champion's spend)."""
+    rng = np.random.default_rng(42)
+    w = Window.empty(48)
+    for e in range(epochs):
+        cheap = (rng.random(Q) < 0.60).astype(np.float64)
+        # The dear model solves everything the cheap one does plus 5% more.
+        dear = np.maximum(cheap, (rng.random(Q) < 0.125).astype(np.float64))
+        grades = np.stack([cheap, dear], axis=1)
+        spends = np.tile(np.array([0.0004, 0.01]), (Q, 1))
+        sl = EpochSlice(epoch=e, question_ids=tuple(f"e{e}q{i}" for i in range(Q)),
+                        categories=tuple(CATS), hard=tuple(c == "hard" for c in CATS),
+                        grades=grades, spends=spends)
+        w = w.add_epoch(sl, {"champ": HeadEpoch(np.zeros(Q, np.int64), np.zeros(Q, bool)),
+                             "router": HeadEpoch(np.ones(Q, np.int64), np.zeros(Q, bool))})
+    return w
+
+
+def test_a_cheap_champion_no_longer_blocks_a_more_accurate_router():
+    import dataclasses
+
+    w = _cheap_vs_accurate_window()
+    acc_c, _ = window_accuracy(w, "champ")
+    acc_r, _ = window_accuracy(w, "router")
+    assert 0.04 < acc_r - acc_c < 0.07                    # about +5 points
+    cands = {"champ": cand("champ", 0), "router": cand("router", 1)}
+    # Champion-anchored V (= 30 x $0.0004): the router's spend costs ~80 points.
+    legacy = seat_step(seated("champ"), 9, "e9", w, cands, params=PARAMS)
+    assert legacy.event == "hold"
+    # Pinned anchor (~$0.026/q, the v2 Fable expectation): the spend costs ~1.2.
+    anchored = dataclasses.replace(PARAMS, anchor_spend=0.0258)
+    taken = seat_step(seated("champ"), 9, "e9", w, cands, params=anchored)
+    assert taken.event == "take" and taken.champion == "router"
+
+
+def test_the_anchor_sets_v_whoever_holds_the_seat():
+    w = _cheap_vs_accurate_window(3)
+    a = pair_units(w, "router", "champ", accuracy_value=30.0, hard_weight=2.0,
+                   anchor_spend=0.0258)
+    b = pair_units(w, "champ", "router", accuracy_value=30.0, hard_weight=2.0,
+                   anchor_spend=0.0258)
+    assert a.value_per_correct == b.value_per_correct == pytest.approx(30 * 0.0258)
+    for c in a.by_category:                                # exactly antisymmetric now
+        assert np.array_equal(a.by_category[c], -b.by_category[c])
+    with pytest.raises(ValueError):
+        pair_units(w, "router", "champ", accuracy_value=30.0, hard_weight=2.0, anchor_spend=0.0)
+
+
+def test_the_shipped_anchor_is_fable_priced_from_pinned_files():
+    from fugal_subnet.config import CHAMPION_ANCHOR_MODEL
+    from fugal_subnet.v2_epoch import anchor_spend_per_question, seat_params_from_config
+
+    assert CHAMPION_ANCHOR_MODEL == "anthropic/claude-fable-5.1"
+    spend = anchor_spend_per_question(CHAMPION_ANCHOR_MODEL)
+    assert 0.02 < spend < 0.03
+    assert seat_params_from_config().anchor_spend == spend
+    with pytest.raises(KeyError):
+        anchor_spend_per_question("no/such-model")

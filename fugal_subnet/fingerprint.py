@@ -147,11 +147,24 @@ def environment_fingerprint() -> dict:
         # env-overridable and absent from the digest, so a validator with one
         # exported scored the field differently and nothing said why.
         "scoring": {
-            name: getattr(config, name)
-            for name in _SCORING_CONSTANTS
+            **{name: getattr(config, name) for name in _SCORING_CONSTANTS},
+            # Derived from pinned files (the reviewed v2 token manifest and the
+            # v2 price table) and CHAMPION_ANCHOR_MODEL: the anchor spend V is
+            # built from. In the digest so a validator pricing it differently
+            # is visibly different.
+            "CHAMPION_ANCHOR_SPEND_PER_Q": _anchor_spend_or_error(config.CHAMPION_ANCHOR_MODEL),
         },
         "approved_entries": sorted(config.TEE_APPROVED_MEASUREMENTS),
     }
+
+
+def _anchor_spend_or_error(model: str):
+    try:
+        from fugal_subnet.v2_epoch import anchor_spend_per_question
+
+        return anchor_spend_per_question(model)
+    except Exception as e:  # noqa: BLE001 - recorded, not raised: a fingerprint never fails
+        return f"unavailable: {type(e).__name__}"
 
 
 # Module attribute names, in a fixed order, so the digest is stable.
@@ -167,7 +180,8 @@ _SCORING_CONSTANTS = (
     "HARNESS_ALLOW_EXEC", "HEAD_HIDDEN_DIM", "HEAD_MAX_MODELS", "HEAD_MAX_BYTES",
     "HEAD_MAX_DECOMPRESSED_BYTES", "HEAD_MAX_MODEL_ID_LEN",
     # Protocol v2 (in effect from config.V2_ACTIVATION_BLOCK).
-    "CHAMPION_ACCURACY_VALUE", "CHAMPION_HARD_WEIGHT", "CHAMPION_MARGIN",
+    "CHAMPION_ACCURACY_VALUE", "CHAMPION_HARD_WEIGHT", "CHAMPION_ANCHOR_MODEL",
+    "CHAMPION_MARGIN",
     "CHAMPION_CONFIDENCE", "CHAMPION_BOOTSTRAP_RESAMPLES",
     "CHAMPION_HARD_GATE_MIN_QUESTIONS", "CHAMPION_TIME_GATE_FACTOR",
     "CHAMPION_GHOST_OFF", "CHAMPION_GHOST_RETIRE", "CHAMPION_WINDOW_EPOCHS",

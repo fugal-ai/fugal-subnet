@@ -168,7 +168,9 @@ def test_no_burned_in_head_means_burn():
 
 
 def test_a_better_router_takes_the_seat_and_the_old_champion_keeps_a_seat():
-    r = chain(range(30), {5: always("m/strong"), 6: oracle}, blocks={5: 1, 6: 2})
+    # A champion that always calls the cheap model, then a router that is far
+    # more accurate: the router takes the seat.
+    r = chain(range(30), {5: always("m/cheap"), 6: oracle}, blocks={5: 1, 6: 2})
     assert r.decision.state.champion == H(6) and r.decision.state.history[0] == H(5)
     assert w(r)[6] == pytest.approx(0.90) and w(r)[5] == pytest.approx(0.10)
 
@@ -375,3 +377,11 @@ def test_the_validator_reads_the_v2_category_map_and_the_copy_rule():
     assert "exact_copies" not in call
     assert "allow_take=not v2_window_degraded" in call
     assert "burn_in_questions=V2_BURN_IN_QUESTIONS" in call
+
+
+def test_under_the_pinned_anchor_saving_spend_alone_rarely_takes_the_seat():
+    # Accuracy-first: with V = m x the pinned anchor's spend (~$0.77), a router
+    # that matches the champion's accuracy and only spends less gains well
+    # under the 0.2-point margin, so the champion holds.
+    r = chain(range(30), {5: always("m/strong"), 6: oracle}, blocks={5: 1, 6: 2})
+    assert r.decision.state.champion == H(5) and r.decision.event == "hold"

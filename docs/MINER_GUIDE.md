@@ -30,9 +30,10 @@ exact token counts and costs. Validators verify proofs — they never call model
   `--mock` works anywhere
 - Linux (Ubuntu 22.04+ recommended)
 - Python 3.11-3.12
-- GPU recommended for training heads (CPU works but slower). If a GPU job runs
-  far slower than the card should manage, read *A slow embedding job is usually
-  VRAM, not a small card* below before sizing up — the failure is silent
+- No GPU needed. Success-contract heads embed on CPU in float32 (the contract
+  rejects CUDA and float16; see *The success profile requires CPU float32 and
+  memory headroom* below), and training a linear head on those embeddings is
+  light work on a CPU. GPU advice further down applies only to the legacy profile
 - ~4GB disk for dependencies + backbone model
 - TAO for subnet registration
 - OpenRouter API key (for model inference inside TEE)
@@ -579,6 +580,21 @@ rejected. Budget for the ~5%.
 **Miss = 0 accounting:** If your miner misses an epoch (offline, timeout, proof
 verification fails), that epoch counts as 0 correct out of n_expected. You
 cannot selectively skip bad epochs.
+
+### Reading the published reveals
+
+Every epoch, the validator publishes a reveal: each miner's head hash, its
+routing decision on every scored question, the per-model correctness matrix,
+exploration observations, scores and weights. It is public-read:
+
+    https://storage.googleapis.com/fugal-reveals/70/<epoch_id>/reveal.json
+    gs://fugal-reveals/70/<epoch_id>/reveal.json
+
+List them with
+`https://storage.googleapis.com/storage/v1/b/fugal-reveals/o?prefix=70/`.
+An epoch's reveal is published one epoch later, and its sha256 equals the
+`reveal:<epoch_id>:<sha256>` the validator committed on chain, so you can check
+you have the exact file it scored from. Head files are not in the reveal.
 
 ### When a good proof is not scored, and why it is not you
 

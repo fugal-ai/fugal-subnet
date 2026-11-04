@@ -2328,6 +2328,34 @@ gate is not applied, and the published policy says so.
 
 Enforced by `tests/test_champion.py`.
 
+### I3 — seats, not shares: the v2 payout (v2 release; from the activation block)
+
+From protocol v2 the miner share is split across **seats** held by the last three champions
+(`fugal_subnet/payout.py`, `PAYOUT_SEAT_SHARES` 0.85 / 0.10 / 0.05: current,
+previous, the one before), never across the field.
+
+- **A seat pays only while its head is live and eligible** this epoch
+  (verified, window accuracy at or above `CHAMPION_MIN_ACCURACY`, not an exact
+  copy: the hold rule, so burn-in is not required and a champion that resumes
+  after a miss is paid at once). An unpaid seat's
+  share goes to the current champion; with no current champion it burns,
+  along with the champion's own share. A seat no champion has filled yet is
+  an empty seat and pays the champion.
+- **Seats are paid to the UID serving the seat's head.** A hotkey keeps every
+  seat it holds. One operator holds several seats only by having won each in
+  turn, so registering more hotkeys buys nothing: under proportional pay an
+  operator with eight passing heads took eight shares, and under seats it
+  takes at most the seats it has won.
+- **The burn UID is never a paid seat.** Its share goes to the champion.
+- The weight-change cap (`MAX_WEIGHT_DELTA`) still applies to the vector
+  afterwards, as in v1, so a change of champion takes several epochs to
+  complete.
+
+`validate_seat_shares` refuses a split that does not sum to one, has a
+negative share, or pays a later seat more than an earlier one.
+
+Enforced by `tests/test_payout.py`.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

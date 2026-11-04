@@ -21,6 +21,15 @@ ghost whose owner commits a new head becomes a retire ghost. Not wired
 into the validator yet. INVARIANTS: "I3 — one champion; taking the seat needs
 the margin, holding it needs none".
 
+### Added — protocol v2 payout: 85/10/5 across the last three champions (module)
+
+`fugal_subnet/payout.py`: `seat_weights` splits the miner share across seats
+held by the current and two previous champions (`PAYOUT_SEAT_SHARES`). A seat
+pays only while its head is live and eligible, otherwise to the current
+champion, and burns when there is none; seats are paid to the serving UID, so
+one hotkey keeps the seats it holds and extra registrations buy nothing. Not
+wired into the validator yet. INVARIANTS: "I3 — seats, not shares".
+
 ### Added — v2 slicer: explicit benchmark weights inside a category
 
 `select_slice_v2` and `select_explore_set_v2` take an optional `bench_weight` map. Within a

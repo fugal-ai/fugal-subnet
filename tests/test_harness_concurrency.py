@@ -49,7 +49,7 @@ def _run(monkeypatch, stub, n=40, explore=False):
     proxy.prices = {m: (1e-6 * (i + 1), 2e-6 * (i + 1)) for i, m in enumerate(MODELS)}
     monkeypatch.setattr(harness_mod, "benchmark_costs", success_fixtures.costs)
     monkeypatch.setattr(harness_mod, "_call_model", stub)
-    monkeypatch.setattr(harness_mod, "select_slice", lambda nonce, p, k: p[:k])
+    monkeypatch.setattr(harness_mod.epoch_plan, "scored_slice", lambda version, nonce, p, k: p[:k])
     try:
         t = time.time()
         proof = harness_mod.run_benchmark(

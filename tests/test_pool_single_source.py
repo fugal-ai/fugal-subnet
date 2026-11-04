@@ -31,9 +31,11 @@ def test_both_neurons_get_their_pool_from_load_all():
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
-        assert "load_all" in calls, (
-            f"neurons/{name} does not call load_all() — if it derives the pool "
-            "some other way, the two neurons can disagree about consensus state"
+        # load_pool(version) is the versioned entry point (protocol v2); it
+        # dispatches to load_all / load_all_v2, the only two pool builders.
+        assert calls & {"load_all", "load_pool"}, (
+            f"neurons/{name} calls neither load_all() nor load_pool() — if it derives "
+            "the pool some other way, the two neurons can disagree about consensus state"
         )
 
 

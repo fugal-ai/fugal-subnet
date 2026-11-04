@@ -108,6 +108,13 @@ BENCHMARK_WEIGHT_V2 = {
     "aime": 0.244369, "aime25": 0.007858, "beyondaime": 0.026192, "omnimath_hard": 0.221582,
 }
 
+# Miner-side only (never a score): an epoch is not started with fewer than this
+# many blocks left before its collection block (~12 min at 12 s/block).
+LATE_START_MARGIN_BLOCKS = 60
+# Miner-side only: the v2 image commits its head this many blocks after the last
+# v1 boundary, clear of the boundary block where validators read commitments.
+COMMIT_AFTER_BOUNDARY_BLOCKS = 10
+
 # --- Harness answer budget and call deadlines (image constants, protocol v2) ---
 # Part of the measured image, not env-overridable: exploration (the reference
 # frame's source) runs on the same harness, so a miner and the frame ask for the

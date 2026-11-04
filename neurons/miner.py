@@ -185,7 +185,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # questions_hash for a reason that looks nothing like the cause. Default to
     # the same loader the validator calls; --benchmark-pool is an explicit
     # local override, and FUGAL_BENCHMARK_POOL overrides for both sides at once.
-    from fugal_subnet.benchmarks.loader import load_all, pool_hash
     # ONE code path, always. --benchmark-pool used to json.load the file here,
     # which meant the flag bypassed everything load_all() does — and when the
     # loader learned to drop questions the harness cannot grade, the validator
@@ -193,9 +192,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # a questions_hash that named neither side. Routing the flag through the
     # same env var the validator honours makes a second path impossible rather
     # than merely discouraged. tests/test_pool_single_source.py enforces it.
+    # Protocol v2 images set FUGAL_V2_ACTIVATION_BLOCK in their compose: the v2
+    # image serves v2 only (v1 TDs keep running the v1 image until the flip), so
+    # the miner needs no dual mode, only the hold below. Unset means v1.
+    from fugal_subnet.benchmarks.loader import load_pool, pool_hash
+    from fugal_subnet.config import V2_ACTIVATION_BLOCK
+    protocol = 2 if V2_ACTIVATION_BLOCK is not None else 1
     if benchmark_pool:
-        os.environ["FUGAL_BENCHMARK_POOL"] = os.path.abspath(benchmark_pool)
-    pool = load_all()
+        os.environ["FUGAL_BENCHMARK_POOL_V2" if protocol == 2 else "FUGAL_BENCHMARK_POOL"] = \
+            os.path.abspath(benchmark_pool)
+    pool = load_pool(protocol)
     if not pool:
         raise click.ClickException("Benchmark pool is empty — nothing to benchmark")
     logger.info("Benchmark pool: %d questions, pool_hash=%s",
@@ -204,8 +210,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # The globally agreed model space. Exploration targets are drawn from this
     # sorted list, never from the miner's own head, so the samples the reference
     # frame is built from cannot be steered.
-    prices = load_prices(TEE_MODEL_PRICES_PATH or None)
-    pool_models = sorted(prices)
+    from fugal_subnet.routing_protocol import models_for_protocol, price_table
+    if protocol == 2:
+        prices = price_table(2)
+        pool_models = models_for_protocol(2)
+    else:
+        prices = load_prices(TEE_MODEL_PRICES_PATH or None)
+        pool_models = sorted(prices)
     explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
     logger.info("Price table: %d models; exploration quota %d questions/epoch",
                 len(pool_models), explore_size)
@@ -345,6 +356,28 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         )
         return synapse
 
+    blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
+    committed = False
+    if protocol == 2:
+        # Hold until the flip. One hotkey holds ONE on-chain commitment, and the
+        # v1 TD serving this hotkey until the flip is scored against it: a v2
+        # commit during the notice window would make every v1 proof from this
+        # hotkey fail. So: embed (done above), commit in the epoch BEFORE the
+        # activation block so the commitment is on chain at the flip boundary,
+        # and register the axon only from the activation block.
+        from fugal_subnet.benchmarks.slicer import validate_activation_block
+        validate_activation_block(V2_ACTIVATION_BLOCK, blocks_per_epoch)
+        # Validators read commitments at each epoch's BOUNDARY block, so a commit
+        # that lands after the last v1 boundary is invisible to that v1 epoch
+        # (its proof is still checked against the old head) and visible at the
+        # flip boundary. COMMIT_AFTER_BOUNDARY_BLOCKS keeps it clear of the
+        # boundary block itself.
+        from fugal_subnet.config import COMMIT_AFTER_BOUNDARY_BLOCKS
+        commit_at = V2_ACTIVATION_BLOCK - blocks_per_epoch + COMMIT_AFTER_BOUNDARY_BLOCKS
+        _wait_for_block(subtensor, commit_at, "commit the v2 head (after the last v1 boundary)")
+        committed = ensure_commitment(subtensor, wallet, netuid, weights_hash)
+        _wait_for_block(subtensor, V2_ACTIVATION_BLOCK, "serve the axon (the v2 flip)")
+
     external_ip = os.getenv("FUGAL_AXON_IP")
     if external_ip and _is_unroutable(external_ip):
         # The chain rejects loopback and unspecified addresses for serve_axon
@@ -397,11 +430,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     # Now that the axon is serving, commit the head hash. Retried in the loop
     # below if the chain rate-limits this one.
-    committed = ensure_commitment(subtensor, wallet, netuid, weights_hash)
+    if not committed:
+        committed = ensure_commitment(subtensor, wallet, netuid, weights_hash)
     if not committed:
         logger.warning("Weights hash NOT committed on-chain yet — will retry.")
-
-    blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 
     try:
         last_refresh = time.time()
@@ -433,6 +465,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                 if not block_hash:
                     continue
 
+                # Don't start an epoch that can't finish: a proof that misses the
+                # collection block is a miss, and the calls are paid for anyway.
+                # Seen at a cutover: three runs started after their collection block.
+                from fugal_subnet.benchmarks.slicer import collect_block_for_epoch
+                from fugal_subnet.config import EPOCH_COLLECT_FRACTION, LATE_START_MARGIN_BLOCKS
+                deadline = collect_block_for_epoch(epoch_index, blocks_per_epoch, EPOCH_COLLECT_FRACTION)
+                if current_block > deadline - LATE_START_MARGIN_BLOCKS:
+                    logger.info("Skipping epoch %d: %d blocks to its collection block %d, fewer than %d",
+                                epoch_index, deadline - current_block, deadline, LATE_START_MARGIN_BLOCKS)
+                    last_epoch_index = epoch_index
+                    continue
+
                 last_epoch_index = epoch_index
                 _run_epoch(
                     blocks_per_epoch=blocks_per_epoch,
@@ -449,6 +493,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     explore_models=pool_models,
                     explore_size=explore_size,
                     hotkey=my_hotkey,
+                    protocol_version=protocol,
+                    prices=prices if protocol == 2 else None,
                 )
                 consecutive_failures = 0
             except Exception:
@@ -473,6 +519,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         logger.info("Miner shutdown complete")
 
 
+def _wait_for_block(subtensor, block: int, purpose: str, poll_s: float = 30.0) -> None:
+    """Block until the chain reaches `block`, logging what the miner is waiting to do."""
+    while True:
+        current = subtensor.get_current_block()
+        if current >= block:
+            return
+        logger.info("Holding for v2: %d blocks until block %d, then %s", block - current, block, purpose)
+        time.sleep(poll_s)
+
+
 def _run_epoch(
     blocks_per_epoch,
     head_data,
@@ -488,6 +544,8 @@ def _run_epoch(
     explore_models,
     explore_size,
     hotkey,
+    protocol_version=1,
+    prices=None,
 ):
     """Run a single benchmark epoch."""
     from fugal_subnet.benchmarks.slicer import derive_nonce, epoch_id_for_block
@@ -513,7 +571,7 @@ def _run_epoch(
         epoch_id, nonce[:16], collect_block,
     )
 
-    proxy = tee_runtime.setup(proxy_port=proxy_port)
+    proxy = tee_runtime.setup(proxy_port=proxy_port, prices=prices)
     try:
         proof = run_benchmark(
             nonce=nonce,
@@ -530,6 +588,7 @@ def _run_epoch(
             # epoch, a slice, a head and a runtime, but to nobody — and can be
             # read off this axon and presented by anyone.
             hotkey=hotkey,
+            protocol_version=protocol_version,
         )
 
         content_hash_bytes = bytes.fromhex(proof.content_hash())

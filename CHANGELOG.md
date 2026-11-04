@@ -21,6 +21,29 @@ All notable changes to this project will be documented here. Releases follow [Se
 - The v1 `select_slice` is unchanged. Dispatch by protocol version, and the benchmark→category
   map and targets, arrive with the v2 benchmark list.
 
+### Added — protocol v2 shared grades (from the activation block)
+
+`fugal_subnet/shared_grades.py`: one coldkey-median grade per (question,
+model) cell of the scored slice, with failed calls dropped. A head's own failed
+call stays wrong. From `FUGAL_V2_ACTIVATION_BLOCK` the validator computes the
+cells each epoch and the reveal carries `protocol_version` and
+`shared_grades`; v1 reveals are unchanged. Nothing scores from them yet: the
+paired champion comparison reads them in the next change. New determinism
+stage `shared_grades`. INVARIANTS: "I4 — shared grades: a cell is a vote of
+operators".
+
+### Added — protocol v2 activation block and v2 constants (no behaviour change yet)
+
+`FUGAL_V2_ACTIVATION_BLOCK` names the epoch boundary at which validators switch
+to the v2 rules. The version an epoch is scored under is a function of its
+boundary block (`slicer.protocol_version_for_boundary`), so retries and late
+validators agree; a block that is not an epoch boundary is refused at startup;
+the value is a consensus input in the digest's `epoch` block. Unset means v1
+for every epoch. The v2 champion and payout constants (`CHAMPION_*`,
+`PAYOUT_SEAT_SHARES`) are added as consensus constants. Nothing reads them yet;
+the v2 rules land behind the activation block in later changes. INVARIANTS:
+"I1 — protocol v2 activates at one named boundary".
+
 ### Fixed — proofs can carry their own TPM intermediates (validator half)
 
 `verify_ak_chain` accepted `extra_certs` and INVARIANTS said a proof could

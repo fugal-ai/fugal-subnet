@@ -237,6 +237,28 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         ]
         logger.info("Approved entries: %d — %s", len(described), "; ".join(described))
 
+    # Protocol v2 flips at one named epoch boundary on every validator. Checked
+    # before any chain connection, so a block that is not a boundary fails at
+    # startup rather than producing an epoch whose rules depend on where a
+    # validator looked (docs/INVARIANTS.md, "I1 — protocol v2 activates at one
+    # named boundary").
+    from fugal_subnet.benchmarks.slicer import (
+        blocks_per_epoch as _bpe_for_activation,
+    )
+    from fugal_subnet.benchmarks.slicer import validate_activation_block
+    from fugal_subnet.config import V2_ACTIVATION_BLOCK
+    try:
+        validate_activation_block(V2_ACTIVATION_BLOCK, _bpe_for_activation(EPOCH_INTERVAL))
+    except ValueError as e:
+        raise click.ClickException(f"FUGAL_V2_ACTIVATION_BLOCK: {e}") from e
+    if V2_ACTIVATION_BLOCK is None:
+        logger.info("Protocol v2 activation: not set; v1 rules apply to every epoch")
+    else:
+        logger.info(
+            "Protocol v2 activation: boundary block %d (epoch index %d); v1 rules before it",
+            V2_ACTIVATION_BLOCK, V2_ACTIVATION_BLOCK // _bpe_for_activation(EPOCH_INTERVAL),
+        )
+
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
     if not mock:
         from fugal_subnet.routing_protocol import MANIFEST_PATH
@@ -265,6 +287,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         derive_nonce,
         epoch_id_for_block,
         epoch_index_for_block,
+        protocol_version_for_boundary,
         select_slice,
     )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
@@ -296,6 +319,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.rewards import cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
+    from fugal_subnet.shared_grades import (
+        ScoredAnswer,
+        cells_for_reveal,
+        shared_cell_grades,
+    )
     from fugal_subnet.tee.attestation import CollateralBudget, verification_order
     from fugal_subnet.tee.proof import BenchmarkProof
     from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
@@ -443,11 +471,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             boundary_block = epoch_index * blocks_per_epoch
             block_hash = subtensor.get_block_hash(boundary_block)
             epoch_id = epoch_id_for_block(epoch_index)
+            # Decided by the boundary block, so every peer and every retry of
+            # this epoch scores it under the same rules. Nothing branches on it
+            # yet: the v2 rules land behind it one change at a time.
+            protocol_version = protocol_version_for_boundary(boundary_block, V2_ACTIVATION_BLOCK)
 
             timer = EpochTimer()
             metagraph = subtensor.metagraph(netuid)
-            logger.info("=== Epoch %s (boundary block %d, hash %s) ===",
-                        epoch_id, boundary_block, block_hash[:16])
+            logger.info("=== Epoch %s (boundary block %d, hash %s, protocol v%d) ===",
+                        epoch_id, boundary_block, block_hash[:16], protocol_version)
 
             # --- COMMITMENTS, pinned to the boundary block ---
             # Read NOW, while the boundary block is seconds old, not after the
@@ -795,6 +827,29 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 frontier.confidence, frontier.least_trials,
             )
 
+            # --- SHARED GRADES (protocol v2) ---
+            # One coldkey-median grade per (question, model) cell of the
+            # scored slice: failed calls dropped, one vote per operator. From
+            # the activation boundary the paired champion comparison grades
+            # every head from these cells, so two heads that routed alike are
+            # not separated by a provider answering differently on the second
+            # call (docs/INVARIANTS.md, "I4 — shared grades").
+            shared_cells = None
+            if protocol_version >= 2:
+                shared_cells = shared_cell_grades(
+                    ScoredAnswer(
+                        question_id=r.question_id, model=r.routed_model,
+                        coldkey=coldkey_of[uid], correct=bool(r.correct),
+                        failed=bool(r.failed),
+                    )
+                    for uid, proof in verified_proofs.items()
+                    for r in proof.scored_results
+                )
+                logger.info(
+                    "Shared grades: %d (question, model) cells from %d coldkeys",
+                    len(shared_cells), len(set(coldkey_of.values())),
+                )
+
             # --- SCORE FROM PROOFS ---
             timer.start_phase("score")
             epoch_scores: dict[int, HeadScore] = {}
@@ -977,6 +1032,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 head_hashes, routing_for_reveal,
                 epoch_score_dicts, epoch_weight_map,
                 exploration=exploration_for_reveal,
+                protocol_version=protocol_version,
+                shared_grades=(
+                    cells_for_reveal(shared_cells) if shared_cells is not None else None
+                ),
             )
 
             # --- SET WEIGHTS ---

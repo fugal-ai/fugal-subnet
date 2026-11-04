@@ -243,6 +243,19 @@ class SimMiner:
         # The v2 head is committed in the epoch before it serves.
         return FLIP + self.v2_from - 1
 
+    def committed(self, epoch: int, bpe: int) -> tuple[str, int]:
+        """(head hash, block) on chain at this epoch's boundary. A missed epoch
+        does not withdraw the commitment; only committing another head does."""
+        if epoch <= self.commit_epoch():
+            return hashlib.sha256(f"v1|{self.v1_policy}".encode()).hexdigest(), self.reg_block
+        return (hashlib.sha256(f"v2|{self.v2_policy}".encode()).hexdigest(),
+                self.commit_block(bpe))
+
+    def commit_block(self, bpe: int) -> int:
+        # Inside that epoch, miners commit in registration order, so m1
+        # commits its head before m5 commits the same bytes.
+        return self.commit_epoch() * bpe + 1 + self.reg_block
+
 
 MINERS = (
     SimMiner("m1", 2, "ck-a", 10, "mix:1", "const:sim/mid"),
@@ -398,9 +411,9 @@ class SimValidator:
         self.scoring = ScoringState(records=raw["records"])
         v2raw = raw.get("v2")
         if self.f["wiring"].present and v2raw is not None:
+            from fugal_subnet.config import CHAMPION_WINDOW_EPOCHS
             from fugal_subnet.v2_epoch import load_window, seat_from_dict
 
-            from fugal_subnet.config import CHAMPION_WINDOW_EPOCHS
             self.seat = seat_from_dict(v2raw.get("seat"))
             self.owners = dict(v2raw.get("owners") or {})
             self.window = load_window(self.path + ".v2window.npz", CHAMPION_WINDOW_EPOCHS)
@@ -493,7 +506,6 @@ class SimValidator:
 
     def _v2_epoch(self, epoch, epoch_id, questions, proofs, records):
         from fugal_subnet.champion import SeatState, Window
-        from fugal_subnet.commitments import seniority_key
 
         params = _seat_params()
         seat = self.seat if self.seat is not None else SeatState()
@@ -503,8 +515,9 @@ class SimValidator:
 
         by_uid = {m.uid: m for m in MINERS}
         bpe = blocks_per_epoch(EPOCH_INTERVAL)
-        seniority = {u: seniority_key(by_uid[u].reg_block, by_uid[u].commit_epoch() * bpe + 1)
-                     for u in proofs}
+        # v2 seniority among heads is the commitment block (the first
+        # committer of a hash owns it), as the validator reads it from chain.
+        seniority = {u: by_uid[u].commit_block(bpe) for u in proofs}
         commit_epoch = {u: by_uid[u].commit_epoch() for u in proofs}
         # Exact copies: a junior uid serving a senior uid's bytes (the
         # validator's dedup flags these; here by hash equality).
@@ -526,9 +539,9 @@ class SimValidator:
                 head_hashes={u: p.weights_hash for u, p in proofs.items()},
                 coldkey_of={u: by_uid[u].coldkey for u in proofs},
                 hotkey_of={u: by_uid[u].hotkey for u in proofs},
-                seniority=seniority, commit_epoch=commit_epoch, records=records,
+                commit_block=seniority, commit_epoch=commit_epoch, records=records,
                 exact_copies=copies,
-                commitments={m.hotkey: m.head(epoch) or "" for m in MINERS},
+                commitments={m.hotkey: m.committed(epoch, bpe) for m in MINERS},
                 window=window, seat=seat, owners=self.owners, burn_uid=BURN_UID,
                 params=params, shares=_shares(), burn_in_questions=BURN_IN,
                 bench_category=BENCH_CATEGORY,

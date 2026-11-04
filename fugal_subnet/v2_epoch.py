@@ -211,6 +211,36 @@ def seat_params_from_config() -> SeatParams:
     )
 
 
+def v2_state_for_reveal(
+    *,
+    seat: SeatState,
+    owners: Mapping[str, str],
+    serving: Mapping[str, int],
+    burn_in: Mapping[str, float],
+    extra: Mapping[str, object] | None = None,
+) -> dict:
+    """The post-epoch snapshot of everything the next v2 epoch reads.
+
+    Published in every v2 reveal as `v2_state`, so a validator that lost its
+    state, or has just joined, rebuilds it from the newest reveal (the window
+    itself is replayed from the last CHAMPION_WINDOW_EPOCHS reveals, not read
+    from here). `extra` is where later v2 state (the copy rule's first-commit
+    seniority, ownership and ghosts) is published: one block, one channel, so
+    the rebuild reads one place. Keys are sorted for byte-identical reveals.
+    """
+    block = {
+        "seat": seat_to_dict(seat),
+        "owners": {h: owners[h] for h in sorted(owners)},
+        "serving": {h: int(serving[h]) for h in sorted(serving)},
+        "burn_in": {h: float(burn_in[h]) for h in sorted(burn_in)},
+    }
+    for key in sorted(extra or {}):
+        if key in block:
+            raise ValueError(f"v2_state key {key!r} is reserved")
+        block[key] = extra[key]
+    return block
+
+
 def decision_for_reveal(decision: SeatDecision) -> dict:
     return {
         "event": decision.event,
@@ -362,6 +392,14 @@ def run_v2_epoch(
             for uid in sorted(verified_proofs)
         },
         "champion": decision_for_reveal(decision),
+        "v2_state": v2_state_for_reveal(
+            seat=decision.state, owners=new_owners, serving=serving,
+            burn_in={
+                h: float(getattr(getattr(records.get(uid), "evidence", None),
+                                 "burn_in_progress", 0.0) or 0.0)
+                for h, uid in serving.items()
+            },
+        ),
     }
     return V2EpochResult(new_window, decision, new_owners, uids, weights, reveal)
 
@@ -369,4 +407,5 @@ def run_v2_epoch(
 __all__ = [
     "Candidate", "V2EpochResult", "build_epoch_slice", "run_v2_epoch", "category_of", "decision_for_reveal", "head_epoch",
     "load_window", "save_window", "seat_from_dict", "seat_params_from_config", "seat_to_dict",
+    "v2_state_for_reveal",
 ]

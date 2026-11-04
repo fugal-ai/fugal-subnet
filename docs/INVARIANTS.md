@@ -2433,7 +2433,11 @@ above the floor), so a champion that resumes after a miss is paid at once.
 `shared_grades` (each cell's grade and median completion tokens), each UID's
 failed questions, and the seat decision (event, champion, bar, seat state,
 and the comparison detail), so every head's grades, spends and NV, and the
-seat itself, can be recomputed from the reveal alone. The `v2_epoch` stage of
+seat itself, can be recomputed from the reveal alone. It also carries a
+`v2_state` block (`v2_epoch.v2_state_for_reveal`): the post-epoch snapshot of
+everything the next epoch reads (seat, head owners, the UID chosen for each
+head, each head's burn-in progress), the single place later v2 state is
+published too, and what a rebuild from reveals reads. The `v2_epoch` stage of
 `check_determinism.py` runs the whole v2 epoch on the synthetic proofs in
 reverse order.
 

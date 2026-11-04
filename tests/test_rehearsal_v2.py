@@ -58,6 +58,22 @@ M1, M2, M3 = 2, 3, 4
 H = {M1: "a" * 64, M2: "b" * 64, M3: "c" * 64}
 
 
+# First commits: m1 senior, then m3, then m2 (the deterministic junior).
+FIRST_COMMIT = {M1: 10, M3: 20, M2: 30}
+
+
+def _copy_state(idx):
+    """The copy-rule block a v2 reveal publishes (copy_rule.CopyState.to_reveal)."""
+    return {
+        "epoch": idx,
+        "first_commit": {H[u]: b for u, b in FIRST_COMMIT.items()},
+        "ownership": {H[u]: f"ck{u}" for u in H},
+        "first_hotkey": {H[u]: f"hk{u}" for u in H},
+        "active": sorted(H.values()),
+        "retired_at": {},
+    }
+
+
 def _row(idx, *, event=None, champion=None, weights, control=True, m2_missed=False):
     v2 = idx >= ACT
     reveal = {
@@ -67,10 +83,14 @@ def _row(idx, *, event=None, champion=None, weights, control=True, m2_missed=Fal
         "environment": {"platform": f"host-{idx}"},
     }
     if v2:
+        served = [u for u in H if not (m2_missed and u == M2)]
         reveal.update(protocol_version=2, shared_grades=[{"question_id": "q", "grade": 1.0}],
-                      champion={"event": event, "champion": champion})
+                      champion={"event": event, "champion": champion},
+                      copy_verdicts={str(u): "owner" for u in served},
+                      v2_state={"copy_rule": _copy_state(idx)})
     entry = {"epoch_id": f"e{idx:08d}", "scores": {"2": 0.1},
-             "weights": {str(k): v for k, v in weights.items()}}
+             "weights": {str(k): v for k, v in weights.items()},
+             "n_heads_valid": 2 if m2_missed else 3, "n_heads_invalid": 0}
     reveals = [reveal, copy.deepcopy(reveal)]
     entries = [entry, copy.deepcopy(entry)]
     # val2 runs on a different host: environment differs, digest does not.
@@ -78,7 +98,7 @@ def _row(idx, *, event=None, champion=None, weights, control=True, m2_missed=Fal
     if control and idx <= ACT:
         ctl = copy.deepcopy(reveal)
         ctl["consensus_digest"] = "control"
-        for k in ("protocol_version", "shared_grades", "champion"):
+        for k in ("protocol_version", "shared_grades", "champion", "copy_verdicts", "v2_state"):
             ctl.pop(k, None)
         reveals.append(ctl)
         entries.append(copy.deepcopy(entry))
@@ -141,7 +161,7 @@ def test_chain_checks_catch_a_wrong_first_champion_and_split():
     rows[102]["entries"][0]["weights"] = rows[102]["entries"][1]["weights"] = {
         str(M2): 0.85, str(M1): 0.10, "0": 0.05}
     names = {r[1] for r in _run_checks(rows, miss).failed}
-    assert "the first seat goes to the most senior eligible head" in names
+    assert "the first seat goes to the most senior eligible head (by first commit)" in names
     assert "payout: weights sum to 1; two champions split 90/10" in names
 
 
@@ -158,3 +178,18 @@ def test_chain_checks_skip_what_the_branch_lacks():
     skipped = [r for r in report.rows if r[2] is None]
     assert not report.failed, report.failed
     assert len(skipped) == 7  # six seat/payout rows and the E'' evidence row
+
+
+def test_chain_checks_fail_clearly_without_the_copy_rule_state():
+    rows, miss = _good_run()
+    for r in rows[101]["reveals"]:
+        r.pop("v2_state", None)
+    failed = {r[1]: r for r in _run_checks(rows, miss).failed}
+    assert "the first seat goes to the most senior eligible head (by first commit)" in failed
+
+
+def test_chain_checks_catch_a_lost_v1_epoch():
+    rows, miss = _good_run()
+    rows[ACT - 1]["entries"][0]["n_heads_valid"] = 2
+    names = {r[1] for r in _run_checks(rows, miss).failed}
+    assert any(n.startswith("no v1 epoch is lost in the handover") for n in names)

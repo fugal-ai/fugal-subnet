@@ -1385,7 +1385,13 @@ def _v2_flip_seat_checks(report, S, rows, v2e, uid, miss, names, close):
     # the heads served by their owners that epoch.
     from fugal_subnet import copy_rule
     r_first = rows[first]["reveals"][0]
-    state = copy_rule.CopyState.from_reveal((r_first.get("v2_state") or {})["copy_rule"])
+    block = (r_first.get("v2_state") or {}).get(copy_rule.REVEAL_KEY)
+    if block is None:
+        report.check(S, names[1], False,
+                     f"e{first:08d}'s reveal carries no v2_state['{copy_rule.REVEAL_KEY}']: "
+                     "cannot tell which head is senior by first commit")
+        return
+    state = copy_rule.CopyState.from_reveal(block)
     owners_now = [heads[first].get(u) for u, v in (r_first.get("copy_verdicts") or {}).items()
                   if v == "owner" and heads[first].get(u)]
     expected = min(owners_now, key=lambda h: (copy_rule.v2_seniority(state, h), h),

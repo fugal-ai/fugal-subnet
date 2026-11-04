@@ -2366,6 +2366,10 @@ protocol_version=2)`):
 - **Migration.** `Evidence.burn_in_n` is new; a record written before it reads
   `-1` and counts as its `n_total`, so at the flip every head keeps the
   burn-in its evidence already shows. A state file without the field loads.
+  Before the flip, a validator running this code writes `burn_in_n: -1.0` into
+  its local state file for every record (v1 accumulation never sets it). That
+  is local state only: it is in no reveal, no hash and no score, and it reads
+  as "not yet counted".
 
 Simulated over 400 runs of 300 epochs: withholding below-mean epochs earns
 3.07 against honest play's 3.19 under E'', where plain decay without the reset

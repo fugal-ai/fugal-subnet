@@ -2471,7 +2471,8 @@ the weighted sums current.
 In v2 the frame is informational (I3/I4, "v2 pays from the paired rule
 alone"): this keeps the exploration detectors and the published diagnostics
 honest, and nothing that pays reads it. The weights are published in the v2
-reveal (`frame_mix_weights`), so a rebuild from reveals reproduces them.
+reveal (`frame_mix_weights`, and `explore_benchmarks` for each explored
+question), so a rebuild from reveals reproduces them.
 
 Enforced by `tests/test_frame_mix_v2.py`.
 

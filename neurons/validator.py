@@ -833,6 +833,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # frontier's confidence reads). The frame is informational in v2;
             # this keeps it honest for the detectors and the diagnostics.
             mix: dict[str, float] = {}
+            bench_of: dict[str, str] = {}
             sample_weights = None
             if protocol_version >= 2:
                 explored_qs = [gold_answers[q] for q in sorted(explore_map) if q in gold_answers]
@@ -1102,7 +1103,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 exploration=exploration_for_reveal,
                 protocol_version=protocol_version,
                 v2_fields=(
-                    {**v2_result.reveal, "frame_mix_weights": dict(sorted(mix.items()))}
+                    {**v2_result.reveal,
+                     "frame_mix_weights": dict(sorted(mix.items())),
+                     "explore_benchmarks": dict(sorted(bench_of.items()))}
                     if v2_result is not None else None
                 ),
             )

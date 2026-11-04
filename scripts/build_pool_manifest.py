@@ -61,13 +61,61 @@ def build(pool: list[dict], skip: list[str]) -> dict:
     }
 
 
+V2_DATASETS = ("TIGER-Lab/MMLU-Pro", "cais/mmlu", "EleutherAI/hendrycks_math", "KbsdJames/Omni-MATH",
+               "m-a-p/SuperGPQA", "qq8933/AIME_1983_2024", "opencompass/AIME2025",
+               "ByteDance-Seed/BeyondAIME", "google/IFEval")
+MANIFEST_PATH_V2 = os.path.join("fugal_subnet", "benchmarks", "pool_manifest_v2.json")
+
+
+def build_v2(pool: list[dict]) -> dict:
+    """The v2 manifest: hashes as v1, plus each benchmark's licence, category and weight, so the
+    pool's terms and its slice allocation are pinned in the same reviewed file."""
+    from collections import Counter
+
+    from fugal_subnet.benchmarks.loader import DATASET_REVISIONS, pool_hash
+    from fugal_subnet.benchmarks.v2_sets import V2_LICENCES
+    from fugal_subnet.config import BENCHMARK_CATEGORY_V2, BENCHMARK_WEIGHT_V2, CATEGORY_TARGETS_V2
+
+    counts = Counter(q.get("benchmark", "") for q in pool)
+    return {
+        "protocol": 2,
+        "n_questions": len(pool),
+        "pool_hash": pool_hash(pool),
+        "content_hash": content_hash(pool),
+        "category_targets": dict(sorted(CATEGORY_TARGETS_V2.items())),
+        "per_benchmark": {b: {"n": counts[b], "category": BENCHMARK_CATEGORY_V2[b],
+                              "weight": BENCHMARK_WEIGHT_V2.get(b), "licence": V2_LICENCES[b]}
+                          for b in sorted(counts)},
+        "dataset_revisions": {k: DATASET_REVISIONS[k] for k in sorted(V2_DATASETS)},
+        "gated_datasets": [],
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="Verify only; write nothing")
     ap.add_argument("--from-file", help="Use a materialised pool JSON instead of loading")
-    ap.add_argument("--out", default=MANIFEST_PATH)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2))
     args = ap.parse_args()
+    if args.protocol == 2:
+        from fugal_subnet.benchmarks.loader import build_pool_v2
+        out = args.out or MANIFEST_PATH_V2
+        pool = json.load(open(args.from_file, encoding="utf-8")) if args.from_file else build_pool_v2(strict=True)
+        built = build_v2(pool)
+        print(json.dumps({k: built[k] for k in ("n_questions", "pool_hash", "content_hash")}, indent=1))
+        if args.check:
+            pinned = json.load(open(out, encoding="utf-8"))
+            same = all(pinned.get(k) == built[k] for k in built)
+            print("v2 manifest matches" if same else "v2 manifest MISMATCH")
+            return 0 if same else 1
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(built, f, indent=1, sort_keys=True)
+            f.write("\n")
+        print(f"wrote {out}")
+        return 0
+    args.out = args.out or MANIFEST_PATH
 
     from fugal_subnet.benchmarks.loader import load_all
 

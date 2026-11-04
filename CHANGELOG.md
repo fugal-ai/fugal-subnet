@@ -12,7 +12,9 @@ paired bootstrap within category, PCG64 seeded per pair and epoch), the
 bounded comparison window (`CHAMPION_WINDOW_EPOCHS`, 48), and the seat state
 machine (the most senior eligible head takes an empty seat, hold at no
 margin, take at `CHAMPION_MARGIN`, high-water accuracy gates from the first
-champion's lower bound, ghost bars, resume inside the ghost window). Not wired
+champion's lower bound, ghost bars, resume inside the ghost window), and an absolute
+accuracy floor `CHAMPION_MIN_ACCURACY` (0.30, unmeasured on v2 benchmarks) for
+taking and holding, which replaces the frame-based quality floor. Not wired
 into the validator yet. INVARIANTS: "I3 — one champion; taking the seat needs
 the margin, holding it needs none".
 

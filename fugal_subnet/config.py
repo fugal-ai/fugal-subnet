@@ -505,6 +505,15 @@ CHAMPION_BOOTSTRAP_RESAMPLES = int(os.getenv("FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES
 # CHAMPION_TIME_GATE_FACTOR of the champion's. Time is a gate only; it is not
 # priced into NV, and it is not applied until proofs carry a hash-bound
 # per-call latency.
+# An absolute accuracy floor on a head's window accuracy (shared grades, the
+# last CHAMPION_WINDOW_EPOCHS), applied to taking AND holding the seat. It
+# replaces v1's frame-based quality floor, because in v2 nothing that pays may
+# read the frame. Its job is narrow: a broken head (every call failing, say)
+# must not be seated first and collect the champion share until someone
+# beats it. 0.30 is far below any working router on any plausible v2 list,
+# but it is UNMEASURED on the v2 benchmarks and is to be revisited after the
+# first v2 week.
+CHAMPION_MIN_ACCURACY = float(os.getenv("FUGAL_CHAMPION_MIN_ACCURACY", "0.30"))
 CHAMPION_HARD_GATE_MIN_QUESTIONS = int(os.getenv("FUGAL_CHAMPION_HARD_GATE_MIN_QUESTIONS", "100"))
 CHAMPION_TIME_GATE_FACTOR = float(os.getenv("FUGAL_CHAMPION_TIME_GATE_FACTOR", "2"))
 # A champion that stops being eligible leaves a ghost bar: for this many
@@ -680,6 +689,7 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_CHAMPION_GHOST_OFF",
     "FUGAL_CHAMPION_GHOST_RETIRE",
     "FUGAL_CHAMPION_WINDOW_EPOCHS",
+    "FUGAL_CHAMPION_MIN_ACCURACY",
     "FUGAL_PAYOUT_SEAT_SHARES",
 )
 CONSENSUS_ENV_INPUTS = (

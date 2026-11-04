@@ -392,6 +392,8 @@ class SeatParams:
     ghost_off: int
     ghost_retire: int
     wilson_confidence: float
+    # Absolute floor on window accuracy, for taking and holding the seat.
+    min_accuracy: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -417,6 +419,9 @@ def _passes_gates(
     acc, n = window_accuracy(window, h, cand.since_epoch)
     if n == 0:
         detail.append((h, "no scored questions in the window"))
+        return False
+    if acc < params.min_accuracy:
+        detail.append((h, f"accuracy {acc:.4f} below the floor {params.min_accuracy:.4f}"))
         return False
     if acc < state.high_water:
         detail.append((h, f"accuracy {acc:.4f} below the high-water mark {state.high_water:.4f}"))
@@ -474,9 +479,19 @@ def seat_step(
     since = state.champion_since
     history = state.history
 
-    if champion is not None:
-        c = candidates.get(champion)
+    def can_hold(h: str) -> bool:
+        c = candidates.get(h)
         if c is None or not c.eligible:
+            return False
+        acc, n = window_accuracy(window, h)
+        if n and acc < params.min_accuracy:
+            detail.append((h, f"champion accuracy {acc:.4f} below the floor "
+                              f"{params.min_accuracy:.4f}"))
+            return False
+        return True
+
+    if champion is not None:
+        if not can_hold(champion):
             reason = "retired" if champion in retired else "missed"
             span = params.ghost_retire if reason == "retired" else params.ghost_off
             ghosts = ghosts + (Ghost(champion, epoch + span - 1, reason),)
@@ -489,8 +504,7 @@ def seat_step(
         # its ghost bar still stands. That is what the ghost window is for: a
         # short outage must not hand the seat to whoever is next.
         for g in sorted(ghosts, key=lambda g: g.head_hash):
-            c = candidates.get(g.head_hash)
-            if g.reason == "missed" and c is not None and c.eligible:
+            if g.reason == "missed" and can_hold(g.head_hash):
                 champion = g.head_hash
                 since = epoch
                 ghosts = tuple(x for x in ghosts if x.head_hash != champion)

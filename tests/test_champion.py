@@ -34,7 +34,7 @@ ACC = np.array([0.55, 0.70, 0.85])                # what each model gets right
 PARAMS = SeatParams(
     margin_points=0.2, confidence=0.90, resamples=400, accuracy_value=30.0,
     hard_weight=2.0, hard_gate_min_questions=100,
-    ghost_off=3, ghost_retire=24, wilson_confidence=0.95,
+    ghost_off=3, ghost_retire=24, wilson_confidence=0.95, min_accuracy=0.30,
 )
 
 
@@ -268,6 +268,40 @@ def test_burn_in_is_needed_to_take_a_seat_but_not_to_hold_or_resume_one():
     back = seat_step(lost.state, 10, "e10", w, {"champ": cand("champ", 0, burned_in=False)},
                      params=PARAMS)
     assert back.event == "hold" and back.champion == "champ"
+
+
+def broken(difficulty):
+    return np.full(Q, 0)
+
+
+def failing_window(policies, failing):
+    """Like build_window, but every call of the heads in `failing` fails."""
+    w = Window.empty(48)
+    for e in range(10):
+        sl, diff = make_slice(e)
+        w = w.add_epoch(sl, {
+            h: HeadEpoch(np.asarray(p(diff), dtype=np.int64), np.full(Q, h in failing))
+            for h, p in policies.items()
+        })
+    return w
+
+
+def test_a_broken_head_cannot_take_an_empty_seat():
+    # Every call failing: accuracy 0, under the 0.30 floor. The junior working
+    # router is first instead, though the broken head is senior.
+    w = failing_window({"broken": broken, "router": oracle_router}, failing={"broken"})
+    d = seat_step(SeatState(), 9, "e9", w,
+                  {"broken": cand("broken", 0), "router": cand("router", 1)}, params=PARAMS)
+    assert d.event == "first" and d.champion == "router"
+
+
+def test_a_champion_below_the_floor_loses_the_seat():
+    w = failing_window({"champ": oracle_router}, failing={"champ"})
+    d = seat_step(seated("champ"), 9, "e9", w, {"champ": cand("champ", 0)}, params=PARAMS)
+    assert d.event == "ghost" and d.champion is None
+    # ... and does not resume while it stays below it.
+    again = seat_step(d.state, 10, "e10", w, {"champ": cand("champ", 0)}, params=PARAMS)
+    assert again.champion is None
 
 
 def test_the_high_water_mark_gates_and_only_rises():

@@ -2221,8 +2221,13 @@ the seat changes hands by a paired test (`fugal_subnet/champion.py`):
   estimate is part of the rule, not only a shortcut: no bootstrap runs for a
   mean at or below the margin.
 - **Eligibility.** To hold a seat, or resume one inside its ghost window, a
-  head must be live, pass the quality floor and not be an exact copy. To
-  *take* a seat (first or by challenge) it must also have completed burn-in
+  head must be live, not be an exact copy, and have window accuracy (shared
+  grades over the window) at or above `CHAMPION_MIN_ACCURACY` (0.30). That
+  absolute floor replaces v1's frame-based quality floor, because nothing that
+  pays in v2 reads the frame; its job is only to keep a broken head out of the
+  seat, and the value is unmeasured on the v2 benchmarks. To
+  *take* a seat (first or by challenge) it must pass the same floor and also
+  have completed burn-in
   since its last reset or miss (E''), so a champion that misses an epoch
   keeps its seat while a head that is not seated re-earns burn-in first.
 - **Hold.** A live, eligible champion keeps the seat with no margin, so two

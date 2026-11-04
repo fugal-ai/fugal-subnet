@@ -1000,8 +1000,42 @@ def scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub):
 #   the miner holding its axon       the parallel handover; without it the
 #                                    v1 miners are swapped for v2 ones in the
 #                                    last v1 epoch (one VM per hotkey)
+#
+# v2-VALID FIXTURES. v2 epochs are scored on the v2 pool, models and token
+# manifest, so the v2 miners serve a v2 fixture pool (every v2 benchmark,
+# FUGAL_BENCHMARK_POOL_V2) and v2 heads over three v2 models built against the
+# v2 manifest; the stub answers both v1 and v2 models. The embedding cache for
+# the v2 pool is warmed before the activation block is chosen.
+#
+# DETERMINISTIC SENIORITY. v2 seniority is the head's first commit (the copy
+# rule), and v2 miners holding for the flip commit in the same window. So m1
+# and m3's v2 miners start beside the v1 ones, and m2's starts only in the
+# last v1 epoch, after they have committed: m2 is the junior head, and the
+# challenger, every run. Which of m1 and m3 is senior is the chain's call; the
+# first-seat check reads it from the reveal's published copy-rule state.
 
 V2_FLIP_V1_EPOCHS = 2
+
+
+def _warm_v2_embeddings(timeout: int = 2400) -> float:
+    """Fill the miner's embedding cache for the v2 fixture pool, before the
+    activation block is chosen.
+
+    The cache is keyed on the pool's hash, so one warm-up serves every v2
+    miner. Without it the first v2 miner embeds 200 fresh questions on one CPU
+    thread (several minutes) while the clock runs towards an activation block
+    already fixed, and the parallel handover becomes a race against the
+    backbone instead of a test of the hold. Same code path as the miner
+    (neurons.miner._compute_hidden_states on loader.load_pool(2)).
+    """
+    t0 = time.time()
+    code = ("import sys; sys.path.insert(0, '.'); "
+            "from fugal_subnet.benchmarks.loader import load_pool; "
+            "import neurons.miner as m; "
+            "print(m._compute_hidden_states(load_pool(2)).shape)")
+    subprocess.run([sys.executable, "-c", code], env=miner_env(), check=True,
+                   timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return time.time() - t0
 
 
 def _epoch_index_now(subtensor) -> int:
@@ -1090,6 +1124,7 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
         report.check(S, "v1 miners produced proofs for the current epoch", False)
         return
 
+    print(f"    v2 embedding cache warm in {_warm_v2_embeddings():.0f}s", flush=True)
     act_idx = _epoch_index_now(subtensor) + V2_FLIP_V1_EPOCHS + 1
     act = act_idx * bpe
     with_block = {**shortened, "FUGAL_V2_ACTIVATION_BLOCK": str(act)}

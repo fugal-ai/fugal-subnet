@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 champion scoring (module; wiring follows)
+
+`fugal_subnet/champion.py`: the paired net-value test (NV quantised to exact
+integers, V = m times the champion's own mean spend on the paired questions,
+paired bootstrap within category, PCG64 seeded per pair and epoch), the
+bounded comparison window (`CHAMPION_WINDOW_EPOCHS`, 48), and the seat state
+machine (the most senior eligible head takes an empty seat, hold at no
+margin, take at `CHAMPION_MARGIN`, high-water accuracy gates from the first
+champion's lower bound, ghost bars, resume inside the ghost window), and an absolute
+accuracy floor `CHAMPION_MIN_ACCURACY` (0.30, unmeasured on v2 benchmarks) for
+taking and holding, which replaces the frame-based quality floor. A
+challenger is measured only on its current unbroken run of served epochs; a
+take needs `CHAMPION_MIN_PAIRED_QUESTIONS` (1,500) paired questions; a missed
+ghost whose owner commits a new head becomes a retire ghost. Not wired
+into the validator yet. INVARIANTS: "I3 — one champion; taking the seat needs
+the margin, holding it needs none".
+
 ### Added — v2 slicer: explicit benchmark weights inside a category
 
 `select_slice_v2` and `select_explore_set_v2` take an optional `bench_weight` map. Within a

@@ -89,7 +89,7 @@ HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "8")))
 # manifest and checked against it (scripts/check_safety_invariants.py).
 # Targets apply to the scored slice and to exploration alike
 # (slicer.select_slice_v2 / select_explore_set_v2).
-# Jack, 2026-11-04: instruction is 5% in v2.0 (only 259 IFEval items are checkable
+# Decided 2026-11-04: instruction is 5% in v2.0 (only 259 IFEval items are checkable
 # by the pinned constraint kinds; at 15 a slice they repeat every ~17 epochs).
 # The generated instruction set that lets it grow again is v2.1.
 CATEGORY_TARGETS_V2 = {"knowledge": 0.40, "math": 0.25, "hard": 0.30, "instruction": 0.05}

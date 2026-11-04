@@ -148,7 +148,7 @@ def test_the_validator_runs_v2_only_under_v2():
     src = pathlib.Path(__file__).resolve().parents[1].joinpath("neurons", "validator.py").read_text()
     guard = src.index("if protocol_version >= 2:\n                # --- PROTOCOL v2")
     assert src.index("v2_result = None") < guard < src.index("v2_result = run_v2_epoch(")
-    assert "v2_fields=v2_result.reveal if v2_result is not None else None" in src
+    assert "{**v2_result.reveal," in src and "if v2_result is not None else None" in src
 
 
 def test_cell_tokens_are_the_coldkey_median_of_attested_tokens():

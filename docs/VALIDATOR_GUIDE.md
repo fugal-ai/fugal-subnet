@@ -222,6 +222,7 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_NETWORK` | `test` | Network: `finney`, `test`, `local` |
 | `FUGAL_NETUID` | `1` | Subnet netuid |
 | `FUGAL_EPOCH_INTERVAL` | `3600` | Seconds between epochs. **Mainnet: 4320** (tempo 360 × 12 s); must equal tempo × 12 on every neuron |
+| `FUGAL_V2_ACTIVATION_BLOCK` | unset | The epoch boundary block at which protocol v2 activates. A consensus input: identical on every validator, recorded in the consensus digest; refused at startup if it is not an epoch boundary. Unset means v1 forever. See "Protocol v2: flip procedure" |
 | `FUGAL_TEE_MEASUREMENTS` | — | Comma-separated approved entries, each `<base_measurement>:<compose_hash>`. Required for `--live`, which refuses a bare base: one would accept any application on that image, and the application fixes the model upstream (see `deploy/dstack/README.md`) |
 | `FUGAL_PCCS_URL` | `https://pccs.phala.network` | Where DCAP collateral is fetched. Not a trust root; point at a local caching proxy to remove the third party from the epoch path |
 | `FUGAL_COLLATERAL_TIMEOUT` | `10` | Seconds one collateral fetch may take before the proof is recorded `unverifiable` |
@@ -363,6 +364,104 @@ The validator automatically flags:
 - **Commit-reveal** — questions committed before miner queries
 - **State persistence** — scoring state survives restarts
 - **Dedup seniority** — the earliest-registered hotkey, then the earliest commitment, wins duplicate clusters; read from chain at the epoch boundary
+
+## Protocol v2: flip procedure
+
+Protocol v2 switches every validator from the v1 rules to the v2 rules at one
+named epoch boundary, the **activation block**. The rules an epoch is scored
+under depend only on that epoch's boundary block
+(`slicer.protocol_version_for_boundary`), never on when a validator happens to
+run it. So a late or retried epoch is scored the same way on every peer.
+What changes for miners is in `docs/MINER_GUIDE.md`, "Protocol v2".
+
+Values marked `<LIKE_THIS>` are published in the signed v2 release
+(`<V2_RELEASE_NOTE>`) at the announcement, at least 72 hours before the flip.
+Do not fill them in from anywhere else.
+
+### Before the flip
+
+1. **Upgrade the validator to the v2 release** (`<V2_RELEASE_TAG>`) any time
+   in the notice period. Until the activation block it scores exactly as v1
+   does: the same weights, and reveals with no v2 fields. Upgrading early is
+   safe.
+2. **Set `FUGAL_V2_ACTIVATION_BLOCK=<ACTIVATION_BLOCK>`** in the environment
+   file, and restart. Every validator must use the **identical** value.
+   - It is a consensus input like `FUGAL_EPOCH_INTERVAL`. It is written into
+     the consensus digest every reveal carries, so a validator with a
+     different value, or none, shows a different digest from its first epoch,
+     long before the flip.
+   - It must be an epoch boundary (a multiple of the blocks per epoch). The
+     validator refuses to start on a block that is not
+     (`FUGAL_V2_ACTIVATION_BLOCK: ... not an epoch boundary`).
+   - Unset, v2 never activates. That validator keeps v1 rules after the flip
+     and disagrees with every peer that flipped.
+   - The startup log confirms it:
+     `Protocol v2 activation: boundary block <ACTIVATION_BLOCK> (epoch index N); v1 rules before it`.
+3. **Add the v2 approved entry beside the v1 entries** in
+   `FUGAL_TEE_MEASUREMENTS`, from `scripts/fetch_approved_entries.py --tag
+   <V2_IMAGE_TAG>`, and restart. Follow the transition window in
+   `docs/APPROVED_ENTRY_ROTATION.md`: every validator carries **both** before
+   any miner moves. Before the flip a v2 miner holds its axon, so no v2 proof
+   arrives early. Carrying the entry early costs nothing, and carrying it late
+   scores every v2 miner absent at the flip.
+4. **Do not set any other v2 constant.** The `FUGAL_CHAMPION_*`,
+   `FUGAL_PAYOUT_SEAT_SHARES` and `FUGAL_BURN_IN_QUESTIONS` values are
+   consensus constants. `--live` refuses to start on finney with any of them
+   set.
+
+A restart at any point is safe. State is written only when an epoch
+completes, so a validator killed mid-epoch resumes from the previous epoch and
+scores the interrupted one again, identically. From the flip, the state also
+holds the champion seat and the comparison window (`<state>.v2window.npz`
+beside the state file). Keep both on durable disk.
+
+### At the flip
+
+- The first epoch whose boundary block is `<ACTIVATION_BLOCK>` is scored under
+  v2. The epoch header in the log reads `protocol v2`. The previous one reads
+  `protocol v1`.
+- **Retire the v1 entries at the flip.** v1 images are not valid after it, a
+  hard date published in the release. Remove them from
+  `FUGAL_TEE_MEASUREMENTS` and restart, at or after the activation block,
+  never before.
+- **Expect the miner share to burn for the first days.** Every head is new at
+  the flip, and no head can take the seat until it has scored
+  `BURN_IN_QUESTIONS` (3000, about 10 epochs) in an unbroken run. Until then
+  each epoch logs `v2 seat: empty` and the weight goes to the burn UID. This is
+  intended, not a fault.
+
+### What to watch
+
+Per epoch, in the log and in `reveal.json`:
+
+| Signal | Healthy | If not |
+|---|---|---|
+| `consensus_digest` | identical to every peer's, before and after the flip | the activation block, a consensus constant or a package differs: compare `environment` in the two reveals |
+| `protocol_version` in the reveal | absent before `<ACTIVATION_BLOCK>`, `2` from it | the block is unset or different on this validator |
+| `v2 seat: <event>` log line, `champion` in the reveal | `empty` until a head is burned in; then `first`, then `hold` / `take` / `ghost` | weights disagree with peers' when the seat does. Find the first epoch where the `champion.detail` lines differ |
+| weights | identical to every peer's. At most three miner UIDs are paid (85/10/5), plus the burn UID | see `docs/INVARIANTS.md`, I1 |
+| `shared_grades` in the reveal | present in every v2 epoch | the v2 wiring is not running: check the release |
+| `unverifiable` / `invalid` counts | v2 miners verify from the flip | the v2 entry is missing (a v2 proof on a validator without it is `invalid`) |
+
+`scripts/watch_subnet.py` compares validators epoch by epoch. Run it across the
+flip and for the first day after. Weights still move by at most
+`FUGAL_MAX_WEIGHT_DELTA` per epoch, so a new champion's weight reaches its seat
+share over a few epochs.
+
+### Rehearse it first
+
+The flip is rehearsed locally with the shipped neurons on a local chain, at no
+cost:
+
+```bash
+python scripts/dress_rehearsal.py --scenario v2_flip   # Docker, ~30-60 min
+python scripts/rehearsal_v2.py                         # in process, seconds
+```
+
+Both check that validators agree across the flip, that v1 epochs are
+unchanged, the seat and the 85/10/5 split, the E″ miss rule, and a restart
+mid-epoch. The chain scenario shortens burn-in and a few other constants so it
+finishes in minutes, and prints the overrides it used.
 
 ## Troubleshooting
 

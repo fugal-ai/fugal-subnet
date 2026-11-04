@@ -4,6 +4,11 @@ Run a TEE miner on the Fugal subnet. Your miner runs benchmarks inside an Intel
 TDX confidential VM each epoch, producing hardware-attested proofs of routing
 quality. Better routers earn more emissions.
 
+> **Protocol v2** switches on at an announced activation block and changes the
+> image, the model list, the benchmarks and the payout. Read
+> [Protocol v2](#protocol-v2) before the flip: every head must be retrained, and
+> the move needs a second instance to avoid losing epochs.
+
 ## What You're Building
 
 A **router head** — a small linear layer (~14KB to ~130KB `.npz` file, depending
@@ -702,6 +707,161 @@ uncertainty in the table and has not been measured against a live provider.
 conditions; `scripts/model_miner_economics.py` lets you put your own numbers in.
 The MeteringProxy inside the TEE records your exact costs, which are included in
 the attested proof.
+
+## Protocol v2
+
+Protocol v2 changes the image, the model list, the benchmarks and how the
+miner share is paid. It switches on at one epoch boundary, the **activation
+block**, on every validator at once. Everything above this section describes
+v1, which applies until that block. This section says what changes at the flip
+and how to move without losing epochs.
+
+Values marked `<LIKE_THIS>` are not final. They are published together at the
+v2 announcement, 72 hours or more before the flip, in a signed release:
+
+| Placeholder | What it will be |
+|---|---|
+| `<ACTIVATION_BLOCK>` | the block of the flip. It is an epoch boundary (a multiple of the blocks per epoch) and every validator sets it as `FUGAL_V2_ACTIVATION_BLOCK` |
+| `<V2_IMAGE_DIGEST>` | the v2 miner image, by digest, and its approved entry (`docs/APPROVED_ENTRY_ROTATION.md`) |
+| `<V2_MODEL_LIST>` | the v2 model list and prices, `data/models_v2.json`, hash-pinned |
+| `<V2_POOL_MANIFEST>` | the v2 benchmark pool manifest, with its category targets |
+| `<V2_RELEASE_NOTE>` | the signed release that names all of the above |
+
+### What changes at the flip
+
+**Longer answers.** The harness asks for up to `HARNESS_MAX_TOKENS` = 16384
+completion tokens per call, reasoning included (v1: 2048). Each model runs at
+one pinned reasoning setting from the model list. Call deadlines nest so each
+layer reports before the next gives up: `PROXY_CALL_DEADLINE_S` = 420 s per
+call (retries included) inside `HARNESS_CALL_TIMEOUT_S` = 450 s. A 401, 402 or
+403 from the provider is never retried and is logged as
+`OPERATOR ACTION REQUIRED` (see "Your OpenRouter account is part of your
+miner", above). Longer answers cost more. The cost per epoch at 16k has not
+been measured yet. Measure your own first epochs before you budget.
+
+**A new model list.** `<V2_MODEL_LIST>`. Every model on it has at least three
+OpenRouter endpoints, is text-only, and runs at exactly one reasoning setting.
+A v1 head names v1 models, so **every head must be retrained** for v2. There
+is no published label set to retrain from: you label your own data.
+
+**Open benchmarks, by category.** The v2 pool is drawn by category first and
+then by benchmark (`slicer.select_slice_v2`). Exploration is drawn at the same
+mix, so the reference frame measures models on the mix that is scored. The
+categories are knowledge, math, hard reasoning and instruction, at the targets
+in `CATEGORY_TARGETS_V2` (`<V2_POOL_MANIFEST>`). Every set in the pool is
+openly licensed, and the licence of each is recorded in the manifest. None is
+gated. The hard-reasoning category is half multiple-choice and half
+integer-answer olympiad math (`BENCHMARK_WEIGHT_V2`).
+
+**Champion scoring replaces headroom scoring.** In v2 the miner share does not
+go to the field in proportion to score. It goes to a **champion**, and a head
+takes the seat only by beating the champion on the same questions. Every miner
+answers the same scored slice, so the comparison is question by question:
+
+```
+NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
+V    = CHAMPION_ACCURACY_VALUE (30) x the champion's own mean spend per question
+       over the same questions
+u_i  = CHAMPION_HARD_WEIGHT (2) on a hard-reasoning question, else 1
+NV   = 100 x mean_i NV_i                          (percentage points)
+```
+
+- `g` is the **shared grade** of the (question, model) cell you routed to: the
+  median across operators (coldkeys) of every answer to that model on that
+  question. Two heads that pick the same model get the same grade, so
+  provider noise on a second call does not separate them. Your own failed call
+  still grades 0.
+- `s` is the cost of your choice under the pinned prices, from the cell's
+  median attested completion tokens. It is not your self-reported spend.
+- One extra correct answer is worth 30 questions of the champion's spend.
+  Accuracy decides. Cost decides between heads of near-equal accuracy.
+- You take the seat when the one-sided paired-bootstrap lower bound of NV, at
+  `CHAMPION_CONFIDENCE` = 90% over `CHAMPION_BOOTSTRAP_RESAMPLES` = 2000
+  resamples, is above `CHAMPION_MARGIN` = **0.2 points**. The point estimate
+  must clear the margin too. The champion keeps its seat with no margin, so two
+  near-equal heads cannot trade it on noise.
+- The comparison reads the last `CHAMPION_WINDOW_EPOCHS` (48) epochs. It counts
+  only your current unbroken run since your commitment, and needs at least
+  `CHAMPION_MIN_PAIRED_QUESTIONS` (1500) questions paired with the champion.
+- Gates on a challenger, besides the margin: window accuracy at or above
+  `CHAMPION_MIN_ACCURACY` = **0.30**, and at or above the high-water mark (the
+  current champion's Wilson lower bound when it was seated). Once the window
+  holds `CHAMPION_HARD_GATE_MIN_QUESTIONS` (100) hard questions, the same
+  applies to hard-category accuracy. The per-call time gate
+  (`CHAMPION_TIME_GATE_FACTOR`) is not applied at launch.
+- **The first champion.** With nobody seated, the most senior eligible head
+  takes the seat: burned in, at or above the accuracy floor, and not an exact
+  copy. Seniority is registration block, then commitment block. There is no
+  virtual champion to beat. Until some head is eligible the miner share burns.
+
+**Payout: 85/10/5 across the last three champions.** `PAYOUT_SEAT_SHARES` =
+0.85 / 0.10 / 0.05 go to the current champion, the previous one and the one
+before. A seat pays only while its head is live this epoch and can hold a seat
+(verified, window accuracy at or above 0.30, not an exact copy). An unpaid
+seat's share goes to the current champion. With no current champion, the
+champion's share burns. A seat is paid to the UID serving its head, and one
+head hash pays one UID (the most senior serving it), so running the same head
+on more hotkeys earns nothing. The v2 payout does not read the reference
+frame's confidence: from the flip the whole miner share is paid by this rule,
+and the frame is published for information. `MAX_WEIGHT_DELTA` still limits
+how fast the weights move.
+
+**Burn-in is to take a seat, not to hold it.** A head must score
+`BURN_IN_QUESTIONS` (3000, about 10 epochs) in an unbroken run before it can
+take a seat, first or by challenge. A seated champion that has to re-earn
+burn-in after a miss keeps its seat and its pay while it does.
+
+**Missed epochs (the E″ rule).** A missed epoch is no longer scored as a slice
+of wrong answers:
+
+- **Before burn-in**, a miss resets your evidence to zero. A young head cannot
+  shape its record by withholding a bad epoch, because withholding restarts it.
+- **After burn-in**, a miss decays your evidence by one epoch of the evidence
+  half-life (`FUGAL_EVIDENCE_HALF_LIFE`, 200 epochs), with no zeros added, and
+  restarts the burn-in counter. An honest outage costs a
+  few epochs, not hundreds.
+- **A champion that misses** leaves a ghost bar for `CHAMPION_GHOST_OFF` (3)
+  epochs. While it stands, a challenger must beat the ghost by the margin, and
+  the champion's share burns. A champion that returns inside the window
+  resumes its seat and is paid at once. A champion whose owner commits a
+  different head leaves a ghost for `CHAMPION_GHOST_RETIRE` (24) epochs.
+
+**Every head starts from zero.** v2 is a new model list, so the flip resets
+everyone's evidence. No v1 record carries over into a v2 seat.
+
+### How to move
+
+The v2 image cannot reuse the v1 embedding cache. An image upgrade is
+`dstack-cloud deploy --delete`, which discards the data disk, so the v2
+instance **re-embeds the whole v2 pool** at startup. Measured on the v1 pool:
+3 h 20 min on a `c3-standard-8`, about 5 to 6 hours on a `c3-standard-4`.
+Measure the v2 pool on your own host.
+
+Use a second instance:
+
+1. **Retrain** on the v2 model list (`<V2_MODEL_LIST>`), labelling your own
+   data. Allow one to two days if you start from no labels. This is why the
+   notice is 72 hours.
+2. **Bring up a second TD on the v2 image** (`<V2_IMAGE_DIGEST>`) **with the
+   same hotkey**, beside the running v1 TD, and provision it as usual. It
+   embeds and then **holds**: no axon and no commitment until the epoch before
+   `<ACTIVATION_BLOCK>`. The image reads the activation block itself.
+3. **The v2 TD commits in the epoch before the flip and serves from it.** A
+   hotkey holds one commitment. A validator reads commitments at each epoch's
+   boundary block, so the v1 epoch that is already running is still checked
+   against your v1 commitment, and from the flip your v2 head is the one
+   committed. Do not commit the v2 head yourself earlier: during the notice
+   period that would break the v1 proofs of the same hotkey.
+4. **Stop the v1 TD** once the v2 TD is serving v2 epochs. v1 approved
+   entries retire at the flip.
+
+Without a second instance you lose the embed time plus up to one epoch. Under
+E″ a v2 head that has not served yet loses nothing by starting late, but it
+also cannot start its burn-in until it serves.
+
+A rehearsal of the flip with the shipped neurons on a local chain, at no cost:
+`python scripts/dress_rehearsal.py --scenario v2_flip`. The in-process half,
+which needs no Docker: `python scripts/rehearsal_v2.py`.
 
 ## Troubleshooting
 

@@ -36,3 +36,6 @@ data/rehearsal/pool_*.json
 data/rehearsal/head_cheap_*.npz
 data/embeddings/
 .claude/settings.local.json
+
+# Seed-operator training labels: local only (see data/observations/README.md)
+data/observations/dense_calls_v*.jsonl

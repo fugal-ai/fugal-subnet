@@ -922,6 +922,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 },
                 n_questions=len(questions),
                 pool_size=len(benchmark_pool),
+                protocol_version=protocol_version,
             )
 
             # --- WEIGHTS ---

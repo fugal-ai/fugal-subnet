@@ -30,6 +30,15 @@ champion, and burns when there is none; seats are paid to the serving UID, so
 one hotkey keeps the seats it holds and extra registrations buy nothing. Not
 wired into the validator yet. INVARIANTS: "I3 — seats, not shares".
 
+### Added — protocol v2 miss rule E'' (from the activation block)
+
+`Evidence.burn_in_n` counts scored questions since the last reset or miss.
+From `FUGAL_V2_ACTIVATION_BLOCK`, a miss before burn-in resets the evidence
+fully and a miss after it decays the evidence with no phantom zeros and
+restarts burn-in (`apply_miss_v2`, `accumulate_epoch_v2`, `burn_in_complete`).
+Pre-existing records migrate lazily (the counter reads as `n_total`). v1
+epochs are unchanged. INVARIANTS: "I3 — the v2 miss rule (E'')".
+
 ### Added — protocol v2 shared grades (from the activation block)
 
 `fugal_subnet/shared_grades.py`: one coldkey-median grade per (question,

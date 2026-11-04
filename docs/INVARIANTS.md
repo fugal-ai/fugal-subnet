@@ -2344,6 +2344,36 @@ negative share, or pays a later seat more than an earlier one.
 
 Enforced by `tests/test_payout.py`.
 
+### I3 — the v2 miss rule (E'') (v2 release; from the activation block)
+
+Under v1 a missed epoch adds a full slice of wrong answers to the head's
+evidence (`apply_miss`) with a 200-epoch half-life: a six-hour outage took
+about 250 epochs to recover from, while publishing a new head hash recovered
+in ten, so the rule punished only operators who did not know to reset. A miss
+cannot be free either: an operator sees its own grades before it serves and
+could withhold a bad epoch. From protocol v2 (`update_scores(...,
+protocol_version=2)`):
+
+- **Before burn-in is complete** (`Evidence.burn_in_progress` <
+  `BURN_IN_QUESTIONS`, counted in scored questions since the last reset or
+  miss, undecayed), a miss **resets the evidence fully**
+  (`evidence.apply_miss_v2`). A young head cannot shape its record by
+  withholding, because withholding restarts it.
+- **After burn-in**, a miss **decays the evidence with no phantom zeros** and
+  **restarts the burn-in counter**. The record survives an honest outage, and
+  the head must re-earn burn-in before it can take a seat. A seated champion
+  keeps its seat (holding needs no burn-in; I3, the champion rule).
+- **Migration.** `Evidence.burn_in_n` is new; a record written before it reads
+  `-1` and counts as its `n_total`, so at the flip every head keeps the
+  burn-in its evidence already shows. A state file without the field loads.
+
+Simulated over 400 runs of 300 epochs: withholding below-mean epochs earns
+3.07 against honest play's 3.19 under E'', where plain decay without the reset
+let a young head out-earn honest play by 6.3%. An isolated honest outage costs
+about 4.5 epochs. v1 epochs keep `apply_miss` unchanged.
+
+Enforced by `tests/test_miss_rule_v2.py`.
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they

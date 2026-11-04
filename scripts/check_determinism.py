@@ -49,6 +49,7 @@ STAGES = (
     "routing_decisions",
     "proof",
     "verification",
+    "shared_grades",
     "frame",
     "scores",
     "weights",
@@ -218,6 +219,23 @@ def run_pipeline(seed: int) -> dict:
         routing[uid] = [r.routed_model for r in proof.scored_results]
         head_hashes[uid] = proof.weights_hash
 
+    # Protocol v2's shared grades: one coldkey-median grade per (question,
+    # model) cell of the scored slice. Fed in REVERSE uid order, the opposite
+    # of the frame below, so a result that depended on proof order would show.
+    from fugal_subnet.shared_grades import (
+        ScoredAnswer,
+        cells_for_reveal,
+        shared_cell_grades,
+    )
+    shared = cells_for_reveal(shared_cell_grades(
+        ScoredAnswer(
+            question_id=r.question_id, model=r.routed_model,
+            coldkey=f"coldkey-{uid % 3}", correct=bool(r.correct), failed=bool(r.failed),
+        )
+        for uid in sorted(proof_objs, reverse=True)
+        for r in proof_objs[uid].scored_results
+    ))
+
     # The frame pools every verified proof's exploration samples, one vote per
     # coldkey and one sample per (question, model), exactly as the validator
     # does. Every synthetic miner answers the same exploration questions, so
@@ -283,6 +301,7 @@ def run_pipeline(seed: int) -> dict:
         "routing_decisions": _digest(routing),
         "proof": _digest(proofs),
         "verification": _digest(verdicts),
+        "shared_grades": _digest(shared),
         "frame": _digest(frame.to_dict()),
         "scores": _digest(scores_out),
         "weights": _digest({"uids": uids, "weights": weight_values}),

@@ -4,6 +4,15 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — v2 slicer: explicit benchmark weights inside a category
+
+`select_slice_v2` and `select_explore_set_v2` take an optional `bench_weight` map. Within a
+category a benchmark's share is its weight over the category total (default: pool size, as
+before). The approved v2 hard category weights an open multiple-choice set and integer
+olympiad math 50/50, rather than by raw pool size. A category that weights any benchmark must
+weight all of them (a partial map is refused). The share cap and the exploration draw use the
+same weighted shares, so expected exploration share still equals expected scored share.
+
 ### Added — protocol v2 slicer: category-first allocation; exploration matches the scored mix (not yet wired; lands with v2)
 
 - `select_slice_v2` allocates the scored slice by category at published targets (largest

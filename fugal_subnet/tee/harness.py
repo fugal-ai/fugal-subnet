@@ -23,7 +23,12 @@ from urllib.request import Request, urlopen
 import numpy as np
 
 from fugal_subnet.benchmarks.slicer import select_slice
-from fugal_subnet.config import HARNESS_ALLOW_EXEC, HARNESS_CONCURRENCY
+from fugal_subnet.config import (
+    HARNESS_ALLOW_EXEC,
+    HARNESS_CALL_TIMEOUT_S,
+    HARNESS_CONCURRENCY,
+    HARNESS_MAX_TOKENS,
+)
 from fugal_subnet.exploration import expected_exploration
 from fugal_subnet.graders import grade
 from fugal_subnet.grading_task import build_grader_task
@@ -261,7 +266,7 @@ def _call_model(
     payload = json.dumps({
         "model": model_id,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 2048,
+        "max_tokens": HARNESS_MAX_TOKENS,
     }).encode()
 
     req = Request(
@@ -273,11 +278,11 @@ def _call_model(
     )
 
     try:
-        # Slightly longer than the proxy's own 180 s upstream timeout, so the
-        # proxy's 502 reaches us before we give up on the proxy; otherwise the
-        # proxy writes into a closed socket (BrokenPipe) and the failure is
-        # logged twice as two different errors.
-        with urlopen(req, timeout=200) as resp:
+        # Longer than the proxy's own per-call deadline (PROXY_CALL_DEADLINE_S),
+        # so the proxy's 502 reaches us before we give up on the proxy;
+        # otherwise the proxy writes into a closed socket (BrokenPipe) and the
+        # failure is logged twice as two different errors.
+        with urlopen(req, timeout=HARNESS_CALL_TIMEOUT_S) as resp:
             data = json.loads(resp.read())
         return _text_of(data)
     except Exception:

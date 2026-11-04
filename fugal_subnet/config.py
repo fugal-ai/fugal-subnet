@@ -84,6 +84,24 @@ HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "",
 # a stalled call cost one worker rather than the epoch.
 HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "8")))
 
+# --- Harness answer budget and call deadlines (image constants, protocol v2) ---
+# Part of the measured image, not env-overridable: the reference frame is built
+# with the same harness, so a miner and the frame must ask for the same answer.
+#
+# HARNESS_MAX_TOKENS bounds the whole completion, reasoning included (reasoning
+# tokens count inside max_tokens on most providers). v1 asked for 2048, and
+# measured on the July matrix that cap was the reason most long reasoners were
+# graded wrong: 118 of one model's 145 wrong answers stopped at it. At 8192,
+# 4.1% of all answers still ended at the cap, nearly all wrong, mostly on
+# competition math. 16384 recovers most of those.
+HARNESS_MAX_TOKENS = 16384
+#
+# Deadlines nest, innermost first, so each layer reports before the next gives
+# up: one upstream attempt <= the proxy's per-call deadline < the harness's wait.
+# A 16k answer from a slow model (~50 tok/s) takes ~330 s.
+PROXY_CALL_DEADLINE_S = 420.0      # total time the proxy spends on one call, retries included
+HARNESS_CALL_TIMEOUT_S = 450.0     # the harness's wait on the proxy; > PROXY_CALL_DEADLINE_S
+
 # Checkers that grade by running the candidate's code, and therefore return 0
 # unless HARNESS_ALLOW_EXEC. Named here rather than in graders.py, which is
 # hash-pinned and must stay byte-identical.

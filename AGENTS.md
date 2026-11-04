@@ -131,7 +131,17 @@ python -m fugal_subnet.attacks.run_attacks
 
 # Full dress rehearsal: the shipped neurons against a real local chain (Docker)
 python scripts/dress_rehearsal.py --scenario all
+
+# Protocol v2 flip: v1 epochs, the activation block, v2 epochs (seat, 85/10/5,
+# E'' miss, restart mid-epoch). Chain half (Docker, ~30-60 min, not in "all"):
+python scripts/dress_rehearsal.py --scenario v2_flip
+# In-process half (seconds, no Docker; also run by tests/test_rehearsal_v2.py):
+python scripts/rehearsal_v2.py
 ```
+
+Both v2 rehearsals probe which v2 pieces the branch has and SKIP (never fail)
+the checks whose code has not landed. Both shorten burn-in and a few seat
+constants so they finish quickly, and print the overrides they use.
 
 There is no paid validator path: the validator never calls a model and has no
 budget flag. Real spend only happens inside a `--live` miner, with a key pushed

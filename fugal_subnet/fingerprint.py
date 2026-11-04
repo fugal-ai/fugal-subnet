@@ -130,6 +130,11 @@ def environment_fingerprint() -> dict:
             "epoch_interval_s": EPOCH_INTERVAL,
             "explore_fraction": EXPLORE_FRACTION,
             "collect_fraction": EPOCH_COLLECT_FRACTION,
+            # Which rules an epoch is scored under is a function of its
+            # boundary block and this value (slicer.protocol_version_for_boundary).
+            # In the digest so a validator that would flip at a different
+            # block, or never, is visibly different from its first epoch.
+            "v2_activation_block": config.V2_ACTIVATION_BLOCK,
         },
         # Every constant that decides a score or which proofs verify, as in
         # effect right now (read off the module, so an override is recorded
@@ -156,6 +161,11 @@ _SCORING_CONSTANTS = (
     "BENCHMARK_POOL_MIN_SIZE", "MAX_WEIGHT_DELTA", "REQUIRE_COMMITMENT",
     "HARNESS_ALLOW_EXEC", "HEAD_HIDDEN_DIM", "HEAD_MAX_MODELS", "HEAD_MAX_BYTES",
     "HEAD_MAX_DECOMPRESSED_BYTES", "HEAD_MAX_MODEL_ID_LEN",
+    # Protocol v2 (in effect from config.V2_ACTIVATION_BLOCK).
+    "CHAMPION_ACCURACY_VALUE", "CHAMPION_HARD_WEIGHT", "CHAMPION_MARGIN",
+    "CHAMPION_CONFIDENCE", "CHAMPION_BOOTSTRAP_RESAMPLES",
+    "CHAMPION_HARD_GATE_MIN_QUESTIONS", "CHAMPION_TIME_GATE_FACTOR",
+    "CHAMPION_GHOST_OFF", "CHAMPION_GHOST_RETIRE", "PAYOUT_SEAT_SHARES",
 )
 
 

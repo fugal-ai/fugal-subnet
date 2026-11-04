@@ -4,6 +4,18 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 activation block and v2 constants (no behaviour change yet)
+
+`FUGAL_V2_ACTIVATION_BLOCK` names the epoch boundary at which validators switch
+to the v2 rules. The version an epoch is scored under is a function of its
+boundary block (`slicer.protocol_version_for_boundary`), so retries and late
+validators agree; a block that is not an epoch boundary is refused at startup;
+the value is a consensus input in the digest's `epoch` block. Unset means v1
+for every epoch. The v2 champion and payout constants (`CHAMPION_*`,
+`PAYOUT_SEAT_SHARES`) are added as consensus constants. Nothing reads them yet;
+the v2 rules land behind the activation block in later changes. INVARIANTS:
+"I1 — protocol v2 activates at one named boundary".
+
 ### Fixed — proofs can carry their own TPM intermediates (validator half)
 
 `verify_ak_chain` accepted `extra_certs` and INVARIANTS said a proof could

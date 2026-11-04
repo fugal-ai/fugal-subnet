@@ -163,10 +163,13 @@ class BenchmarkProof:
     # so a miner whose region (or whose rotated intermediate) is not vendored
     # still verifies. Untrusted and unattested on purpose: a supplied
     # certificate is worthless unless it chains to the pinned Google root
-    # (tpm.verify_ak_chain), exactly as in TLS. So it is NOT in content_hash,
-    # which keeps report_data, proof_hash and every existing proof unchanged,
-    # and it is omitted from to_dict when empty so old proofs serialise
-    # byte-identically. Bounded in from_dict (I2).
+    # (tpm.verify_ak_chain), exactly as in TLS. It is NOT in content_hash, which
+    # keeps report_data, proof_hash and every existing proof unchanged; the
+    # cost is that it is unbound, so a miner can serve different intermediates
+    # to different validators under one proof_hash (INVARIANTS, TPM section).
+    # The harness half should add it to content_hash, only when non-empty so
+    # proofs without it keep their hash. Omitted from to_dict when empty so
+    # old proofs serialise byte-identically. Bounded in from_dict (I2).
     tpm_intermediates: list[bytes] = field(default_factory=list)
 
     @property

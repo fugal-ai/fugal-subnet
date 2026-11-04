@@ -593,10 +593,22 @@ a proof carries its own intermediates in `BenchmarkProof.tpm_intermediates`
 certificate is worthless unless it chains to the pinned root by signature
 (`run_tee_attacks`: a rogue CA named as Google's intermediate, and one named as
 the root, are both refused). Determinism is preserved because the bytes are in
-the proof rather than on the network. The field is deliberately **outside**
-`content_hash`: it is untrusted input checked against the anchor, not a claim
-the hardware needs to attest, so adding it changed no `report_data`, no
-`proof_hash` and no existing proof. It is omitted from `to_dict` when empty and
+the proof rather than on the network, and so no validator's verdict depends on
+when it asked. The field is **outside** `content_hash`: it is untrusted input
+checked against the anchor, so forging with it is impossible, and keeping it
+out changed no `report_data`, no `proof_hash` and no existing proof.
+
+**Known gap (I1), accepted for now.** Being outside `content_hash`, the
+intermediates are not bound to `proof_hash` or `report_data`. A miner can send
+a valid chain to one validator and junk (or nothing) to another under the same
+`proof_hash`, and the two validators then disagree about that miner's proof.
+This splits validators only on the miner's own proof and only against its own
+interest, which a miner can already do by answering some validators and not
+others; it cannot make any other miner's proof fail or pass. It is still a
+departure from "every validator sees the same input", so it is recorded here.
+**Fix, with the harness half (next image):** add `tpm_intermediates` to
+`content_hash`, included only when non-empty so proofs without it keep their
+hash, which binds it through `report_data`. It is omitted from `to_dict` when empty and
 bounded in `from_dict` (at most 4 certificates of 8 KB; I2). One intermediate
 (us-central1) is vendored so the common case needs nothing extra.
 
@@ -607,7 +619,8 @@ intermediate could chain, and a Google rotation would have failed every proof.
 The validator half is now wired (`tests/test_tpm_proof_intermediates.py`
 simulates the rotation on a real attestation). **The miner half is not yet:**
 the harness must embed the intermediate(s) for its AK certificate, which is an
-image change. Until a miner image does, proofs carry none and the vendored
+image change, and the same change should bind them into `content_hash` (gap
+above). Until a miner image does, proofs carry none and the vendored
 us-central1 intermediate remains the only one that chains.
 
 **Signature and chain are one check, not two.** Either alone proves nothing: a

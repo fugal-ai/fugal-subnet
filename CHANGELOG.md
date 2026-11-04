@@ -14,8 +14,11 @@ miner in another region, would have failed every proof at once.
 now passed through. It is outside `content_hash`, so no `report_data`,
 `proof_hash` or existing proof changes, and it is omitted when empty. A supplied
 certificate still has to chain to the pinned Google root by signature; two new
-`run_tee_attacks` cases pin that. The miner half (the harness embedding its
-chain) needs an image change and is not part of this.
+`run_tee_attacks` cases pin that. Known gap: being outside `content_hash`,
+the intermediates are not bound to `proof_hash`, so a miner can show different
+validators different chains for its own proof (INVARIANTS). The miner half (the
+harness embedding its chain, and adding it to `content_hash` when non-empty)
+needs an image change and is not part of this.
 
 ### Docs — MINER_GUIDE: failed model calls score as wrong answers
 

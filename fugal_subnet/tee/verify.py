@@ -184,9 +184,16 @@ def unwrap_attestation(blob: bytes, extra_certs: "list[bytes] | None" = None
 
     try:
         # extra_certs: intermediates the proof carries (BenchmarkProof.
-        # tpm_intermediates). Safe to accept from the miner: they only help if
-        # they chain to the pinned root, and they are in the proof bytes, so
-        # every validator sees the same ones (I1).
+        # tpm_intermediates). Safe to accept from the miner in the sense that
+        # matters for forgery: they only help if they chain to the pinned root
+        # by signature. They are NOT bound to proof_hash or report_data (they
+        # are outside content_hash), so a miner can send different
+        # intermediates to different validators under the same proof_hash, a
+        # valid chain to one and junk to another, and split them on its own
+        # proof. That costs the miner, not the field, and is no more than a
+        # miner can already do by answering only some validators; it is still
+        # an I1 gap, recorded in INVARIANTS. Closed when the harness puts them
+        # inside content_hash (next image).
         ok = verify_tpm_quote(att["tpm"], extra_certs=extra_certs)
     except TpmError as e:
         raise ValueError(f"TPM quote rejected: {e}") from e

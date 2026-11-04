@@ -312,6 +312,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         derive_nonce,
         epoch_id_for_block,
         epoch_index_for_block,
+        mix_weights,
         protocol_version_for_boundary,
         select_slice,
     )
@@ -504,6 +505,51 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             "differently until it catches up. Set FUGAL_FRAME_BOOTSTRAP to a "
             "directory of published reveals to rebuild instead."
         )
+
+    # Protocol v2 state, rebuilt the same way when this validator has none of
+    # its own, or has a seat but lost its window: the seat, owners and burn-in
+    # from the newest reveal's v2_state snapshot, the window replayed from the
+    # last CHAMPION_WINDOW_EPOCHS reveals (fugal_subnet/v2_rebuild.py, trust
+    # model in its docstring). Per-head v1 evidence is not rebuilt, as before;
+    # only the E'' burn-in counter is restored, into fresh records.
+    #
+    # Exact only if the reveals reach the epoch just before the one this
+    # validator resumes at. Published reveals lag by the commit-reveal hold,
+    # so a rebuild from a peer's may be a few epochs behind: then the window
+    # lacks those epochs and the seat is as of the newest reveal, and the
+    # validator stays DEGRADED (no first or take decision) until its window
+    # has refilled. Start a rebuilding validator after the hold has passed.
+    if ((not v2_raw or v2_window_degraded) and not v2_window.slices
+            and os.getenv("FUGAL_FRAME_BOOTSTRAP")):
+        from fugal_subnet.evidence import Evidence
+        from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
+        rebuilt = rebuild_v2_from_reveals(
+            os.environ["FUGAL_FRAME_BOOTSTRAP"], window_size=CHAMPION_WINDOW_EPOCHS,
+            prices=prices, bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+        )
+        if rebuilt.newest_epoch_id is not None:
+            v2_window, v2_seat, v2_owners = rebuilt.window, rebuilt.seat, rebuilt.owners
+            for h, uid in sorted(rebuilt.serving.items()):
+                if uid in scoring_state.records or h not in rebuilt.burn_in:
+                    continue
+                rec = MinerRecord(uid=uid, hotkey=rebuilt.owners.get(h, ""), current_head_hash=h)
+                rec.evidence = Evidence(weights_hash=h, burn_in_n=rebuilt.burn_in[h])
+                scoring_state.records[uid] = rec
+            resume_epoch = epoch_index_for_block(
+                subtensor.get_current_block(), blocks_per_epoch_fn(EPOCH_INTERVAL),
+            )
+            behind = resume_epoch - 1 - int(rebuilt.newest_epoch_id.lstrip("e"))
+            v2_window_degraded = behind > 0
+            if v2_window_degraded:
+                logger.error(
+                    "v2 state rebuilt from reveals that end %d epoch(s) before this "
+                    "validator resumes: no first or take decisions until the window has "
+                    "refilled. Restart after the commit-reveal hold to rebuild exactly.",
+                    behind,
+                )
+            else:
+                logger.info("v2 state rebuilt exactly from reveals up to %s",
+                            rebuilt.newest_epoch_id)
 
     blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 
@@ -844,10 +890,26 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     "UID %d exploration excluded from the reference frame this "
                     "epoch: %s. Its score is untouched (I4).", uid, why,
                 )
-            samples = aggregate_observations(
+            keyed = aggregate_observations(
                 observations,
                 exclude_coldkeys={coldkey_of[uid] for uid in suspicious},
+                with_question=True,
             )
+            samples = [row[1:] for row in keyed]
+            # Protocol v2: weight each exploration observation by its
+            # benchmark's scored share over its exploration share this epoch
+            # (slicer.mix_weights), so the frame estimates every model on the
+            # scored mix. The raw trial count is not weighted (it is what the
+            # frontier's confidence reads). The frame is informational in v2;
+            # this keeps it honest for the detectors and the diagnostics.
+            mix: dict[str, float] = {}
+            bench_of: dict[str, str] = {}
+            sample_weights = None
+            if protocol_version >= 2:
+                explored_qs = [gold_answers[q] for q in sorted(explore_map) if q in gold_answers]
+                mix = mix_weights(questions, explored_qs)
+                bench_of = {q["question_id"]: str(q.get("benchmark", "")) for q in explored_qs}
+                sample_weights = [mix.get(bench_of.get(row[0], ""), 1.0) for row in keyed]
 
             # EPOCH-LOCAL from here to save_state. `frame`, `scoring_state`,
             # `prev_uids` and `prev_weights` are the validator's durable state
@@ -858,7 +920,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # applied every miss twice and decayed the frame twice — and then
             # persisted it (found 2026-11-02). tests/test_epoch_atomicity.py
             # holds this shape.
-            epoch_frame = accumulate_exploration(frame, samples)
+            epoch_frame = accumulate_exploration(frame, samples, weights=sample_weights)
             ref_model, acc_best = best_model(epoch_frame, prices)
             logger.info(
                 "Reference frame: %d samples this epoch, best model %s "
@@ -1129,7 +1191,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 epoch_score_dicts, epoch_weight_map,
                 exploration=exploration_for_reveal,
                 protocol_version=protocol_version,
-                v2_fields=v2_result.reveal if v2_result is not None else None,
+                v2_fields=(
+                    {**v2_result.reveal,
+                     "frame_mix_weights": dict(sorted(mix.items())),
+                     "explore_benchmarks": dict(sorted(bench_of.items()))}
+                    if v2_result is not None else None
+                ),
             )
 
             # --- SET WEIGHTS ---

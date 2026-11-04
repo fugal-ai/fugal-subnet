@@ -507,6 +507,26 @@ def _epoch_index(epoch_id: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def from_rebuild(rebuilt) -> CopyState | None:
+    """The copy-rule state from `v2_rebuild.rebuild_v2_from_reveals`'s result.
+
+    That rebuild carries every later v2 state block verbatim in
+    `V2Rebuild.extra`; this module's is under `REVEAL_KEY`. It is validated
+    and bounded like any reveal input (`CopyState.from_reveal`), and refused
+    if it is for a different epoch than the newest reveal it came from. None
+    if the newest reveal carries no copy-rule state.
+    """
+    block = (getattr(rebuilt, "extra", None) or {}).get(REVEAL_KEY)
+    if block is None:
+        return None
+    state = CopyState.from_reveal(block)
+    newest = _epoch_index(getattr(rebuilt, "newest_epoch_id", None) or "")
+    if newest is not None and state.epoch is not None and state.epoch != newest:
+        raise ValueError(
+            f"newest reveal is epoch {newest} but its copy-rule state is for epoch {state.epoch}")
+    return state
+
+
 def rebuild_from_reveals(source) -> CopyState | None:
     """The copy-rule state from the newest v2 reveal that carries it.
 

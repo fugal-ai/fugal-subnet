@@ -587,3 +587,47 @@ def test_the_state_plugs_into_the_single_v2_state_block(tmp_path):
     (d / "reveal.json").write_text(json.dumps(
         {"epoch_id": "e00000010", "protocol_version": 2, "v2_state": block}))
     assert cr.rebuild_from_reveals(tmp_path) == st
+
+
+def test_the_state_round_trips_through_the_v2_rebuild(tmp_path):
+    # The validator's rebuild (snapshot + replay) carries the copy rule's
+    # block verbatim; from_rebuild reads, validates and returns it, and a
+    # rebuilt validator keeps folding exactly like one that never stopped.
+    from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
+    from tests.test_v2_epoch import PRICES
+    from tests.test_v2_rebuild import live, schedule, write
+
+    _, reveals = live(3, schedule)
+    st = cr.CopyState()
+    for e, b, cs in [(0, 360, SNAPS[0][2]), (1, 720, SNAPS[1][2]), (2, 1080, SNAPS[1][2])]:
+        st = cr.observe(st, e, b + 3600, cs, ghost_retire=RET)
+    reveals[-1]["v2_state"][cr.REVEAL_KEY] = json.loads(json.dumps(st.to_reveal()))
+    write(tmp_path, reveals)
+    rb = rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES)
+    assert cr.from_rebuild(rb) == st
+    nxt = [C("hk", "ck", "y", 3700)]
+    assert (cr.observe(cr.from_rebuild(rb), 3, 5000, nxt, ghost_retire=RET)
+            == cr.observe(st, 3, 5000, nxt, ghost_retire=RET))
+
+
+def test_the_v2_rebuild_refuses_copy_rule_state_for_another_epoch(tmp_path):
+    from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
+    from tests.test_v2_epoch import PRICES
+    from tests.test_v2_rebuild import live, schedule, write
+
+    _, reveals = live(3, schedule)
+    st = cr.observe(cr.CopyState(), 1, 3600, SNAPS[0][2], ghost_retire=RET)
+    reveals[-1]["v2_state"][cr.REVEAL_KEY] = st.to_reveal()        # epoch 1, reveal is 2
+    write(tmp_path, reveals)
+    with pytest.raises(ValueError):
+        cr.from_rebuild(rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES))
+
+
+def test_no_copy_rule_state_in_the_v2_rebuild_is_none(tmp_path):
+    from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
+    from tests.test_v2_epoch import PRICES
+    from tests.test_v2_rebuild import live, schedule, write
+
+    _, reveals = live(2, schedule)
+    write(tmp_path, reveals)
+    assert cr.from_rebuild(rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES)) is None

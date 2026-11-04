@@ -4,6 +4,35 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v2 state rebuilt from reveals (snapshot + replay)
+
+`fugal_subnet/v2_rebuild.py`: the seat, owners, serving UIDs, burn-in
+progress and any later v2 fields are read from the newest v2 reveal's
+`v2_state`; the comparison window is replayed from the last
+`CHAMPION_WINDOW_EPOCHS` v2 reveals. The frame rebuild applies the v2 mix
+weights. A validator with no local v2 state and `FUGAL_FRAME_BOOTSTRAP` set
+rebuilds at startup and restores burn-in counters. INVARIANTS: "I1 — v2 state
+is rebuilt from reveals: snapshot + replay", including the trust model.
+
+### Added — protocol v2: exploration weighted by the scored mix in the frame
+
+From the activation block each aggregated exploration observation is
+weighted by `slicer.mix_weights` (its benchmark's scored share over its
+exploration share this epoch). `ReferenceFrame` keeps weighted sums for
+accuracy and verbosity beside the raw ones; the raw trial count, which the
+frontier's confidence reads, is unweighted. v1 frames serialise unchanged.
+`aggregate_observations(..., with_question=True)` carries the question id.
+The weights are in the v2 reveal (`frame_mix_weights`). INVARIANTS: "I9 — v2:
+the frame is estimated on the scored mix".
+
+### Added — `epoch_plan`: the single, versioned question-selection entry point for both neurons
+
+`epoch_plan.scored_slice(version, nonce, pool, size)` and
+`exploration_plan(version, nonce, pool, scored_ids, models, size)`. v1 is byte-identical to
+`select_slice` and `expected_exploration`; v2 uses the category-first slicer with the v2
+targets, map and weights. The exploration model assignment moves to
+`exploration.assign_explore_models`, shared by both versions (v1 output unchanged).
+
 ### Added — protocol v2 wired into the validator (from the activation block)
 
 `fugal_subnet/v2_epoch.py`: from `FUGAL_V2_ACTIVATION_BLOCK` the validator
@@ -37,7 +66,8 @@ test. A chain coldkey swap keeps the author's head: ownership follows the
 first committer's hotkey. The state is a fold over boundary commitment snapshots, published as
 plain JSON (`CopyState.to_reveal` / `from_reveal`: `epoch`, `first_commit`,
 `ownership`, `first_hotkey`, `active`, `retired_at`) for the v2 reveal state block, rebuilt
-from the newest reveal or replayed from an archive node. New determinism stage
+from the newest reveal or replayed from an archive node (`from_rebuild` reads it from
+`v2_rebuild.rebuild_v2_from_reveals`). New determinism stage
 `copy_rule`. INVARIANTS: "I3/I4 — the v2 copy rule", including the accepted
 front-running residual until commitments are bound to the coldkey.
 

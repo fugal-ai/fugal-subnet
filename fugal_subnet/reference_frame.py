@@ -61,9 +61,25 @@ class ReferenceFrame:
     prompt_tokens: dict[str, float] = field(default_factory=dict)
     completion_tokens: dict[str, float] = field(default_factory=dict)
     epochs: int = 0
+    # Protocol v2: the same sums with each observation weighted by its
+    # benchmark's scored share over its exploration share this epoch
+    # (slicer.mix_weights), so accuracy and verbosity are estimated on the
+    # SCORED mix even when fifteen exploration slots round away from it. The
+    # raw `trials` above stay unweighted: they count how much was measured,
+    # which is what the frontier's confidence reads. Empty until the first v2
+    # epoch, and omitted from to_dict while empty, so a v1 frame serialises
+    # byte for byte as before.
+    successes_w: dict[str, float] = field(default_factory=dict)
+    trials_w: dict[str, float] = field(default_factory=dict)
+    prompt_tokens_w: dict[str, float] = field(default_factory=dict)
+    completion_tokens_w: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def weighted(self) -> bool:
+        return bool(self.trials_w)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "routing_protocol": identity(),
             "successes": self.successes,
             "trials": self.trials,
@@ -71,6 +87,12 @@ class ReferenceFrame:
             "completion_tokens": self.completion_tokens,
             "epochs": self.epochs,
         }
+        if self.weighted:
+            d["successes_w"] = self.successes_w
+            d["trials_w"] = self.trials_w
+            d["prompt_tokens_w"] = self.prompt_tokens_w
+            d["completion_tokens_w"] = self.completion_tokens_w
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> ReferenceFrame:
@@ -81,7 +103,22 @@ class ReferenceFrame:
             prompt_tokens=dict(d.get("prompt_tokens") or {}),
             completion_tokens=dict(d.get("completion_tokens") or {}),
             epochs=int(d.get("epochs", 0)),
+            successes_w=dict(d.get("successes_w") or {}),
+            trials_w=dict(d.get("trials_w") or {}),
+            prompt_tokens_w=dict(d.get("prompt_tokens_w") or {}),
+            completion_tokens_w=dict(d.get("completion_tokens_w") or {}),
         )
+
+    def _mean(self, model: str, raw: dict, weighted: dict) -> float | None:
+        """Per-trial mean of a sum: weighted when the model has weighted
+        evidence (v2), raw otherwise. None when the model is unmeasured."""
+        nw = self.trials_w.get(model, 0.0)
+        if nw > 1e-9:
+            return weighted.get(model, 0.0) / nw
+        n = self.trials.get(model, 0.0)
+        if n > 1e-9:
+            return raw.get(model, 0.0) / n
+        return None
 
     def accuracy(self, model: str) -> float:
         """Posterior mean accuracy under the Beta prior."""
@@ -123,20 +160,21 @@ class ReferenceFrame:
         ramp depends on field size (I4). The prior still serves `accuracy`
         and `best_model`, which are selection and reporting, not valuation.
         """
-        n = self.trials.get(model, 0.0)
-        if n < 1e-9:
+        mean = self._mean(model, self.successes, self.successes_w)
+        if mean is None:
             return 1.0
-        return min(1.0, max(0.0, self.successes.get(model, 0.0) / n))
+        return min(1.0, max(0.0, mean))
 
     def avg_completion_tokens(self, model: str, default: float) -> float:
-        n = self.trials.get(model, 0.0)
-        if n < 1e-9:
-            return default
-        return self.completion_tokens.get(model, 0.0) / n
+        mean = self._mean(model, self.completion_tokens, self.completion_tokens_w)
+        return default if mean is None else mean
 
     def _posterior_counts(self, model: str) -> tuple[float, float]:
+        # The prior's weight is against the RAW count of what was measured;
+        # the success rate it is mixed with is the weighted one in v2.
         n = self.trials.get(model, 0.0)
-        s = self.successes.get(model, 0.0)
+        mean = self._mean(model, self.successes, self.successes_w)
+        s = 0.0 if mean is None else mean * n
         k = float(FRAME_PRIOR_STRENGTH)
         return s + k * FRAME_PRIOR_ACCURACY, n + k
 
@@ -167,7 +205,8 @@ class Observation:
 def aggregate_observations(
     observations: list[Observation],
     exclude_coldkeys: set[str] | frozenset[str] | None = None,
-) -> list[tuple[str, float, float, float]]:
+    with_question: bool = False,
+) -> list[tuple]:
     """Collapse an epoch's shared exploration answers into ONE sample per
     (question, model), robust to a minority of dishonest operators.
 
@@ -206,13 +245,14 @@ def aggregate_observations(
             continue
         by_key.setdefault((o.model, o.question_id), {}).setdefault(o.coldkey, []).append(o)
 
-    out: list[tuple[str, float, float, float]] = []
-    for (model, _qid), by_coldkey in sorted(by_key.items()):
+    out: list[tuple] = []
+    for (model, qid), by_coldkey in sorted(by_key.items()):
         votes = sorted(by_coldkey.items())
         correct = median(sum(float(o.correct) for o in obs) / len(obs) for _, obs in votes)
         p_tok = median(sum(o.prompt_tokens for o in obs) / len(obs) for _, obs in votes)
         c_tok = median(sum(o.completion_tokens for o in obs) / len(obs) for _, obs in votes)
-        out.append((model, float(correct), float(p_tok), float(c_tok)))
+        row = (model, float(correct), float(p_tok), float(c_tok))
+        out.append((qid, *row) if with_question else row)
     return out
 
 
@@ -282,12 +322,21 @@ def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
             for i, e in enumerate(reveal.get("exploration", []))
             if e.get("model")
         ]
-        epochs.append((epoch_id, aggregate_observations(observations)))
+        # Protocol v2 reveals publish the epoch's mix weights and each
+        # explored question's benchmark; the live epoch weighted its samples
+        # by them, so the replay does too.
+        weights = None
+        keyed = aggregate_observations(observations, with_question=True)
+        if int(reveal.get("protocol_version", 1)) >= 2 and "frame_mix_weights" in reveal:
+            mix = reveal.get("frame_mix_weights") or {}
+            bench_of = reveal.get("explore_benchmarks") or {}
+            weights = [float(mix.get(bench_of.get(row[0], ""), 1.0)) for row in keyed]
+        epochs.append((epoch_id, [row[1:] for row in keyed], weights))
 
     frame = None
     replayed = 0
-    for epoch_id, samples in sorted(epochs, key=lambda x: x[0]):
-        frame = accumulate_exploration(frame, samples, half_life=half_life)
+    for epoch_id, samples, weights in sorted(epochs, key=lambda x: x[0]):
+        frame = accumulate_exploration(frame, samples, half_life=half_life, weights=weights)
         replayed += 1
     logger.info(
         "Rebuilt reference frame from %d reveals (%d models measured)",
@@ -428,6 +477,7 @@ def accumulate_exploration(
     frame: ReferenceFrame | None,
     samples: list[tuple[str, float, float, float]],
     half_life: int = FRAME_HALF_LIFE,
+    weights: list[float] | None = None,
 ) -> ReferenceFrame:
     """Fold one epoch's exploration samples into the frame.
 
@@ -437,7 +487,14 @@ def accumulate_exploration(
     accepted too, which is what tests and single-voter replays supply. Sample
     order does not affect the result — all terms are sums — so validators
     processing proofs in any order reach identical frames.
+
+    `weights` (protocol v2) are per-sample mix weights, aligned with
+    `samples`; they enter only the weighted sums, never the raw trial count.
+    Once a frame carries weighted sums, later epochs keep them up to date
+    (weight 1 where none is given), so the two never drift apart.
     """
+    if weights is not None and len(weights) != len(samples):
+        raise ValueError("weights must align with samples")
     alpha = decay_factor(half_life)
     prev = frame or ReferenceFrame()
 
@@ -448,11 +505,25 @@ def accumulate_exploration(
         completion_tokens={m: v * alpha for m, v in prev.completion_tokens.items()},
         epochs=prev.epochs + 1,
     )
-    for model, correct, p_tok, c_tok in samples:
+    keep_weighted = weights is not None or prev.weighted
+    if keep_weighted:
+        out.successes_w = {m: v * alpha for m, v in prev.successes_w.items()}
+        out.trials_w = {m: v * alpha for m, v in prev.trials_w.items()}
+        out.prompt_tokens_w = {m: v * alpha for m, v in prev.prompt_tokens_w.items()}
+        out.completion_tokens_w = {m: v * alpha for m, v in prev.completion_tokens_w.items()}
+    for i, (model, correct, p_tok, c_tok) in enumerate(samples):
         out.trials[model] = out.trials.get(model, 0.0) + 1.0
         out.successes[model] = out.successes.get(model, 0.0) + float(correct)
         out.prompt_tokens[model] = out.prompt_tokens.get(model, 0.0) + float(p_tok)
         out.completion_tokens[model] = out.completion_tokens.get(model, 0.0) + float(c_tok)
+        if keep_weighted:
+            w = 1.0 if weights is None else float(weights[i])
+            out.trials_w[model] = out.trials_w.get(model, 0.0) + w
+            out.successes_w[model] = out.successes_w.get(model, 0.0) + w * float(correct)
+            out.prompt_tokens_w[model] = out.prompt_tokens_w.get(model, 0.0) + w * float(p_tok)
+            out.completion_tokens_w[model] = (
+                out.completion_tokens_w.get(model, 0.0) + w * float(c_tok)
+            )
     return out
 
 

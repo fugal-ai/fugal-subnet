@@ -4,6 +4,31 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — the metering proxy names any reply over the answer budget (protocol v2 image)
+
+Some providers bound reasoning tokens loosely. Measured 2026-11-04: one model returned 17,763
+completion tokens against `max_tokens` 16,384. The proxy now logs the model and the overrun on
+every such call. Nothing is refused: the call happened and is attested and billed either way.
+This logs from every call rather than a one-off startup probe, and spends nothing.
+
+### Changed — protocol v2 image wiring: the miner serves v2 only, holds until the flip, and skips epochs it cannot finish
+
+- The harness takes `protocol_version`:
+  - questions come from `epoch_plan`;
+  - v2 heads are priced with `benchmark_costs_for(head, 2)` (the reviewed v2 token manifest and table);
+  - every v2 call carries the model's pinned `reasoning` setting;
+  - v2 proofs carry `identity_v2()`.
+  v1 behaviour is unchanged.
+- The TEE runtime's metering proxy takes the epoch's price table (`setup(prices=...)`).
+- Miner: with `FUGAL_V2_ACTIVATION_BLOCK` set (the v2 compose), the pool, prices and model space
+  are v2's. After embedding, the miner **holds**: it commits its head in the epoch before the
+  activation block, `COMMIT_AFTER_BOUNDARY_BLOCKS` (10) after the last v1 boundary. Validators read
+  commitments at the boundary block, so the last v1 epoch still sees the old head, and the flip
+  boundary sees the new one. It registers its axon from the activation block. Unset means v1,
+  as before.
+- Miner: an epoch is not started with fewer than `LATE_START_MARGIN_BLOCKS` (60) blocks left
+  before its collection block. Missing the block is a miss either way, and the calls are paid.
+
 ### Added — protocol v2 epoch inputs chosen by version in the validator
 
 From `FUGAL_V2_ACTIVATION_BLOCK` the validator selects the scored slice and

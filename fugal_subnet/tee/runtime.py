@@ -70,6 +70,26 @@ def _retry_wait(attempt: int, retry_after: str | None) -> float:
     return min(PROXY_MAX_WAIT_S, base)
 
 
+def _log_cap_overrun(model_id: str, completion_tokens) -> None:
+    """Name any reply that exceeded the harness's answer budget.
+
+    Some providers bound reasoning tokens loosely or not at all, so a reply can
+    bill more than `HARNESS_MAX_TOKENS` asked for (measured 2026-11-04: one model
+    returned 17,763 against 16,384). Nothing is refused, because the call
+    happened and its tokens are attested and billed either way; the warning is so
+    the operator sees which model, how far over and how often, from every call
+    rather than from a one-off probe.
+    """
+    from fugal_subnet.config import HARNESS_MAX_TOKENS
+    try:
+        n = int(completion_tokens or 0)
+    except (TypeError, ValueError):
+        return
+    if n > HARNESS_MAX_TOKENS:
+        logger.warning("Model %s returned %d completion tokens, over the %d answer budget (+%d)",
+                       model_id, n, HARNESS_MAX_TOKENS, n - HARNESS_MAX_TOKENS)
+
+
 def _fetch_upstream(req, model_id: str) -> bytes:
     """POST to the upstream with the retry policy above. Returns the body or raises."""
     from urllib.error import HTTPError
@@ -196,6 +216,7 @@ class MeteringProxy:
 
                     cost = proxy.price_call(model_id, prompt_tokens, completion_tokens)
                     resp_hash = hashlib.sha256(resp_body).hexdigest()
+                    _log_cap_overrun(model_id, completion_tokens)
 
                     provider_cost = 0.0
                     try:
@@ -297,8 +318,13 @@ class TEERuntime:
     mock: bool = True
     proxy: MeteringProxy | None = None
 
-    def setup(self, api_key: str = "", proxy_port: int = 8199) -> MeteringProxy:
+    def setup(self, api_key: str = "", proxy_port: int = 8199,
+              prices: dict | None = None) -> MeteringProxy:
         self.proxy = MeteringProxy(port=proxy_port, api_key=api_key)
+        if prices:
+            # The epoch's protocol table (routing_protocol.price_table(version)), so a v2 call is
+            # priced on v2 rates; with none, the proxy loads the v1 table as before.
+            self.proxy.prices = dict(prices)
         self.proxy.start()
         return self.proxy
 

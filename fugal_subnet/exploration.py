@@ -107,6 +107,15 @@ def expected_exploration(
     # cannot steer or foresee its own targets — the property that matters is
     # unforgeability, and ranking by HMAC preserves it exactly as select_slice
     # does for questions.
+    return assign_explore_models(nonce, chosen, models)
+
+
+def assign_explore_models(nonce: bytes, chosen: list[dict], models: list[str]) -> dict[str, str]:
+    """{question_id: model} for an already chosen exploration set: round-robin
+    over a nonce-permuted model list, questions in id order. Shared by every
+    protocol version, so the assignment rule exists exactly once."""
+    if not models:
+        raise ValueError("expected_exploration requires a non-empty model list")
     ranked = sorted(
         models,
         key=lambda m: hmac.new(

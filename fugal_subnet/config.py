@@ -499,6 +499,13 @@ REVEAL_BUCKET = os.getenv("FUGAL_REVEAL_BUCKET", "").strip()
 # read it from the chain.
 REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
 
+# --- Head archive (operational; nothing here reads back into a score) ---
+# Directory where the validator keeps every VERIFIED miner head, raw bytes
+# named by sha256, plus an index.jsonl (fugal_subnet/head_archive.py). Private:
+# created 0700, never uploaded. Unset (default): heads are discarded after
+# verification, as before.
+HEAD_ARCHIVE_DIR = os.getenv("FUGAL_HEAD_ARCHIVE_DIR", "").strip()
+
 # --- Chain endpoints (operational) ---
 # The validator pins three reads to old blocks every epoch (commitments and
 # the owner hotkey at the boundary block, the metagraph at the collection
@@ -605,6 +612,7 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_MIN_VALIDATOR_STAKE",
     "FUGAL_REVEAL_BUCKET",
     "FUGAL_REVEAL_DELAY_EPOCHS",
+    "FUGAL_HEAD_ARCHIVE_DIR",
     "FUGAL_ARCHIVE_ENDPOINTS",
     "FUGAL_FALLBACK_ENDPOINTS",
     "FUGAL_WEIGHTS_SET_RETRIES",

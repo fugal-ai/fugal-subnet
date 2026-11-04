@@ -674,6 +674,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # value the miner asserted over the axon.
                 head_hashes[uid] = proof.weights_hash
 
+            # Diagnostics only: keep the verified heads on private disk. Feeds
+            # no score, hash, reveal or fingerprint, and can't fail the epoch.
+            _archive_heads(epoch_id, verified_heads, head_hashes, metagraph)
+
             if not verified_proofs:
                 logger.warning("No valid proofs received, skipping epoch")
                 epoch_log = EpochLog(
@@ -1475,6 +1479,30 @@ def confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights, tol=1e-3)
                 f"chain has {got.get(uid, 0.0):.4f}"
             )
     return True, f"{len(got)} weights match within {tol}"
+
+
+def _archive_heads(epoch_id, verified_heads, head_hashes, metagraph):
+    """Save this epoch's verified heads when FUGAL_HEAD_ARCHIVE_DIR is set.
+
+    Diagnostics only: the archive feeds nothing back into scoring, and any
+    error is logged and swallowed so it cannot cost the epoch.
+    """
+    from fugal_subnet.config import HEAD_ARCHIVE_DIR
+    from fugal_subnet.head_archive import archive_verified_heads
+
+    if not HEAD_ARCHIVE_DIR or not verified_heads:
+        return
+    try:
+        n = len(metagraph.hotkeys)
+        counts = archive_verified_heads(
+            HEAD_ARCHIVE_DIR, epoch_id, verified_heads, head_hashes,
+            hotkeys={u: metagraph.hotkeys[u] for u in verified_heads if u < n},
+            coldkeys={u: metagraph.coldkeys[u] for u in verified_heads if u < n},
+        )
+        logger.info("Head archive: %d new, %d repeat, %d skipped",
+                    counts["first_seen"], counts["repeat"], counts["skipped"])
+    except Exception as e:  # noqa: BLE001 - diagnostics must not cost the epoch
+        logger.warning("Head archive failed this epoch: %s", e)
 
 
 def count_failed_scored(proof) -> int:

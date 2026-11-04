@@ -4,6 +4,14 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — `epoch_plan`: the single, versioned question-selection entry point for both neurons
+
+`epoch_plan.scored_slice(version, nonce, pool, size)` and
+`exploration_plan(version, nonce, pool, scored_ids, models, size)`. v1 is byte-identical to
+`select_slice` and `expected_exploration`; v2 uses the category-first slicer with the v2
+targets, map and weights. The exploration model assignment moves to
+`exploration.assign_explore_models`, shared by both versions (v1 output unchanged).
+
 ### Added — protocol v2 wired into the validator (from the activation block)
 
 `fugal_subnet/v2_epoch.py`: from `FUGAL_V2_ACTIVATION_BLOCK` the validator

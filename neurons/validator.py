@@ -797,6 +797,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         head_bytes=head_bytes,
                         mock=mock,
                         collateral_budget=collateral_budget,
+                        protocol_version=protocol_version,
                     )
                 except ImportError:
                     raise

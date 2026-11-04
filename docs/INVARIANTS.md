@@ -2520,6 +2520,12 @@ every epoch input that differs by version is chosen by the epoch's
   manifest and pool file.
 - **Prices and model space:** `routing_protocol.price_table(version)` and
   `models_for_protocol(version)`.
+- **Proof namespace and head cost profile:** `verify_proof(...,
+  protocol_version=)` requires the proof's `routing_protocol` to be the
+  version's (`identity()` for v1, `identity_v2()` for v2, which the harness
+  stamps per version) and checks the head with
+  `benchmark_costs_for(head, version)`; a v1 proof does not verify in a v2
+  epoch, nor the reverse.
 
 The validator loads v1's inputs as before and, when an activation block is
 set, v2's as well, at startup; a live validator that cannot load v2's refuses

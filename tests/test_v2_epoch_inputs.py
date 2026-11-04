@@ -72,3 +72,43 @@ def test_the_startup_rebuild_prices_the_window_at_v2s_table():
     call = start[:start.index(")\n")]
     assert "prices=epoch_inputs.get(2, epoch_inputs[1])[2]" in call
     assert SRC.index("    epoch_inputs = {1:") < SRC.index("rebuilt = rebuild_v2_from_reveals(")
+
+
+def _proof_with_namespace(namespace):
+    from fugal_subnet.attacks import run_tee_attacks as t
+
+    p = t._proof([t._qr(q) for q in t.SLICE])
+    p.routing_protocol = namespace
+    p.attestation_quote = t._quote(bytes.fromhex(p.content_hash()), t.HONEST_MRTD,
+                                   t.HONEST_RTMR3)
+    return p
+
+
+def _verify(p, version):
+    from fugal_subnet.attacks import run_tee_attacks as t
+
+    return t._verify(p, mock=True, protocol_version=version)
+
+
+def test_a_v2_proof_verifies_only_under_v2_and_a_v1_proof_only_under_v1():
+    from fugal_subnet.routing_protocol import identity, identity_v2
+
+    v1, v2 = _proof_with_namespace(identity()), _proof_with_namespace(identity_v2())
+    assert _verify(v1, 1).valid and _verify(v2, 2).valid
+    for p, version in ((v1, 2), (v2, 1)):
+        r = _verify(p, version)
+        assert not r.valid and "namespace" in r.reason
+
+
+def test_the_validator_verifies_with_the_epochs_version():
+    call = SRC[SRC.index("result = verify_proof("):]
+    call = call[:call.index("\n                    )")]
+    assert "protocol_version=protocol_version" in call
+
+
+def test_the_head_cost_profile_is_checked_for_the_epochs_version():
+    import inspect
+
+    from fugal_subnet.tee import verify
+    src = inspect.getsource(verify.verify_proof)
+    assert "benchmark_costs_for(load_head_from_npz(head_bytes), int(protocol_version))" in src

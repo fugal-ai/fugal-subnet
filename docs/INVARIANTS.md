@@ -2425,13 +2425,11 @@ model per epoch:
    only when the seat is empty.
 2. **Eligibility does not read the frame, nor v1 dedup.** v1's quality floor (a
    fraction of the frontier's maximum accuracy) is replaced by
-   `CHAMPION_MIN_ACCURACY` on window shared-grade accuracy, and the v1
-   epsilon clause (which compares frontier-based composites) does not run.
-   v1's routing-similarity dedup does not decide v2 eligibility either: it
-   keeps the head on the senior *registration*, so a near-constant mimic on an
-   older hotkey could flag the champion and unseat it. In v2 a copy is an
-   exact hash owned by someone else (below) or a junior that fails the NV
-   margin (the copy rule).
+   `CHAMPION_MIN_ACCURACY` on window shared-grade accuracy, and v1's dedup
+   clauses (routing similarity, parameter distance, the epsilon clause) do not
+   decide v2 eligibility. In v2 a copy is decided by the copy rule
+   (`copy_rule.py`): an exact hash owned by another coldkey, or a junior head
+   that fails the margin against a senior seat holder.
 3. **Spend is measured, not modelled (I4).** A head's spend on a question is
    the pool's prompt tokens plus the cell's coldkey-median attested completion
    tokens (`shared_grades.shared_cell_tokens`), at the pinned prices, not
@@ -2445,18 +2443,22 @@ headroom, quality and thrift (computed and published as diagnostics, deciding
 nothing); the exploration detectors (they decide only which samples enter the
 frame); and `best_model` / `reference_cost` (they feed only the diagnostics).
 
-**A head hash has one owner, its first committer.** A hash is owned by the
-hotkey with the earliest on-chain commitment of it among every hotkey
-committing it at the boundary (not only those serving it that epoch), and
-keeps that owner while it is remembered. Only the owner's UID serves it: any
-other UID serving the same bytes is a copy and is not paid as it, not
-measured as it, and cannot become its owner when the author's proof fails. A
-champion is *retired* (24-epoch ghost) only when its OWNER now commits a
-different head, never because a copier did, and *missed* (3-epoch ghost)
-otherwise; a standing missed ghost is checked the same way every epoch and
-upgraded. Payout
-eligibility is the hold rule (live, not an exact copy, window accuracy at or
-above the floor), so a champion that resumes after a miss is paid at once.
+**Ownership, seniority and retirement are the copy rule's.** Each epoch the
+validator folds the boundary snapshot of commitments (every committed hotkey
+with its owning coldkey, read pinned at the boundary) into the copy rule's
+state (`copy_rule.observe`). A hash belongs to the coldkey that first
+committed it; only its canonical owner UID serves it (`copy_rule.classify`),
+so a UID serving another coldkey's bytes is a copy and is not paid as it, not
+measured as it, and cannot retire it. A head's seniority and the first epoch
+of its comparison are its first commit (`v2_seniority`, `first_epoch`), never
+a registration block. A champion is *retired* (24-epoch ghost) only when its
+owner stops committing it (`retired_hashes`), and *missed* (3-epoch ghost)
+otherwise; a standing missed ghost is checked every epoch and upgraded. A
+head takes a seat only by also beating every senior seat holder in the
+comparison set by the margin (`senior_bars`, holders from `seat_holders`).
+The fold is idempotent across a retried epoch. Payout eligibility is the hold
+rule (live, canonical owner, window accuracy at or above the floor), so a
+champion that resumes after a miss is paid at once.
 
 **The reveal.** From the activation boundary it carries `protocol_version`,
 `shared_grades` (each cell's grade and median completion tokens), each UID's

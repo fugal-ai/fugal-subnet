@@ -4,6 +4,18 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — protocol v2 wiring uses the copy rule for ownership and seniority
+
+`run_v2_epoch` replaces its interim per-hotkey ownership with the copy rule
+(`copy_rule.py`): it folds the boundary commitment snapshot (`observe`),
+serves each head from its canonical owner UID only (`classify`), takes
+seniority and the comparison's first epoch from the first commit
+(`v2_seniority`, `first_epoch`), retires on the owner's commitment
+(`retired_hashes`), and passes `senior_bars` (seat holders only) to
+`seat_step`. The copy rule's state is persisted, published in the v2 reveal's
+`v2_state` under `copy_rule`, and restored by the rebuild (`from_rebuild`).
+The reveal also carries per-UID `copy_verdicts`.
+
 ### Fixed — protocol v2 payout: a ghost keeps seat 1
 
 During a champion's ghost window the payout seats shifted down a seat (the

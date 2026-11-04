@@ -457,7 +457,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.v2_epoch import load_window, seat_from_dict
     v2_raw = state.get("v2") or {}
     v2_seat = seat_from_dict(v2_raw.get("seat"))
-    v2_owners = dict(v2_raw.get("owners") or {})
+    # The copy rule's state (first commits, coldkey ownership, retirements),
+    # published in every v2 reveal's v2_state under copy_rule.REVEAL_KEY.
+    from fugal_subnet import copy_rule
+    v2_copy = (copy_rule.CopyState.from_reveal(v2_raw[copy_rule.REVEAL_KEY])
+               if v2_raw.get(copy_rule.REVEAL_KEY) else copy_rule.CopyState())
     v2_window = load_window(STATE_PATH + ".v2window.npz", CHAMPION_WINDOW_EPOCHS)
     # A seat with no window to back it (the .npz lost, or never written) must
     # not be judged on a partial window: hold, resume and ghosts continue, but
@@ -528,7 +532,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             prices=prices, bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
         )
         if rebuilt.newest_epoch_id is not None:
-            v2_window, v2_seat, v2_owners = rebuilt.window, rebuilt.seat, rebuilt.owners
+            v2_window, v2_seat = rebuilt.window, rebuilt.seat
+            v2_copy = copy_rule.from_rebuild(rebuilt) or copy_rule.CopyState()
             for h, uid in sorted(rebuilt.serving.items()):
                 if uid in scoring_state.records or h not in rebuilt.burn_in:
                     continue
@@ -828,7 +833,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # window is counted in epochs, so it still expires on time.
                 save_state(scoring_state.records, prev_uids, prev_weights,
                            last_epoch_index, frame,
-                           v2={"seat": seat_to_dict(v2_seat), "owners": v2_owners,
+                           v2={"seat": seat_to_dict(v2_seat), copy_rule.REVEAL_KEY: v2_copy.to_reveal(),
                                "window_degraded": v2_window_degraded},
                            v2_window=v2_window)
                 if once:
@@ -1043,33 +1048,30 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # head-vs-head rule (docs/INVARIANTS.md, the v2 I3/I4
                 # entries). The v1 composite above is still computed and
                 # published as a diagnostic; it decides nothing.
+                # The boundary snapshot for the copy rule: every committed
+                # hotkey with its owning coldkey, read pinned at the boundary.
+                ck_of_hotkey = {
+                    metagraph.hotkeys[u]: (str(coldkeys[u]) if u < len(coldkeys) else "")
+                    for u in range(len(metagraph.hotkeys))
+                }
+                snapshot = [
+                    copy_rule.Commitment(hk, ck_of_hotkey[hk], c[0], int(c[1]))
+                    for hk, c in sorted(chain_commitments.items())
+                    if ck_of_hotkey.get(hk)
+                ]
                 v2_result = run_v2_epoch(
-                    epoch_index=epoch_index, epoch_id=epoch_id, questions=questions,
-                    pool_models=pool_models, prices=prices,
+                    epoch_index=epoch_index, epoch_id=epoch_id,
+                    boundary_block=boundary_block, blocks_per_epoch=blocks_per_epoch,
+                    questions=questions, pool_models=pool_models, prices=prices,
                     verified_proofs=verified_proofs, head_hashes=head_hashes,
                     coldkey_of=coldkey_of,
                     hotkey_of={uid: metagraph.hotkeys[uid] for uid in verified_proofs},
-                    commit_block={
-                        uid: chain_commitments[metagraph.hotkeys[uid]][1]
-                        for uid in verified_proofs
-                        if metagraph.hotkeys[uid] in chain_commitments
-                    },
-                    commit_epoch={
-                        uid: (
-                            chain_commitments[metagraph.hotkeys[uid]][1] // blocks_per_epoch
-                            if metagraph.hotkeys[uid] in chain_commitments else epoch_index
-                        )
-                        for uid in verified_proofs
-                    },
-                    # v1's routing-similarity dedup does NOT decide v2
-                    # eligibility: a near-constant mimic on an older hotkey
-                    # could flag the champion and unseat it. In v2 a copy is
-                    # an exact hash owned by someone else (first committer,
-                    # above) or a junior that fails the NV margin (the copy
-                    # rule).
-                    records=epoch_state.records, exact_copies=set(),
-                    commitments={hk: (c[0], int(c[1])) for hk, c in chain_commitments.items()},
-                    window=v2_window, seat=v2_seat, owners=v2_owners, burn_uid=burn_uid,
+                    # v1's dedup clauses do not decide v2 eligibility. In v2
+                    # a copy is an exact hash owned by another coldkey, or a
+                    # junior that fails the margin against a senior seat
+                    # holder (the copy rule, copy_rule.py).
+                    records=epoch_state.records, commitments=snapshot,
+                    window=v2_window, seat=v2_seat, copy_state=v2_copy, burn_uid=burn_uid,
                     params=seat_params_from_config(), shares=PAYOUT_SEAT_SHARES,
                     burn_in_questions=BURN_IN_QUESTIONS,
                     bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
@@ -1297,11 +1299,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             write_epoch_log(epoch_log)
 
             next_v2 = (
-                (v2_result.window, v2_result.decision.state, v2_result.owners,
+                (v2_result.window, v2_result.decision.state, v2_result.copy_state,
                  v2_window_degraded
                  and len(v2_result.window.slices) < CHAMPION_WINDOW_EPOCHS)
                 if v2_result is not None
-                else (v2_window, v2_seat, v2_owners, v2_window_degraded)
+                else (v2_window, v2_seat, v2_copy, v2_window_degraded)
             )
 
             # COMMIT. The epoch is complete; only now does it become the state
@@ -1309,10 +1311,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             scoring_state, frame = epoch_state, epoch_frame
             prev_uids, prev_weights = next_prev_uids, next_prev_weights
             last_epoch_index = epoch_index
-            v2_window, v2_seat, v2_owners, v2_window_degraded = next_v2
+            v2_window, v2_seat, v2_copy, v2_window_degraded = next_v2
             save_state(scoring_state.records, prev_uids, prev_weights,
                        last_epoch_index, frame,
-                       v2={"seat": seat_to_dict(v2_seat), "owners": v2_owners,
+                       v2={"seat": seat_to_dict(v2_seat), copy_rule.REVEAL_KEY: v2_copy.to_reveal(),
                            "window_degraded": v2_window_degraded},
                        v2_window=v2_window)
 

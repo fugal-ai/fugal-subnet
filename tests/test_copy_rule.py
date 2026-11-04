@@ -599,15 +599,17 @@ def test_the_state_round_trips_through_the_v2_rebuild(tmp_path):
 
     _, reveals = live(3, schedule)
     st = cr.CopyState()
-    for e, b, cs in [(0, 360, SNAPS[0][2]), (1, 720, SNAPS[1][2]), (2, 1080, SNAPS[1][2])]:
+    # The live reveals are chain epochs 1..3 (tests/test_v2_epoch.run), so
+    # the injected state is folded through epoch 3, the newest reveal's.
+    for e, b, cs in [(1, 360, SNAPS[0][2]), (2, 720, SNAPS[1][2]), (3, 1080, SNAPS[1][2])]:
         st = cr.observe(st, e, b + 3600, cs, ghost_retire=RET)
     reveals[-1]["v2_state"][cr.REVEAL_KEY] = json.loads(json.dumps(st.to_reveal()))
     write(tmp_path, reveals)
     rb = rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES)
     assert cr.from_rebuild(rb) == st
     nxt = [C("hk", "ck", "y", 3700)]
-    assert (cr.observe(cr.from_rebuild(rb), 3, 5000, nxt, ghost_retire=RET)
-            == cr.observe(st, 3, 5000, nxt, ghost_retire=RET))
+    assert (cr.observe(cr.from_rebuild(rb), 4, 5000, nxt, ghost_retire=RET)
+            == cr.observe(st, 4, 5000, nxt, ghost_retire=RET))
 
 
 def test_the_v2_rebuild_refuses_copy_rule_state_for_another_epoch(tmp_path):
@@ -617,7 +619,7 @@ def test_the_v2_rebuild_refuses_copy_rule_state_for_another_epoch(tmp_path):
 
     _, reveals = live(3, schedule)
     st = cr.observe(cr.CopyState(), 1, 3600, SNAPS[0][2], ghost_retire=RET)
-    reveals[-1]["v2_state"][cr.REVEAL_KEY] = st.to_reveal()        # epoch 1, reveal is 2
+    reveals[-1]["v2_state"][cr.REVEAL_KEY] = st.to_reveal()        # epoch 1, reveal is 3
     write(tmp_path, reveals)
     with pytest.raises(ValueError):
         cr.from_rebuild(rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES))
@@ -629,5 +631,7 @@ def test_no_copy_rule_state_in_the_v2_rebuild_is_none(tmp_path):
     from tests.test_v2_rebuild import live, schedule, write
 
     _, reveals = live(2, schedule)
+    for rv in reveals:                       # the wiring publishes it; strip it here
+        rv["v2_state"].pop(cr.REVEAL_KEY, None)
     write(tmp_path, reveals)
     assert cr.from_rebuild(rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES)) is None

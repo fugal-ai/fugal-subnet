@@ -18,9 +18,12 @@ printf 'Telegram bot token (input hidden): '
 stty -echo; read -r token; stty echo; printf '\n'
 [ -n "$token" ] || { echo "empty token"; exit 2; }
 api="https://api.telegram.org/bot$token"
-me="$(curl -fsS -m 20 "$api/getMe")" || { echo "getMe failed: token rejected or no network"; exit 1; }
+# Every request URL carries the token, so it reaches curl on stdin (-K -),
+# never on argv, which any local user can read in ps.
+tg() { method="$1"; shift; printf 'url = "%s/%s"\n' "$api" "$method" | curl -fsS -m 20 -K - "$@"; }
+me="$(tg getMe)" || { echo "getMe failed: token rejected or no network"; exit 1; }
 echo "bot: $(printf '%s' "$me" | python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["username"])')"
-chat_id="$(curl -fsS -m 20 "$api/getUpdates" | python3 -c '
+chat_id="$(tg getUpdates | python3 -c '
 import json,sys
 r=json.load(sys.stdin)["result"]
 ids=[u.get("message",u.get("channel_post",{})).get("chat",{}).get("id") for u in r]
@@ -32,5 +35,5 @@ tmp="$(mktemp)"
 grep -vE '^(FUGAL_ALERT_URL|FUGAL_ALERT_KIND|FUGAL_ALERT_CHAT_ID)=' "$env_file" > "$tmp"
 printf 'FUGAL_ALERT_KIND=telegram\nFUGAL_ALERT_URL=%s/sendMessage\nFUGAL_ALERT_CHAT_ID=%s\n' "$api" "$chat_id" >> "$tmp"
 install -m 0600 -o root -g root "$tmp" "$env_file"; rm -f "$tmp"
-curl -fsS -m 20 -d "chat_id=$chat_id" --data-urlencode "text=fugal-watch on $(hostname): Telegram alerts configured $(date -u +%Y-%m-%dT%H:%MZ)" "$api/sendMessage" >/dev/null \
+tg sendMessage -d "chat_id=$chat_id" --data-urlencode "text=fugal-watch on $(hostname): Telegram alerts configured $(date -u +%Y-%m-%dT%H:%MZ)" >/dev/null \
   && echo "test message sent; $env_file updated"

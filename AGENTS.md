@@ -74,7 +74,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 11. `frontier.py` + `scoring.py` → headroom above the constant-policy frontier (upper convex hull of per-model cost/accuracy from the frame), quality floor, burn-in ramp, frontier confidence
 12. `rewards.py` → weight computation (single pool, weight capping ±0.3/epoch)
 13. `dedup.py` → dedup: behavioural (cosine on routing decisions, GLOBAL model index space), parametric (`head_distance.py`, relative weight distance), and the epsilon rule (a near-copy must beat its senior); seniority is `commitments.seniority_key` (registration block, then commitment block); v1 only, see `copy_rule.py` for v2
-14. `champion.py` / `copy_rule.py` → protocol v2: the champion seat (paired NV test) and the copy rule (first-commit seniority, coldkey ownership, ghost incumbents; a junior must beat every senior by the champion margin)
+14. `champion.py` / `copy_rule.py` → protocol v2: the champion seat (paired NV test) and the copy rule (first-commit seniority, coldkey ownership, ghost incumbents; a junior must beat every senior seat holder by the champion margin)
 15. `commit_reveal.py` → commit-reveal integrity + publish epoch artifacts
 
 ### Orchestrators

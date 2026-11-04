@@ -2305,7 +2305,7 @@ spend) and per head only its routing and its failed calls, so it is bounded
 and reconstructable from the published reveals.
 
 **The bar is never the field.** What a challenger must beat is the champion
-or its ghost and, under the copy rule (next entry), the heads senior to it.
+or its ghost and, under the copy rule (next entry), the senior seat holders.
 No junior head's presence moves it (I4).
 
 **Determinism (I1).** Each NV_i is computed elementwise and quantised to an
@@ -2487,7 +2487,7 @@ Enforced by `tests/test_v2_epoch.py`, `tests/test_shared_grades.py`,
 `tests/test_champion.py` (re-adding an epoch, no take on an untrusted window)
 and the `v2_epoch` stage of `scripts/check_determinism.py`.
 
-### I3/I4 — the v2 copy rule: a head must beat every senior head by the margin (v2 release; from the activation block)
+### I3/I4 — the v2 copy rule: a head must beat every senior seat holder by the margin (v2 release; from the activation block)
 
 v1 recognised copies by resemblance (`dedup.py`: routing agreement ≥ 0.99,
 relative weight distance < 0.2, and the epsilon clause at 95% agreement and
@@ -2510,37 +2510,49 @@ that copies a newer head the senior one. From protocol v2
   The same hash under another coldkey is an exact copy and is ineligible; a
   hash a copier still commits stays on record as the author's, so a copier
   never inherits its age. Ownership is by coldkey, so an operator whose
-  hotkey is pruned and re-registers keeps its head. Two hotkeys of the owner
+  hotkey is pruned and re-registers keeps its head. A chain coldkey swap
+  moves the first committer's hotkey to a new coldkey; ownership follows that
+  hotkey (`is_exact_copy` is False for it, and `observe` moves the record),
+  while any other hotkey serving the hash under a coldkey that is not the
+  owner is still a copy. Two hotkeys of the owner
   serving one hash are one head: the earliest commitment (then hotkey, then
   UID) is canonical and the other earns nothing.
-- **A junior must beat every senior by the champion margin.** To take a
-  seat, first or by challenge, a head must beat each senior head in the
-  comparison set by `CHAMPION_MARGIN` on the same paired test
+- **A junior must beat every senior seat holder by the champion margin.**
+  To take a seat, first or by challenge, a head must beat each senior SEAT
+  HOLDER in the comparison set by `CHAMPION_MARGIN` on the same paired test
   (`paired_test`, at least `CHAMPION_MIN_PAIRED_QUESTIONS` paired questions).
   There is no second margin and no resemblance test: a copy is simply a head
   that is not measurably better than its source, whatever it looks like. The
   ranking among heads that qualify is still their margin over the champion or
   its ghost; the copy rule is pass/fail. The v1 clauses stay v1-only.
-- **The comparison set** is every senior head with answers in the champion
+  **Seat holders** (`seat_holders`) are the heads the payout pays: the
+  champion and the former champions in seats 2–3, plus the champion's
+  ghosts. Only seats pay, so a copy of a head that holds no seat earns
+  nothing anyway; barring it against every older head would turn one 90%
+  test into many and let noise against weak seniors block a genuinely better
+  head.
+- **The comparison set** (from which the seat holders are taken) is every
+  head with answers in the champion
   window that is live this epoch; or that its owner still commits and that
   was scored within `CHAMPION_GHOST_OFF` epochs; or that is **retired** (its
   owner no longer commits it: it committed a different head, or its hotkey
   left the subnet) within `CHAMPION_GHOST_RETIRE` epochs of its FIRST
   retirement. These ghost incumbents are unpaid. They exist so that perturbed
-  copies of a head cannot become incumbents the epoch its author moves on: a
+  copies of a retired seat holder cannot become incumbents the epoch its
+  author moves on: a
   copy that served alongside the head has to beat it on that pairing, and a
   copy that only started after it retired has no pairing and is barred until
   the ghost expires. After that a copy can win, if it is then the best live
   router; that is accepted.
 
 **What the copy rule costs honest miners, stated plainly.** A head that only
-ties a senior head earns nothing, even if it is independent. Rewarding ties
+ties a senior seat holder earns nothing, even if it is independent. Rewarding ties
 is what made copying pay.
 
-**I4: a senior can delay a junior, and only a senior can.** The bar now
-includes heads other than the champion, so another head's presence can stop a
-junior taking a seat. It is bounded. Only heads committed before the junior
-count; a head never scored has no evidence and bars nobody, so committing a
+**I4: a senior seat holder can delay a junior, and only one can.** The bar
+now includes seats 2–3 as well as the champion, so their presence can stop a
+junior taking a seat. It is bounded. Only seat holders committed before the
+junior count; a head never scored has no evidence and bars nobody, so committing a
 hash early buys nothing; a head that misses bars for at most
 `CHAMPION_GHOST_OFF` epochs after its last scored epoch, and every epoch it
 does serve adds to the pairing, after which a worse senior is beaten; and a

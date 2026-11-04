@@ -30,9 +30,11 @@ coldkey is an exact copy (`classify`; wiring names `owner`,
 commits it) stays in the comparison set, unpaid, for `CHAMPION_GHOST_RETIRE`
 epochs from its first retirement, and a head that missed for
 `CHAMPION_GHOST_OFF`. `champion.seat_step(senior_bars=...)`: a head takes a
-seat, first or by challenge, only by beating every senior head in that set by
+seat, first or by challenge, only by beating every senior SEAT HOLDER in that
+set (the paid seats 1-3 and the champion's ghosts, `seat_holders`) by
 `CHAMPION_MARGIN` on the same paired test; no second margin, no resemblance
-test. The state is a fold over boundary commitment snapshots, published as
+test. A chain coldkey swap keeps the author's head: ownership follows the
+first committer's hotkey. The state is a fold over boundary commitment snapshots, published as
 plain JSON (`CopyState.to_reveal` / `from_reveal`: `epoch`, `first_commit`,
 `ownership`, `first_hotkey`, `active`, `retired_at`) for the v2 reveal state block, rebuilt
 from the newest reveal or replayed from an archive node. New determinism stage

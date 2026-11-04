@@ -45,9 +45,16 @@ def cand(state, name, eligible=True, burned_in=True, since=0):
                      eligible=eligible, since_epoch=since, burned_in=burned_in)
 
 
-def bars(state, epoch, window, names, ghost_retire=RET):
+def bars(state, epoch, window, names, holders, ghost_retire=RET):
     return cr.senior_bars(state, epoch, window, [H(n) for n in names],
+                          holders=[H(n) for n in holders],
                           ghost_off=OFF, ghost_retire=ghost_retire)
+
+
+def seat(champion=None, history=()):
+    return SeatState(champion=None if champion is None else H(champion),
+                     champion_since=None if champion is None else 0,
+                     history=tuple(H(h) for h in history))
 
 
 # --- rule 1: seniority is the head's first commit ---------------------------
@@ -131,6 +138,29 @@ def test_the_wiring_names():
     assert cr.owner(s, H("unknown")) is None and cr.first_commit_block(s, H("unknown")) is None
     assert cr.v2_seniority(s, H("x")) < cr.v2_seniority(s, H("t"))
     assert cr.v2_seniority(s, H("x")) == cr.seniority(s, H("x"))
+
+
+def test_an_author_that_swaps_coldkey_keeps_its_head():
+    s = obs(cr.CopyState(), 1, C("hk-author", "ck-old", "x", 100))
+    # A chain coldkey swap: the same hotkey, the same commitment, a new coldkey.
+    s = obs(s, 2, C("hk-author", "ck-new", "x", 100))
+    r = s.get(H("x"))
+    assert r.active and r.retired_at is None and r.first_block == 100
+    assert cr.owner(s, H("x")) == ("ck-new", "hk-author")
+    assert not cr.is_exact_copy(s, "ck-new", H("x"), hotkey="hk-author")
+    assert cr.classify(s, {3: C("hk-author", "ck-new", "x", 100)}) == {3: "owner"}
+    # Before the state has seen the swap, the hotkey alone keeps it eligible.
+    s1 = obs(cr.CopyState(), 1, C("hk-author", "ck-old", "x", 100))
+    assert not cr.is_exact_copy(s1, "ck-new", H("x"), hotkey="hk-author")
+
+
+def test_a_different_hotkey_under_a_new_coldkey_is_still_a_copy():
+    s = obs(cr.CopyState(), 1, C("hk-author", "ck-old", "x", 100))
+    s = obs(s, 2, C("hk-author", "ck-new", "x", 100), C("hk-other", "ck-x", "x", 150))
+    assert cr.is_exact_copy(s, "ck-x", H("x"), hotkey="hk-other")
+    assert cr.is_exact_copy(s, "ck-old", H("x"), hotkey="hk-other")
+    assert cr.classify(s, {3: C("hk-author", "ck-new", "x", 100),
+                           4: C("hk-other", "ck-x", "x", 150)}) == {3: "owner", 4: "copy"}
 
 
 def test_one_coldkeys_two_hotkeys_in_one_block_record_the_lowest_hotkey():
@@ -338,40 +368,69 @@ def test_replay_of_chain_snapshots_matches_the_live_fold():
     assert cr.replay(reversed(SNAPS), ghost_retire=RET) == live
 
 
-# --- rule 4: a junior must beat every senior by the champion margin ----------
+# --- rule 4: a junior must beat every senior seat holder by the champion margin
 
 
 def _state(*entries, epoch=9):
     return obs(cr.CopyState(), epoch, *entries)
 
 
-def test_a_near_copy_of_a_senior_does_not_take_the_seat_even_if_it_beats_the_champion():
-    # The champion is weak; the author's head S is strong but not yet burned
-    # in; J is a near-copy of S. Without the copy rule J takes the seat on S's
-    # quality. With it, J must beat S by the margin, and a copy cannot.
+def test_seat_holders_are_the_paid_seats_and_the_champions_ghosts():
+    from fugal_subnet.champion import Ghost
+
+    st = SeatState(champion=H("c"), champion_since=0, history=(H("p1"), H("p2"), H("p3")))
+    assert cr.seat_holders(st, 3) == {H("c"), H("p1"), H("p2")}
+    empty = SeatState(history=(H("p1"), H("p2"), H("p3")),
+                      ghosts=(Ghost(H("p1"), 12, "retired"),))
+    assert cr.seat_holders(empty, 3) == {H("p1"), H("p2")}
+
+
+def test_a_near_copy_of_a_former_champion_does_not_take_the_seat():
+    # S held the seat before the current champion (seat 2); J is a near-copy
+    # of S. Without the copy rule J takes the seat on S's quality. With it, J
+    # must beat S by the margin, and a copy cannot.
     w = build_window({H("champ"): noisy(oracle_router, 0.6, 5), H("S"): oracle_router,
                       H("J"): noisy(oracle_router, 0.002, 11)})
     s = _state(C("hk0", "ck0", "champ", 50), C("hk1", "ck1", "S", 100),
                C("hk2", "ck2", "J", 200))
+    st = seat("champ", ["S"])
     cands = {H("champ"): cand(s, "champ"), H("S"): cand(s, "S", burned_in=False),
              H("J"): cand(s, "J")}
-    without = seat_step(seated(H("champ")), 9, "e9", w, cands, params=PARAMS)
+    without = seat_step(st, 9, "e9", w, cands, params=PARAMS)
     assert without.event == "take" and without.champion == H("J")
-    sb = bars(s, 9, w, ["champ", "S", "J"])
+    sb = cr.senior_bars(s, 9, w, [H("champ"), H("S"), H("J")],
+                        holders=cr.seat_holders(st, 3), ghost_off=OFF, ghost_retire=RET)
     assert sb[H("J")] == (H("champ"), H("S"))
-    d = seat_step(seated(H("champ")), 9, "e9", w, cands, params=PARAMS, senior_bars=sb)
+    d = seat_step(st, 9, "e9", w, cands, params=PARAMS, senior_bars=sb)
     assert d.event == "hold" and d.champion == H("champ")
     assert any("does not beat senior" in msg for h, msg in d.detail if h == H("J"))
 
 
-def test_a_junior_that_beats_every_senior_by_the_margin_takes_the_seat():
+def test_a_senior_that_holds_no_seat_does_not_bar():
+    # The narrowing: a better head is not put through a test against every
+    # older head, only against the seats. S is senior, strong and unseated.
+    w = build_window({H("champ"): noisy(oracle_router, 0.6, 5), H("S"): oracle_router,
+                      H("J"): noisy(oracle_router, 0.002, 11)})
+    s = _state(C("hk0", "ck0", "champ", 50), C("hk1", "ck1", "S", 100),
+               C("hk2", "ck2", "J", 200))
+    st = seat("champ")
+    sb = cr.senior_bars(s, 9, w, [H("J")], holders=cr.seat_holders(st, 3),
+                        ghost_off=OFF, ghost_retire=RET)
+    assert sb[H("J")] == (H("champ"),)
+    cands = {H("champ"): cand(s, "champ"), H("S"): cand(s, "S", burned_in=False),
+             H("J"): cand(s, "J")}
+    assert seat_step(st, 9, "e9", w, cands, params=PARAMS,
+                     senior_bars=sb).champion == H("J")
+
+
+def test_a_junior_that_beats_every_senior_seat_holder_takes_the_seat():
     w = build_window({H("champ"): noisy(oracle_router, 0.6, 5),
                       H("S"): noisy(oracle_router, 0.4, 7), H("J"): oracle_router})
     s = _state(C("hk0", "ck0", "champ", 50), C("hk1", "ck1", "S", 100),
                C("hk2", "ck2", "J", 200))
     cands = {H(n): cand(s, n) for n in ("champ", "S", "J")}
-    d = seat_step(seated(H("champ")), 9, "e9", w, cands, params=PARAMS,
-                  senior_bars=bars(s, 9, w, ["champ", "S", "J"]))
+    d = seat_step(seat("champ", ["S"]), 9, "e9", w, cands, params=PARAMS,
+                  senior_bars=bars(s, 9, w, ["champ", "S", "J"], ["champ", "S"]))
     assert d.event == "take" and d.champion == H("J")
 
 
@@ -380,20 +439,27 @@ def test_a_junior_never_bars_a_senior():
                       H("J"): noisy(oracle_router, 0.002, 11)})
     s = _state(C("hk0", "ck0", "champ", 50), C("hk1", "ck1", "S", 100),
                C("hk2", "ck2", "J", 200))
-    sb = bars(s, 9, w, ["champ", "S", "J"])
+    sb = bars(s, 9, w, ["champ", "S", "J"], ["champ", "S", "J"])
     assert H("J") not in sb[H("S")] and sb[H("champ")] == ()
     cands = {H("champ"): cand(s, "champ"), H("S"): cand(s, "S"), H("J"): cand(s, "J")}
     d = seat_step(seated(H("champ")), 9, "e9", w, cands, params=PARAMS, senior_bars=sb)
     assert d.event == "take" and d.champion == H("S")
 
 
-def test_an_empty_seat_does_not_go_to_a_copy_of_a_senior_that_is_not_burned_in():
+def test_an_empty_seat_does_not_go_to_a_copy_of_a_former_champion():
+    # S held a seat and its owner retired it; the seat is empty with no ghost
+    # (S's champion ghost has expired), but S is still a paid seat in the
+    # history and inside its copy-rule retire window.
     w = build_window({H("S"): oracle_router, H("J"): noisy(oracle_router, 0.002, 11)})
-    s = _state(C("hk1", "ck1", "S", 100), C("hk2", "ck2", "J", 200))
-    cands = {H("S"): cand(s, "S", burned_in=False), H("J"): cand(s, "J")}
-    assert seat_step(SeatState(), 9, "e9", w, cands, params=PARAMS).champion == H("J")
-    d = seat_step(SeatState(), 9, "e9", w, cands, params=PARAMS,
-                  senior_bars=bars(s, 9, w, ["S", "J"]))
+    s = _state(C("hk1", "ck1", "S", 100), C("hk2", "ck2", "J", 200), epoch=8)
+    s = obs(s, 9, C("hk1", "ck1", "S2", 900), C("hk2", "ck2", "J", 200))
+    w2 = _extend(w, [10], {H("J"): noisy(oracle_router, 0.002, 11)})
+    s = obs(s, 10, C("hk1", "ck1", "S2", 900), C("hk2", "ck2", "J", 200))
+    st = seat(None, ["S"])
+    cands = {H("J"): cand(s, "J")}
+    assert seat_step(st, 10, "e10", w2, cands, params=PARAMS).champion == H("J")
+    d = seat_step(st, 10, "e10", w2, cands, params=PARAMS,
+                  senior_bars=bars(s, 10, w2, ["J"], ["S"]))
     assert d.event == "empty" and d.champion is None
 
 
@@ -402,7 +468,7 @@ def test_a_committed_but_never_scored_senior_bars_nobody():
     w = build_window({H("champ"): noisy(oracle_router, 0.6, 5), H("J"): oracle_router})
     s = _state(C("hk-x", "ck-x", "squat", 1), C("hk0", "ck0", "champ", 50),
                C("hk2", "ck2", "J", 200))
-    sb = bars(s, 9, w, ["champ", "J"])
+    sb = bars(s, 9, w, ["champ", "J"], ["squat", "champ"])
     assert H("squat") not in sb[H("J")]
     cands = {H("champ"): cand(s, "champ"), H("J"): cand(s, "J")}
     assert seat_step(seated(H("champ")), 9, "e9", w, cands, params=PARAMS,
@@ -419,30 +485,32 @@ def _extend(w, epochs, policies):
     return w
 
 
-def test_a_retired_head_bars_its_copies_for_the_retire_window_then_stops():
+def test_a_retired_seat_holder_bars_its_copies_for_the_retire_window_then_stops():
     champ, J = noisy(oracle_router, 0.6, 5), noisy(oracle_router, 0.002, 11)
     w = build_window({H("champ"): champ, H("S"): oracle_router, H("J"): J})
     base = [C("hk0", "ck0", "champ", 50), C("hk2", "ck2", "J", 200)]
     s = obs(cr.CopyState(), 9, *base, C("hk1", "ck1", "S", 100), ghost_retire=3)
-    # Epoch 10: S's author commits a new head (not yet scored). S retires.
-    seat = seated(H("champ"))
+    # S held seat 2. Epoch 10: S's author commits a new head (not yet scored).
+    st = seat("champ", ["S"])
     events = []
     for e in range(10, 14):
         s = obs(s, e, *base, C("hk1", "ck1", "S2", 3000 + e), ghost_retire=3)
         w = _extend(w, [e], {H("champ"): champ, H("J"): J})
         cs = cr.comparison_set(s, e, w, ghost_off=OFF, ghost_retire=3)
         cands = {H("champ"): cand(s, "champ"), H("J"): cand(s, "J")}
-        d = seat_step(seat, e, f"e{e}", w, cands, retired=cr.retired_hashes(s),
-                      params=PARAMS, senior_bars=bars(s, e, w, ["champ", "J"], ghost_retire=3))
+        sb = cr.senior_bars(s, e, w, cands, holders=cr.seat_holders(st, 3),
+                            ghost_off=OFF, ghost_retire=3)
+        d = seat_step(st, e, f"e{e}", w, cands, retired=cr.retired_hashes(s),
+                      params=PARAMS, senior_bars=sb)
         events.append((cs.get(H("S")), d.event, d.champion))
-        seat = d.state
+        st = d.state
     # Retired at 10, ghost through 12: the copy cannot take. At 13 the ghost
     # is gone, and J (now the best live router) takes the seat.
     assert events[:3] == [("retired", "hold", H("champ"))] * 3
     assert events[3] == (None, "take", H("J"))
 
 
-def test_a_fresh_copy_of_a_retired_head_is_barred_with_no_paired_evidence():
+def test_a_fresh_copy_of_a_retired_seat_holder_is_barred_with_no_paired_evidence():
     champ, S = noisy(oracle_router, 0.6, 5), oracle_router
     w = build_window({H("champ"): champ, H("S"): S})
     s = obs(cr.CopyState(), 9, C("hk0", "ck0", "champ", 50), C("hk1", "ck1", "S", 100))
@@ -452,9 +520,9 @@ def test_a_fresh_copy_of_a_retired_head_is_barred_with_no_paired_evidence():
         s = obs(s, e, C("hk0", "ck0", "champ", 50), C("hk1", "ck1", "S2", 3000),
                 C("hk2", "ck2", "J", 3500))
     cands = {H("champ"): cand(s, "champ"), H("J"): cand(s, "J", since=10)}
-    sb = bars(s, 19, w, ["champ", "J"])
+    sb = bars(s, 19, w, ["champ", "J"], ["champ", "S"])
     assert H("S") in sb[H("J")]
-    d = seat_step(seated(H("champ")), 19, "e19", w, cands, params=PARAMS, senior_bars=sb)
+    d = seat_step(seat("champ", ["S"]), 19, "e19", w, cands, params=PARAMS, senior_bars=sb)
     assert d.event == "hold"
     assert any(f"vs senior {H('S')[:16]}: n=0" in msg for h, msg in d.detail if h == H("J"))
 
@@ -488,8 +556,8 @@ def test_senior_bars_do_not_depend_on_input_order():
     snap = [C(f"hk{i}", f"ck{i}", n, 100 + 10 * i) for i, n in enumerate("abcde")]
     s1 = _state(*snap)
     s2 = _state(*reversed(snap))
-    b1 = bars(s1, 9, w, list("abcde"))
-    b2 = bars(s2, 9, w, list(reversed("abcde")))
+    b1 = bars(s1, 9, w, list("abcde"), list("abcd"))
+    b2 = bars(s2, 9, w, list(reversed("abcde")), list(reversed("abcd")))
     assert b1 == b2
     assert b1[H("e")] == tuple(H(n) for n in "abcd") and b1[H("a")] == ()
 
@@ -499,9 +567,8 @@ def test_the_copy_rule_uses_the_champion_margin_and_no_other():
     w = build_window({H("S"): noisy(oracle_router, 0.4, 7), H("J"): oracle_router})
     s = _state(C("hk1", "ck1", "S", 100), C("hk2", "ck2", "J", 200))
     cands = {H("S"): cand(s, "S", burned_in=False), H("J"): cand(s, "J")}
-    sb = bars(s, 9, w, ["S", "J"])
-    assert seat_step(SeatState(), 9, "e9", w, cands, params=PARAMS,
-                     senior_bars=sb).champion == H("J")
+    sb = bars(s, 9, w, ["S", "J"], ["S"])
+    st = seat(None, ["S"])
+    assert seat_step(st, 9, "e9", w, cands, params=PARAMS, senior_bars=sb).champion == H("J")
     huge = dataclasses.replace(PARAMS, margin_points=1000.0)
-    assert seat_step(SeatState(), 9, "e9", w, cands, params=huge,
-                     senior_bars=sb).champion is None
+    assert seat_step(st, 9, "e9", w, cands, params=huge, senior_bars=sb).champion is None

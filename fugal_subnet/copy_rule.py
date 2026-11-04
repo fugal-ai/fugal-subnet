@@ -19,7 +19,9 @@ unchanged):
    sha256("fugal-v2-owner:" || head hash || ":" || coldkey), lowest first:
    deterministic and not chosen by the committer's hotkey address.
 2. **A head belongs to the coldkey that first committed it.** The same hash
-   served under another coldkey is an exact copy and is ineligible. Keyed by
+   served under another coldkey is an exact copy and is ineligible. A chain
+   coldkey swap moves the first committer's hotkey to a new coldkey, and
+   ownership follows that hotkey. Keyed by
    coldkey, not hotkey, so an operator whose hotkey is pruned and who
    re-registers keeps the head's age. Two hotkeys of the OWNER serving one
    hash are one head: the canonical one is decided by `classify`, the other
@@ -34,7 +36,9 @@ unchanged):
    scored, the same span as a champion that missed.
 
 The bar a junior must clear is the champion test itself: `senior_bars` lists,
-for each head, every senior head in the comparison set, and
+for each head, the senior SEAT HOLDERS in the comparison set (the paid seats
+and the champion's ghosts, `seat_holders`; a retired seat holder keeps
+barring through its retire window), and
 `champion.seat_step` requires a head to beat each of them by
 `CHAMPION_MARGIN` (paired LCB, the same `paired_test`) before it can take a
 seat, first or by challenge. There is no second margin.
@@ -236,15 +240,24 @@ def first_commit_block(state: CopyState, head_hash: str) -> int | None:
     return None if r is None else r.first_block
 
 
-def is_exact_copy(state: CopyState, coldkey: str, head_hash: str) -> bool:
-    """True iff `head_hash` is owned, and by a coldkey other than `coldkey`.
+def is_exact_copy(
+    state: CopyState, coldkey: str, head_hash: str, hotkey: str | None = None,
+) -> bool:
+    """True iff `head_hash` is owned, and the server is not its owner.
 
     The serving UID's coldkey (read pinned at the boundary) goes in
-    `coldkey`. An unknown hash is not a copy but is not eligible either; see
+    `coldkey`, its hotkey in `hotkey`. The hotkey that first committed the
+    head is never a copy of it: a chain coldkey swap moves that hotkey to a
+    new coldkey, and ownership follows it. Otherwise the coldkeys are
+    compared. An unknown hash is not a copy but is not eligible either; see
     `classify`, which is this applied to every serving UID at once.
     """
     r = state.get(head_hash)
-    return r is not None and r.owner != coldkey
+    if r is None:
+        return False
+    if hotkey is not None and hotkey == r.first_hotkey:
+        return False
+    return r.owner != coldkey
 
 
 def v2_seniority(state: CopyState, head_hash: str) -> tuple:
@@ -308,6 +321,12 @@ def observe(
     recs: dict[str, HeadRecord] = {r.head_hash: r for r in state.heads}
     for c in valid:
         r = recs.get(c.head_hash)
+        if r is not None and c.hotkey == r.first_hotkey and c.coldkey != r.owner:
+            # The first committer's hotkey now sits under another coldkey: a
+            # chain coldkey swap. Ownership follows the hotkey, age is kept.
+            r = HeadRecord(r.head_hash, r.first_block, c.coldkey, r.active,
+                           r.retired_at, r.first_hotkey)
+            recs[c.head_hash] = r
         claim = (_claim(c.block, c.head_hash, c.coldkey), c.hotkey)
         if r is None or claim < (_claim(r.first_block, r.head_hash, r.owner), r.first_hotkey):
             # An earlier claim than the one on record can only come from chain
@@ -377,7 +396,7 @@ def classify(state: CopyState, served: Mapping[int, Commitment]) -> dict[int, st
         r = state.get(c.head_hash)
         if r is None:
             verdict[uid] = "unknown"
-        elif r.owner != c.coldkey:
+        elif is_exact_copy(state, c.coldkey, c.head_hash, c.hotkey):
             verdict[uid] = "copy"
         else:
             owners.setdefault(c.head_hash, []).append((int(c.block), c.hotkey, uid))
@@ -420,17 +439,39 @@ def comparison_set(
     return out
 
 
+def seat_holders(seat, n_seats: int) -> frozenset[str]:
+    """The heads the copy rule protects: the paid seats and the champion's ghosts.
+
+    `seat` is the `champion.SeatState` the epoch starts from. The seats are
+    the ones `payout.seat_weights` pays: the champion, then former champions
+    most recent first, `n_seats` in all (`len(PAYOUT_SEAT_SHARES)`). Only
+    seats pay, so a copy of a head that holds no seat earns nothing anyway,
+    and barring it would only add tests a better head can fail on noise.
+    """
+    holders: list[str] = [seat.champion] if seat.champion is not None else []
+    for h in seat.history:
+        if len(holders) >= int(n_seats) - (0 if seat.champion is not None else 1):
+            break
+        if h not in holders:
+            holders.append(h)
+    return frozenset(holders) | frozenset(g.head_hash for g in seat.ghosts)
+
+
 def senior_bars(
     state: CopyState, epoch: int, window, heads: Iterable[str], *,
-    ghost_off: int, ghost_retire: int,
+    holders: Iterable[str], ghost_off: int, ghost_retire: int,
 ) -> dict[str, tuple[str, ...]]:
-    """For each head, every senior head in the comparison set, most senior first.
+    """For each head, the senior seat holders in the comparison set, most senior first.
 
-    Pass the result to `champion.seat_step(senior_bars=...)`: a head takes a
-    seat only by beating each of these by the champion margin.
+    `holders` is `seat_holders(seat, n_seats)`. Pass the result to
+    `champion.seat_step(senior_bars=...)`: a head takes a seat only by
+    beating each of these by the champion margin. A seat holder that has
+    retired keeps barring through its retire window (rule 1c), so copies of a
+    retired seat holder cannot become incumbents.
     """
     cs = comparison_set(state, epoch, window, ghost_off=ghost_off, ghost_retire=ghost_retire)
-    ranked = sorted(cs, key=lambda h: (seniority(state, h), h))
+    protected = set(holders)
+    ranked = sorted((h for h in cs if h in protected), key=lambda h: (seniority(state, h), h))
     out: dict[str, tuple[str, ...]] = {}
     for h in sorted(set(heads)):
         mine = seniority(state, h)

@@ -379,7 +379,7 @@ def window_accuracy(
 #
 # The bar is never "the best of the field": what a challenger has to beat is
 # the champion or its ghost and, under the copy rule (copy_rule.py), every
-# head SENIOR to it in the comparison set. No junior head's presence moves it
+# seat holder SENIOR to it in the comparison set. No junior head's presence moves it
 # (I4).
 # ---------------------------------------------------------------------------
 
@@ -551,7 +551,7 @@ def seat_step(
     decision: it fails closed rather than judging on a partial window.
 
     `senior_bars` (protocol v2 copy rule, `copy_rule.senior_bars`) lists, per
-    head, the senior heads it must ALSO beat by the margin before it can take
+    head, the senior seat holders it must ALSO beat by the margin before it can take
     a seat, first or by challenge. None (or a head with no entry) adds no bar,
     which is this function's behaviour before the copy rule.
     """
@@ -627,9 +627,9 @@ def seat_step(
         detail.append(("", "window not trusted: no first or take decision this epoch"))
 
     def beats_seniors(c: Candidate, already: Sequence[str] = ()) -> bool:
-        # The copy rule: a head must beat every senior head in the comparison
-        # set by the same margin, on the same paired test, before it may take
-        # a seat. A copy of a senior never does.
+        # The copy rule: a head must beat every senior seat holder in the
+        # comparison set by the same margin, on the same paired test, before
+        # it may take a seat. A copy of a seat holder never does.
         for k in (senior_bars or {}).get(c.head_hash, ()):
             if k == c.head_hash or k in already:
                 continue
@@ -641,7 +641,7 @@ def seat_step(
     if champion is None and not ghosts:
         # FIRST: an empty seat with nothing barring it goes to the most senior
         # eligible head that passes the gates (and, under the copy rule, beats
-        # every senior head in the comparison set).
+        # every senior seat holder in the comparison set).
         for c in challengers:
             if _passes_gates(state, window, c, params, detail) and beats_seniors(c):
                 new = _seated(state, window, c, epoch, history, params)

@@ -55,6 +55,30 @@ rebound only at the commit point. A failed call is graded 0 and costs 0 in v2.
 New determinism stage `v2_epoch`. INVARIANTS: "I3/I4 — v2 pays from the paired
 rule alone; the frame is informational".
 
+### Added — protocol v2 copy rule (module; wiring follows)
+
+`fugal_subnet/copy_rule.py`, from the activation block (v1 keeps
+`commitments.seniority_key` and every `dedup.py` clause unchanged):
+seniority is the block at which a head's exact weights hash was first
+committed by any hotkey (same-block ties by a coldkey digest); a hash belongs
+to the coldkey that first committed it, and the same hash under another
+coldkey is an exact copy (`classify`; wiring names `owner`,
+`first_commit_block`, `is_exact_copy`, `v2_seniority`); a retired head (its owner no longer
+commits it) stays in the comparison set, unpaid, for `CHAMPION_GHOST_RETIRE`
+epochs from its first retirement, and a head that missed for
+`CHAMPION_GHOST_OFF`. `champion.seat_step(senior_bars=...)`: a head takes a
+seat, first or by challenge, only by beating every senior SEAT HOLDER in that
+set (the paid seats 1-3 and the champion's ghosts, `seat_holders`) by
+`CHAMPION_MARGIN` on the same paired test; no second margin, no resemblance
+test. A chain coldkey swap keeps the author's head: ownership follows the
+first committer's hotkey. The state is a fold over boundary commitment snapshots, published as
+plain JSON (`CopyState.to_reveal` / `from_reveal`: `epoch`, `first_commit`,
+`ownership`, `first_hotkey`, `active`, `retired_at`) for the v2 reveal state block, rebuilt
+from the newest reveal or replayed from an archive node (`from_rebuild` reads it from
+`v2_rebuild.rebuild_v2_from_reveals`). New determinism stage
+`copy_rule`. INVARIANTS: "I3/I4 — the v2 copy rule", including the accepted
+front-running residual until commitments are bound to the coldkey.
+
 ### Added — protocol v2 benchmark pool: open licences only, category map and weights, its own manifest (lands with v2)
 
 - `fugal_subnet/benchmarks/v2_sets.py`: knowledge = MMLU-Pro + a 3,000-question MMLU subset;

@@ -38,6 +38,10 @@ def seniority_key(registration_block: int, commit_block: int) -> int:
     fact. The commitment block breaks ties among hotkeys registered in the
     same block. Packed into one int because `dedup.find_duplicates` orders by
     a number and treats a missing one as infinitely junior.
+
+    Protocol v1 only. From the v2 activation block seniority is the block at
+    which the head's weights hash was first committed by any hotkey
+    (`copy_rule.seniority`).
     """
     return int(registration_block) * 10**10 + int(commit_block)
 

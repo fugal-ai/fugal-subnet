@@ -373,7 +373,7 @@ class SimValidator:
         self.scoring = ScoringState()
         self.seat = None
         self.window = None
-        self.owners: dict[str, str] = {}
+        self.copy = None   # copy_rule.CopyState once the wiring runs
 
     def _validator_module(self):
         """neurons/validator.py, for its own save_state/load_state (no chain import)."""
@@ -392,14 +392,17 @@ class SimValidator:
         kwargs = {}
         params = inspect.signature(v.save_state).parameters
         if self.f["wiring"].present and "v2" in params and self.seat is not None:
+            from fugal_subnet import copy_rule
             from fugal_subnet.v2_epoch import seat_to_dict
-            kwargs = {"v2": {"seat": seat_to_dict(self.seat), "owners": self.owners},
+            copy_state = self.copy or copy_rule.CopyState()
+            kwargs = {"v2": {"seat": seat_to_dict(self.seat),
+                             copy_rule.REVEAL_KEY: copy_state.to_reveal()},
                       "v2_window": self.window}
         v.save_state(self.scoring.records, [], [], last_epoch, None, path=self.path, **kwargs)
         if not kwargs:
             # Before the wiring there is no serializer for the window and the
             # seat; keep an in-memory copy and say so in the restart check.
-            self._mem = copy.deepcopy((self.seat, self.window, self.owners))
+            self._mem = copy.deepcopy((self.seat, self.window, self.copy))
 
     def restart(self):
         """Process death: drop everything in memory and reload what is on disk."""
@@ -411,15 +414,17 @@ class SimValidator:
         self.scoring = ScoringState(records=raw["records"])
         v2raw = raw.get("v2")
         if self.f["wiring"].present and v2raw is not None:
+            from fugal_subnet import copy_rule
             from fugal_subnet.config import CHAMPION_WINDOW_EPOCHS
             from fugal_subnet.v2_epoch import load_window, seat_from_dict
 
             self.seat = seat_from_dict(v2raw.get("seat"))
-            self.owners = dict(v2raw.get("owners") or {})
+            block = v2raw.get(copy_rule.REVEAL_KEY)
+            self.copy = copy_rule.CopyState.from_reveal(block) if block else None
             self.window = load_window(self.path + ".v2window.npz", CHAMPION_WINDOW_EPOCHS)
             self.restored_from_disk = True
         elif hasattr(self, "_mem"):
-            self.seat, self.window, self.owners = copy.deepcopy(self._mem)
+            self.seat, self.window, self.copy = copy.deepcopy(self._mem)
 
     # -- one epoch -----------------------------------------------------------
     def digest(self) -> str:
@@ -485,7 +490,7 @@ class SimValidator:
             "epoch": epoch, "protocol_version": pv, "digest": self.digest(),
             "records": {u: dataclasses.asdict(r) for u, r in sorted(state.records.items())},
         }
-        seat, window, owners = self.seat, self.window, self.owners
+        seat, window, copy_state = self.seat, self.window, self.copy
         if pv < 2:
             uids, weights = compute_weights(state.records, set(),
                                             paid_fraction=frontier.confidence,
@@ -494,12 +499,12 @@ class SimValidator:
         else:
             out["shared_grades"] = _shared_grades(proofs)
             if self.f["champion"].present and self.f["payout"].present:
-                seat, window, owners, v2 = self._v2_epoch(epoch, epoch_id, questions, proofs,
-                                                          state.records)
+                seat, window, copy_state, v2 = self._v2_epoch(epoch, epoch_id, questions,
+                                                              proofs, state.records)
                 out.update(v2)
 
         if commit:
-            self.scoring, self.seat, self.window, self.owners = state, seat, window, owners
+            self.scoring, self.seat, self.window, self.copy = state, seat, window, copy_state
             self.outputs[epoch] = out
             self.persist(epoch)
         return out
@@ -531,29 +536,36 @@ class SimValidator:
                 first_by_hash[h] = u
 
         if self.f["wiring"].present:
+            from fugal_subnet import copy_rule
             from fugal_subnet.v2_epoch import run_v2_epoch
 
+            # The boundary snapshot, as the validator reads it from chain:
+            # every miner's commitment with its owning coldkey. Ownership,
+            # seniority and copies are the copy rule's (copy_rule.classify).
+            snapshot = [
+                copy_rule.Commitment(m.hotkey, m.coldkey, *m.committed(epoch, bpe))
+                for m in MINERS
+            ]
             r = run_v2_epoch(
-                epoch_index=epoch, epoch_id=epoch_id, questions=questions,
+                epoch_index=epoch, epoch_id=epoch_id, boundary_block=epoch * bpe,
+                blocks_per_epoch=bpe, questions=questions,
                 pool_models=list(MODELS), prices=PRICES, verified_proofs=proofs,
                 head_hashes={u: p.weights_hash for u, p in proofs.items()},
                 coldkey_of={u: by_uid[u].coldkey for u in proofs},
                 hotkey_of={u: by_uid[u].hotkey for u in proofs},
-                commit_block=seniority, commit_epoch=commit_epoch, records=records,
-                exact_copies=copies,
-                commitments={m.hotkey: m.committed(epoch, bpe) for m in MINERS},
-                window=window, seat=seat, owners=self.owners, burn_uid=BURN_UID,
-                params=params, shares=_shares(), burn_in_questions=BURN_IN,
-                bench_category=BENCH_CATEGORY,
+                records=records, commitments=snapshot,
+                window=window, seat=seat, copy_state=self.copy or copy_rule.CopyState(),
+                burn_uid=BURN_UID, params=params, shares=_shares(),
+                burn_in_questions=BURN_IN, bench_category=BENCH_CATEGORY,
             )
-            decision, new_window, owners = r.decision, r.window, r.owners
+            decision, new_window, copy_state = r.decision, r.window, r.copy_state
             weights = dict(zip(r.uids, r.weights))
             path = "validator wiring (v2_epoch.run_v2_epoch)"
         else:
             decision, new_window, weights = _compose_v2(
                 epoch, epoch_id, questions, proofs, records, seniority, commit_epoch, copies,
                 window, seat, params)
-            owners = self.owners
+            copy_state = self.copy
             path = "module level (champion.seat_step + payout.seat_weights; wiring absent)"
         st = decision.state
         # Head hash -> the most senior uid serving it (m1 before its copy m5),
@@ -572,7 +584,7 @@ class SimValidator:
             "weights": weights,
             "burned_in": {u: _burned_in(records.get(u)) for u in sorted(proofs)},
         }
-        return st, new_window, owners, v2
+        return st, new_window, copy_state, v2
 
 
 def _policy_cost(q: dict, model: str) -> float:

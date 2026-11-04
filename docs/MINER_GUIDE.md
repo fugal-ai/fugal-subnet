@@ -592,9 +592,12 @@ exploration observations, scores and weights. It is public-read:
 
 List them with
 `https://storage.googleapis.com/storage/v1/b/fugal-reveals/o?prefix=70/`.
-An epoch's reveal is published one epoch later, and its sha256 equals the
-`reveal:<epoch_id>:<sha256>` the validator committed on chain, so you can check
-you have the exact file it scored from. Head files are not in the reveal.
+An epoch's reveal is published one epoch later (the subnet's weight
+commit-reveal period, currently 1). The validator's on-chain commitment is a
+rolling pointer, `reveal:<epoch_id>:<sha256>`, for the newest reveal it has
+published. To check an older epoch, read the commitment at a block from when it
+was current. If an upload was retried, an epoch published together with a newer
+one may never have been committed on its own. Head files are not in the reveal.
 
 ### When a good proof is not scored, and why it is not you
 

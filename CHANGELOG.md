@@ -7,7 +7,7 @@ All notable changes to this project will be documented here. Releases follow [Se
 ### Docs — MINER_GUIDE: where the reveals are published; no GPU needed
 
 The public reveal bucket (`fugal-reveals/70/<epoch_id>/reveal.json`), what a
-reveal holds, and how to check it against the on-chain commitment. The
+reveal holds, and how to check it against the validator's rolling on-chain commitment. The
 requirements list no longer recommends a GPU: success-contract heads embed on
 CPU float32, which the contract enforces.
 

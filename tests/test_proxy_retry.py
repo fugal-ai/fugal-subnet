@@ -130,9 +130,10 @@ def test_call_deadlines_nest_so_each_layer_reports_before_the_next_gives_up():
 
 
 def test_harness_asks_for_the_v2_answer_budget(monkeypatch):
-    """The harness's request carries HARNESS_MAX_TOKENS (16384): the frame is
-    built with the same harness, so a miner and the frame ask for the same answer."""
+    """The harness's request carries HARNESS_MAX_TOKENS (16384): exploration runs on
+    the same harness, so a miner and the reference frame ask for the same answer."""
     import json as _json
+
     from fugal_subnet.config import HARNESS_MAX_TOKENS
     from fugal_subnet.tee import harness as hm
     seen = {}

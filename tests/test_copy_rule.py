@@ -572,3 +572,18 @@ def test_the_copy_rule_uses_the_champion_margin_and_no_other():
     assert seat_step(st, 9, "e9", w, cands, params=PARAMS, senior_bars=sb).champion == H("J")
     huge = dataclasses.replace(PARAMS, margin_points=1000.0)
     assert seat_step(st, 9, "e9", w, cands, params=huge, senior_bars=sb).champion is None
+
+
+def test_the_state_plugs_into_the_single_v2_state_block(tmp_path):
+    # One channel: the copy rule publishes through v2_state_for_reveal's
+    # `extra`, and the rebuild reads it back from there.
+    from fugal_subnet.v2_epoch import v2_state_for_reveal
+
+    st = cr.observe(cr.CopyState(), 10, 3600, SNAPS[0][2], ghost_retire=RET)
+    block = v2_state_for_reveal(seat=SeatState(), owners={}, serving={}, burn_in={},
+                                extra={cr.REVEAL_KEY: st.to_reveal()})
+    d = tmp_path / "e00000010"
+    d.mkdir()
+    (d / "reveal.json").write_text(json.dumps(
+        {"epoch_id": "e00000010", "protocol_version": 2, "v2_state": block}))
+    assert cr.rebuild_from_reveals(tmp_path) == st

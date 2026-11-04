@@ -2506,15 +2506,11 @@ and the `v2_epoch` stage of `scripts/check_determinism.py`.
 
 ### I3/I4 — the v2 copy rule: a head must beat every senior seat holder by the margin (v2 release; from the activation block)
 
-v1 recognised copies by resemblance (`dedup.py`: routing agreement ≥ 0.99,
-relative weight distance < 0.2, and the epsilon clause at 95% agreement and
-0.5% of composite) and ranked seniority by registration block
-(`commitments.seniority_key`). Measured offline, neither holds up. A lightly
-perturbed copy keeps its source's quality while sitting further from it (agreement ~0.87, distance ~0.29) than two
-honest refits on the same data sit from each other (0.74–0.83), so no
-threshold separates them; the epsilon is far below the sampling noise
-between two miners; and registration-first seniority makes an older hotkey
-that copies a newer head the senior one. From protocol v2
+v1 recognised copies by resemblance (`dedup.py`) and ordered seniority by
+registration (`commitments.seniority_key`). v2 replaces both: seniority is
+the first commit of the head, and a junior head must be measurably better
+than every senior seat holder rather than look different from it. From
+protocol v2
 (`fugal_subnet/copy_rule.py`, enforced inside `champion.seat_step`):
 
 - **Seniority is the head's first commit.** A head's age is the block at

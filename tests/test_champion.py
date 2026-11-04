@@ -1,0 +1,388 @@
+"""Protocol v2 champion scoring: paired NV, the seat, ghosts.
+
+docs/INVARIANTS.md, "I3 — one champion; taking the seat needs the margin,
+holding it needs none".
+"""
+import math
+import random
+
+import numpy as np
+import pytest
+
+from fugal_subnet.champion import (
+    NV_UNITS_PER_POINT,
+    Candidate,
+    EpochSlice,
+    HeadEpoch,
+    SeatParams,
+    SeatState,
+    Window,
+    pair_seed,
+    pair_units,
+    paired_test,
+    question_nv_units,
+    seat_step,
+    window_accuracy,
+)
+
+Q = 300
+M = 3                      # model 0 cheap/weak, 1 mid, 2 expensive/strong
+CATS = ["knowledge"] * 90 + ["math"] * 75 + ["hard"] * 90 + ["instruction"] * 45
+SPEND = np.array([0.0001, 0.001, 0.01])          # $ per question, per model
+ACC = np.array([0.55, 0.70, 0.85])                # what each model gets right
+
+PARAMS = SeatParams(
+    margin_points=0.2, confidence=0.90, resamples=400, accuracy_value=30.0,
+    hard_weight=2.0, hard_gate_min_questions=100,
+    ghost_off=3, ghost_retire=24, wilson_confidence=0.95,
+)
+
+
+def make_slice(epoch, seed=0):
+    rng = np.random.default_rng(seed + epoch)
+    # Model k solves question q when q's difficulty is below its accuracy, so
+    # stronger models solve a superset: a realistic, router-friendly world.
+    difficulty = rng.random(Q)
+    grades = (difficulty[:, None] < ACC[None, :]).astype(np.float64)
+    return EpochSlice(
+        epoch=epoch,
+        question_ids=tuple(f"e{epoch}q{i}" for i in range(Q)),
+        categories=tuple(CATS),
+        hard=tuple(c == "hard" for c in CATS),
+        grades=grades,
+        spends=np.tile(SPEND, (Q, 1)),
+    ), difficulty
+
+
+def oracle_router(difficulty):
+    """Cheapest model that solves each question; the strong model when none does."""
+    routed = np.full(Q, 2)
+    for k in (1, 0):
+        routed = np.where(difficulty < ACC[k], k, routed)
+    return routed
+
+
+def constant(k):
+    return lambda difficulty: np.full(Q, k)
+
+
+def noisy(policy, flip, seed):
+    """A policy that, on a share of questions, routes to the strong model instead."""
+    def run(difficulty):
+        r = policy(difficulty).copy()
+        rng = np.random.default_rng(seed + int(difficulty[0] * 1e9))
+        r[rng.random(Q) < flip] = 2
+        return r
+    return run
+
+
+def build_window(policies, epochs=range(10), size=48):
+    w = Window.empty(size)
+    for e in epochs:
+        sl, diff = make_slice(e)
+        answers = {
+            h: HeadEpoch(routed=np.asarray(p(diff), dtype=np.int64), failed=np.zeros(Q, bool))
+            for h, p in policies.items()
+        }
+        w = w.add_epoch(sl, answers)
+    return w
+
+
+def cand(h, seniority=0, eligible=True, since=0, burned_in=True):
+    return Candidate(head_hash=h, seniority=(seniority,), eligible=eligible,
+                     since_epoch=since, burned_in=burned_in)
+
+
+def units(w, a, b):
+    return pair_units(w, a, b, accuracy_value=30.0, hard_weight=2.0)
+
+
+def seated(h, hw=0.0):
+    return SeatState(champion=h, champion_since=0, high_water=hw)
+
+
+# --- NV and the paired test -------------------------------------------------
+
+
+def test_nv_is_zero_for_identical_heads_and_antisymmetric_without_cost():
+    w = build_window({"a": oracle_router, "b": noisy(oracle_router, 0.3, 1),
+                      "c": oracle_router})
+    ac = units(w, "a", "c")
+    assert all(not x.any() for x in ac.by_category.values())
+    assert not paired_test(ac.by_category, margin_points=0.2, confidence=0.9,
+                           resamples=200, seed=1).takes_seat
+    # V is the bar's own spend, so it differs by direction; with the cost term
+    # off NV is exactly antisymmetric.
+    one = pair_units(w, "a", "b", accuracy_value=1e300, hard_weight=2.0)
+    two = pair_units(w, "b", "a", accuracy_value=1e300, hard_weight=2.0)
+    for c in one.by_category:
+        assert np.array_equal(one.by_category[c], -two.by_category[c])
+
+
+def test_v_is_the_champions_own_mean_spend_on_the_paired_questions():
+    w = build_window({"a": oracle_router, "champ": constant(1)})
+    pu = units(w, "a", "champ")
+    assert pu.value_per_correct == pytest.approx(30.0 * SPEND[1])
+    assert pu.n_questions == 10 * Q
+
+
+def test_a_bar_that_spent_nothing_drops_the_cost_term():
+    w = build_window({"a": oracle_router, "free": constant(0)})
+    for sl in w.slices.values():
+        sl.spends[:] = 0.0
+    assert units(w, "a", "free").value_per_correct is None
+
+
+def test_question_nv_matches_the_definition():
+    # One extra correct answer, at 0.01 $ more, V = 0.3: 100*(1 - 0.01/0.3) points.
+    u = question_nv_units(1.0, 0.0, 0.011, 0.001, hard=False,
+                          value_per_correct=0.3, hard_weight=2.0)
+    assert u == round(100 * (1 - 0.01 / 0.3) * NV_UNITS_PER_POINT)
+    hard = question_nv_units(1.0, 0.0, 0.0, 0.0, hard=True, value_per_correct=0.3, hard_weight=2.0)
+    assert hard == 200 * NV_UNITS_PER_POINT
+
+
+def test_the_paired_test_is_exact_and_order_independent():
+    rng = random.Random(3)
+    u = {c: [rng.randrange(-10**8, 10**8) for _ in range(500)] for c in ("a", "b", "c")}
+    u["a"] = [x + 10**6 for x in u["a"]]
+    r1 = paired_test(u, margin_points=0.0, confidence=0.9, resamples=300, seed=99)
+    r2 = paired_test(dict(reversed(list(u.items()))), margin_points=0.0,
+                     confidence=0.9, resamples=300, seed=99)
+    assert r1 == r2
+
+
+def test_the_point_mean_is_a_necessary_condition():
+    # The rule is "mean > margin AND LCB > margin". A mean at or below the
+    # margin never takes the seat and no bootstrap runs; the reported LCB is
+    # then the mean, so LCB <= mean holds by construction on this path.
+    margin_units = round(0.2 * NV_UNITS_PER_POINT)
+    res = paired_test({"x": [margin_units] * 100}, margin_points=0.2, confidence=0.9,
+                      resamples=50, seed=0)
+    assert not res.takes_seat and res.lcb_units == res.mean_units == margin_units
+
+
+def test_the_lower_bound_does_not_exceed_the_mean_on_real_data():
+    w = build_window({"a": oracle_router, "b": constant(1)})
+    res = paired_test(units(w, "a", "b").by_category, margin_points=0.2, confidence=0.9,
+                      resamples=400, seed=5)
+    assert res.takes_seat and res.lcb_units <= res.mean_units
+
+
+def test_a_challenger_just_below_the_margin_does_not_take_and_just_above_does():
+    n = 3000
+    for delta, expected in ((-1, False), (+1, True)):
+        vals = [round(0.2 * NV_UNITS_PER_POINT) + 50 * delta + (i % 3 - 1) for i in range(n)]
+        res = paired_test({"x": vals}, margin_points=0.2, confidence=0.9, resamples=200, seed=7)
+        assert res.takes_seat is expected, (delta, res)
+
+
+def test_the_seed_depends_on_epoch_and_both_heads():
+    seeds = {pair_seed(e, a, b) for e in ("e1", "e2") for a in ("x", "y") for b in ("x", "y")}
+    assert len(seeds) == 8
+
+
+# --- the first champion -------------------------------------------------------
+
+
+def test_nothing_eligible_means_an_empty_seat():
+    w = build_window({"a": oracle_router})
+    d = seat_step(SeatState(), 9, "e9", w, {"a": cand("a", eligible=False)}, params=PARAMS)
+    assert d.champion is None and d.event == "empty"
+
+
+def test_the_most_senior_eligible_head_takes_the_empty_seat_and_sets_the_mark():
+    w = build_window({"junior": oracle_router, "senior": constant(2)})
+    d = seat_step(SeatState(), 9, "e9", w,
+                  {"junior": cand("junior", 5), "senior": cand("senior", 1)}, params=PARAMS)
+    assert d.event == "first" and d.champion == "senior"
+    acc, _ = window_accuracy(w, "senior")
+    assert 0.0 < d.state.high_water <= acc
+
+
+def test_a_constant_policy_can_hold_the_seat_until_a_router_beats_it_by_the_margin():
+    # Accepted (INVARIANTS): with no virtual champion a constant head can be
+    # first. Any router that beats it by the margin unseats it.
+    w = build_window({"const": constant(2), "router": oracle_router})
+    first = seat_step(SeatState(), 9, "e9", w, {"const": cand("const", 0)}, params=PARAMS)
+    assert first.champion == "const"
+    taken = seat_step(first.state, 9, "e9", w,
+                      {"const": cand("const", 0), "router": cand("router", 1)}, params=PARAMS)
+    assert taken.event == "take" and taken.champion == "router"
+    assert taken.state.history[0] == "const"
+
+
+# --- hold, take, hysteresis -----------------------------------------------------
+
+
+def test_the_champion_holds_against_an_equal_or_slightly_better_challenger():
+    w = build_window({"champ": oracle_router, "copy": oracle_router,
+                      "nudge": noisy(oracle_router, 0.002, 11)})
+    for challenger in ("copy", "nudge"):
+        d = seat_step(seated("champ"), 9, "e9", w,
+                      {"champ": cand("champ", 0), challenger: cand(challenger, 1)}, params=PARAMS)
+        assert d.event == "hold" and d.champion == "champ"
+
+
+def test_k_equal_juniors_earn_nothing():
+    juniors = {f"j{i}": oracle_router for i in range(8)}
+    w = build_window({"champ": oracle_router, **juniors})
+    cands = {"champ": cand("champ", 0), **{h: cand(h, i + 1) for i, h in enumerate(juniors)}}
+    d = seat_step(seated("champ"), 9, "e9", w, cands, params=PARAMS)
+    assert d.champion == "champ" and d.event == "hold"
+
+
+def test_a_better_challenger_takes_the_seat_from_a_seated_champion():
+    w = build_window({"champ": noisy(oracle_router, 0.6, 5), "better": oracle_router})
+    d = seat_step(seated("champ"), 9, "e9", w,
+                  {"champ": cand("champ", 0), "better": cand("better", 1)}, params=PARAMS)
+    assert d.event == "take" and d.champion == "better"
+    assert d.state.history[0] == "champ"
+
+
+def test_an_ineligible_challenger_never_takes():
+    w = build_window({"champ": noisy(oracle_router, 0.6, 5), "better": oracle_router})
+    d = seat_step(seated("champ"), 9, "e9", w,
+                  {"champ": cand("champ", 0), "better": cand("better", 1, eligible=False)},
+                  params=PARAMS)
+    assert d.event == "hold"
+
+
+def test_burn_in_is_needed_to_take_a_seat_but_not_to_hold_or_resume_one():
+    w = build_window({"champ": noisy(oracle_router, 0.6, 5), "better": oracle_router})
+    # A better head that has not completed burn-in cannot take the seat ...
+    d = seat_step(seated("champ"), 9, "e9", w,
+                  {"champ": cand("champ", 0), "better": cand("better", 1, burned_in=False)},
+                  params=PARAMS)
+    assert d.event == "hold"
+    # ... nor an empty one.
+    e = seat_step(SeatState(), 9, "e9", w, {"better": cand("better", 1, burned_in=False)},
+                  params=PARAMS)
+    assert e.event == "empty"
+    # A champion whose burn-in restarted after a miss still holds ...
+    h = seat_step(seated("champ"), 9, "e9", w, {"champ": cand("champ", 0, burned_in=False)},
+                  params=PARAMS)
+    assert h.event == "hold"
+    # ... and resumes inside its ghost window.
+    lost = seat_step(seated("champ"), 9, "e9", w, {}, params=PARAMS)
+    back = seat_step(lost.state, 10, "e10", w, {"champ": cand("champ", 0, burned_in=False)},
+                     params=PARAMS)
+    assert back.event == "hold" and back.champion == "champ"
+
+
+def test_the_high_water_mark_gates_and_only_rises():
+    w = build_window({"champ": noisy(oracle_router, 0.6, 5), "better": oracle_router})
+    acc, _ = window_accuracy(w, "better")
+    blocked = seat_step(seated("champ", hw=acc + 0.01), 9, "e9", w,
+                        {"champ": cand("champ", 0), "better": cand("better", 1)}, params=PARAMS)
+    assert blocked.event == "hold"
+    taken = seat_step(seated("champ", hw=0.5), 9, "e9", w,
+                      {"champ": cand("champ", 0), "better": cand("better", 1)}, params=PARAMS)
+    assert taken.champion == "better" and 0.5 < taken.state.high_water <= acc
+    held = seat_step(seated("champ", hw=0.999), 9, "e9", w, {"champ": cand("champ", 0)},
+                     params=PARAMS)
+    assert held.state.high_water == 0.999   # holding never lowers it
+
+
+# --- ghosts ------------------------------------------------------------------------
+
+
+def test_a_missing_champion_leaves_a_ghost_bar_then_the_next_head_is_first():
+    w = build_window({"champ": oracle_router, "copy": oracle_router}, epochs=range(10))
+    s = seated("champ")
+    events = []
+    for e in range(10, 15):
+        sl, diff = make_slice(e)
+        w = w.add_epoch(sl, {"copy": HeadEpoch(np.asarray(oracle_router(diff)), np.zeros(Q, bool))})
+        d = seat_step(s, e, f"e{e}", w, {"copy": cand("copy", 1)}, params=PARAMS)
+        events.append((d.event, d.champion))
+        s = d.state
+    # Ghost for GHOST_OFF = 3 epochs (10, 11, 12): the share burns, and an
+    # equal copy cannot beat the ghost. Then the seat is empty and the copy,
+    # the only eligible head, is first.
+    assert events[:3] == [("ghost", None)] * 3
+    assert events[3] == ("first", "copy")
+
+
+def test_the_marks_reset_when_the_last_ghost_expires_with_the_seat_empty():
+    # A departed champion's bar must not burn the share indefinitely (no-burn
+    # preference): once its ghost expires, a weaker head can be first.
+    w = build_window({"champ": oracle_router, "weak": constant(0)}, epochs=range(10))
+    s = seated("champ", hw=0.99)
+    for e in range(10, 13):          # ghost epochs 10, 11, 12
+        sl, _ = make_slice(e)
+        w = w.add_epoch(sl, {"weak": HeadEpoch(np.zeros(Q, np.int64), np.zeros(Q, bool))})
+        s = seat_step(s, e, f"e{e}", w, {"weak": cand("weak", 1)}, params=PARAMS).state
+        assert s.high_water == 0.99
+    sl, _ = make_slice(13)
+    w = w.add_epoch(sl, {"weak": HeadEpoch(np.zeros(Q, np.int64), np.zeros(Q, bool))})
+    d = seat_step(s, 13, "e13", w, {"weak": cand("weak", 1)}, params=PARAMS)
+    assert d.event == "first" and d.champion == "weak"
+    acc, _ = window_accuracy(w, "weak")
+    assert d.state.high_water <= acc < 0.99
+
+
+def test_a_challenger_that_beats_the_ghost_takes_the_seat_inside_the_window():
+    w = build_window({"champ": noisy(oracle_router, 0.6, 5), "better": oracle_router})
+    d = seat_step(seated("champ"), 9, "e9", w, {"better": cand("better", 1)}, params=PARAMS)
+    assert d.event == "take" and d.champion == "better" and d.state.ghosts == ()
+
+
+def test_a_champion_that_returns_inside_its_ghost_window_resumes():
+    w = build_window({"champ": oracle_router, "copy": oracle_router})
+    lost = seat_step(seated("champ"), 9, "e9", w, {"copy": cand("copy", 1)}, params=PARAMS)
+    assert lost.event == "ghost"
+    back = seat_step(lost.state, 10, "e10", w,
+                     {"champ": cand("champ", 0), "copy": cand("copy", 1)}, params=PARAMS)
+    assert back.event == "hold" and back.champion == "champ"
+    assert back.state.ghosts == () and "champ" not in back.state.history
+
+
+def test_a_retired_champion_bars_for_the_retire_window_and_does_not_resume():
+    w = build_window({"champ": oracle_router})
+    d = seat_step(seated("champ"), 9, "e9", w, {}, retired={"champ"}, params=PARAMS)
+    (g,) = d.state.ghosts
+    assert g.reason == "retired" and g.last_epoch == 9 + PARAMS.ghost_retire - 1
+    assert d.event == "ghost" and d.champion is None
+    back = seat_step(d.state, 10, "e10", w, {"champ": cand("champ")}, params=PARAMS)
+    assert back.champion is None
+
+
+# --- determinism and the window -------------------------------------------------
+
+
+def test_the_seat_does_not_depend_on_candidate_order():
+    pols = {"champ": noisy(oracle_router, 0.6, 5), "a": oracle_router,
+            "b": noisy(oracle_router, 0.1, 9), "c": constant(1)}
+    w = build_window(pols)
+    cands = [cand(h, i) for i, h in enumerate(pols)]
+    first = seat_step(seated("champ"), 9, "e9", w, {c.head_hash: c for c in cands}, params=PARAMS)
+    for i in range(3):
+        random.Random(i).shuffle(cands)
+        again = seat_step(seated("champ"), 9, "e9", w, {c.head_hash: c for c in cands},
+                          params=PARAMS)
+        assert again == first
+
+
+def test_the_window_keeps_only_the_last_size_epochs():
+    w = build_window({"a": oracle_router}, epochs=range(10), size=4)
+    assert sorted(w.slices) == [6, 7, 8, 9]
+    assert w.epochs_of("a") == [6, 7, 8, 9]
+    with pytest.raises(ValueError):
+        w.add_epoch(make_slice(9)[0], {})
+
+
+def test_a_failed_call_grades_zero():
+    sl, _ = make_slice(0)
+    failed = np.zeros(Q, bool)
+    failed[:10] = True
+    w = Window.empty(4).add_epoch(sl, {"a": HeadEpoch(np.full(Q, 2), failed)})
+    g, _ = w.head_vectors("a", 0)
+    assert not g[:10].any()
+
+
+def test_window_accuracy_is_exactly_summed():
+    w = build_window({"a": oracle_router})
+    acc, n = window_accuracy(w, "a")
+    flat = [float(x) for e in w.epochs_of("a") for x in w.head_vectors("a", e)[0]]
+    assert n == len(flat) and acc == math.fsum(flat) / len(flat)

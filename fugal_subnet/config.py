@@ -472,8 +472,9 @@ V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
 # champion on the SAME questions, by net value per question:
 #
 #     NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
-#     V    = CHAMPION_ACCURACY_VALUE * anchor spend per question
-#     u_i  = CHAMPION_HARD_WEIGHT on a hard question (one no frame model solved), else 1
+#     V    = CHAMPION_ACCURACY_VALUE * the champion's own mean spend per
+#            question over the same paired questions
+#     u_i  = CHAMPION_HARD_WEIGHT on the hard-reasoning category, else 1
 #     NV   = 100 * mean_i NV_i                       (percentage points)
 #
 # The challenger takes the seat when the one-sided paired-bootstrap lower
@@ -485,8 +486,10 @@ V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
 # points.
 #
 # CHAMPION_ACCURACY_VALUE (m) prices one extra correct answer at m questions'
-# worth of the anchor's spend. At 30, accuracy dominates and cost decides
-# between heads of near-equal accuracy. It is a published policy constant.
+# worth of the champion's own spend. At 30, accuracy dominates and cost
+# decides between heads of near-equal accuracy. It is a published policy
+# constant. With no champion there is no comparison: the most senior eligible
+# head takes the empty seat.
 CHAMPION_ACCURACY_VALUE = float(os.getenv("FUGAL_CHAMPION_ACCURACY_VALUE", "30"))
 CHAMPION_HARD_WEIGHT = float(os.getenv("FUGAL_CHAMPION_HARD_WEIGHT", "2"))
 CHAMPION_MARGIN = float(os.getenv("FUGAL_CHAMPION_MARGIN", "0.2"))
@@ -495,9 +498,13 @@ CHAMPION_CONFIDENCE = float(os.getenv("FUGAL_CHAMPION_CONFIDENCE", "0.90"))
 CHAMPION_BOOTSTRAP_RESAMPLES = int(os.getenv("FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES", "2000"))
 # Quality gates on a challenger, besides the margin: accuracy at or above the
 # high-water mark (overall, and on the hard subset once the comparison holds
-# at least CHAMPION_HARD_GATE_MIN_QUESTIONS hard questions), and per-call time
-# within CHAMPION_TIME_GATE_FACTOR of the anchor's. Time is a gate only; it is
-# not priced into NV.
+# at least CHAMPION_HARD_GATE_MIN_QUESTIONS hard questions; the marks start at
+# the first champion's lower bound, never fall while a champion or its ghost
+# stands, and reset when the last ghost expires with the seat empty), and
+# per-call time within
+# CHAMPION_TIME_GATE_FACTOR of the champion's. Time is a gate only; it is not
+# priced into NV, and it is not applied until proofs carry a hash-bound
+# per-call latency.
 CHAMPION_HARD_GATE_MIN_QUESTIONS = int(os.getenv("FUGAL_CHAMPION_HARD_GATE_MIN_QUESTIONS", "100"))
 CHAMPION_TIME_GATE_FACTOR = float(os.getenv("FUGAL_CHAMPION_TIME_GATE_FACTOR", "2"))
 # A champion that stops being eligible leaves a ghost bar: for this many
@@ -508,6 +515,12 @@ CHAMPION_TIME_GATE_FACTOR = float(os.getenv("FUGAL_CHAMPION_TIME_GATE_FACTOR", "
 # burns.
 CHAMPION_GHOST_OFF = int(os.getenv("FUGAL_CHAMPION_GHOST_OFF", "3"))
 CHAMPION_GHOST_RETIRE = int(os.getenv("FUGAL_CHAMPION_GHOST_RETIRE", "24"))
+# The paired comparison reads the last CHAMPION_WINDOW_EPOCHS epochs by
+# calendar, counting only epochs in which both heads were scored and, for the
+# challenger, only from its first commit. Bounded so the per-question state
+# every validator holds (and rebuilds from reveals) is bounded: 48 epochs is
+# up to 14,400 paired questions, about two and a half days.
+CHAMPION_WINDOW_EPOCHS = int(os.getenv("FUGAL_CHAMPION_WINDOW_EPOCHS", "48"))
 
 # --- Protocol v2: payout ---
 # The miner share is split across the last three champions: current, previous,
@@ -666,6 +679,7 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_CHAMPION_TIME_GATE_FACTOR",
     "FUGAL_CHAMPION_GHOST_OFF",
     "FUGAL_CHAMPION_GHOST_RETIRE",
+    "FUGAL_CHAMPION_WINDOW_EPOCHS",
     "FUGAL_PAYOUT_SEAT_SHARES",
 )
 CONSENSUS_ENV_INPUTS = (

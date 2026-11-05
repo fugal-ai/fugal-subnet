@@ -850,7 +850,8 @@ Measure the v2 pool on your own host.
 
 Use a second instance:
 
-1. **Retrain** on the v2 model list (`<V2_MODEL_LIST>`), labelling your own
+1. **Retrain** on the v2 model list (`<V2_MODEL_LIST>`; final, merged as
+   `data/models_v2.json` on `release/v2` and pinned in the signed image), labelling your own
    data. Allow one to two days if you start from no labels. The notice is 24
    hours, so start early: the v2 model list and code are already public
    on the `release/v2` branch.

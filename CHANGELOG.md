@@ -246,6 +246,18 @@ on the DCAP library. Honest TDs are unaffected (both real GCP quotes checked).
 Also: tests pin the quote version and minimum length checks; an unused
 `TDXQuote.report_data_bytes` property is removed.
 
+### Security — the event-log replay binds each digest to its payload
+
+`attestation.replay_event_log` proved that the chain of digests in a miner's
+TDX event log reproduces RTMR3, then read the `compose-hash` payload beside
+those digests without checking that the digest was computed from it. A log
+with every genuine digest and a rewritten payload replayed to the signed
+register, so `verify_proof` approved an application nobody had approved.
+Verified on the real fixtures. The replay now recomputes each event's digest
+from its name and payload (both dstack encodings) and refuses a mismatch, and
+reads the FIRST event of each name rather than the last. Regression tests on
+synthetic and real logs; three new `run_tee_attacks` cases.
+
 ### Fixed — epoch artifacts are written atomically; the publisher refuses a partial reveal
 
 `commit.json` and `reveal.json` were written in place with `json.dump`, so a

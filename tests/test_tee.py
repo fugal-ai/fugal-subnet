@@ -909,6 +909,44 @@ def test_changing_the_compose_hash_changes_the_register():
     assert replay_event_log(a)[0] != replay_event_log(b)[0]
 
 
+def test_replay_rejects_a_relabelled_payload():
+    """The exploit the digest binding closes: keep every genuine digest and
+    rewrite the compose-hash PAYLOAD to an approved value. The chain of digests
+    still reproduces RTMR3, so a replay that only checks the register believes
+    the relabelled field. The digest must bind the (name, payload) it travels
+    with, in either dstack encoding."""
+    from fugal_subnet.tee.attestation import replay_event_log
+
+    for version in (1, 2):
+        honest = [_ev("compose-hash", "abcd", version=version),
+                  _ev("instance-id", "beef", version=version)]
+        rtmr3, seen = replay_event_log(honest)
+        assert seen["compose-hash"].hex() == "abcd"
+        forged = [dict(honest[0], event_payload="ab" * 32), honest[1]]
+        with pytest.raises(ValueError, match="does not bind"):
+            replay_event_log(forged)
+        renamed = [dict(honest[0], event="instance-id"), honest[1]]
+        with pytest.raises(ValueError, match="does not bind"):
+            replay_event_log(renamed)
+    # A mixed-encoding log is fine: each event binds in its own encoding.
+    mixed = [_ev("compose-hash", "abcd", version=1), _ev("instance-id", "beef", version=2)]
+    assert replay_event_log(mixed)[1]["compose-hash"].hex() == "abcd"
+
+
+def test_replay_keeps_the_first_event_of_a_name():
+    """The initrd extends compose-hash once, before any container runs. A
+    later event under the same name is the application's, so the claim a
+    verifier reads must be the first one, never the last."""
+    from fugal_subnet.tee.attestation import replay_event_log
+
+    log = [_ev("compose-hash", "abcd"), _ev("instance-id", "beef"),
+           _ev("compose-hash", "dead")]
+    rtmr3, seen = replay_event_log(log)
+    assert seen["compose-hash"].hex() == "abcd"
+    # Both events are still in the chain: the register reflects the second.
+    assert rtmr3 == replay_event_log(log)[0] != replay_event_log(log[:2])[0]
+
+
 def test_event_log_must_reproduce_the_quote_before_it_is_read():
     """The log comes from a miner. Replaying it is the only reason to believe it.
 

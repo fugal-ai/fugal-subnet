@@ -305,6 +305,52 @@ def a_forged_event_log():
     return _verify_log(forged)
 
 
+def a_relabelled_compose_payload():
+    """Keep every genuine digest; rewrite only the compose-hash PAYLOAD to the
+    approved value. The chain of digests still reproduces RTMR3, so a replay
+    that checks only the register reads the relabelled field and approves an
+    application nobody approved. This VERIFIED on the real fixtures until the
+    replay bound each digest to its (name, payload) (2026-11-05)."""
+    other = [
+        {"imr": 3, "event": "compose-hash", "event_payload": "dead",
+         "digest": dstack_event_digest("compose-hash", bytes.fromhex("dead"))},
+        dict(_HONEST_LOG[1]),
+    ]
+    rtmr3 = bytes.fromhex(replay_event_log(other)[0])
+    forged = [dict(other[0], event_payload="abcd"), other[1]]   # approved value, genuine digest
+    return _verify_log(forged, rtmr3=rtmr3)
+
+
+def a_relabelled_compose_payload_v1_encoding():
+    """The same relabel against a log in dstack's v1 event encoding, which is
+    what the real GCP fixtures use (tests/fixtures/attestation_*.bin)."""
+    other = [
+        {"imr": 3, "event": "compose-hash", "event_payload": "dead",
+         "digest": dstack_event_digest("compose-hash", bytes.fromhex("dead"), 1)},
+        {"imr": 3, "event": "instance-id", "event_payload": "beef",
+         "digest": dstack_event_digest("instance-id", bytes.fromhex("beef"), 1)},
+    ]
+    rtmr3 = bytes.fromhex(replay_event_log(other)[0])
+    forged = [dict(other[0], event_payload="abcd"), other[1]]
+    return _verify_log(forged, rtmr3=rtmr3)
+
+
+def a_second_compose_hash_event():
+    """Extend a second `compose-hash` event, with the approved value, AFTER the
+    initrd's genuine one (the guest agent's EmitEvent on a newer base). Every
+    digest is genuine and the log replays; a last-wins read would believe the
+    application's own claim. The first event of a name is the one that counts."""
+    log = [
+        {"imr": 3, "event": "compose-hash", "event_payload": "dead",
+         "digest": dstack_event_digest("compose-hash", bytes.fromhex("dead"))},
+        dict(_HONEST_LOG[1]),
+        {"imr": 3, "event": "compose-hash", "event_payload": "abcd",
+         "digest": dstack_event_digest("compose-hash", bytes.fromhex("abcd"))},
+    ]
+    rtmr3 = bytes.fromhex(replay_event_log(log)[0])
+    return _verify_log(log, rtmr3=rtmr3)
+
+
 def a_reordered_event_log():
     """Extends are not commutative. Reorder to try to reach the target value."""
     return _verify_log(list(reversed(_HONEST_LOG)))
@@ -471,6 +517,9 @@ ATTACKS = [
     ("block the network during exploration only", "I9", a_blocked_exploration),
     ("a failed call that is also correct", "I9", a_failed_but_correct),
     ("forge an event log for an approved app", "I8", a_forged_event_log),
+    ("relabel the compose-hash payload, keep the digests", "I8", a_relabelled_compose_payload),
+    ("relabel the payload in the v1 event encoding", "I8", a_relabelled_compose_payload_v1_encoding),
+    ("extend a second compose-hash event after boot", "I8", a_second_compose_hash_event),
     ("reorder the event log to hit a target", "I8", a_reordered_event_log),
     ("truncate the event log", "I8", a_truncated_event_log),
     ("v2 preimage that lies about its digest", "I8", a_lying_preimage),

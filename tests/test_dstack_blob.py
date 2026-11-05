@@ -104,3 +104,22 @@ def test_a_real_gcp_td_is_not_a_debug_td(name):
     quote = parse_quote(decode_dstack_attestation(_blob(name))["quote"])
     assert int.from_bytes(bytes.fromhex(quote.td_attributes), "little") == 1 << 28
     assert not td_is_debug(quote)
+
+
+@pytest.mark.parametrize("name", ["A", "B"])
+def test_a_relabelled_compose_hash_in_a_real_log_is_refused(name):
+    """Found 2026-11-05 on these fixtures: with the genuine digests kept and only
+    the compose-hash PAYLOAD rewritten, the log still replayed to the signed
+    RTMR3 and the verifier read the rewritten value. The replay must bind each
+    digest to the (name, payload) beside it, and the genuine log must still
+    replay under that rule."""
+    d = decode_dstack_attestation(_blob(name))
+    quote = parse_quote(d["quote"])
+    replayed, events = replay_event_log(d["events"], imr=3)
+    assert replayed == quote.rtmr3                    # the honest log binds
+    forged = [dict(e) for e in d["events"]]
+    for e in forged:
+        if e.get("event") == "compose-hash":
+            e["event_payload"] = "ab" * 32
+    with pytest.raises(ValueError, match="does not bind"):
+        replay_event_log(forged, imr=3)

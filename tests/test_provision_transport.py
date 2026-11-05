@@ -29,6 +29,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import x25519
 
 from fugal_subnet.tee import provision
+from fugal_subnet.tee.attestation import dstack_event_digest
 from fugal_subnet.tee.provision import (
     ProvisionError,
     ProvisionStore,
@@ -55,7 +56,9 @@ def _events(compose=APP, instance=INSTANCE):
         raw = bytes.fromhex(payload)
         out.append({
             "imr": 3, "event_type": 0x08000001,
-            "digest": hashlib.sha384(name.encode() + raw).hexdigest(),
+            # dstack's own digest of the event: the replay now recomputes it and
+            # refuses a log whose digests do not bind their payloads.
+            "digest": dstack_event_digest(name, raw),
             "event": name, "event_payload": raw.hex(),
         })
     return out

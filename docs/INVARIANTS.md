@@ -870,6 +870,7 @@ Every link verified on a real deploy rather than argued, in
 `tests/test_tpm.py::test_the_compose_file_bytes_reach_the_signed_register`:
 
     sha256(app-compose.json RAW BYTES)  ==  the compose-hash event in the log
+    each event's digest                 binds its (name, payload), either encoding
     the event log                       replays to RTMR3
     RTMR3                               is inside the Intel-signed quote
 
@@ -883,6 +884,21 @@ This is what makes an approved entry computable off-hardware, and it is the
 check that was missing when the compose hash was computed from normalised JSON.
 That version produced a hash dstack never extends: it would have rejected every
 honest miner while looking correct.
+
+**The second link was missing until 2026-11-05.** `replay_event_log` proved
+that the SEQUENCE OF DIGESTS reproduces RTMR3 and then read the `(name,
+payload)` pairs beside them as if the two were one thing. They are not: a
+miner keeps every genuine digest, rewrites the `compose-hash` payload to an
+approved value, and the log still replays to the register the CPU signed —
+verified on the real fixtures, where the forged log passed `verify_proof`.
+dstack computes each digest from the event's type, name and payload (two
+encodings; the GCP fixtures use the first), so the replay now recomputes it
+and refuses an event whose digest binds neither. It also keeps the FIRST event
+of each name: the initrd extends `compose-hash` once before any container
+runs, and anything extended later under that name is the application's
+(the guest agent's `EmitEvent` on newer bases), which closes the last-wins
+item from OPEN_WORK. `tests/test_tee.py`, `tests/test_dstack_blob.py` (on
+the real logs) and three `run_tee_attacks` cases hold it.
 
 **Do not re-serialise.** Fields are in insertion order, not sorted. dstack's
 bytes happen to equal `json.dumps(obj, indent=2)` exactly, and that is asserted

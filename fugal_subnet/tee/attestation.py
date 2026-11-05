@@ -286,6 +286,10 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
 
     `upto` stops after the named event, which is how a verifier can bind only as
     far as `compose-hash` and ignore per-instance events that follow it.
+
+    Every event's digest is checked against its own (name, payload) in both
+    dstack encodings, so a field read from the returned map is the one that
+    was actually extended, and the first event of each name is the one kept.
     """
     reg = b"\x00" * _RTMR_DIGEST_BYTES
     seen: dict[str, bytes] = {}
@@ -310,7 +314,32 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
         reg = hashlib.sha384(reg + digest).digest()
         name = str(ev.get("event", ""))
         payload = ev.get("event_payload", b"")
-        seen[name] = bytes.fromhex(payload) if isinstance(payload, str) else bytes(payload)
+        payload = bytes.fromhex(payload) if isinstance(payload, str) else bytes(payload)
+
+        # THE DIGEST MUST BIND THE NAME AND PAYLOAD IT TRAVELS WITH. The
+        # replay above proves only that this SEQUENCE OF DIGESTS reproduces
+        # the register; the (name, payload) pairs beside them are what the
+        # verifier goes on to read, and nothing else ties the two together.
+        # Without this check a miner keeps every genuine digest, relabels the
+        # compose-hash payload to an approved value, and the log still
+        # replays to the register the CPU signed (found 2026-11-05 on the real
+        # fixtures: the forged log verified). dstack computes the digest from
+        # the event's type, name and payload in one of two encodings, so
+        # either reproducing it is proof the pair is the one that was
+        # extended; neither reproducing it is a lie about what was extended.
+        if digest.hex() not in (
+            dstack_event_digest(name, payload, 1),
+            dstack_event_digest(name, payload, 2),
+        ):
+            raise ValueError(
+                f"event {i} ({name or '?'}) digest does not bind its name and "
+                "payload: the log claims an extend it cannot have made"
+            )
+        # FIRST occurrence wins. The initrd extends `compose-hash` once, before
+        # any container runs; anything extended later under the same name is
+        # the application's doing (the guest agent's EmitEvent on newer
+        # bases), so a last-wins read would hand the claim to the miner.
+        seen.setdefault(name, payload)
         if upto is not None and name == upto:
             break
     return reg.hex(), seen

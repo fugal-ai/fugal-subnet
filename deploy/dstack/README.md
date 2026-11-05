@@ -55,7 +55,7 @@ image by digest.
 dstack-cloud new fugal-miner && cd fugal-miner        # copy docker-compose.yaml in, set fields above
 dstack-cloud prepare                                   # writes shared/app-compose.json
 python scripts/compute_app_identity.py --compose shared/app-compose.json \
-    --base 12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+    --base <base measured on the TD you are approving; f4be9383…aa427 on 2026-11-03>
 # -> FUGAL_TEE_MEASUREMENTS=<base>:<compose_hash>  on EVERY validator
 ```
 

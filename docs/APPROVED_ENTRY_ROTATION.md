@@ -139,7 +139,12 @@ the new rules, so a proof from the old image can't be scored after it. For v2
 the notice before the activation block is therefore also the whole overlap:
 at least 24 hours, with the v2 code, model list and pool public on
 `release/v2` ahead of the announcement so operators can prepare early. The old
-entries retire at the activation block.
+entries retire at the activation block. The activation block itself travels in
+the v2 compose (`FUGAL_V2_ACTIVATION_BLOCK` in `deploy/dstack/docker-compose.yaml`,
+which the miner image reads), so choosing it is what fixes the v2 compose hash:
+freeze the compose after the block is chosen, not before, and publish that
+entry. `scripts/check_safety_invariants.py` refuses a live compose that no
+frozen app-compose embeds, so an edit after a freeze cannot ship unnoticed.
 
 ## What must not happen
 

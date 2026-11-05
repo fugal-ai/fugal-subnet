@@ -810,6 +810,43 @@ def check_upstream_is_inside_the_measurement(errors: list[str]) -> None:
             )
 
 
+def check_live_composes_are_frozen(errors: list[str], root: Path | None = None) -> None:
+    """Each live compose (deploy/dstack/docker-compose*.yaml) must be, byte for
+    byte, the `docker_compose_file` of some frozen app-compose*.json.
+
+    The compose hash validators approve is sha256 of the frozen app-compose,
+    which embeds the compose text. A compose edited after its freeze yields a
+    hash no entry names: a miner deploying it is refused, and nothing says
+    why. Found 2026-11-05 (review F-074): both live composes gained
+    FUGAL_POOL_CACHE_V2 after the 2026-11-03c freeze and matched none of the
+    eight frozen files. Clear it by freezing the compose again
+    (`dstack-cloud prepare`, commit the app-compose.json, publish the entry)
+    or by reverting the compose change.
+    """
+    import json
+
+    root = root or ROOT
+    dstack = root / "deploy" / "dstack"
+    frozen_texts: dict[str, str] = {}
+    for path in sorted(dstack.glob("app-compose*.json")):
+        try:
+            frozen_texts[path.name] = json.loads(path.read_text(encoding="utf-8")).get(
+                "docker_compose_file", "")
+        except ValueError:
+            continue  # reported by check_upstream_is_inside_the_measurement
+    for live in sorted(dstack.glob("docker-compose*.yaml")):
+        text = live.read_text(encoding="utf-8")
+        if text not in frozen_texts.values():
+            digest = next((ln.strip().split("@sha256:")[-1][:12] for ln in text.splitlines()
+                           if "@sha256:" in ln), "?")
+            errors.append(
+                f"{live.relative_to(root)} (image {digest}...) is not the embedded compose of "
+                f"any frozen app-compose*.json: a miner deploying it gets a compose hash no "
+                "approved entry names. Freeze it (dstack-cloud prepare -> commit the "
+                "app-compose.json, publish the entry) or revert the change (I8)"
+            )
+
+
 def check_live_requires_app_identity(errors: list[str]) -> None:
     """A live validator must refuse a bare base approved entry at startup.
 
@@ -948,6 +985,7 @@ def main() -> None:
     check_tee_safety(errors)
     check_upstream_is_inside_the_measurement(errors)
     check_live_requires_app_identity(errors)
+    check_live_composes_are_frozen(errors)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)
     check_documented_flags(errors)

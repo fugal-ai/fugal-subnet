@@ -1930,8 +1930,11 @@ Four changes, which ship together because they share the sample schema:
    identical answers are one observation, which is also what finding 3 (the
    prior's confidence filling on duplicates) needed. Reveals carry `coldkey`
    and `failed` per exploration entry so `rebuild_from_reveals` regroups the
-   same way; entries written before those fields existed are each their own
-   voter, which is what they were.
+   same way, and `frame_excluded_coldkeys`, the operators the detectors kept
+   out of the frame that epoch, so the replay drops the same voters (without
+   it a rebuilt validator re-admitted them and valued the frontier from a
+   different frame, found 2026-11-05); entries written before those fields
+   existed are each their own voter, which is what they were.
 
 **The assumption, stated plainly.** The frame is robust while honest coldkeys
 are a majority of those answering each question. Sybils are not a lever — the

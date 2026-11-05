@@ -75,6 +75,7 @@ def reveal_epoch(
     exploration: list[dict] | None = None,
     protocol_version: int = 1,
     v2_fields: dict | None = None,
+    frame_excluded_coldkeys: list[str] | None = None,
 ) -> bool:
     """Verify the commitment and publish the full epoch artifact.
 
@@ -137,6 +138,14 @@ def reveal_epoch(
             key=lambda e: (e.get("question_id", ""), e.get("model", ""),
                            e.get("coldkey", "")),
         ),
+        # The operators whose exploration samples the detectors kept OUT of
+        # the frame this epoch (reference_frame.implausible_exploration and
+        # disagreeing_exploration). Every observation above is published,
+        # excluded ones included, so a rebuild from this reveal can only
+        # reach the live frame if it knows which voters the live epoch
+        # dropped; before this field existed it re-admitted them and a
+        # rebuilt validator valued the frontier from a different frame (I1).
+        "frame_excluded_coldkeys": sorted(set(frame_excluded_coldkeys or [])),
         "scores": {str(k): v for k, v in scores.items()},
         "weights": {str(k): v for k, v in weights.items()},
         # What these numbers were computed with. Two validators publishing

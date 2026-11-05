@@ -4,6 +4,15 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — a frame rebuilt from reveals drops the voters the live epoch excluded
+
+The live validator keeps a flagged operator's exploration samples out of the
+reference frame (the two-sided detector) but published every observation and
+no exclusion list, so `rebuild_from_reveals` re-admitted the flagged voter and
+a validator that rebuilt its frame scored the field against a different
+frontier from its peers (I1). Reveals now carry `frame_excluded_coldkeys`
+and the replay applies it. Reveals from before the field re-admit as before.
+
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 
 The wall-clock call deadline set a per-read timeout on the connection's socket.

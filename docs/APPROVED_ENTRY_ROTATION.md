@@ -132,6 +132,15 @@ re-embed with margin: **48 hours minimum** for a compose-hash rotation, longer
 for a base rotation, because that one also needs the dstack image re-uploaded
 to the cloud project (about 8 minutes, measured, but it is a new moving part).
 
+**Protocol switches are the exception (v2).** A compose-hash rotation inside one
+protocol version runs both entries side by side for the window above. A
+protocol switch can't: from the activation block every validator scores under
+the new rules, so a proof from the old image can't be scored after it. For v2
+the notice before the activation block is therefore also the whole overlap:
+at least 24 hours, with the v2 code, model list and pool public on
+`release/v2` ahead of the announcement so operators can prepare early. The old
+entries retire at the activation block.
+
 ## What must not happen
 
 - **A bare base entry.** `<base>` alone approves any application on the image.

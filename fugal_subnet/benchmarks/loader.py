@@ -495,13 +495,65 @@ def load_all_v2(strict: bool = True) -> list[dict]:
     path = os.getenv("FUGAL_BENCHMARK_POOL_V2", "").strip()
     if not path and os.path.isfile(os.getenv("FUGAL_POOL_FILE_V2", DEFAULT_POOL_FILE_V2)):
         path = os.getenv("FUGAL_POOL_FILE_V2", DEFAULT_POOL_FILE_V2)
+    cache = "" if path else os.getenv("FUGAL_POOL_CACHE_V2", "").strip()
+    if cache:
+        cached = _read_verified_pool_cache_v2(cache)
+        if cached is not None:
+            return cached
     pool = _drop_unscoreable(_read_pool_file(path)) if path else build_pool_v2(strict)
     if path and _unpinned_pool_declared():
         logger.warning("FUGAL_POOL_UNPINNED is set: the v2 pool is not verified against its manifest")
         return pool
     _verify_against_manifest_v2(pool, strict)
     _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict)
+    if cache:
+        _write_pool_cache_v2(pool, cache)
     return pool
+
+
+# FUGAL_POOL_CACHE_V2: where a miner keeps the v2 pool after the first load that
+# matched the pinned manifest, so a restart does not need Hugging Face. The
+# cache is untrusted storage: it is verified against the pinned pool_hash and
+# content_hash on every read, strictly, whatever `strict` the caller passed and
+# whatever FUGAL_POOL_UNPINNED says, so editing it cannot change the pool, only
+# force a rebuild. A cache that fails is deleted and the pool rebuilt from the
+# pinned revisions. The first boot of a fresh volume still needs Hugging Face.
+
+
+def _read_verified_pool_cache_v2(cache: str) -> list[dict] | None:
+    if not os.path.isfile(cache):
+        return None
+    try:
+        pool = _read_pool_file(cache)
+        _verify_against_manifest_v2(pool, strict=True)
+        _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict=True)
+    except Exception as e:
+        logger.warning("v2 pool cache %s failed verification (%s); deleting it and rebuilding "
+                       "from the pinned revisions", cache, str(e)[:200])
+        try:
+            os.remove(cache)
+        except OSError as rm:
+            logger.warning("Could not delete the v2 pool cache %s: %s", cache, rm)
+        return None
+    logger.info("v2 pool read from the verified cache %s (%d questions)", cache, len(pool))
+    return pool
+
+
+def _write_pool_cache_v2(pool: list[dict], cache: str) -> None:
+    """Write the verified pool in its load order (embeddings are indexed by position),
+    atomically, so a crash mid-write leaves no partial file to fail the next read."""
+    import gzip
+
+    try:
+        os.makedirs(os.path.dirname(cache) or ".", exist_ok=True)
+        tmp = f"{cache}.tmp.{os.getpid()}"
+        payload = json.dumps(pool, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        with open(tmp, "wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as f:
+            f.write(payload)
+        os.replace(tmp, cache)
+        logger.info("v2 pool cached at %s for later boots", cache)
+    except OSError as e:
+        logger.warning("Could not write the v2 pool cache %s (%s); the next boot rebuilds it", cache, e)
 
 
 def load_pool(protocol_version: int, strict: bool = True) -> list[dict]:

@@ -29,12 +29,12 @@ class _Upstream:
             def do_POST(self):
                 n = int(self.headers.get("Content-Length", 0)); self.rfile.read(n)
                 outer.hits += 1
-                status, retry_after = outer.script.pop(0) if outer.script else (200, None)
+                status, retry_after, *err = outer.script.pop(0) if outer.script else (200, None)
                 if status != 200:
                     self.send_response(status)
                     if retry_after is not None:
                         self.send_header("Retry-After", str(retry_after))
-                    self.end_headers(); self.wfile.write(b"{}")
+                    self.end_headers(); self.wfile.write(json.dumps(err[0]).encode() if err else b"{}")
                     return
                 body = json.dumps({"choices": [{"message": {"content": "42"}}],
                                    "usage": {"prompt_tokens": 5, "completion_tokens": 2, "cost": 0.0}}).encode()
@@ -195,3 +195,47 @@ def test_a_reply_over_the_answer_budget_is_named(caplog):
         assert not caplog.records
         rt._log_cap_overrun("x/model", 17763)
     assert any("x/model" in r.getMessage() and "17763" in r.getMessage() for r in caplog.records)
+
+
+def _or402(reason, limit_source):
+    return {"error": {"code": 402, "message": "insufficient budget",
+                      "metadata": {"reason": reason, "limit_source": limit_source}}}
+
+
+IN_FLIGHT = _or402("in_flight_budget_exhausted", "openrouter_in_flight_budget")
+TOO_LARGE = _or402("weight_exceeds_budget", "openrouter_credits")
+
+
+def test_an_in_flight_budget_402_is_retried_like_a_429(monkeypatch, fast, caplog):
+    """OpenRouter refuses a request with 402 when the key's in-flight holds are full, even
+    with a positive balance; the holds release as running calls finish, so it is transient."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="fugal_subnet.tee.runtime"):
+        status, data, hits, records = _run(monkeypatch, [(402, "1", IN_FLIGHT)])
+    assert status == 200 and hits == 2 and len(records) == 1
+    assert any("in-flight budget full" in r.getMessage() for r in caplog.records)
+    assert not any("OPERATOR ACTION" in r.getMessage() for r in caplog.records)
+
+
+def test_a_persistent_in_flight_402_fails_after_the_attempt_cap_and_says_why(monkeypatch, fast, caplog):
+    import logging
+    with caplog.at_level(logging.ERROR, logger="fugal_subnet.tee.runtime"):
+        status, data, hits, records = _run(monkeypatch, [(402, None, IN_FLIGHT)] * 10)
+    assert status == 502 and hits == rt.PROXY_MAX_ATTEMPTS and records == []
+    assert any("in-flight budget stayed full" in r.getMessage() for r in caplog.records)
+
+
+def test_a_request_larger_than_the_whole_budget_is_an_operator_error(monkeypatch, fast, caplog):
+    import logging
+    with caplog.at_level(logging.ERROR, logger="fugal_subnet.tee.runtime"):
+        status, data, hits, records = _run(monkeypatch, [(402, "1", TOO_LARGE)])
+    assert status == 502 and hits == 1 and records == []
+    assert any("OPERATOR ACTION" in r.getMessage() and "weight_exceeds_budget" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.parametrize("body", [{}, {"error": {"code": 402}}, {"error": {"metadata": {"reason": 7}}},
+                                  _or402("insufficient_credits", "openrouter_credits")])
+def test_any_other_402_is_still_the_balance_and_never_retried(monkeypatch, fast, body):
+    status, data, hits, records = _run(monkeypatch, [(402, None, body)])
+    assert status == 502 and hits == 1 and records == []

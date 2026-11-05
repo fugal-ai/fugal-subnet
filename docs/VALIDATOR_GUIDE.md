@@ -375,7 +375,7 @@ run it. So a late or retried epoch is scored the same way on every peer.
 What changes for miners is in `docs/MINER_GUIDE.md`, "Protocol v2".
 
 Values marked `<LIKE_THIS>` are published in the signed v2 release
-(`<V2_RELEASE_NOTE>`) at the announcement, at least 72 hours before the flip.
+(`<V2_RELEASE_NOTE>`) at the announcement, at least 24 hours before the flip.
 Do not fill them in from anywhere else.
 
 ### Before the flip

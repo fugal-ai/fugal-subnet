@@ -635,3 +635,75 @@ def test_no_copy_rule_state_in_the_v2_rebuild_is_none(tmp_path):
         rv["v2_state"].pop(cr.REVEAL_KEY, None)
     write(tmp_path, reveals)
     assert cr.from_rebuild(rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES)) is None
+
+
+# --- pre-flip seniority: every commit before the flip ties ---------------------------
+
+
+def _state_with(first_blocks: dict) -> "cr.CopyState":
+    heads = tuple(cr.HeadRecord(h, b, f"ck-{h[:4]}", True, None, f"hk-{h[:4]}")
+                  for h, b in first_blocks.items())
+    return cr.CopyState(epoch=1, heads=heads)
+
+
+def _hh(name):
+    import hashlib
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
+def test_an_early_squatter_does_not_outrank_a_last_v1_epoch_committer():
+    act = 3000
+    squat, honest = _hh("squatter"), _hh("honest")
+    early = _state_with({squat: 5, honest: 2950})            # days early vs last v1 epoch
+    late = _state_with({squat: 2949, honest: 2950})
+    for st in (early, late):
+        ks = cr.v2_seniority(st, squat, floor_block=act, salt="0xabc")
+        kh = cr.v2_seniority(st, honest, floor_block=act, salt="0xabc")
+        assert ks[0] == kh[0] == act                          # both tie at the flip
+    # Committing earlier changes nothing: the order is the same either way.
+    order = lambda st: sorted([squat, honest], key=lambda h: cr.v2_seniority(   # noqa: E731
+        st, h, floor_block=act, salt="0xabc"))
+    assert order(early) == order(late)
+
+
+def test_the_pre_flip_order_depends_on_the_activation_hash_so_it_cannot_be_ground():
+    heads = {_hh(f"h{i}"): 10 + i for i in range(6)}
+    st = _state_with(heads)
+    orders = {tuple(sorted(heads, key=lambda h: cr.v2_seniority(st, h, floor_block=100,
+                                                                 salt=f"0x{s:x}")))
+              for s in range(40)}
+    assert len(orders) > 1                                    # the salt decides, not the committer
+
+
+def test_post_flip_ordering_is_unchanged_and_pre_flip_heads_are_senior():
+    act = 3000
+    pre, post1, post2 = _hh("pre"), _hh("post1"), _hh("post2")
+    st = _state_with({pre: 10, post1: 3005, post2: 3200})
+    key = lambda h: cr.v2_seniority(st, h, floor_block=act, salt="s")   # noqa: E731
+    assert key(post1) == cr.seniority(st, post1) and key(post2) == cr.seniority(st, post2)
+    assert key(pre) < key(post1) < key(post2)
+
+
+def test_no_floor_is_the_old_ordering():
+    a, b = _hh("a"), _hh("b")
+    st = _state_with({a: 5, b: 50})
+    assert cr.v2_seniority(st, a) == cr.seniority(st, a) and cr.v2_seniority(st, a) < cr.v2_seniority(st, b)
+
+
+def test_senior_bars_use_the_same_pre_flip_key():
+    import numpy as np
+
+    from fugal_subnet.champion import EpochSlice, HeadEpoch, Window
+
+    act = 300
+    a, b = _hh("bar-a"), _hh("bar-b")
+    st = _state_with({a: 5, b: 250})                          # both before the flip
+    sl = EpochSlice(epoch=2, question_ids=("q",), categories=("math",), hard=(False,),
+                    grades=np.ones((1, 1)), spends=np.ones((1, 1)))
+    w = Window.empty(48).add_epoch(sl, {h: HeadEpoch(np.zeros(1, np.int64), np.zeros(1, bool))
+                                        for h in (a, b)})
+    bars = cr.senior_bars(st, 2, w, [a, b], holders=[a, b], ghost_off=3, ghost_retire=24,
+                          floor_block=act, salt="0xfeed")
+    senior = min([a, b], key=lambda h: cr.v2_seniority(st, h, floor_block=act, salt="0xfeed"))
+    junior = b if senior == a else a
+    assert bars[junior] == (senior,) and bars[senior] == ()

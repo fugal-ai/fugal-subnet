@@ -2277,10 +2277,17 @@ the seat changes hands by a paired test (`fugal_subnet/champion.py`):
 - **First.** With no champion and no ghost, the most senior eligible head
   (full burn-in, quality floor, not an exact copy) that passes the high-water
   gates takes the empty seat; there is nothing to compare it with. Until any
-  head is eligible the champion share burns, as in v1. At the flip this
-  makes the first seat go to the eligible head committed earliest before
-  the activation boundary, which is a timing race between operators; it is
-  accepted because any better head displaces it by the margin.
+  head is eligible the champion share burns, as in v1. **Pre-flip commits
+  tie.** Every first commit at or before the activation block is ranked at
+  the activation block, and the tie is broken by sha256 over the activation
+  boundary's block hash, the head and its owner (`copy_rule.seniority`,
+  `floor_block`/`salt`; published per epoch as the reveal's `v2_seniority`).
+  So the first seat among heads committed before the flip is decided by that
+  tie-break, not by who committed earliest: committing days ahead buys
+  nothing, and the order cannot be ground in advance, because the salt does
+  not exist until the activation block and every pre-flip commitment is
+  fixed by then. Commits after the flip keep their real block. Any better
+  head still displaces the first champion by the margin.
 - **Ghost.** A champion that stops being live or eligible leaves a ghost bar
   for `CHAMPION_GHOST_OFF` epochs (missed) or `CHAMPION_GHOST_RETIRE` (its
   owner serves a different head). While it stands, a challenger must beat the

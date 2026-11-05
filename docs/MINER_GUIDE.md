@@ -863,7 +863,10 @@ Use a second instance:
    boundary block, so the v1 epoch that is already running is still checked
    against your v1 commitment, and from the flip your v2 head is the one
    committed. Do not commit the v2 head yourself earlier: during the notice
-   period that would break the v1 proofs of the same hotkey.
+   period that would break the v1 proofs of the same hotkey. If the commit
+   transaction fails, the TD retries every 2 blocks until 20 blocks before the
+   flip, and logs an ERROR if it still has not landed by then. Watch for that
+   line: a head committed after the flip boundary misses its first v2 epoch(s).
 4. **Stop the v1 TD** once the v2 TD is serving v2 epochs. v1 approved
    entries retire at the flip.
 

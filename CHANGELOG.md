@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — the v2 miner retries its pre-flip commitment
+
+The v2 image committed its head once, 10 blocks after the last v1 boundary. If
+that one transaction failed, the commit fell back to after the flip, and the
+miner's first v2 epoch(s) were rejected as committed late. It now retries every
+`COMMIT_RETRY_BLOCKS` (2) until `COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS` (20) before
+the activation block. It logs each failure and an ERROR if the deadline passes;
+the post-flip fallback is unchanged. Miner-side only (an image change; no
+consensus change).
+
 ### Changed — protocol v2 NV: V is pinned to an anchor, not the champion
 
 `V = CHAMPION_ACCURACY_VALUE x anchor_spend_per_question(CHAMPION_ANCHOR_MODEL)`,

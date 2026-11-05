@@ -114,6 +114,12 @@ LATE_START_MARGIN_BLOCKS = 60
 # Miner-side only: the v2 image commits its head this many blocks after the last
 # v1 boundary, clear of the boundary block where validators read commitments.
 COMMIT_AFTER_BOUNDARY_BLOCKS = 10
+# The pre-flip commit is retried every COMMIT_RETRY_BLOCKS until this many blocks
+# before the activation block. A single failed transaction would otherwise leave
+# the commit to the post-flip fallback, and validators reading commitments at the
+# flip boundary would reject this miner's first v2 epoch as committed late.
+COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS = 20
+COMMIT_RETRY_BLOCKS = 2
 
 # --- Harness answer budget and call deadlines (image constants, protocol v2) ---
 # Part of the measured image, not env-overridable: exploration (the reference

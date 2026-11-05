@@ -377,10 +377,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         # (its proof is still checked against the old head) and visible at the
         # flip boundary. COMMIT_AFTER_BOUNDARY_BLOCKS keeps it clear of the
         # boundary block itself.
-        from fugal_subnet.config import COMMIT_AFTER_BOUNDARY_BLOCKS
+        from fugal_subnet.config import (
+            COMMIT_AFTER_BOUNDARY_BLOCKS,
+            COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS,
+        )
         commit_at = V2_ACTIVATION_BLOCK - blocks_per_epoch + COMMIT_AFTER_BOUNDARY_BLOCKS
         _wait_for_block(subtensor, commit_at, "commit the v2 head (after the last v1 boundary)")
-        committed = ensure_commitment(subtensor, wallet, netuid, weights_hash)
+        committed = _commit_before_deadline(
+            subtensor, wallet, netuid, weights_hash,
+            deadline=V2_ACTIVATION_BLOCK - COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS,
+        )
         _wait_for_block(subtensor, V2_ACTIVATION_BLOCK, "serve the axon (the v2 flip)")
 
     external_ip = os.getenv("FUGAL_AXON_IP")
@@ -532,6 +538,51 @@ def _wait_for_block(subtensor, block: int, purpose: str, poll_s: float = 30.0) -
             return
         logger.info("Holding for v2: %d blocks until block %d, then %s", block - current, block, purpose)
         time.sleep(poll_s)
+
+
+def _commit_before_deadline(subtensor, wallet, netuid, weights_hash, deadline: int,
+                            retry_blocks: int | None = None, poll_s: float = 6.0) -> bool:
+    """Commit the head, retrying every `retry_blocks` blocks until block `deadline`.
+
+    Returns True once the chain holds the commitment. A False return means the
+    deadline passed: the post-flip fallback will still commit, but validators read
+    commitments at the flip boundary, so this miner's first v2 epoch(s) will be
+    rejected as committed late.
+    """
+    from fugal_subnet.commitments import ensure_commitment
+    from fugal_subnet.config import COMMIT_RETRY_BLOCKS
+    retry_blocks = COMMIT_RETRY_BLOCKS if retry_blocks is None else retry_blocks
+    def block_now():
+        while True:
+            try:
+                return subtensor.get_current_block()
+            except Exception as e:
+                logger.warning("Could not read the current block (%s); retrying", e)
+                time.sleep(poll_s)
+
+    attempt = 0
+    while True:
+        current = block_now()
+        if current >= deadline:
+            logger.error(
+                "v2 head NOT committed by block %d (now %d) after %d attempt(s). The commit "
+                "falls back to after the flip, and validators will reject this miner's first "
+                "v2 epoch(s) as committed late. Check the hotkey's chain access and balance.",
+                deadline, current, attempt,
+            )
+            return False
+        attempt += 1
+        if ensure_commitment(subtensor, wallet, netuid, weights_hash):
+            if attempt > 1:
+                logger.info("v2 head committed on attempt %d at block %d", attempt, current)
+            return True
+        retry_at = current + retry_blocks
+        logger.warning(
+            "v2 head commit attempt %d failed at block %d; retrying at block %d "
+            "(deadline %d, %d blocks left)", attempt, current, retry_at, deadline, deadline - current,
+        )
+        while block_now() < retry_at:
+            time.sleep(poll_s)
 
 
 def _run_epoch(

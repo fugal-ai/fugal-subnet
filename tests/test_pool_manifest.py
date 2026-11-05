@@ -123,6 +123,28 @@ def test_the_default_configuration_does_not_bypass_verification(monkeypatch):
         _verify_against_manifest(wrong_pool, _default_skip(), strict=True)
 
 
+def test_a_skip_list_mismatch_is_refused_in_strict_mode(monkeypatch, caplog):
+    """The other half of the bug above: with FUGAL_SKIP_BENCHMARKS set to
+    something the manifest was not built with, strict mode still returned
+    early with a warning, so a live neuron on its own skip list scored a pool
+    nobody else had and the check that would have said so switched itself off.
+    Strict refuses; non-strict keeps the warning."""
+    import logging
+
+    import pytest
+
+    from fugal_subnet.benchmarks.loader import _default_skip, _verify_against_manifest
+
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+    odd = set(_default_skip()) ^ {"mmlu"}            # differs from the pinned list
+    pool = [{"question_id": "q1", "prompt": "x", "gold": "y", "grader_id": "exec_io"}]
+    with pytest.raises(RuntimeError, match="FUGAL_SKIP_BENCHMARKS"):
+        _verify_against_manifest(pool, odd, strict=True)
+    with caplog.at_level(logging.WARNING, logger="fugal_subnet.benchmarks.loader"):
+        _verify_against_manifest(pool, odd, strict=False)
+    assert any("Skipping content verification" in r.getMessage() for r in caplog.records)
+
+
 def test_the_manifest_ships_in_the_wheel(tmp_path):
     """The bug this closes twice over.
 

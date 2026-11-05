@@ -4,6 +4,15 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — a pool skip-list mismatch is refused in strict mode
+
+`loader._verify_against_manifest` returned early with a warning when the
+process's `FUGAL_SKIP_BENCHMARKS` differed from the list the manifest was
+built with, so a live neuron on its own skip list scored a pool nobody else
+had and the check that would have said so switched itself off. Strict mode
+(the live neurons) now refuses to start on a mismatch; non-strict keeps the
+warning.
+
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 
 The wall-clock call deadline set a per-read timeout on the connection's socket.

@@ -609,8 +609,8 @@ CHAMPION_BOOTSTRAP_RESAMPLES = int(os.getenv("FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES
 CHAMPION_MIN_ACCURACY = float(os.getenv("FUGAL_CHAMPION_MIN_ACCURACY", "0.30"))
 # Insurance on the paired test: a take needs at least this many paired
 # questions against the bar, whatever the bootstrap says. The v2 burn-in
-# (V2_BURN_IN_QUESTIONS, 1,500 in an unbroken run) is the same count, so it
-# normally guarantees it the epoch burn-in completes; this keeps a short
+# (V2_BURN_IN_QUESTIONS, 1,500 in an unbroken run) is the same count, so a
+# burned-in head normally meets it already; this keeps a short
 # overlap with a ghost or a champion that only just appeared from deciding
 # the seat on a few hundred questions.
 CHAMPION_MIN_PAIRED_QUESTIONS = int(os.getenv("FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS", "1500"))

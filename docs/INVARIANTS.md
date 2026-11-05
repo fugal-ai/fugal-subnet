@@ -2705,6 +2705,13 @@ seat but lost its window, and `FUGAL_FRAME_BOOTSTRAP` names a directory of
 reveals. Per-head v1 evidence is not rebuilt (as before); only the burn-in
 counter is restored, into fresh records.
 
+**A malformed reveal is refused by name.** The replay validates every field it
+reads (lists where lists are expected, one routing index per question, every
+index inside the model space, well-formed epoch ids) and refuses the file by
+path and epoch rather than crashing or, for a non-list `models`, silently
+accepting it; a window missing one epoch is a different window from every
+peer's, so the operator fixes the file.
+
 **Exact only when the reveals are current.** Published reveals lag by the
 commit-reveal hold. A rebuild is exact when the newest reveal is the epoch
 just before the one the validator resumes at (its own reveals after a lost

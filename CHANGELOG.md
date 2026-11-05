@@ -4,6 +4,18 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — v2 rebuild refuses a malformed reveal by name; restored burn-in survives; the metagraph fallback is logged
+
+The startup rebuild from reveals crashed with KeyError/ValueError tracebacks
+on a truncated or malformed peer reveal and silently accepted a string
+`models`; it now validates what it reads and refuses the file by path and
+epoch. Records created to restore a head's E'' burn-in carried the head's
+first committing hotkey, so an owner serving from a newer hotkey lost the
+restored burn-in on its first verified proof; they now carry no hotkey (unknown,
+kept). When the pinned metagraph read at the collection block fails and the
+live one is used, the epoch log now records `metagraph_unpinned`, so a
+divergence that epoch is attributable from the published artifacts.
+
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 
 The wall-clock call deadline set a per-read timeout on the connection's socket.

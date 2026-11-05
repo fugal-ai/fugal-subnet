@@ -568,7 +568,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             for h, uid in sorted(rebuilt.serving.items()):
                 if uid in scoring_state.records or h not in rebuilt.burn_in:
                     continue
-                rec = MinerRecord(uid=uid, hotkey=rebuilt.owners.get(h, ""), current_head_hash=h)
+                # No hotkey: `owners` is the head's FIRST committing hotkey, and
+                # an owner may serve from a newer one (coldkey ownership).
+                # update_scores treats "" as unknown and keeps the record; a
+                # stale value made it drop the record, and the restored
+                # burn-in with it, on the first verified proof (F-066).
+                rec = MinerRecord(uid=uid, hotkey="", current_head_hash=h)
                 rec.evidence = Evidence(weights_hash=h, burn_in_n=rebuilt.burn_in[h])
                 scoring_state.records[uid] = rec
             resume_epoch = epoch_index_for_block(
@@ -687,7 +692,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # validator, so they query the same axons at the same chain state
             # and any difference in what they collect is a real difference
             # rather than a timing artefact.
-            metagraph = metagraph_at(subtensor, netuid, collect_block, metagraph)
+            metagraph, metagraph_pinned = metagraph_at(subtensor, netuid, collect_block, metagraph)
 
             # --- QUERY MINERS FOR PROOFS ---
             timer.start_phase("query")
@@ -864,8 +869,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     n_heads_unverifiable=n_unverifiable,
                     commit_hash=commitment.commit_hash,
                     anomalies=(
-                        ["no_valid_proofs", "collateral_unavailable"]
-                        if n_unverifiable else ["no_valid_proofs"]
+                        ["no_valid_proofs"]
+                        + (["collateral_unavailable"] if n_unverifiable else [])
+                        + ([] if metagraph_pinned else
+                           [f"metagraph_unpinned: the read at block {collect_block} failed"])
                     ),
                     duration_s=timer.total_s,
                 )
@@ -1301,6 +1308,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
             if not reveal_ok:
                 anomalies.append("commit_reveal_failed")
+            if not metagraph_pinned:
+                # Attributable after the fact, not only on the console: two
+                # validators that queried different axon sets this epoch have
+                # a named cause in the published log (F-070).
+                anomalies.append(
+                    f"metagraph_unpinned: the read at block {collect_block} failed and the "
+                    "current metagraph was used"
+                )
             for uid, why in suspicious.items():
                 # In the published epoch log so it is attributable after the
                 # fact by anyone, not just whoever was reading the validator's
@@ -1705,16 +1720,19 @@ def registration_block_of(metagraph, uid: int) -> int:
         return 0
 
 
-def metagraph_at(subtensor, netuid: int, block: int, fallback):
-    """Metagraph as of `block`, falling back to the live one.
+def metagraph_at(subtensor, netuid: int, block: int, fallback) -> tuple:
+    """(metagraph as of `block`, True), or (the live one, False) when the pinned
+    read fails.
 
     Pinning the read is what makes two validators query the same axons. A node
     that has pruned the state for that block cannot serve it, though, and a
     validator that refuses to run because it cannot read 40 blocks of history
-    is worse than one that reads the current state and says so.
+    is worse than one that reads the current state and says so. The False is
+    what the epoch log records as `metagraph_unpinned`, so the divergence is
+    attributable from the published artifacts, not only from the console.
     """
     try:
-        return subtensor.metagraph(netuid, block=block)
+        return subtensor.metagraph(netuid, block=block), True
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "Could not read the metagraph at block %d (%s) — using the current "
@@ -1722,7 +1740,7 @@ def metagraph_at(subtensor, netuid: int, block: int, fallback):
             "axon sets, so a divergence this epoch has a known cause.",
             block, e,
         )
-        return fallback
+        return fallback, False
 
 
 def confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights, tol=1e-3):

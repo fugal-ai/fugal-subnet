@@ -116,7 +116,7 @@
    {
     "change": "x-ai/grok-4.7 removed from the v2.0 list (18 models). It does not honour max_tokens for its reasoning: 17,763 completion tokens on 1 of 38 calls here (reasoning.effort medium; xAI accepts effort only), and 48,132 (47,656 reasoning) against 16,384 in an external measurement, about 5x its budgeted cost per call. It returns once the harness can abort a streamed call at its deadline.",
     "date": "2026-11-05",
-    "re_verification": "PENDING: Agent 1 re-verifies the 18 means against the call log; merging the amendment PR on Jack's approval is the human review.",
+    "re_verification": "Agent 1, 2026-11-05: 18 rows byte-identical to the 2026-11-04 review; means re-checked against data/observations/benchmark_tokens_protocol_v2.jsonl, 0 mismatches. Merging the amendment PR on Jack's approval is the human review.",
     "unchanged": "The 18 remaining rows (ids, means, samples) are byte-for-byte the rows reviewed on 2026-11-04; sources (the call log) are unchanged."
    }
   ],

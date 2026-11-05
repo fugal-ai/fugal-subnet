@@ -147,6 +147,9 @@ HARNESS_MAX_TOKENS = 16384
 # Deadlines nest, innermost first, so each layer reports before the next gives
 # up: one upstream attempt <= the proxy's per-call deadline < the harness's wait.
 # A 16k answer from a slow model (~50 tok/s) takes ~330 s.
+# PROXY_CALL_DEADLINE_S is wall-clock (runtime._post_with_deadline): a per-read
+# socket timeout is not a deadline, because OpenRouter keeps a non-streamed
+# request alive while the model reasons (one such call was measured at 917 s).
 PROXY_CALL_DEADLINE_S = 420.0      # total time the proxy spends on one call, retries included
 HARNESS_CALL_TIMEOUT_S = 450.0     # the harness's wait on the proxy; > PROXY_CALL_DEADLINE_S
 

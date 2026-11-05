@@ -4,6 +4,28 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — v2 model list: x-ai/grok-4.7 removed (18 models)
+
+grok-4.7's provider does not bound reasoning by `max_tokens`: 17,763 completion
+tokens were measured here, and 48,132 (47,656 reasoning) in an external
+measurement, against 16,384. That is about five times the call's budgeted cost.
+Removed from `data/models_v2.json` (and its copy) and from the v2 token manifest,
+whose 18 other rows are unchanged; the call log keeps its rows.
+`PINNED_PRICE_TABLE_V2_SHA256` and `identity_v2()` move. Consensus from
+`V2_ACTIVATION_BLOCK`. grok-4.7 can return in v2.1, once the harness streams
+calls and can abort one at its deadline (which stops billing on providers that
+support it).
+
+### Fixed — the proxy's call deadline is wall-clock
+
+`PROXY_CALL_DEADLINE_S` (420 s) was a per-read socket timeout. OpenRouter keeps
+a non-streamed request alive while the model reasons, so a call could run far
+past it (917 s measured externally), keeping its proxy thread and upstream
+connection open after the harness had given up. The proxy now sets the time
+left as the timeout of every read, with a watchdog that shuts the socket down at
+the deadline. The call ends by 420 s with its connection closed and is
+recorded failed; the harness gets the proxy's 502 before its own 450 s wait. A
+non-streamed reply is still billed in full by the provider. Miner-side only.
 ### Changed — protocol v2 seniority: pre-flip commits tie at the activation block
 
 From an outside review: a UID with no v1 role could commit a v2 head days

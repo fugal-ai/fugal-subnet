@@ -776,7 +776,11 @@ been measured yet. Measure your own first epochs before you budget.
 
 **A new model list.** `<V2_MODEL_LIST>`. Every model on it has at least three
 OpenRouter endpoints, is text-only, and runs at exactly one reasoning setting.
-A v1 head names v1 models, so **every head must be retrained** for v2. There
+The list has 18 models. x-ai/grok-4.7 was on the draft list and was removed
+before release: its provider does not bound reasoning by `max_tokens`, and one
+measured call billed 48,132 completion tokens against a 16,384 budget. It can
+return in v2.1, once the harness streams calls and can abort one at its
+deadline. A v1 head names v1 models, so **every head must be retrained** for v2. There
 is no published label set to retrain from: you label your own data.
 
 **Open benchmarks, by category.** The v2 pool is

@@ -25,12 +25,6 @@
    "samples": 40
   },
   {
-   "id": "x-ai/grok-4.7",
-   "mean_in_tokens": 1340.4473684210527,
-   "mean_out_tokens": 3728.8947368421054,
-   "samples": 38
-  },
-  {
    "id": "qwen/qwen3.8-2.4t-a95b",
    "mean_in_tokens": 148.55,
    "mean_out_tokens": 1956.9,
@@ -118,6 +112,14 @@
  "omitted_missing_or_zero_input": 0,
  "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
  "review": {
+  "amendments": [
+   {
+    "change": "x-ai/grok-4.7 removed from the v2.0 list (18 models). It does not honour max_tokens for its reasoning: 17,763 completion tokens on 1 of 38 calls here (reasoning.effort medium; xAI accepts effort only), and 48,132 (47,656 reasoning) against 16,384 in an external measurement, about 5x its budgeted cost per call. It returns once the harness can abort a streamed call at its deadline.",
+    "date": "2026-11-05",
+    "re_verification": "Agent 1, 2026-11-05: 18 rows byte-identical to the 2026-11-04 review; means re-checked against data/observations/benchmark_tokens_protocol_v2.jsonl, 0 mismatches. Merging the amendment PR on Jack's approval is the human review.",
+    "unchanged": "The 18 remaining rows (ids, means, samples) are byte-for-byte the rows reviewed on 2026-11-04; sources (the call log) are unchanged."
+   }
+  ],
   "billing_check": {
    "provider_billed_usd": 5.183,
    "repinned_from_measured_effective_price": {
@@ -141,15 +143,12 @@
   },
   "date": "2026-11-04",
   "limitations": [
-   "40 samples per model (38 for grok-4.7, 39 for mimo-v2.6-pro) is a cost interface, not a workload study.",
+   "40 samples per model (39 for mimo-v2.6-pro) is a cost interface, not a workload study.",
    "The hard category was sampled from AIME 2025 and historical AIME only, standing in for SuperGPQA and Omni-MATH; means for long-reasoning models on those sets are an extrapolation.",
    "Completion means for several long-reasoning models sit at or near the 16,384 cap."
   ],
   "method": "757 metered calls (3 more failed) recorded through the v2 harness path (max_tokens 16384, each model's single pinned reasoning setting) on a deterministic sample of 40 questions per model at the v2 category mix; means of provider-reported prompt and completion tokens per model.",
-  "notes": [
-   "x-ai/grok-4.7 returned 17,763 completion tokens on 1 of 38 calls against max_tokens 16,384 (reasoning.effort medium; xAI accepts effort only). Kept; the harness self-test logs overruns.",
-   "x-ai/grok-4.7 reports 1,267-1,575 prompt tokens on every call (others 25-750): the provider adds about 1.2k tokens per call, included in its mean_in_tokens."
-  ],
+  "notes": [],
   "reviewed_by": [
    "Agent 1 (Claude Opus 5.5, Fugal leader agent), 2026-11-04",
    "Jack Doherty (Fugal Labs; merging the promotion PR on their approval is the human review)"
@@ -169,7 +168,6 @@
    "openai/gpt-6.1-terra": 40,
    "qwen/qwen3.8-2.4t-a95b": 40,
    "qwen/qwen3.8-27b": 40,
-   "x-ai/grok-4.7": 38,
    "xiaomi/mimo-v2.6-flash": 40,
    "xiaomi/mimo-v2.6-pro": 39,
    "z-ai/glm-5.3": 40,

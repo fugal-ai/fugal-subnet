@@ -167,7 +167,10 @@ def _post_with_deadline(req, deadline: float) -> bytes:
         # `sock` closed while the response still reads through it: any call on
         # `sock` then raises EBADF. shutdown() acts on the TCP connection, not
         # the descriptor, so the duplicate still ends a blocked read.
-        ctl = sock.dup()
+        # Not sock.dup(): SSLSocket.dup() raises NotImplementedError, and every
+        # production call is HTTPS. A plain socket on a dup'd descriptor shuts
+        # down the same TCP connection under the TLS layer.
+        ctl = socket.socket(sock.family, sock.type, sock.proto, fileno=os.dup(sock.fileno()))
         sock_box.append(ctl)
         if fired.is_set():
             raise UpstreamDeadline("deadline reached while connecting")

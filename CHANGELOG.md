@@ -11,7 +11,10 @@ When an upstream answered with Content-Length and closed the connection (HTTP/1.
 or HTTP/1.1 with `Connection: close`), `http.client` marked that socket closed
 while the reply was still being read, and the next `settimeout` raised EBADF:
 every such call failed. The watchdog now shuts the connection down through a
-duplicate descriptor and the per-read timeout tolerates the closed socket.
+plain socket on a duplicated descriptor (not `sock.dup()`, which raises on the
+TLS sockets every production call uses), and the per-read timeout tolerates the
+closed socket. HTTP and HTTPS regression tests cover keep-alive, closing and
+dripping replies.
 Found by the v2_flip dress rehearsal; regression tests in tests/test_proxy_deadline.py.
 
 ### Changed — v2 model list: x-ai/grok-4.7 removed (18 models)

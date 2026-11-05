@@ -196,3 +196,66 @@ def test_a_closing_reply_that_drips_still_ends_at_the_deadline(short_deadline):
         assert time.monotonic() - t0 < DEADLINE + 1.5
     finally:
         srv.shutdown()
+
+
+def _tls_pair(tmp_path):
+    """A self-signed cert for 127.0.0.1 and a client context that trusts it."""
+    import datetime
+    import ipaddress
+    import ssl
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=1))
+            .not_valid_after(now + datetime.timedelta(hours=1))
+            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+                           critical=False)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    cert_pem, key_pem = tmp_path / "c.pem", tmp_path / "k.pem"
+    cert_pem.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_pem.write_bytes(key.private_bytes(serialization.Encoding.PEM,
+                                          serialization.PrivateFormat.PKCS8,
+                                          serialization.NoEncryption()))
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(cert_pem, key_pem)
+    client_ctx = ssl.create_default_context(cafile=str(cert_pem))
+    return server_ctx, client_ctx
+
+
+@pytest.mark.parametrize("proto,close_header,drip", [
+    ("HTTP/1.1", False, False),      # keep-alive, the normal OpenRouter shape
+    ("HTTP/1.1", True, False),       # closes after the reply
+    ("HTTP/1.0", False, False),
+    ("HTTP/1.1", True, True),        # closes, and drips past the deadline
+])
+def test_https_calls_work_and_still_end_at_the_deadline(short_deadline, monkeypatch, tmp_path,
+                                                        proto, close_header, drip):
+    # Regression: SSLSocket.dup() raises NotImplementedError, so a dup-based
+    # watchdog broke every HTTPS call (every production call).
+    import ssl
+    server_ctx, client_ctx = _tls_pair(tmp_path)
+    monkeypatch.setattr(ssl, "create_default_context", lambda *a, **k: client_ctx)
+    srv = _closing_server(proto, close_header, drip=drip)
+    srv.socket = server_ctx.wrap_socket(srv.socket, server_side=True)
+    try:
+        req = Request(f"https://127.0.0.1:{srv.server_address[1]}/v1/chat/completions",
+                      data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+        if drip:
+            t0 = time.monotonic()
+            with pytest.raises(rt.UpstreamDeadline):
+                rt._post_with_deadline(req, time.monotonic() + DEADLINE)
+            assert time.monotonic() - t0 < DEADLINE + 1.5
+        else:
+            body = rt._post_with_deadline(req, time.monotonic() + DEADLINE)
+            assert json.loads(body)["choices"][0]["message"]["content"] == "42"
+    finally:
+        srv.shutdown()

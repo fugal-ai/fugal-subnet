@@ -302,7 +302,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     configure_logging(log_level)
 
     from fugal_subnet import config as config_module
-    from fugal_subnet.api import load_prices
     from fugal_subnet.benchmarks.loader import load_all, pool_hash
     from fugal_subnet.benchmarks.slicer import (
         blocks_per_epoch as blocks_per_epoch_fn,
@@ -437,8 +436,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     # Pinned price table — the consensus cost denominator. Loaded once so every
     # epoch prices against the same rates, and so a missing table fails at
-    # startup rather than mid-epoch.
-    prices = load_prices()
+    # startup rather than mid-epoch. Read from the SAME file the protocol
+    # identity hashes (fugal_subnet/routing_data/models.json): data/models.json
+    # is the reviewed copy, and the two are checked identical in CI, but a
+    # checkout where they differed would have priced every proof from a table
+    # the reveal's identity did not name (review 2026-11-05, F-043).
+    from fugal_subnet.routing_protocol import price_table
+    prices = price_table(1)
     # One global, sorted model space. Used for exploration targets and for
     # dedup indices, so every miner's routing vector is directly comparable.
     pool_models = sorted(prices)

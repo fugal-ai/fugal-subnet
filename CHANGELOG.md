@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — the neurons price v1 proofs from the copy the protocol identity hashes
+
+The validator priced v1 proofs from `data/models.json` while the protocol
+identity it stamps on every reveal hashes `fugal_subnet/routing_data/models.json`;
+the two are byte-identical today but nothing on the v1 path checked it. Both
+neurons now read `routing_protocol.price_table(1)` (the miner keeps the
+`FUGAL_MODEL_PRICES` override, which finney refuses), and
+`scripts/check_safety_invariants.py` requires the two copies to be identical,
+as it already did for the v2 table.
+
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 
 The wall-clock call deadline set a per-read timeout on the connection's socket.

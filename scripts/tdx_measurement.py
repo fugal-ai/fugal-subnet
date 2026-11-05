@@ -51,8 +51,9 @@ def main() -> int:
     print(f"rtmr1           : {quote.rtmr1}")
     print(f"rtmr2           : {quote.rtmr2}")
     print(f"\nmeasurement_id  : {measurement}")
-    print("\nApprove this image with:")
-    print(f"  export FUGAL_TEE_MEASUREMENTS={measurement}")
+    print("\nThis is the BASE half of an approved entry. A bare base is refused by")
+    print("--live; pair it with the compose hash of the frozen app-compose.json:")
+    print(f"  python scripts/compute_app_identity.py --compose <app-compose.json> --base {measurement}")
 
     if not args.verify:
         return 0
@@ -82,20 +83,24 @@ def main() -> int:
     from fugal_subnet.tee.proof import BenchmarkProof, compute_questions_hash
     from fugal_subnet.tee.verify import verify_proof
 
+    # verify_proof outside mock refuses to run without the hotkey binding
+    # (a proof not bound to a miner can be relayed), so the probe names one.
     proof = BenchmarkProof(
         epoch_id="probe", nonce="n" * 64,
         questions_hash=compute_questions_hash([]), weights_hash="w" * 64,
         source_hash="claims-to-be-approved", results=[],
         total_cost_usd=0.0, per_model_costs={}, attestation_quote=b"", timestamp=0.0,
+        hotkey="5TdxMeasurementProbe",
     )
     proof.attestation_quote = runtime.generate_attestation(
         bytes.fromhex(proof.content_hash())
     )
     result = verify_proof(
         proof,
-        approved_measurements={"0" * 64},      # deliberately NOT this image
+        approved_measurements={"0" * 64 + ":" + "1" * 64},   # deliberately NOT this image
         expected_questions_hash=proof.questions_hash,
         expected_nonce=proof.nonce, gold_answers={},
+        expected_hotkey="5TdxMeasurementProbe",
         mock=False,
     )
     rejected = (not result.valid) and "Unapproved runtime image" in result.reason

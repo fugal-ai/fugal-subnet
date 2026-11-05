@@ -207,14 +207,29 @@ def _claim(block: int, head_hash: str, coldkey: str) -> tuple[int, str]:
     return int(block), digest
 
 
-def seniority(state: CopyState, head_hash: str) -> tuple:
+def seniority(state: CopyState, head_hash: str, *, floor_block: int | None = None,
+              salt: str = "") -> tuple:
     """The head's seniority key, lower is senior: (first-commit block, owner digest).
 
     A head with no record (never seen committed) is junior to every head with one.
+
+    `floor_block` (protocol v2: the activation block) clamps every first commit
+    at or before it to it, so every head committed before the flip ties, and
+    the tie is broken by sha256 over `salt` (the activation boundary's block
+    hash), the head and its owner. Committing early buys nothing: a head
+    committed days before the flip ranks with one committed in the last v1
+    epoch. And the order among them cannot be ground in advance: the salt does
+    not exist until the activation block, by which time every pre-flip
+    commitment is fixed. Commits after `floor_block` keep their real block and
+    the ordinary digest.
     """
     r = state.get(head_hash)
     if r is None:
         return (float("inf"), head_hash)
+    if floor_block is not None and r.first_block <= int(floor_block):
+        digest = hashlib.sha256(
+            f"fugal-v2-preflip:{salt}:{r.head_hash}:{r.owner}".encode()).hexdigest()
+        return int(floor_block), digest
     return _claim(r.first_block, r.head_hash, r.owner)
 
 
@@ -257,10 +272,12 @@ def is_exact_copy(
     return r.owner != coldkey
 
 
-def v2_seniority(state: CopyState, head_hash: str) -> tuple:
+def v2_seniority(state: CopyState, head_hash: str, *, floor_block: int | None = None,
+                 salt: str = "") -> tuple:
     """Seniority for protocol v2: the head's first-commit block, never the
-    registration block. An alias of `seniority`, named for the wiring."""
-    return seniority(state, head_hash)
+    registration block, with pre-flip commits tied at the activation block
+    (`seniority`, `floor_block`/`salt`). Named for the wiring."""
+    return seniority(state, head_hash, floor_block=floor_block, salt=salt)
 
 
 def valid_commitments(
@@ -457,6 +474,7 @@ def seat_holders(seat, n_seats: int) -> frozenset[str]:
 def senior_bars(
     state: CopyState, epoch: int, window, heads: Iterable[str], *,
     holders: Iterable[str], ghost_off: int, ghost_retire: int,
+    floor_block: int | None = None, salt: str = "",
 ) -> dict[str, tuple[str, ...]]:
     """For each head, the senior seat holders in the comparison set, most senior first.
 
@@ -468,11 +486,14 @@ def senior_bars(
     """
     cs = comparison_set(state, epoch, window, ghost_off=ghost_off, ghost_retire=ghost_retire)
     protected = set(holders)
-    ranked = sorted((h for h in cs if h in protected), key=lambda h: (seniority(state, h), h))
+    def key(h):
+        return seniority(state, h, floor_block=floor_block, salt=salt)
+
+    ranked = sorted((h for h in cs if h in protected), key=lambda h: (key(h), h))
     out: dict[str, tuple[str, ...]] = {}
     for h in sorted(set(heads)):
-        mine = seniority(state, h)
-        out[h] = tuple(k for k in ranked if k != h and seniority(state, k) < mine)
+        mine = key(h)
+        out[h] = tuple(k for k in ranked if k != h and key(k) < mine)
     return out
 
 

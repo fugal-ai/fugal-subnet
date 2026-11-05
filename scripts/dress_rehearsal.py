@@ -1396,7 +1396,9 @@ def _v2_flip_seat_checks(report, S, rows, v2e, uid, miss, names, close):
     state = copy_rule.CopyState.from_reveal(block)
     owners_now = [heads[first].get(u) for u, v in (r_first.get("copy_verdicts") or {}).items()
                   if v == "owner" and heads[first].get(u)]
-    expected = min(owners_now, key=lambda h: (copy_rule.v2_seniority(state, h), h),
+    sen = r_first.get("v2_seniority") or {}
+    expected = min(owners_now, key=lambda h: (copy_rule.v2_seniority(
+        state, h, floor_block=sen.get("floor_block"), salt=sen.get("salt") or ""), h),
                    default=None)
     report.check(S, names[1], expected is not None and seats[first].get("champion") == expected,
                  f"seated {str(seats[first].get('champion'))[:12]}, most senior owner "

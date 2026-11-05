@@ -193,3 +193,45 @@ def test_chain_checks_catch_a_lost_v1_epoch():
     rows[ACT - 1]["entries"][0]["n_heads_valid"] = 2
     names = {r[1] for r in _run_checks(rows, miss).failed}
     assert any(n.startswith("no v1 epoch is lost in the handover") for n in names)
+
+
+def test_rehearsal_v2_router_head_splits_a_collinear_pool(tmp_path):
+    """write_head_v2 with the embeddings' mean must route across all three
+    models and stay clear of CHAMPION_MIN_ACCURACY on the stub ladder.
+
+    The backbone's pooled hidden states are nearly collinear, so the old
+    0.02-scale random head was a constant router to whichever model its bias
+    favoured; seed 24's was the cheapest (stub skill 0.30, exactly the floor)
+    and the first champion sat on the floor, was correctly not paid on one
+    take epoch, and the 90/10 payout check failed. Synthetic collinear
+    hidden states reproduce the shape: a common direction plus a small
+    per-question component.
+    """
+    import numpy as np
+
+    from fugal_subnet.config import CHAMPION_MIN_ACCURACY, HEAD_HIDDEN_DIM
+    from fugal_subnet.routing_protocol import price_table
+    from fugal_subnet.vendor import success_contract as contract
+
+    dr = _load("dress_rehearsal")
+    rng = np.random.RandomState(7)
+    common = rng.randn(HEAD_HIDDEN_DIM)
+    hidden = common[None, :] + rng.randn(200, HEAD_HIDDEN_DIM) * 0.04
+    hidden /= np.linalg.norm(hidden, axis=1, keepdims=True)
+    assert float((hidden @ hidden.T).mean()) > 0.99
+    mean = hidden.mean(axis=0)
+    skill = np.array([0.30, 0.60, 0.85])
+
+    def split(path):
+        z = contract.load(open(path, "rb").read())
+        costs = contract.estimated_cost(z, price_table(2))
+        dec = contract.rank(contract.predictions(z["W"], z["b"], hidden), costs, 1.0)[:, 0]
+        return np.bincount(dec, minlength=3), float(skill[dec].mean())
+
+    counts, acc = split(dr.write_head_v2(str(tmp_path / "router.npz"), seed=61, hidden_mean=mean))
+    assert counts.min() >= 20, counts.tolist()
+    assert acc >= CHAMPION_MIN_ACCURACY + 0.2, acc
+
+    # Without the mean it is the old constant router.
+    counts, _ = split(dr.write_head_v2(str(tmp_path / "constant.npz"), seed=24))
+    assert counts.max() == 200, counts.tolist()

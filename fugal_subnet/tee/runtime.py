@@ -161,7 +161,14 @@ def _post_with_deadline(req, deadline: float) -> bytes:
         path = (u.path or "/") + (f"?{u.query}" if u.query else "")
         conn.connect()
         sock = conn.sock          # kept: http.client drops conn.sock on Connection: close
-        sock_box.append(sock)
+        # The watchdog shuts the connection down through a DUPLICATE descriptor.
+        # When the reply closes the connection (Content-Length plus HTTP/1.0 or
+        # "Connection: close"), getresponse() calls conn.close(), which marks
+        # `sock` closed while the response still reads through it: any call on
+        # `sock` then raises EBADF. shutdown() acts on the TCP connection, not
+        # the descriptor, so the duplicate still ends a blocked read.
+        ctl = sock.dup()
+        sock_box.append(ctl)
         if fired.is_set():
             raise UpstreamDeadline("deadline reached while connecting")
         conn.request(req.get_method(), path, body=req.data, headers=dict(req.header_items()))
@@ -171,7 +178,12 @@ def _post_with_deadline(req, deadline: float) -> bytes:
         while True:
             if fired.is_set() or left() <= 0:
                 raise UpstreamDeadline("deadline reached while reading the reply")
-            sock.settimeout(max(0.001, left()))
+            try:
+                sock.settimeout(max(0.001, left()))
+            except OSError:
+                # `sock` was marked closed by getresponse(); the read keeps the
+                # timeout set before it, and the watchdog still enforces the deadline.
+                pass
             chunk = resp.read1(65536)
             if not chunk:
                 break
@@ -191,6 +203,11 @@ def _post_with_deadline(req, deadline: float) -> bytes:
     finally:
         timer.cancel()
         conn.close()
+        for s in sock_box:
+            try:
+                s.close()
+            except OSError:
+                pass
 
 
 def _fetch_upstream(req, model_id: str) -> bytes:

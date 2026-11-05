@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
+
+The wall-clock call deadline set a per-read timeout on the connection's socket.
+When an upstream answered with Content-Length and closed the connection (HTTP/1.0,
+or HTTP/1.1 with `Connection: close`), `http.client` marked that socket closed
+while the reply was still being read, and the next `settimeout` raised EBADF:
+every such call failed. The watchdog now shuts the connection down through a
+duplicate descriptor and the per-read timeout tolerates the closed socket.
+Found by the v2_flip dress rehearsal; regression tests in tests/test_proxy_deadline.py.
+
 ### Changed — v2 model list: x-ai/grok-4.7 removed (18 models)
 
 grok-4.7's provider does not bound reasoning by `max_tokens`: 17,763 completion

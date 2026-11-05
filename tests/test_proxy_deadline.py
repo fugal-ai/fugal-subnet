@@ -138,3 +138,61 @@ def test_the_proxy_answers_502_before_the_harness_gives_up(short_deadline, monke
         assert proxy.records == []
     finally:
         proxy.stop(); srv.shutdown()
+
+
+def _closing_server(proto, close_header, drip=False):
+    """A server that sends Content-Length and closes the connection after the
+    reply (HTTP/1.0, or HTTP/1.1 with "Connection: close"). http.client then
+    marks the proxy's socket closed while the reply is still being read."""
+    class H(BaseHTTPRequestHandler):
+        protocol_version = proto
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(OK) + (100 if drip else 0)))
+            if close_header:
+                self.send_header("Connection", "close")
+            self.end_headers()
+            if drip:                                   # promises more than it sends, slowly
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < 10:
+                    try:
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                    time.sleep(0.05)
+                return
+            self.wfile.write(OK)
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+@pytest.mark.parametrize("proto,close_header", [("HTTP/1.0", False), ("HTTP/1.1", True)])
+def test_a_reply_that_closes_the_connection_is_returned_whole(short_deadline, proto, close_header):
+    # Regression: getresponse() closes the connection object on these replies,
+    # and the per-read settimeout raised EBADF, failing every call.
+    srv = _closing_server(proto, close_header)
+    try:
+        assert json.loads(rt._post_with_deadline(_req(srv), time.monotonic() + DEADLINE)) \
+            ["choices"][0]["message"]["content"] == "42"
+    finally:
+        srv.shutdown()
+
+
+def test_a_closing_reply_that_drips_still_ends_at_the_deadline(short_deadline):
+    srv = _closing_server("HTTP/1.1", True, drip=True)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(rt.UpstreamDeadline):
+            rt._post_with_deadline(_req(srv), time.monotonic() + DEADLINE)
+        assert time.monotonic() - t0 < DEADLINE + 1.5
+    finally:
+        srv.shutdown()

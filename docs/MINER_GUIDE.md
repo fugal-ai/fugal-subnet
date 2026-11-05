@@ -242,6 +242,14 @@ depend on a 12 MB file. (Earlier versions of this guide said the opposite,
 because at the time the override skipped the manifest check and a tiny pool
 was the only way to get a miner up quickly. That bypass is closed.)
 
+**The first boot of a fresh TD needs Hugging Face.** The v2 image builds the
+pool from the pinned dataset revisions, verifies it against the manifest, and
+caches it on the `fugal-results` volume (`FUGAL_POOL_CACHE_V2`). Later boots
+read the cache, verify it again on every read, and rebuild from Hugging Face
+only if it fails. A Hugging Face outage therefore stops only a TD whose volume
+is new: a fresh instance, or one recreated by `dstack-cloud deploy --delete`.
+**Bring your v2 TD up days before the flip**, not at it (see "How to move").
+
 Embedding a full pool can take hours. Historical measurements with the previous
 profile were about 13 hours on one thread and 7 h 39 m on four threads for
 ~21,500 questions. Those are **not measurements of the new 2048-token profile**.
@@ -642,6 +650,24 @@ logged as `OPERATOR ACTION REQUIRED` (from protocol v2's image; on v1 images a
 calls. Set no total limit on the miner's key, and set a low-balance alert on the
 account.
 
+**A low balance also throttles concurrent calls.** OpenRouter keeps an
+in-flight spending budget for prepaid accounts below a balance threshold and for
+newer accounts: every running request holds its input plus `max_tokens` at the
+endpoint's prices until it settles. From protocol v2 the harness keeps
+`HARNESS_CONCURRENCY` = 24 calls in flight at 16,384 tokens each. Computed from
+the pinned v2 prices (not measured on a live key), 24 calls hold about $2.75
+for a head that spreads evenly over the model list and about $20 for one that
+sends everything to the most expensive model; claude-fable-5.1 alone holds
+$0.82 per call. OpenRouter does not publish the fraction of the balance that
+makes up the budget, or the threshold above which it stops applying. Keep a
+balance of at least ~$25 if your head uses the expensive models. When the
+budget is full, OpenRouter refuses with a temporary 402
+(`in_flight_budget_exhausted`). The v2 image retries that 402 like a 429 and
+logs `OpenRouter in-flight budget full`. If it is still full after the retries,
+the call fails and scores as a wrong answer. A 402 with `weight_exceeds_budget`
+means one request is larger than the whole budget; it is logged as
+`OPERATOR ACTION REQUIRED`. Add credits for either.
+
 ## Anti-Gaming
 
 - **TEE attestation** — results are hardware-attested. You cannot fabricate or
@@ -735,7 +761,16 @@ layer reports before the next gives up: `PROXY_CALL_DEADLINE_S` = 420 s per
 call (retries included) inside `HARNESS_CALL_TIMEOUT_S` = 450 s. A 401, 402 or
 403 from the provider is never retried and is logged as
 `OPERATOR ACTION REQUIRED` (see "Your OpenRouter account is part of your
-miner", above). Longer answers cost more. The cost per epoch at 16k has not
+miner", above). The one exception is OpenRouter's temporary in-flight-budget
+402, which is retried (see "A low balance also throttles concurrent calls").
+
+**More calls in flight.** `HARNESS_CONCURRENCY` is 24 (v1: 8). Reasoning models
+often run long at 16k: in the v2 token run, two cheap reasoners had p90
+completions at the cap. A latency model calibrated on that run puts the p95
+epoch of a head leaning on cheap reasoners at about 33 minutes with 8 in flight,
+which misses the collection block 36 minutes after the boundary. With 24 it is
+about 14 minutes (18 if providers are 30% slower). A head that sends everything
+to one slow model can still take about 30 minutes. Longer answers cost more. The cost per epoch at 16k has not
 been measured yet. Measure your own first epochs before you budget.
 
 **A new model list.** `<V2_MODEL_LIST>`. Every model on it has at least three
@@ -856,7 +891,10 @@ Use a second instance:
 2. **Bring up a second TD on the v2 image** (`<V2_IMAGE_DIGEST>`) **with the
    same hotkey**, beside the running v1 TD, and provision it as usual. It
    embeds and then **holds**: no axon and no commitment until the epoch before
-   `<ACTIVATION_BLOCK>`. The image reads the activation block itself.
+   `<ACTIVATION_BLOCK>`. The image reads the activation block itself. Do this
+   days before the flip, not hours: the first boot needs Hugging Face for the
+   pool and then several hours for the embeddings, and both are behind you
+   once the TD is holding.
 3. **The v2 TD commits in the epoch before the flip and serves from it.** A
    hotkey holds one commitment. A validator reads commitments at each epoch's
    boundary block, so the v1 epoch that is already running is still checked

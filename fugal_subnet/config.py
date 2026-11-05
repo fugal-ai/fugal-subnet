@@ -82,7 +82,17 @@ HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "",
 # math prompts run ~10 s, and one 180 s timeout eats 5% of the window on its
 # own. Eight in flight brings a 315-question slice to a few minutes and makes
 # a stalled call cost one worker rather than the epoch.
-HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "8")))
+#
+# Raised to 24 for protocol v2 (2026-11-05). The 16,384-token answer budget
+# lets reasoning models run long: in the v2 token run, glm-5.3 and mimo-v2.6-pro
+# had p90 completions at the cap, and several other cheap reasoners at 11k-15k.
+# A latency model calibrated on that run (757 calls, wall time reproduced)
+# puts the p95 epoch of a router leaning on cheap reasoners at 33 min with 8 in
+# flight (44 min if providers are 30% slower), a missed proof every epoch; with
+# 24 it is 14 min (18 min). The floor is one call at PROXY_CALL_DEADLINE_S.
+# More in flight also holds more of an OpenRouter in-flight budget; see
+# runtime.OPENROUTER_402_TRANSIENT and docs/MINER_GUIDE.md.
+HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "24")))
 
 # --- Protocol v2 benchmark pool (approved scope, 2026-11-04) ---
 # Consensus constants from V2_ACTIVATION_BLOCK, written into the v2 pool

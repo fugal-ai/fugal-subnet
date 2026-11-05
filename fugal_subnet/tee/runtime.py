@@ -52,6 +52,16 @@ PROXY_OPERATOR_STATUS = {
     # every call: an operator problem exactly like 402, never transient.
     403: "forbidden: the key's spend limit is reached or the key is disabled",
 }
+# OpenRouter's in-flight spending budget (prepaid accounts below a balance
+# threshold, and newer accounts): every running request holds its input plus
+# max_tokens at the endpoint's prices, and a request that does not fit is
+# refused with 402 before it reaches a provider, even with a positive balance.
+# The 402 body's metadata.reason says which: "in_flight_budget_exhausted" is
+# temporary (the holds of running calls release) and is retried like a 429;
+# "weight_exceeds_budget" means this one request is larger than the whole budget
+# and no retry can help. Any other 402 is the balance itself.
+OPENROUTER_402_TRANSIENT = "in_flight_budget_exhausted"
+OPENROUTER_402_TOO_LARGE = "weight_exceeds_budget"
 PROXY_MAX_ATTEMPTS = 3
 PROXY_RETRY_BUDGET_S = 300.0   # no new attempt after this; the call itself ends by PROXY_CALL_DEADLINE_S
 PROXY_MAX_WAIT_S = 20.0
@@ -90,6 +100,17 @@ def _log_cap_overrun(model_id: str, completion_tokens) -> None:
                        model_id, n, HARNESS_MAX_TOKENS, n - HARNESS_MAX_TOKENS)
 
 
+def _402_reason(err) -> str:
+    """metadata.reason from an OpenRouter 402 body, or "" when there is none."""
+    try:
+        body = json.loads(err.read() or b"{}")
+        meta = (body.get("error") or {}).get("metadata") or {}
+        reason = meta.get("reason", "")
+        return reason if isinstance(reason, str) else ""
+    except Exception:
+        return ""
+
+
 def _fetch_upstream(req, model_id: str) -> bytes:
     """POST to the upstream with the retry policy above. Returns the body or raises."""
     from urllib.error import HTTPError
@@ -103,7 +124,20 @@ def _fetch_upstream(req, model_id: str) -> bytes:
                 return resp.read()
         except HTTPError as e:
             code = e.code
-            if code in PROXY_OPERATOR_STATUS:
+            transient = False
+            if code == 402:
+                reason = _402_reason(e)
+                if reason == OPENROUTER_402_TRANSIENT:
+                    transient = True
+                elif reason == OPENROUTER_402_TOO_LARGE:
+                    logger.error(
+                        "Upstream 402 for %s: this one request is larger than the key's whole "
+                        "OpenRouter in-flight budget (weight_exceeds_budget). OPERATOR ACTION "
+                        "REQUIRED: add credits; not retried; the call is recorded as failed",
+                        model_id,
+                    )
+                    raise
+            if code in PROXY_OPERATOR_STATUS and not transient:
                 logger.error(
                     "Upstream %s for %s: %s. OPERATOR ACTION REQUIRED (OpenRouter key or "
                     "balance); not retried; the call is recorded as failed",
@@ -111,11 +145,21 @@ def _fetch_upstream(req, model_id: str) -> bytes:
                 )
                 raise
             elapsed = time.time() - started
-            if code in PROXY_RETRYABLE_STATUS and attempt < PROXY_MAX_ATTEMPTS and elapsed < PROXY_RETRY_BUDGET_S:
+            retryable = code in PROXY_RETRYABLE_STATUS or transient
+            if retryable and attempt < PROXY_MAX_ATTEMPTS and elapsed < PROXY_RETRY_BUDGET_S:
                 wait = _retry_wait(attempt, e.headers.get("Retry-After") if e.headers else None)
-                logger.warning("Upstream %s for %s; retry %d/%d in %.1fs", code, model_id, attempt, PROXY_MAX_ATTEMPTS - 1, wait)
+                logger.warning("Upstream %s%s for %s; retry %d/%d in %.1fs", code,
+                               " (OpenRouter in-flight budget full)" if transient else "",
+                               model_id, attempt, PROXY_MAX_ATTEMPTS - 1, wait)
                 time.sleep(wait)
                 continue
+            if transient:
+                logger.error(
+                    "Upstream 402 for %s: the key's OpenRouter in-flight budget stayed full "
+                    "through %d attempts; the call is recorded as failed. A low balance throttles "
+                    "concurrent calls: add credits (see MINER_GUIDE, harness concurrency)",
+                    model_id, attempt,
+                )
             raise
 
 

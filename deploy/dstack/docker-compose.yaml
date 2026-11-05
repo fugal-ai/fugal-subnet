@@ -48,6 +48,9 @@ services:
       # MUST equal tempo x 12 s on every neuron (validators included).
       - FUGAL_EPOCH_INTERVAL=4320
       - FUGAL_EMBEDDING_CACHE=/app/results/embeddings
+      # The v2 pool after its first manifest-verified load, so a restart does not
+      # need Hugging Face. Verified on every read; rebuilt if it fails.
+      - FUGAL_POOL_CACHE_V2=/app/results/pool_v2.json.gz
       # All vCPUs for the one-time backbone pass over the pool. Miner-side
       # only; validators never run the backbone (fugal_subnet/determinism.py).
       - FUGAL_BACKBONE_THREADS=0

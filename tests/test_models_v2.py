@@ -14,7 +14,7 @@ from fugal_subnet import routing_protocol as rp
 
 def test_both_tables_ship_and_the_version_selects_one():
     v1, v2 = rp.models_for_protocol(1), rp.models_for_protocol(2)
-    assert len(v1) == 17 and len(v2) == 19
+    assert len(v1) == 17 and len(v2) == 18
     assert v1 == sorted(v1) and v2 == sorted(v2)          # the global index space is the sorted ids
     assert not set(v1) & set(v2)                          # a one-time list replacement
     assert set(rp.price_table(2)) == set(v2)

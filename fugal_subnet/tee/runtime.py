@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from threading import Thread
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from fugal_subnet.config import PROXY_CALL_DEADLINE_S
 
@@ -111,17 +111,108 @@ def _402_reason(err) -> str:
         return ""
 
 
+class UpstreamDeadline(TimeoutError):
+    """The upstream call ran past PROXY_CALL_DEADLINE_S of wall-clock time."""
+
+
+def _post_with_deadline(req, deadline: float) -> bytes:
+    """POST `req` and return the body, or raise by `deadline` (time.monotonic()).
+
+    A socket timeout alone is not a deadline: it bounds each read, and OpenRouter
+    keeps a non-streamed request alive while the model reasons, so a call with a
+    "420 s" timeout was measured at 917 s. Here every read gets the time left as
+    its timeout, and a watchdog shuts the socket down at the deadline, which also
+    ends a read blocked inside a chunk. The connection is closed either way.
+    A non-2xx status raises urllib's HTTPError with the body, as urlopen did.
+    """
+    import http.client
+    import io
+    import socket
+    import ssl
+    from urllib.error import HTTPError
+    from urllib.parse import urlsplit
+
+    def left() -> float:
+        return deadline - time.monotonic()
+
+    if left() <= 0:
+        raise UpstreamDeadline("no time left before the call deadline")
+    u = urlsplit(req.full_url)
+    if u.scheme == "https":
+        conn = http.client.HTTPSConnection(u.hostname, u.port, timeout=left(),
+                                           context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(u.hostname, u.port, timeout=left())
+    fired = threading.Event()
+    sock_box: list = []
+
+    def watchdog() -> None:
+        fired.set()
+        for s in sock_box:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    timer = threading.Timer(max(0.0, left()), watchdog)
+    timer.daemon = True
+    timer.start()
+    try:
+        path = (u.path or "/") + (f"?{u.query}" if u.query else "")
+        conn.connect()
+        sock = conn.sock          # kept: http.client drops conn.sock on Connection: close
+        sock_box.append(sock)
+        if fired.is_set():
+            raise UpstreamDeadline("deadline reached while connecting")
+        conn.request(req.get_method(), path, body=req.data, headers=dict(req.header_items()))
+        sock.settimeout(max(0.001, left()))
+        resp = conn.getresponse()
+        chunks = []
+        while True:
+            if fired.is_set() or left() <= 0:
+                raise UpstreamDeadline("deadline reached while reading the reply")
+            sock.settimeout(max(0.001, left()))
+            chunk = resp.read1(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        if fired.is_set():
+            raise UpstreamDeadline("deadline reached while reading the reply")
+        body = b"".join(chunks)
+        if not 200 <= resp.status < 300:
+            raise HTTPError(req.full_url, resp.status, resp.reason, resp.headers, io.BytesIO(body))
+        return body
+    except (TimeoutError, OSError, http.client.HTTPException) as e:
+        if isinstance(e, (UpstreamDeadline, HTTPError)):
+            raise
+        if fired.is_set() or left() <= 0:
+            raise UpstreamDeadline(f"deadline reached ({type(e).__name__})") from e
+        raise
+    finally:
+        timer.cancel()
+        conn.close()
+
+
 def _fetch_upstream(req, model_id: str) -> bytes:
-    """POST to the upstream with the retry policy above. Returns the body or raises."""
+    """POST to the upstream with the retry policy above. Returns the body or raises.
+
+    PROXY_CALL_DEADLINE_S is wall-clock time for the whole call, retries included.
+    """
     from urllib.error import HTTPError
     started = time.time()
+    deadline = time.monotonic() + PROXY_CALL_DEADLINE_S
     attempt = 0
     while True:
         attempt += 1
-        remaining = PROXY_CALL_DEADLINE_S - (time.time() - started)
         try:
-            with urlopen(req, timeout=max(20.0, min(PROXY_CALL_DEADLINE_S, remaining))) as resp:
-                return resp.read()
+            return _post_with_deadline(req, deadline)
+        except UpstreamDeadline:
+            logger.warning(
+                "Upstream call for %s hit the %.0f s wall-clock deadline; connection closed, "
+                "recorded as failed. The provider bills a non-streamed reply in full, so the "
+                "call may still be charged.", model_id, PROXY_CALL_DEADLINE_S,
+            )
+            raise
         except HTTPError as e:
             code = e.code
             transient = False

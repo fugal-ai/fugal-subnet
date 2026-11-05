@@ -3,7 +3,6 @@
   {"id": "anthropic/claude-opus-5.5", "in": 4.0, "out": 20.0, "reasoning": {"max_tokens": 8192}},
   {"id": "google/gemini-4-argon", "in": 2.0, "out": 10.0, "reasoning": {"max_tokens": 8192}},
   {"id": "openai/gpt-6.1-sol", "in": 2.0, "out": 10.0, "reasoning": {"effort": "medium"}},
-  {"id": "x-ai/grok-4.7", "in": 2.0, "out": 6.0, "reasoning": {"effort": "medium"}},
   {"id": "qwen/qwen3.8-2.4t-a95b", "in": 2.0, "out": 6.0, "reasoning": {"max_tokens": 8192}},
   {"id": "anthropic/claude-sonnet-5.5", "in": 2.0, "out": 10.0, "reasoning": {"max_tokens": 8192}},
   {"id": "openai/gpt-6.1-terra", "in": 1.0, "out": 5.0, "reasoning": {"effort": "medium"}},

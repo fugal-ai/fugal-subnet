@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Docs — the v2 numbers and formulas the guides and comments still had wrong
+
+The v2 burn-in is 1500 questions (`V2_BURN_IN_QUESTIONS`), not 3000, in
+MINER_GUIDE, VALIDATOR_GUIDE (new table row), the min-paired-questions comment
+and `evidence.py`; V is 30 x the pinned anchor's expected spend (about $0.77),
+not the champion's own spend, in MINER_GUIDE, `config.py` and `champion.py`
+(whose docstring also said spend came from the frame's verbosity: it is the
+cell's attested completion tokens); the Omni-MATH hard threshold is
+difficulty >= 5 (`v2_sets.OMNI_HARD_DIFFICULTY`), not 7; the current published
+image is `image-v2026.11.03c`, the digest the composes pin.
+
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 
 The wall-clock call deadline set a per-read timeout on the connection's socket.

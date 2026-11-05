@@ -319,11 +319,12 @@ proofs. Deploy the published image — the digest named in the signed
 `deploy/dstack/app-compose.frozen-<date>.json` that matches the entry the
 validators carry (`docs/APPROVED_ENTRY_ROTATION.md`, "Publishing").
 
-**The current release is `image-v2026.11.03b`**, image
-`ghcr.io/fugal-ai/fugal-miner@sha256:3f6e3e2d1252a340b2a7609974987aa031da7abdf6724c267982d6feeb1fda12`.
-Verify the tag before you deploy it:
+**The current published release is `image-v2026.11.03c`**, image
+`ghcr.io/fugal-ai/fugal-miner@sha256:843460e6277be6a3af2ec749b210f7ec00f05a802dd32d07427441e57954a6f8`
+(the digest both `deploy/dstack/docker-compose*.yaml` pin). Verify the tag
+before you deploy it:
 
-    git -c gpg.ssh.allowedSignersFile=deploy/keys/allowed_signers verify-tag image-v2026.11.03b
+    git -c gpg.ssh.allowedSignersFile=deploy/keys/allowed_signers verify-tag image-v2026.11.03c
 
 The image digest is fixed by the release. The base-measurement half of the
 approved entry depends on the cloud's TD firmware, and it is published with the
@@ -810,8 +811,8 @@ pool is split into four categories by `BENCHMARK_CATEGORY_V2`:
 | Category (`CATEGORY_TARGETS_V2`) | Share of the slice | Sets |
 |---|---|---|
 | `knowledge` | 40% | MMLU-Pro, MMLU |
-| `math` | 25% | MATH levels 3–5, Omni-MATH (mid difficulty, integer answers) |
-| `hard` | 30% | SuperGPQA (hard), AIME 1983–2025, BeyondAIME, Omni-MATH (difficulty ≥ 7, integer answers) |
+| `math` | 25% | MATH levels 3–5, Omni-MATH (difficulty < 5, integer answers) |
+| `hard` | 30% | SuperGPQA (hard), AIME 1983–2025, BeyondAIME, Omni-MATH (difficulty ≥ 5 on its 1–10 scale, integer answers; `v2_sets.OMNI_HARD_DIFFICULTY`) |
 | `instruction` | 5% | IFEval (the constraint kinds the pinned grader checks) |
 
 Inside `hard`, half the weight is the multiple-choice set and half is the
@@ -830,8 +831,10 @@ answers the same scored slice, so the comparison is question by question:
 
 ```
 NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
-V    = CHAMPION_ACCURACY_VALUE (30) x the champion's own mean spend per question
-       over the same questions
+V    = CHAMPION_ACCURACY_VALUE (30) x the pinned anchor's expected spend per
+       question (CHAMPION_ANCHOR_MODEL, claude-fable-5.1: its mean tokens in the
+       reviewed v2 token manifest at the pinned v2 prices, about $0.026, so
+       V is about $0.77); the same V whoever holds the seat
 u_i  = CHAMPION_HARD_WEIGHT (2) on a question in the `hard` category, else 1
 NV   = 100 x mean_i NV_i                          (percentage points)
 ```
@@ -880,8 +883,8 @@ and the frame is published for information. `MAX_WEIGHT_DELTA` still limits
 how fast the weights move.
 
 **Burn-in is to take a seat, not to hold it.** A head must score
-`BURN_IN_QUESTIONS` (3000, about 10 epochs) in an unbroken run before it can
-take a seat, first or by challenge. A seated champion that has to re-earn
+`V2_BURN_IN_QUESTIONS` (1500, five epochs) in an unbroken run before it can
+take a seat, first or by challenge (v1 epochs keep `BURN_IN_QUESTIONS`, 3000). A seated champion that has to re-earn
 burn-in after a miss keeps its seat and its pay while it does.
 
 **Missed epochs (the E″ rule; changed in v2).**

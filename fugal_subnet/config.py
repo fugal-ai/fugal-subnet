@@ -557,8 +557,8 @@ V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
 # champion on the SAME questions, by net value per question:
 #
 #     NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
-#     V    = CHAMPION_ACCURACY_VALUE * the champion's own mean spend per
-#            question over the same paired questions
+#     V    = CHAMPION_ACCURACY_VALUE * the pinned anchor's expected spend per
+#            question (CHAMPION_ANCHOR_MODEL, below)
 #     u_i  = CHAMPION_HARD_WEIGHT on the hard-reasoning category, else 1
 #     NV   = 100 * mean_i NV_i                       (percentage points)
 #
@@ -571,7 +571,7 @@ V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
 # points.
 #
 # CHAMPION_ACCURACY_VALUE (m) prices one extra correct answer at m questions'
-# worth of the champion's own spend. At 30, accuracy dominates and cost
+# worth of the anchor's spend. At 30, accuracy dominates and cost
 # decides between heads of near-equal accuracy. It is a published policy
 # constant. With no champion there is no comparison: the most senior eligible
 # head takes the empty seat.
@@ -608,8 +608,9 @@ CHAMPION_BOOTSTRAP_RESAMPLES = int(os.getenv("FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES
 # first v2 week.
 CHAMPION_MIN_ACCURACY = float(os.getenv("FUGAL_CHAMPION_MIN_ACCURACY", "0.30"))
 # Insurance on the paired test: a take needs at least this many paired
-# questions against the bar, whatever the bootstrap says. Burn-in (3,000
-# questions in an unbroken run) normally guarantees it; this keeps a short
+# questions against the bar, whatever the bootstrap says. The v2 burn-in
+# (V2_BURN_IN_QUESTIONS, 1,500 in an unbroken run) is the same count, so it
+# normally guarantees it the epoch burn-in completes; this keeps a short
 # overlap with a ghost or a champion that only just appeared from deciding
 # the seat on a few hundred questions.
 CHAMPION_MIN_PAIRED_QUESTIONS = int(os.getenv("FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS", "1500"))

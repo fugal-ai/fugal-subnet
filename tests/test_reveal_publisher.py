@@ -76,3 +76,27 @@ def test_the_hold_is_the_chain_commit_reveal_period_when_enabled():
     HP.commit_reveal_weights_enabled = False
     assert delay_epochs_for(Sub(HP()), 1) == 1
     assert delay_epochs_for(Sub(None), 1) == 1
+
+
+def test_a_reveal_that_does_not_parse_is_never_uploaded_or_committed(tmp_path):
+    """A truncated reveal (a crash mid-write) used to be uploaded as-is and its
+    hash committed on chain, with the marker stopping any later replacement."""
+    root = _epochs(tmp_path, ["e00000001", "e00000002"])
+    (tmp_path / "e00000001" / "reveal.json").write_text('{"epoch_id": "e0000', encoding="utf-8")
+    up, commits = Uploader(), []
+    out = publish_due_reveals(root, 5, 1, 7, up, commit=lambda d: commits.append(d) or True)
+    assert out == [] and up.sent == [] and commits == []
+    assert not (tmp_path / "e00000001" / ".published").exists()
+    # A reveal naming another epoch is refused the same way.
+    (tmp_path / "e00000001" / "reveal.json").write_text(json.dumps({"epoch_id": "e00000009"}),
+                                                        encoding="utf-8")
+    assert publish_due_reveals(root, 5, 1, 7, up) == [] and up.sent == []
+
+
+def test_the_writer_leaves_no_partial_file_behind(tmp_path):
+    from fugal_subnet.commit_reveal import write_json_atomic
+
+    target = tmp_path / "reveal.json"
+    write_json_atomic(str(target), {"epoch_id": "e1", "n": 1})
+    assert json.loads(target.read_text(encoding="utf-8")) == {"epoch_id": "e1", "n": 1}
+    assert [p.name for p in tmp_path.iterdir()] == ["reveal.json"]      # no .tmp left

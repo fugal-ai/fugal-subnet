@@ -137,6 +137,18 @@ def publish_due_reveals(
         epoch_id = os.path.basename(os.path.dirname(path))
         with open(path, "rb") as f:
             data = f.read()
+        # Never publish bytes that are not the epoch's complete reveal. The
+        # writer is atomic now, but the publisher is the last line: a file
+        # that does not parse, or names another epoch, is left unmarked and
+        # reported, never uploaded and never committed on chain.
+        try:
+            parsed = json.loads(data)
+            ok = isinstance(parsed, dict) and parsed.get("epoch_id") == epoch_id
+        except ValueError:
+            ok = False
+        if not ok:
+            logger.error("Reveal %s is not a complete reveal for its epoch; not published", path)
+            break
         digest = reveal_digest(data)
         key = f"{netuid}/{epoch_id}/reveal.json"
         try:

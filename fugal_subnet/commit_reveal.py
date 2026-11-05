@@ -40,6 +40,23 @@ def compute_commit_hash(questions: list[dict], grader_hash: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def write_json_atomic(path: str, obj: object) -> None:
+    """Write `obj` as JSON so the file is either absent or complete, never partial.
+
+    A crash or a full disk during `json.dump` on the final path left a
+    truncated `reveal.json` that the publisher then uploaded and whose hash it
+    committed on chain, with the `.published` marker stopping the retry from
+    ever replacing it. Write to a sibling temp file, fsync, rename: the rename
+    is atomic and the bytes are on disk before it.
+    """
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def commit_epoch(epoch_id: str, questions: list[dict], block_hash: str) -> EpochCommitment:
     gh = grader_hash()
     commit_hash = compute_commit_hash(questions, gh)
@@ -55,8 +72,7 @@ def commit_epoch(epoch_id: str, questions: list[dict], block_hash: str) -> Epoch
     epoch_dir = os.path.join(EPOCH_DIR, epoch_id)
     os.makedirs(epoch_dir, exist_ok=True)
     commit_path = os.path.join(epoch_dir, "commit.json")
-    with open(commit_path, "w") as f:
-        json.dump(asdict(commitment), f, indent=2)
+    write_json_atomic(commit_path, asdict(commitment))
 
     logger.info("Epoch %s committed: %s", epoch_id, commit_hash)
     return commitment
@@ -162,8 +178,7 @@ def reveal_epoch(
             reveal[key] = fields[key]
 
     reveal_path = os.path.join(epoch_dir, "reveal.json")
-    with open(reveal_path, "w") as f:
-        json.dump(reveal, f, indent=2)
+    write_json_atomic(reveal_path, reveal)
 
     logger.info("Epoch %s revealed and verified: %s", epoch_id, expected)
     return True

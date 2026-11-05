@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — epoch artifacts are written atomically; the publisher refuses a partial reveal
+
+`commit.json` and `reveal.json` were written in place with `json.dump`, so a
+crash or a full disk mid-write left a truncated file that `publish_due_reveals`
+then uploaded and whose hash it committed on chain, and the `.published`
+marker stopped any later retry from replacing it. Both files now go through
+`write_json_atomic` (temp file, fsync, rename, like the state file), and the
+publisher refuses to upload or commit a reveal that does not parse as a
+complete reveal for its epoch.
+
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 
 The wall-clock call deadline set a per-read timeout on the connection's socket.

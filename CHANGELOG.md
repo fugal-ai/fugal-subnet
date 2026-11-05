@@ -392,6 +392,13 @@ for every epoch. The v2 champion and payout constants (`CHAMPION_*`,
 the v2 rules land behind the activation block in later changes. INVARIANTS:
 "I1 — protocol v2 activates at one named boundary".
 
+### Docs — MINER_GUIDE: where the reveals are published; no GPU needed
+
+The public reveal bucket (`fugal-reveals/70/<epoch_id>/reveal.json`), what a
+reveal holds, and how to check it against the validator's rolling on-chain commitment. The
+requirements list no longer recommends a GPU: success-contract heads embed on
+CPU float32, which the contract enforces.
+
 ### Fixed — proofs can carry their own TPM intermediates (validator half)
 
 `verify_ak_chain` accepted `extra_certs` and INVARIANTS said a proof could

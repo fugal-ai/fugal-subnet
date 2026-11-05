@@ -889,7 +889,16 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
     from fugal_subnet import config, fingerprint
 
     source = (ROOT / "fugal_subnet" / "config.py").read_text(encoding="utf-8")
-    read = set(re.findall(r'os\.getenv\(\s*"(FUGAL_[A-Z0-9_]+)"', source))
+    # Every read anywhere in the shipped code, not only config.py: the pool's
+    # skip list and the unpinned-pool switch lived in benchmarks/loader.py and
+    # were consensus-affecting, undigested and unrefused on finney until the
+    # scan was widened (review 2026-11-05, F-027).
+    pattern = re.compile(r'os\.(?:getenv|environ\.get)\(\s*"(FUGAL_[A-Z0-9_]+)"'
+                         r'|os\.environ\[\s*"(FUGAL_[A-Z0-9_]+)"\s*\](?!\s*=)')
+    read: set[str] = set()
+    for path in sorted(list((ROOT / "fugal_subnet").rglob("*.py")) + list((ROOT / "neurons").glob("*.py"))):
+        for a, b in pattern.findall(path.read_text(encoding="utf-8")):
+            read.add(a or b)
     lists = {
         "CONSENSUS_ENV_VARS": set(config.CONSENSUS_ENV_VARS),
         "CONSENSUS_ENV_INPUTS": set(config.CONSENSUS_ENV_INPUTS),
@@ -899,20 +908,28 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
         where = [k for k, v in lists.items() if name in v]
         if len(where) != 1:
             errors.append(
-                f"fugal_subnet/config.py: {name} is read but listed in "
+                f"{name} is read under fugal_subnet/ or neurons/ but listed in "
                 f"{where or 'no classification list'}; it must be in exactly one "
                 "of CONSENSUS_ENV_VARS, CONSENSUS_ENV_INPUTS, OPERATIONAL_ENV_VARS (I1)"
             )
     for k, v in lists.items():
         for name in sorted(v - read):
             errors.append(f"fugal_subnet/config.py: {k} lists {name}, which nothing reads")
+    # Consensus variables read outside config.py are covered by the epoch
+    # block, not by a module attribute; the attribute scan below is for the
+    # ones config.py defines.
+    outside = {"FUGAL_SKIP_BENCHMARKS", "FUGAL_POOL_UNPINNED", "FUGAL_OPENROUTER_BASE"}
 
     fp = fingerprint.environment_fingerprint()
     covered = set(fp["scoring"]) | {
         "SLICE_SIZE", "SLICE_SHARE_FACTOR", "EPOCH_INTERVAL", "EXPLORE_FRACTION",
         "EPOCH_COLLECT_FRACTION", "TEE_MODEL_PRICES_PATH",  # via routing_protocol
     }
-    for env_name in sorted(config.CONSENSUS_ENV_VARS):
+    for key in ("skip_benchmarks", "pool_unpinned", "pool_manifest_v1", "pool_manifest_v2",
+                "openrouter_base"):
+        if key not in fp["epoch"]:
+            errors.append(f"fingerprint epoch block lacks {key} (I1)")
+    for env_name in sorted(set(config.CONSENSUS_ENV_VARS) - outside):
         attr = re.search(
             rf'^([A-Z_]+)\s*=[^\n]*?os\.getenv\(\s*"{env_name}"', source, re.M | re.S,
         )

@@ -2030,11 +2030,20 @@ Diligence 2026-10, additional finding A2. `config.py` reads its constants from
 the environment, and the consensus digest covered five of them. A validator
 with `FUGAL_SCORE_QUALITY_FLOOR=0.5` exported scored the field by its own
 rules, and the digest two validators compare to explain a divergence said
-nothing. Now every `FUGAL_` variable `config.py` reads is in exactly one of
-three lists (`CONSENSUS_ENV_VARS`, `CONSENSUS_ENV_INPUTS`,
-`OPERATIONAL_ENV_VARS`; `check_every_env_constant_classified` fails CI on an
-unclassified one), the fingerprint carries a `scoring` block with every
-consensus constant's value as in effect, `consensus_digest` hashes it along
+nothing. Now every `FUGAL_` variable read anywhere under `fugal_subnet/` or
+`neurons/` is in exactly one of three lists (`CONSENSUS_ENV_VARS`,
+`CONSENSUS_ENV_INPUTS`, `OPERATIONAL_ENV_VARS`;
+`check_every_env_constant_classified` fails CI on an unclassified one — until
+2026-11-05 it scanned `config.py` alone, and `FUGAL_SKIP_BENCHMARKS`,
+`FUGAL_POOL_UNPINNED` and `FUGAL_OPENROUTER_BASE`, read elsewhere, were
+consensus-affecting and neither digested nor refused on finney), the
+fingerprint carries a `scoring` block with every consensus constant's value
+as in effect, an `epoch` block that now also names the pinned pool manifests,
+the skip list in effect and whether pool verification is switched off, and a
+`code` block (`source_sha256`, the miner's own `source_hash` algorithm, and
+the git commit) that is in the reveal but deliberately outside the digest, so
+two validators on different commits are a divergence only when a
+score-affecting input differs, `consensus_digest` hashes it along
 with the routing-protocol identity (which covers the price table), and
 `assert_consensus_overrides_allowed` refuses any consensus constant set in the
 environment on finney, identified by genesis hash as `--mock` is, in both

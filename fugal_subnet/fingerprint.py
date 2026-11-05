@@ -140,6 +140,27 @@ def environment_fingerprint() -> dict:
             # so two validators that would score v2 differently differ visibly
             # from their first epoch (routing_protocol.identity() covers v1).
             "price_table_v2": _file_sha256(_routing_data("models_v2.json")),
+            # Which questions a neuron scores: the pinned pool manifests (the
+            # loader refuses a pool that disagrees with them in strict mode),
+            # the skip list in effect, and whether verification is switched
+            # off. Two neurons with different values select different
+            # questions, and before 2026-11-05 nothing in the digest said so.
+            "pool_manifest_v1": _file_sha256(_benchmarks_data("pool_manifest.json")),
+            "pool_manifest_v2": _file_sha256(_benchmarks_data("pool_manifest_v2.json")),
+            "skip_benchmarks": _skip_benchmarks(),
+            "pool_unpinned": _pool_unpinned(),
+            # The model upstream, if overridden (tee/runtime.py). Miner-side,
+            # but a neuron that sets it is scoring against a different world.
+            "openrouter_base": os.environ.get("FUGAL_OPENROUTER_BASE") or "default",
+        },
+        # The code itself, beside the digest and deliberately OUTSIDE it: two
+        # validators on different commits whose score-affecting inputs agree
+        # are not a divergence, but when they do diverge the reveal must say
+        # which code each ran. The same hash the miner reports as
+        # `source_hash` in its proof (neurons/miner._get_source_hash).
+        "code": {
+            "source_sha256": source_sha256(),
+            "git_commit": _git_commit(),
         },
         # Every constant that decides a score or which proofs verify, as in
         # effect right now (read off the module, so an override is recorded
@@ -192,6 +213,50 @@ _SCORING_CONSTANTS = (
 def _routing_data(name: str):
     from pathlib import Path
     return Path(__file__).resolve().parent / "routing_data" / name
+
+
+def _benchmarks_data(name: str):
+    from pathlib import Path
+    return Path(__file__).resolve().parent / "benchmarks" / name
+
+
+def _skip_benchmarks() -> list[str]:
+    from fugal_subnet.benchmarks.loader import _default_skip
+    return sorted(_default_skip())
+
+
+def _pool_unpinned() -> bool:
+    from fugal_subnet.benchmarks.loader import _unpinned_pool_declared
+    return bool(_unpinned_pool_declared())
+
+
+def source_sha256() -> str:
+    """SHA256 over every .py file under fugal_subnet/, path-prefixed, sorted:
+    the miner's `source_hash` (neurons/miner._get_source_hash), computed the
+    same way so a validator's reveal and a miner's proof name code the same way."""
+    src_dir = Path(fugal_subnet.__file__).resolve().parent
+    h = hashlib.sha256()
+    for root, _dirs, files in sorted(os.walk(src_dir)):
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            fpath = os.path.join(root, fname)
+            h.update(fpath[len(str(src_dir)):].encode())
+            with open(fpath, "rb") as f:
+                h.update(f.read())
+    return h.hexdigest()
+
+
+def _git_commit() -> str:
+    """The checkout's HEAD, best effort; empty in a wheel or outside git."""
+    import subprocess
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=Path(fugal_subnet.__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+    except Exception:  # noqa: BLE001 - provenance is best effort
+        return ""
 
 
 def _file_sha256(path) -> str | None:

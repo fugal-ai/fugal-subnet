@@ -147,3 +147,70 @@ def test_an_unreadable_genesis_does_not_pass_mock():
     with pytest.raises(RuntimeError, match="could not be read"):
         assert_mock_allowed(None, mock=True)
     assert_mock_allowed(None, mock=False)
+
+
+# --- review 2026-11-05, F-027/F-028: the whole package is classified; the code is named ---
+
+
+def test_every_fugal_variable_read_anywhere_in_the_package_is_classified():
+    import pathlib
+    import re
+
+    from fugal_subnet import config
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pattern = re.compile(r'os\.(?:getenv|environ\.get)\(\s*"(FUGAL_[A-Z0-9_]+)"'
+                         r'|os\.environ\[\s*"(FUGAL_[A-Z0-9_]+)"\s*\](?!\s*=)')
+    read = set()
+    for path in list((root / "fugal_subnet").rglob("*.py")) + list((root / "neurons").glob("*.py")):
+        for a, b in pattern.findall(path.read_text(encoding="utf-8")):
+            read.add(a or b)
+    listed = set(config.CONSENSUS_ENV_VARS) | set(config.CONSENSUS_ENV_INPUTS) \
+        | set(config.OPERATIONAL_ENV_VARS)
+    assert read - listed == set(), read - listed
+    for name in ("FUGAL_SKIP_BENCHMARKS", "FUGAL_POOL_UNPINNED", "FUGAL_OPENROUTER_BASE"):
+        assert name in config.CONSENSUS_ENV_VARS, name
+
+
+def test_the_pool_inputs_move_the_consensus_digest(monkeypatch):
+    from fugal_subnet.fingerprint import consensus_digest, environment_fingerprint
+
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+    monkeypatch.delenv("FUGAL_POOL_UNPINNED", raising=False)
+    base = consensus_digest()
+    fp = environment_fingerprint()
+    assert fp["epoch"]["pool_manifest_v1"] and fp["epoch"]["pool_manifest_v2"]
+    assert fp["epoch"]["pool_unpinned"] is False
+    monkeypatch.setenv("FUGAL_SKIP_BENCHMARKS", "mmlu")
+    assert consensus_digest() != base, "the skip list moved and the digest did not"
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS")
+    monkeypatch.setenv("FUGAL_POOL_UNPINNED", "1")
+    assert consensus_digest() != base, "verification was switched off and the digest did not move"
+
+
+def test_an_unpinned_pool_or_a_skip_list_is_refused_on_finney(monkeypatch):
+    from fugal_subnet.config import FINNEY_GENESIS_HASH
+    from fugal_subnet.fingerprint import assert_consensus_overrides_allowed
+
+    for name in ("FUGAL_POOL_UNPINNED", "FUGAL_SKIP_BENCHMARKS", "FUGAL_OPENROUTER_BASE"):
+        monkeypatch.delenv(name, raising=False)
+    assert_consensus_overrides_allowed(FINNEY_GENESIS_HASH)
+    for name in ("FUGAL_POOL_UNPINNED", "FUGAL_SKIP_BENCHMARKS"):
+        monkeypatch.setenv(name, "1")
+        with pytest.raises(RuntimeError, match="finney"):
+            assert_consensus_overrides_allowed(FINNEY_GENESIS_HASH)
+        monkeypatch.delenv(name)
+
+
+def test_the_reveal_names_the_code_but_the_digest_does_not():
+    """Two validators on different commits whose score-affecting inputs agree
+    are not a divergence; when they do diverge the reveal must say which code
+    each ran (F-028)."""
+    import neurons.miner as miner
+    from fugal_subnet.fingerprint import consensus_digest, environment_fingerprint, source_sha256
+
+    fp = environment_fingerprint()
+    assert fp["code"]["source_sha256"] == source_sha256() == miner._get_source_hash()
+    assert len(fp["code"]["source_sha256"]) == 64
+    altered = dict(fp, code={"source_sha256": "0" * 64, "git_commit": ""})
+    assert consensus_digest(altered) == consensus_digest(fp)

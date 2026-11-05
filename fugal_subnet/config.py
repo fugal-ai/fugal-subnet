@@ -742,9 +742,12 @@ FINNEY_GENESIS_HASH = "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7
 # OPERATIONAL_ENV_VARS change timing, ports, paths or a miner's own costs,
 #                      never a validator's scores.
 #
-# scripts/check_safety_invariants.py fails if a FUGAL_ variable is read here
-# and listed in none of the three, so a new constant cannot be added
-# unclassified.
+# scripts/check_safety_invariants.py fails if a FUGAL_ variable is read
+# ANYWHERE under fugal_subnet/ or neurons/ and listed in none of the three, so
+# a new constant cannot be added unclassified. Until 2026-11-05 only this file
+# was scanned, and the pool's skip list and the unpinned-pool declaration
+# (read by benchmarks/loader.py) were consensus-affecting, undigested and not
+# refused on finney (review finding F-027).
 CONSENSUS_ENV_VARS = (
     "FUGAL_SLICE_SIZE",
     "FUGAL_SLICE_SHARE_FACTOR",
@@ -793,6 +796,17 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_CHAMPION_MIN_ACCURACY",
     "FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS",
     "FUGAL_PAYOUT_SEAT_SHARES",
+    # Read by benchmarks/loader.py: both change which questions a neuron
+    # scores (or whether the pool is verified at all), so they are refused on
+    # finney and recorded in the digest's epoch block.
+    "FUGAL_SKIP_BENCHMARKS",
+    "FUGAL_POOL_UNPINNED",
+    # Read by tee/runtime.py: the model upstream. A settable upstream is the
+    # upstream-substitution exploit (INVARIANTS I8); the compose never sets
+    # it and check_safety_invariants refuses a compose that does. Classified
+    # consensus so a neuron with it set is refused on finney and visibly
+    # different elsewhere.
+    "FUGAL_OPENROUTER_BASE",
 )
 CONSENSUS_ENV_INPUTS = (
     "FUGAL_EPOCH_INTERVAL",
@@ -819,4 +833,30 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_ARCHIVE_ENDPOINTS",
     "FUGAL_FALLBACK_ENDPOINTS",
     "FUGAL_WEIGHTS_SET_RETRIES",
+    # Read outside this module. Pool SOURCES are operational because the
+    # loaded pool is verified against the pinned manifest whatever file it
+    # came from (only FUGAL_POOL_UNPINNED, above, switches that off); the
+    # rest are paths, ports, addresses, chain selection and offline tooling.
+    "FUGAL_BENCHMARK_POOL",
+    "FUGAL_POOL_FILE",
+    "FUGAL_BENCHMARK_POOL_V2",
+    "FUGAL_POOL_FILE_V2",
+    "FUGAL_FRAME_BOOTSTRAP",
+    "FUGAL_BACKBONE_THREADS",
+    "FUGAL_EPOCH_DIR",
+    "FUGAL_EPOCH_LOG_DIR",
+    "FUGAL_STATE_PATH",
+    "FUGAL_NETWORK",
+    "FUGAL_NETUID",
+    "FUGAL_WALLET_PATH",
+    "FUGAL_MINER_PORT",
+    "FUGAL_AXON_IP",
+    "FUGAL_PROVISIONED_WALLET_DIR",
+    "FUGAL_EMBEDDING_CACHE",
+    "FUGAL_POOL_CACHE_V2",
+    "FUGAL_API_KEY",
+    "FUGAL_ALLOW_ENV_DRIFT",
+    "FUGAL_MIN_VALIDATORS",
+    "FUGAL_SCORE_DIVERGENCE",
+    "FUGAL_WEIGHT_DIVERGENCE",
 )

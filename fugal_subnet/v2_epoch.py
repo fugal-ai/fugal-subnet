@@ -314,6 +314,8 @@ def run_v2_epoch(
     burn_in_questions: int,
     bench_category: Mapping[str, str] | None = None,
     allow_take: bool = True,
+    seniority_floor: int | None = None,
+    seniority_salt: str = "",
 ) -> V2EpochResult:
     """One v2 epoch, from verified proofs to the weight vector. Pure.
 
@@ -393,7 +395,8 @@ def run_v2_epoch(
         since = copy_rule.first_epoch(new_copy, h, blocks_per_epoch)
         candidates[h] = Candidate(
             head_hash=h,
-            seniority=copy_rule.v2_seniority(new_copy, h),
+            seniority=copy_rule.v2_seniority(new_copy, h, floor_block=seniority_floor,
+                                             salt=seniority_salt),
             eligible=True,
             since_epoch=int(since if since is not None else epoch_index),
             burned_in=burn_in_complete(getattr(rec, "evidence", None), burn_in_questions),
@@ -408,6 +411,7 @@ def run_v2_epoch(
         new_copy, epoch_index, new_window, candidates,
         holders=copy_rule.seat_holders(seat, len(shares)),
         ghost_off=params.ghost_off, ghost_retire=params.ghost_retire,
+        floor_block=seniority_floor, salt=seniority_salt,
     )
     decision = seat_step(seat, epoch_index, epoch_id, new_window, candidates,
                          retired=retired, params=params, allow_take=allow_take,
@@ -441,6 +445,9 @@ def run_v2_epoch(
             for uid in sorted(verified_proofs)
         },
         "copy_verdicts": {str(uid): v for uid, v in sorted(verdicts.items())},
+        # What ordered pre-flip commits: the activation block they tie at and
+        # the boundary hash that breaks the tie (anyone can check it on chain).
+        "v2_seniority": {"floor_block": seniority_floor, "salt": seniority_salt},
         "champion": decision_for_reveal(decision),
         "v2_state": v2_state_for_reveal(
             seat=decision.state, owners=owners, serving=serving,

@@ -26,6 +26,16 @@ left as the timeout of every read, with a watchdog that shuts the socket down at
 the deadline. The call ends by 420 s with its connection closed and is
 recorded failed; the harness gets the proxy's 502 before its own 450 s wait. A
 non-streamed reply is still billed in full by the provider. Miner-side only.
+### Changed — protocol v2 seniority: pre-flip commits tie at the activation block
+
+From an outside review: a UID with no v1 role could commit a v2 head days
+before the flip and be the most senior head at it, taking the first seat by
+timing. Every first commit at or before `FUGAL_V2_ACTIVATION_BLOCK` is now
+ranked at the activation block, ties broken by sha256 over the activation
+boundary's block hash, the head and its owner, a salt nobody holds while
+pre-flip commitments are being made, so the order cannot be ground in advance.
+Commits after the flip keep their real block. Validator-only; published in
+the v2 reveal as `v2_seniority`.
 
 ### Changed — v2 miner: 24 calls in flight, the in-flight-budget 402 is retried, the pool is cached
 

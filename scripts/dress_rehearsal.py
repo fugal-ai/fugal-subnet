@@ -1019,11 +1019,14 @@ def scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub):
 # the v2 pool is warmed before the activation block is chosen.
 #
 # DETERMINISTIC SENIORITY. v2 seniority is the head's first commit (the copy
-# rule), and v2 miners holding for the flip commit in the same window. So m1
-# and m3's v2 miners start beside the v1 ones, and m2's starts only in the
-# last v1 epoch, after they have committed: m2 is the junior head, and the
-# challenger, every run. Which of m1 and m3 is senior is the chain's call; the
-# first-seat check reads it from the reveal's published copy-rule state.
+# rule), and every commit at or before the activation block ties there,
+# ordered by a tie-break salted with the activation block's hash. So m1 and
+# m3's v2 miners start beside the v1 ones (pre-flip commits, tied), and m2
+# keeps its v1 miner through the flip and starts its v2 miner in the first v2
+# epoch: its v2 head is committed after the flip, the junior head and the
+# challenger, every run. Which of m1 and m3 is senior is the salted
+# tie-break's call; the first-seat check reads it, and the salt, from the
+# reveal.
 
 V2_FLIP_V1_EPOCHS = 2
 
@@ -1169,7 +1172,7 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
                            [(ck, v2_heads[ck], ports[ck] + 10, f"v2f_{ck}_v2")
                             for ck in ("dr_m1", "dr_m3")],
                            extra_env=hold_env)
-        v2_parallel = {"dr_m1": procs[-2], "dr_m3": procs[-1]}
+        v2_parallel = {"dr_m1": procs[-2], "dr_m3": procs[-1]}   # m2's joins after the flip
     else:
         report.skip(S, "parallel handover: the v2 miner holds its axon until the flip",
                     missing(f, "miner_hold") + " (the rehearsal swaps miners in the last "
@@ -1222,12 +1225,14 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
         # every v1 miner, before any v1 miner stops: no v1 epoch is lost.
         if idx >= act_idx - 1 and not handed_over:
             if v2_parallel:
-                _launch_sequential(procs, netuid, pool_v2,
-                                   [("dr_m2", v2_heads["dr_m2"], ports["dr_m2"] + 10,
-                                     "v2f_dr_m2_v2")], extra_env=hold_env)
-                v2_parallel["dr_m2"] = procs[-1]
-                _stop(list(serving.values()))
-                serving = dict(v2_parallel)
+                # m1 and m3 hand over now. m2 keeps its v1 miner through the
+                # flip and starts its v2 miner in the first v2 epoch, so its v2
+                # head is committed AFTER the activation block: the one head
+                # junior to the pre-flip ones (which tie at the flip, ordered
+                # by the salted tie-break), and the challenger.
+                _stop([serving["dr_m1"], serving["dr_m3"]])
+                serving = {"dr_m1": v2_parallel["dr_m1"], "dr_m3": v2_parallel["dr_m3"],
+                           "dr_m2": serving["dr_m2"]}
             else:
                 _stop(list(serving.values()))
                 _launch_sequential(procs, netuid, pool_v2,
@@ -1238,6 +1243,16 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
             handed_over = True
             continue
         if idx < act_idx:
+            continue
+        if v2_parallel and "dr_m2" not in v2_parallel:
+            # The first v2 epoch is scored: m2 now hands over, committing its
+            # v2 head after the flip (see the handover above).
+            _launch_sequential(procs, netuid, pool_v2,
+                               [("dr_m2", v2_heads["dr_m2"], ports["dr_m2"] + 10,
+                                 "v2f_dr_m2_v2")], extra_env=hold_env)
+            v2_parallel["dr_m2"] = procs[-1]
+            _stop([serving["dr_m2"]])
+            serving["dr_m2"] = v2_parallel["dr_m2"]
             continue
 
         # E'': take m2 offline for one scored epoch once it is burned in --
@@ -1396,7 +1411,9 @@ def _v2_flip_seat_checks(report, S, rows, v2e, uid, miss, names, close):
     state = copy_rule.CopyState.from_reveal(block)
     owners_now = [heads[first].get(u) for u, v in (r_first.get("copy_verdicts") or {}).items()
                   if v == "owner" and heads[first].get(u)]
-    expected = min(owners_now, key=lambda h: (copy_rule.v2_seniority(state, h), h),
+    sen = r_first.get("v2_seniority") or {}
+    expected = min(owners_now, key=lambda h: (copy_rule.v2_seniority(
+        state, h, floor_block=sen.get("floor_block"), salt=sen.get("salt") or ""), h),
                    default=None)
     report.check(S, names[1], expected is not None and seats[first].get("champion") == expected,
                  f"seated {str(seats[first].get('champion'))[:12]}, most senior owner "

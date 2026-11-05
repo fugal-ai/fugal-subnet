@@ -1119,6 +1119,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     burn_in_questions=V2_BURN_IN_QUESTIONS,
                     bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
                     allow_take=not v2_window_degraded,
+                    # Every head committed at or before the flip ties at the
+                    # activation block, ordered by a digest salted with the
+                    # activation boundary's hash, which nobody knew while the
+                    # pre-flip commitments were being made.
+                    seniority_floor=V2_ACTIVATION_BLOCK,
+                    seniority_salt=_activation_block_hash(subtensor, V2_ACTIVATION_BLOCK,
+                                                          boundary_block, block_hash),
                 )
                 if v2_window_degraded:
                     logger.error(
@@ -1634,6 +1641,26 @@ def wait_for_block(subtensor, target_block: int, poll_s: int = 12) -> None:
             time.sleep(1.0)
         else:
             time.sleep(min(max(s_per_block * remaining, 0.2), 60))
+
+
+_ACTIVATION_HASH: dict[int, str] = {}
+
+
+def _activation_block_hash(subtensor, activation_block: int, boundary_block: int,
+                           boundary_hash: str) -> str:
+    """The activation boundary's block hash: the v2 seniority tie-break salt.
+
+    Chain data, the same for every validator; cached for the process. Raises
+    if the chain cannot serve it, so the epoch is retried rather than ordered
+    with a different salt from every peer.
+    """
+    a = int(activation_block)
+    if a not in _ACTIVATION_HASH:
+        h = boundary_hash if int(boundary_block) == a else subtensor.get_block_hash(a)
+        if not h:
+            raise RuntimeError(f"could not read the hash of activation block {a}")
+        _ACTIVATION_HASH[a] = str(h)
+    return _ACTIVATION_HASH[a]
 
 
 def resolve_burn_uid(subtensor, netuid: int, block: int, metagraph, live: bool) -> int:

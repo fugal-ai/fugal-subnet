@@ -385,3 +385,33 @@ def test_under_the_pinned_anchor_saving_spend_alone_rarely_takes_the_seat():
     # under the 0.2-point margin, so the champion holds.
     r = chain(range(30), {5: always("m/strong"), 6: oracle}, blocks={5: 1, 6: 2})
     assert r.decision.state.champion == H(5) and r.decision.event == "hold"
+
+
+def test_the_first_seat_among_pre_flip_commits_goes_by_the_salted_tie_break():
+    from fugal_subnet.copy_rule import v2_seniority
+
+    def first_with(salt):
+        uids = [5, 6]
+        e = 1
+        return run_v2_epoch(
+            epoch_index=e, epoch_id=f"e{e:08d}", boundary_block=e * BPE, blocks_per_epoch=BPE,
+            questions=questions(0), pool_models=MODELS, prices=PRICES,
+            verified_proofs={u: proof(0, oracle) for u in uids},
+            head_hashes={u: H(u) for u in uids}, coldkey_of={u: f"ck{u}" for u in uids},
+            hotkey_of={u: f"hk{u}" for u in uids},
+            records={u: burned(H(u)) for u in uids},
+            commitments=[C(5, H(5), 1), C(6, H(6), 200)],   # 5 is days "older"
+            window=Window.empty(48), seat=SeatState(), copy_state=CopyState(), burn_uid=0,
+            params=seat_params_from_config(), shares=(0.85, 0.10, 0.05),
+            burn_in_questions=0, bench_category=CATEGORY,
+            seniority_floor=BPE, seniority_salt=salt,
+        )
+    winners = set()
+    for salt in ("0x01", "0x02", "0x03", "0x04", "0x05", "0x06"):
+        r = first_with(salt)
+        state = r.copy_state
+        expect = min([H(5), H(6)], key=lambda h: v2_seniority(state, h, floor_block=BPE, salt=salt))
+        assert r.decision.event == "first" and r.decision.champion == expect
+        assert r.reveal["v2_seniority"] == {"floor_block": BPE, "salt": salt}
+        winners.add(r.decision.champion)
+    assert winners == {H(5), H(6)}      # the earlier commit does not always win

@@ -717,7 +717,7 @@ v1, which applies until that block. This section says what changes at the flip
 and how to move without losing epochs.
 
 Values marked `<LIKE_THIS>` are not final. They are published together at the
-v2 announcement, 72 hours or more before the flip, in a signed release:
+v2 announcement, at least 24 hours before the flip, in a signed release:
 
 | Placeholder | What it will be |
 |---|---|
@@ -851,8 +851,9 @@ Measure the v2 pool on your own host.
 Use a second instance:
 
 1. **Retrain** on the v2 model list (`<V2_MODEL_LIST>`), labelling your own
-   data. Allow one to two days if you start from no labels. This is why the
-   notice is 72 hours.
+   data. Allow one to two days if you start from no labels. The notice is 24
+   hours, so start early: the v2 model list and code are already public
+   on the `release/v2` branch.
 2. **Bring up a second TD on the v2 image** (`<V2_IMAGE_DIGEST>`) **with the
    same hotkey**, beside the running v1 TD, and provision it as usual. It
    embeds and then **holds**: no axon and no commitment until the epoch before

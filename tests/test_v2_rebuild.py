@@ -164,3 +164,31 @@ def test_the_frame_rebuild_applies_v2_mix_weights(tmp_path, monkeypatch):
                                         weights=[0.5 if k[0] == "qa" else 3.0 for k in keyed])
     assert rebuilt.to_dict() == live_frame.to_dict()
     assert rebuilt.frontier_accuracy("m/a") == 0.5 / 3.5
+
+
+def test_a_malformed_reveal_is_refused_by_name_not_crashed_on(tmp_path):
+    """A published reveal is someone else's file (I2). Truncated routing,
+    an index outside the model space, a missing cells list or a non-list
+    `models` used to surface as KeyError/ValueError tracebacks (or, for a
+    string `models`, as silent acceptance) at validator startup."""
+    import pytest
+
+    _, reveals = live(3, schedule)
+    cases = {
+        "routing_decisions truncated": lambda rv: rv["routing_decisions"].update(
+            {k: v[:5] for k, v in rv["routing_decisions"].items()}),
+        "index outside the model space": lambda rv: rv["routing_decisions"].update(
+            {k: [99] * len(v) for k, v in rv["routing_decisions"].items()}),
+        "missing shared_grades": lambda rv: rv.pop("shared_grades"),
+        "models not a list": lambda rv: rv.update(models="m/cheap"),
+        "epoch_id not numeric": lambda rv: rv.update(epoch_id="exx"),
+    }
+    for name, mutate in cases.items():
+        d = tmp_path / name.replace(" ", "_")
+        d.mkdir()
+        rs = json.loads(json.dumps(reveals))
+        mutate(rs[1])
+        write(d, rs)
+        with pytest.raises(ValueError, match="reveal e0000000|epoch_id") as e:
+            rebuild_v2_from_reveals(d, window_size=48, prices=PRICES, bench_category=CATEGORY)
+        assert "e00000002" in str(e.value) or "exx" in str(e.value), (name, str(e.value))

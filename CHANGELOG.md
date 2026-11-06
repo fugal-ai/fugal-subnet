@@ -86,6 +86,17 @@ not the champion's own spend, in MINER_GUIDE, `config.py` and `champion.py`
 cell's attested completion tokens); the Omni-MATH hard threshold is
 difficulty >= 5 (`v2_sets.OMNI_HARD_DIFFICULTY`), not 7; the current published
 image is `image-v2026.11.03c`, the digest the composes pin.
+### Fixed — v2 rebuild refuses a malformed reveal by name; restored burn-in survives; the metagraph fallback is logged
+
+The startup rebuild from reveals crashed with KeyError/ValueError tracebacks
+on a truncated or malformed peer reveal and silently accepted a string
+`models`; it now validates what it reads and refuses the file by path and
+epoch. Records created to restore a head's E'' burn-in carried the head's
+first committing hotkey, so an owner serving from a newer hotkey lost the
+restored burn-in on its first verified proof; they now carry no hotkey (unknown,
+kept). When the pinned metagraph read at the collection block fails and the
+live one is used, the epoch log now records `metagraph_unpinned`, so a
+divergence that epoch is attributable from the published artifacts.
 
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 

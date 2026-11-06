@@ -1,8 +1,13 @@
 # Fugal Subnet — Validator Guide
 
 Run a validator on the Fugal subnet. Validators verify TEE-attested proofs
-from miners and set on-chain weights. **Validators never call models** —
-miners pay for their own inference inside Intel TDX confidential VMs.
+from miners, compare every head on the same questions, and pay the champion
+seat. **Validators never call models** — miners pay for their own inference
+inside Intel TDX confidential VMs.
+
+This guide describes **protocol v2**. Until the published activation block the
+subnet scores by the v1 rules; the switch is the one procedure every validator
+must perform, in "Protocol v2: flip procedure" below.
 
 ## What Validators Do
 
@@ -11,16 +16,24 @@ every validator processes the same epoch on the same slice. Each epoch, your
 validator:
 
 1. Derives a nonce from the epoch **boundary block's** hash
-2. Selects ~300 questions, stratified across benchmarks
+2. Selects 300 questions by the published category quotas (40% knowledge,
+   30% hard, 25% math, 5% instruction), then by benchmark share within each
 3. Commits the question slice + grader hash (commit-reveal integrity)
 4. Derives the epoch's exploration assignment from the same nonce
-5. Queries all registered miners for TEE-attested benchmark proofs
-6. Verifies each proof against every binding (see "TEE Proof Verification")
-7. Pools the verified exploration samples into the **reference frame**
-8. Scores each miner as accuracy headroom above the constant-policy frontier (what any single model or random mixture buys at the miner's own cost)
-9. Deduplicates copied heads: by routing behavior, by weight distance, and by the epsilon rule (a near-copy must beat the senior head); the senior head, by registration block then commitment block, wins
-10. Computes weights, sets weights on-chain
-11. Publishes the epoch reveal artifact
+5. Reads every head commitment at the boundary block and the epoch's
+   metagraph pinned to it
+6. Queries all registered miners for TEE-attested benchmark proofs
+7. Verifies each proof against every binding (see "TEE Proof Verification")
+8. Builds the **shared grades**: one grade per (question, model) cell, the
+   median across the coldkeys that routed there, so every head that chose the
+   same model gets the same grade
+9. Adds the epoch to the **comparison window** (the last 48 epochs) and runs
+   the **seat decision**: hold, take, first, ghost or resume, by the paired
+   net-value test against the champion (`docs/MINER_GUIDE.md`, "Scoring")
+10. Pays the seat: 85% to the champion, 10% and 5% to the two before it, the
+    rest to the burn UID; sets weights on-chain
+11. Publishes the epoch reveal artifact (shared grades, the seat decision and
+    its detail, every head's routing, the weights)
 
 ## Requirements
 
@@ -95,7 +108,8 @@ validator that scored the whole field zero while looking healthy):
    before Yuma reads them, silently (`docs/MAINNET_LAUNCH.md` §2).
 3. `data/reference_frame.json`, the hash-pinned bootstrap reference frame, is
    present in the checkout (or `FUGAL_FRAME_BOOTSTRAP` names a directory of
-   published reveals to rebuild from).
+   published reveals to rebuild from). Under v2 the frame is published for
+   information only; the check stays until protocol v1 is removed.
 4. The token manifest shipped in the checkout is `reviewed`, not `candidate`
    (`docs/SUCCESS_CONTRACT.md`).
 
@@ -264,6 +278,19 @@ warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every neuron.
 | `FUGAL_WILSON_CONFIDENCE` | `0.95` | Wilson LCB confidence level |
 | `FUGAL_SCORE_QUALITY_FLOOR` | `0.8` | Share of the frontier's best accuracy below which a head scores zero |
 | `FUGAL_MAX_WEIGHT_DELTA` | `0.3` | Max weight change per UID per epoch |
+| `FUGAL_CHAMPION_WINDOW_EPOCHS` | `48` | Epochs in the v2 comparison window |
+| `FUGAL_CHAMPION_ACCURACY_VALUE` | `30` | One extra correct answer is worth this many questions of the anchor's spend (V) |
+| `FUGAL_CHAMPION_ANCHOR_MODEL` | `anthropic/claude-fable-5.1` | The model whose expected spend per question prices V |
+| `FUGAL_CHAMPION_HARD_WEIGHT` | `2` | Weight of a `hard`-category question in the net-value test |
+| `FUGAL_CHAMPION_MARGIN` | `0.2` | NV points a challenger's lower bound must clear to take the seat |
+| `FUGAL_CHAMPION_CONFIDENCE` | `0.90` | One-sided confidence of the paired bootstrap lower bound |
+| `FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES` | `2000` | Resamples in the paired bootstrap |
+| `FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS` | `1500` | Paired questions a take needs |
+| `FUGAL_CHAMPION_MIN_ACCURACY` | `0.30` | Window-accuracy floor to take or hold a seat, or be paid as a former champion |
+| `FUGAL_CHAMPION_HARD_GATE_MIN_QUESTIONS` | `100` | Hard questions in the window before the hard-accuracy gate applies |
+| `FUGAL_CHAMPION_TIME_GATE_FACTOR` | `2` | Per-call time gate (not applied at launch) |
+| `FUGAL_CHAMPION_GHOST_OFF` / `_RETIRE` | `3` / `24` | Epochs a missed / retired champion's ghost bar stands |
+| `FUGAL_PAYOUT_SEAT_SHARES` | `0.85,0.10,0.05` | The miner share across the champion and the two before it |
 | dedup, exploration-integrity and head-bound constants | see `config.py` | `FUGAL_DEDUP_*`, `FUGAL_EXPLORE_*`, `FUGAL_HEAD_*`, `FUGAL_POOL_MIN_SIZE`, `FUGAL_MODEL_PRICES` |
 
 ### CLI options
@@ -337,10 +364,15 @@ When a miner submits a proof, the validator checks:
 
 Structured JSONL logs are written to `results/epoch_logs/`. Each entry includes:
 
-- Epoch ID and block hash
-- Number of miners queried, valid/invalid proofs
-- Per-miner scores (Wilson LCB, cost per question, frontier reference, headroom, composite)
-- Weight assignments
+- Epoch ID, block hash and protocol version
+- Number of miners queried; valid, invalid and `unverifiable` proofs; per-UID
+  failed-call counts
+- The seat event (`first`, `hold`, `take`, `ghost`, `empty`), the champion,
+  the former champions, and the comparison detail per head (which gate
+  failed, or the NV and its lower bound against the champion)
+- Weight assignments (at most three miner UIDs plus the burn UID)
+- Whether the metagraph was read pinned to the boundary block or fell back to
+  the live one (`metagraph_unpinned`)
 - Anomaly flags
 - Phase timing breakdown
 - Commit-reveal verification status
@@ -359,12 +391,22 @@ The validator automatically flags:
 - **Zero validator spend** — validators verify proofs, never call models
 - **TEE attestation** — hardware-attested proofs prevent result fabrication
 - **Measurement pinning** — only approved runtime images are accepted
-- **Evidence accumulation** — scores stabilize over epochs via EWMA decay
-  and Wilson LCB; selective publication (skip bad epochs) is penalized
+- **One seat, no margin to hold it** — a champion keeps the seat unless a
+  challenger is measurably better on the same questions (90% lower bound of
+  net value above the margin, over at least 1,500 paired questions), so the
+  seat cannot change hands on noise
+- **The copy rule** — a head belongs to the coldkey that first committed it;
+  the same bytes under another coldkey are an exact copy and earn nothing; a
+  junior head must also beat every senior seat holder by the margin
+- **The E″ miss rule** — a missed epoch decays a head's evidence and restarts
+  its burn-in; selective publication (skip bad epochs) is penalized
 - **Weight capping** — weights change at most ±0.3 per UID per epoch
 - **Commit-reveal** — questions committed before miner queries
-- **State persistence** — scoring state survives restarts
-- **Dedup seniority** — the earliest-registered hotkey, then the earliest commitment, wins duplicate clusters; read from chain at the epoch boundary
+- **State persistence** — scoring state, the seat and the comparison window
+  survive restarts; a lost window is rebuilt from published reveals
+- **Seniority from chain** — the first commitment block, read at the epoch
+  boundary; commitments at or before the activation block tie and are ordered
+  by a salted hash, so nothing can be gamed by committing early
 
 ## Protocol v2: flip procedure
 

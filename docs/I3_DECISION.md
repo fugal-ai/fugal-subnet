@@ -1,5 +1,10 @@
 # I3 decision memo: what should the score reward?
 
+> **Superseded for protocol v2 (November 2026):** from the activation block the
+> score is not headroom above a frontier but a paired net-value test against
+> one champion seat (`design-decisions.md`, Step 8; `INVARIANTS.md`, the "v2
+> release" entries). This memo is the v1 decision, live until that block.
+>
 > **Decided 2026-09-08: option 3, the cost-matched frontier, with a quality
 > floor borrowed from ThirtySpokes' "floors are hard" and continuous (not
 > king-of-the-hill) distribution. Implemented in `fugal_subnet/frontier.py`

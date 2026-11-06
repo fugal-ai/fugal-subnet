@@ -212,7 +212,7 @@ cmdline and initrd — so a stock cloud image would need the approved list
 republished on every kernel package update. **A fixed, reproducibly-built guest
 image with a pinned kernel and initrd is still a prerequisite for `--live` on
 mainnet.** dstack now supplies exactly that, and provisioning has been proven
-end to end against a live TD (see [OPEN_WORK.md](OPEN_WORK.md) for what the
+end to end against a live TD (see [REHEARSAL_2026-09-06.md](REHEARSAL_2026-09-06.md) for what the
 rehearsal did and did not demonstrate). Approved entries are
 `<base>:<compose_hash>` pairs; the procedure for publishing and rotating them
 is [APPROVED_ENTRY_ROTATION.md](APPROVED_ENTRY_ROTATION.md). The live entries

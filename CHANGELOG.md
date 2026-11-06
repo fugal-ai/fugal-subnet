@@ -38,6 +38,19 @@ no exclusion list, so `rebuild_from_reveals` re-admitted the flagged voter and
 a validator that rebuilt its frame scored the field against a different
 frontier from its peers (I1). Reveals now carry `frame_excluded_coldkeys`
 and the replay applies it. Reveals from before the field re-admit as before.
+### Fixed — every `FUGAL_` variable the package reads is classified; the pool inputs are digested; the reveal names the code
+
+The classification check scanned `config.py` only, so `FUGAL_SKIP_BENCHMARKS`,
+`FUGAL_POOL_UNPINNED` (benchmarks/loader.py) and `FUGAL_OPENROUTER_BASE`
+(tee/runtime.py) changed which questions a neuron scores, or whether the pool
+is verified at all, without being in the consensus digest or refused on
+finney. The check now scans all of `fugal_subnet/` and `neurons/`; those three
+are consensus variables; the fingerprint's `epoch` block carries the pinned
+pool manifests' hashes, the skip list in effect, the unpinned flag and the
+upstream override; and a new `code` block (`source_sha256`, `git_commit`)
+names the code in every reveal while staying outside the digest.
+**Every validator's consensus digest changes with this release**: upgrade
+together.
 
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 

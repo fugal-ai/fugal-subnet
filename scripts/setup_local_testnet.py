@@ -747,7 +747,7 @@ def check_wallet_dir_writable() -> None:
             "and try again:\n\n"
             "    docker compose down -v\n"
             "    docker volume rm fugal-subnet_fugal-wallets\n"
-            "    docker compose up --abort-on-container-exit\n\n"
+            "    docker compose -f docker-compose.localnet.yml up --abort-on-container-exit\n\n"
             "The volume holds throwaway dev keys only; nothing of value is lost."
         )
 

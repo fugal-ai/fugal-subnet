@@ -305,6 +305,36 @@ identical weight vectors.
 
 ---
 
+## After the flip: remove protocol v1
+
+Protocol v1 stays in the tree until no v1 epoch can occur, because one binary
+scores both rule sets and validators upgrade before the activation block.
+Once the flip has held for a full comparison window (48 epochs), remove v1 in
+one reviewed PR. Each item below changes a hash pin or a consensus path, so the
+PR updates `scripts/check_safety_invariants.py` and `docs/INVARIANTS.md` with
+it. Kept here, next to the launch sequence, so it is not forgotten.
+
+- `data/models.json`, `data/benchmark_tokens_v1.json`, `data/reference_frame.json`,
+  their copies under `fugal_subnet/routing_data/`, and their pins
+- `data/observations/benchmark_tokens_v1.jsonl`, `benchmark_tokens_v2.jsonl`
+  (v1 data despite the name; rename anything kept) and `bootstrap_frame_calls_v1.jsonl`
+- `fugal_subnet/benchmarks/pool_manifest.json` and the v1-only loaders
+  (`gsm8k`, `humaneval`, `livecode`, `gpqa`, the v1 `math`/`mmlu`/`aime`/`ifeval` sets)
+- the v1 scoring modules: `reference_frame.py`, `frontier.py`, `scoring.py`,
+  `dedup.py`, `head_distance.py`, the v1 halves of `evidence.py` and `rewards.py`
+- the v1 branch of `neurons/validator.py` and the hold-until-flip logic of
+  `neurons/miner.py`
+- `slicer.protocol_version_for_boundary` and `FUGAL_V2_ACTIVATION_BLOCK`,
+  once every validator runs v2 unconditionally
+- the v1 sections of `MINER_GUIDE.md`, `VALIDATOR_GUIDE.md`, `INVARIANTS.md`
+  and the README's "v1 until the activation block" sentences
+- the v1 rehearsal scenarios in `scripts/dress_rehearsal.py` that only exist
+  to prove the handover
+- release bookkeeping: the 0.3.0 CHANGELOG cut and `pyproject` version bump
+  happen at the flip; the v1 removal is the release after it
+
+---
+
 ## Wallet handling
 
 Testnet keys in this repo's rehearsal were regenerated unencrypted so the run

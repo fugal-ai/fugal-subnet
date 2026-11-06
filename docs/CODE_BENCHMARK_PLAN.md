@@ -3,6 +3,13 @@
 HumanEval and LiveCodeBench are currently **excluded from the pool**. This
 describes why, and what has to be true before they return.
 
+> **Protocol v2 (November 2026):** the v2 pool (`pool_manifest_v2.json`: MMLU,
+> MMLU-Pro, MATH, Omni-MATH, SuperGPQA, AIME, BeyondAIME, IFEval) carries no
+> code benchmark either, for the same reason. The phases below apply to v2
+> unchanged; the entry rotation procedure the final phase needs now exists
+> (`APPROVED_ENTRY_ROTATION.md`). Returning code questions is a pool-manifest
+> change, which is consensus, and so a release of its own.
+
 ## What happened
 
 The harness grades with `allow_exec=False`. The checkers for those benchmarks —

@@ -589,7 +589,16 @@ def check_price_table_v2_pinned(errors: list[str]) -> None:
 
 
 def check_price_table_pinned(errors: list[str]) -> None:
-    """The consensus price table must match its pin, and be well-formed."""
+    """The consensus price table must match its pin, and be well-formed.
+
+    Both copies — data/models.json (reviewed, pinned here) and
+    fugal_subnet/routing_data/models.json (hashed into the protocol identity
+    and read by the neurons) — must be byte-identical, as for the v2 table.
+    """
+    copy = ROOT / "fugal_subnet" / "routing_data" / "models.json"
+    if copy.exists() and (ROOT / "data" / "models.json").exists() \
+            and copy.read_bytes() != (ROOT / "data" / "models.json").read_bytes():
+        errors.append("data/models.json and fugal_subnet/routing_data/models.json differ")
     path = ROOT / "data" / "models.json"
     if not path.exists():
         errors.append("data/models.json is missing — validators cannot price proofs")

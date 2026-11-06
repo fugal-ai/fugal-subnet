@@ -23,7 +23,7 @@ of the release bundle or a requirement for this handoff.
 A tokenizer-only pass over all 10,000 selected prompts found 1,410 inputs above
 512 total tokens and none above 2048. All 6,400 completed short-input embeddings
 match the completed 2048 cache exactly. `partial-512.json` records these results;
-`scripts/summarize_partial_success_evaluation.py` reproduces the summary from the
+`scripts/experiments/summarize_partial_success_evaluation.py` reproduces the summary from the
 source extracts, pinned tokenizer, completed cache and interrupted checkpoint.
 
 Reported wall time and memory exclude the discarded attempt and later reads of

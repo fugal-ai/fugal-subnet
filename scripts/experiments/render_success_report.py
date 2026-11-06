@@ -91,17 +91,17 @@ def main():
             lines.append(f"| {v['lo']:.1f}–{v['lo']+.1:.1f} | {v['n']} | {v['mean_prediction']:.6f} | {v['success_rate']:.6f} |")
     lines += ["", "Per-model calibration tables, every λ-specific paired fixed-model contrast, model selection counts, and training histories are retained in the adjacent JSON reports.", "",
               "## Reproduction", "", "Use the exact three source extracts whose hashes appear above, and the pinned local Qwen snapshot. Reuse the existing selected indices; do not resample. The commands below include the optional, deferred full 512 comparison; it is not required to reproduce the limited report from its checked-in JSON results.", "", "```bash",
-              "python scripts/evaluate_success_contract.py --data /path/to/experiments \\",
+              "python scripts/experiments/evaluate_success_contract.py --data /path/to/experiments \\",
               "  --backbone /path/to/Qwen3-0.6B --output /path/to/results --max-length 2048",
-              "python scripts/evaluate_success_contract.py --data /path/to/experiments \\",
+              "python scripts/experiments/evaluate_success_contract.py --data /path/to/experiments \\",
               "  --backbone /path/to/Qwen3-0.6B --output /path/to/results --max-length 512",
-              "python scripts/render_success_report.py --results /path/to/results \\",
+              "python scripts/experiments/render_success_report.py --results /path/to/results \\",
               "  --output /path/to/results/REPORT.md", "```", "",
               "If completed later, experimental 512 artifacts use a distinct, unsupported production contract marker and cannot be loaded as 2048 success heads. The 2048 artifact can be exported offline and loaded in core through FUGAL_HEAD with its evaluated price snapshot. SPROUT token provenance is incomplete, so this bundle is not deployable. The model identifiers come from the historical extract; the bundle does not configure corresponding worker endpoints or establish their availability.", "",
               "No model calls were purchased, no winner was selected, no shipped head was replaced, and no testnet reset or release publication was performed.", ""]
     if partial:
         lines += ["To render this explicitly limited report without resuming the deferred run:", "", "```bash",
-                  "python scripts/render_success_report.py --results docs/decisions/evaluation/success-contract \\",
+                  "python scripts/experiments/render_success_report.py --results docs/decisions/evaluation/success-contract \\",
                   "  --partial-512 docs/decisions/evaluation/success-contract/partial-512.json \\",
                   "  --output /tmp/success-report.md", "```", ""]
     Path(args.output).write_text("\n".join(lines))

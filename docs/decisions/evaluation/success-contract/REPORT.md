@@ -145,11 +145,11 @@ Per-model calibration tables, every λ-specific paired fixed-model contrast, mod
 Use the exact three source extracts whose hashes appear above, and the pinned local Qwen snapshot. Reuse the existing selected indices; do not resample. The commands below include the optional, deferred full 512 comparison; it is not required to reproduce the limited report from its checked-in JSON results.
 
 ```bash
-python scripts/evaluate_success_contract.py --data /path/to/experiments \
+python scripts/experiments/evaluate_success_contract.py --data /path/to/experiments \
   --backbone /path/to/Qwen3-0.6B --output /path/to/results --max-length 2048
-python scripts/evaluate_success_contract.py --data /path/to/experiments \
+python scripts/experiments/evaluate_success_contract.py --data /path/to/experiments \
   --backbone /path/to/Qwen3-0.6B --output /path/to/results --max-length 512
-python scripts/render_success_report.py --results /path/to/results \
+python scripts/experiments/render_success_report.py --results /path/to/results \
   --output /path/to/results/REPORT.md
 ```
 
@@ -160,7 +160,7 @@ No model calls were purchased, no winner was selected, no shipped head was repla
 To render this explicitly limited report without resuming the deferred run:
 
 ```bash
-python scripts/render_success_report.py --results docs/evaluation/success-contract \
+python scripts/experiments/render_success_report.py --results docs/evaluation/success-contract \
   --partial-512 docs/evaluation/success-contract/partial-512.json \
   --output /tmp/success-report.md
 ```

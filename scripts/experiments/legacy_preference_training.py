@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 # isort: off
 # Order is load-bearing — do not let an import sorter reflow this block.
 # numpy and torch read the CPU-dispatch env vars once, at import, so the

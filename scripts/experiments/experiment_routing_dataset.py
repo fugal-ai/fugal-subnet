@@ -32,10 +32,10 @@ requests) -- the response and judge-rationale text, which is ~95% of the
 Usage
 -----
     # fetch the matrix (free, ~5 min)
-    python scripts/experiment_routing_dataset.py fetch
+    python scripts/experiments/experiment_routing_dataset.py fetch
 
     # embed prompts with the subnet's own backbone (GPU strongly advised)
-    python scripts/experiment_routing_dataset.py embed --limit 20000 --device cuda
+    python scripts/experiments/experiment_routing_dataset.py embed --limit 20000 --device cuda
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import numpy as np  # noqa: E402
 

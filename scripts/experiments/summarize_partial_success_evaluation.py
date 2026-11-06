@@ -4,8 +4,8 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.evaluate_success_contract import c, load_progress, np  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.experiments.evaluate_success_contract import c, load_progress, np  # noqa: E402
 
 
 def main():

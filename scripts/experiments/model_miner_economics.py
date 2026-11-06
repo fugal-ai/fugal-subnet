@@ -28,10 +28,10 @@ there is an equilibrium field size N* where the marginal miner breaks even, and
 output.
 
 Usage:
-    python scripts/model_miner_economics.py                  # base case
-    python scripts/model_miner_economics.py --live-chain     # re-read the chain
-    python scripts/model_miner_economics.py --sweep          # sensitivity grid
-    python scripts/model_miner_economics.py --recompute-slice-tokens
+    python scripts/experiments/model_miner_economics.py                  # base case
+    python scripts/experiments/model_miner_economics.py --live-chain     # re-read the chain
+    python scripts/experiments/model_miner_economics.py --sweep          # sensitivity grid
+    python scripts/experiments/model_miner_economics.py --recompute-slice-tokens
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 
 # --------------------------------------------------------------------------
 # Pinned inputs. Each is (value, provenance, source).

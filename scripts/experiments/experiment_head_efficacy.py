@@ -8,7 +8,7 @@ route better than chance, none of that machinery measures anything.
 
 Method
 ------
-Ground truth comes from `scripts/experiment_routing_dataset.py` (see its
+Ground truth comes from `scripts/experiments/experiment_routing_dataset.py` (see its
 docstring for what that data is and is not). Questions are split into disjoint
 train and test halves; every strategy is fit on train only and reported on
 test.
@@ -61,7 +61,7 @@ No paid API call happens anywhere in this file.
 
 Usage
 -----
-    python scripts/experiment_head_efficacy.py --json results/head_efficacy.json
+    python scripts/experiments/experiment_head_efficacy.py --json results/head_efficacy.json
 """
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 # isort: off
 # Order is load-bearing: numpy and torch read the CPU-dispatch env vars once,

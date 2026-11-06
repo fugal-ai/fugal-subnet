@@ -21,3 +21,4 @@ data/*.npz
 data/embeddings/
 data/experiments/
 data/observations/dense_calls_v*.jsonl
+scripts/

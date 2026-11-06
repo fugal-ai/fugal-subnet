@@ -872,7 +872,7 @@ so measure your own first epochs before you budget. The MeteringProxy inside
 the TEE records your exact costs, which are included in the attested proof.
 
 `docs/decisions/MINER_ECONOMICS.md` models whether this is net-positive and under what
-conditions; `scripts/model_miner_economics.py` lets you put your own numbers in.
+conditions; `scripts/experiments/model_miner_economics.py` lets you put your own numbers in.
 
 ## Moving from v1 to v2 (before the activation block)
 

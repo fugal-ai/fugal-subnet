@@ -21,9 +21,9 @@ measurement:
 
 The threshold goes at the geometric midpoint of the two bands. Fully offline;
 no API spend. Needs data/experiments/sprout_* from
-scripts/experiment_routing_dataset.py.
+scripts/experiments/experiment_routing_dataset.py.
 
-    python scripts/experiment_head_similarity.py --heads 8 --json results/head_similarity.json
+    python scripts/experiments/experiment_head_similarity.py --heads 8 --json results/head_similarity.json
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ import math
 import os
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 

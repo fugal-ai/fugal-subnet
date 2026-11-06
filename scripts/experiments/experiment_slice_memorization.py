@@ -2,7 +2,7 @@
 """What share of a score can a memoriser buy, for a given slice shape?
 
 Diligence 2026-10, finding 6. A linear head over 1024-dim embeddings can
-memorise roughly C questions outright (scripts/experiment_pool_memorization.py:
+memorise roughly C questions outright (scripts/experiments/experiment_pool_memorization.py:
 about 2,000 fully, saturating near 2,500 with random labels). A miner that
 pays once to run every model on C questions and ships the lookup earns, on
 every slice, the share of slots those questions fill. Which questions? The
@@ -14,7 +14,7 @@ This script computes that share in closed form for the real pool sizes and a
 range of SLICE_SHARE_FACTOR values, using the slicer itself for the quotas.
 Fully offline, deterministic, no data needed.
 
-    python scripts/experiment_slice_memorization.py --capacity 2500
+    python scripts/experiments/experiment_slice_memorization.py --capacity 2500
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ import os
 import sys
 from collections import Counter
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
 from fugal_subnet.benchmarks.slicer import select_slice  # noqa: E402

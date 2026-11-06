@@ -275,7 +275,7 @@ DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("FUGAL_DEDUP_THRESHOLD", "0.99"))
 # Parameter clause: two heads whose weights sit closer than this relative
 # Frobenius distance (fugal_subnet/head_distance.py) are one head whatever
 # their decisions say. Measured 2026-10-14 by
-# scripts/experiment_head_similarity.py on the cached SPROUT data: eight heads
+# scripts/experiments/experiment_head_similarity.py on the cached SPROUT data: eight heads
 # each trained on its own 60% of the questions sit 0.42-0.61 from each other
 # (and agree on only 85-92% of decisions); copies of one head with 10%
 # multiplicative weight noise sit at 0.10 and change 0-15 of 300 decisions,

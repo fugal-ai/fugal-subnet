@@ -11,12 +11,12 @@ three, so the labels are not decoration.
 Reproduce everything:
 
 ```bash
-python scripts/experiment_routing_dataset.py fetch
-python scripts/experiment_routing_dataset.py embed --limit 10000 --device cuda --batch-size 8
-python scripts/experiment_head_efficacy.py --json results/head_efficacy.json
-python scripts/experiment_pool_memorization.py embed-pool --device cuda --batch-size 8 --limit 12000
-python scripts/experiment_pool_memorization.py capacity --json results/pool_capacity.json
-python scripts/experiment_pool_memorization.py gap --json results/pool_gap.json
+python scripts/experiments/experiment_routing_dataset.py fetch
+python scripts/experiments/experiment_routing_dataset.py embed --limit 10000 --device cuda --batch-size 8
+python scripts/experiments/experiment_head_efficacy.py --json results/head_efficacy.json
+python scripts/experiments/experiment_pool_memorization.py embed-pool --device cuda --batch-size 8 --limit 12000
+python scripts/experiments/experiment_pool_memorization.py capacity --json results/pool_capacity.json
+python scripts/experiments/experiment_pool_memorization.py gap --json results/pool_gap.json
 ```
 
 No paid API call happens in any of it.
@@ -25,7 +25,7 @@ No paid API call happens in any of it.
 > (`quality^0.9 * thrift^0.1` against the best single model) has been replaced
 > by headroom above the constant-policy frontier (`docs/I3_DECISION.md`,
 > `fugal_subnet/frontier.py`), under which every constant policy scores zero.
-> `scripts/experiment_head_efficacy.py` keeps the old constants inline so the
+> `scripts/experiments/experiment_head_efficacy.py` keeps the old constants inline so the
 > numbers here stay reproducible. The 13-evaluation check this document asked
 > for exists as `tests/test_degenerate_constant_policy.py`.
 
@@ -423,7 +423,7 @@ decisions changed (measured with `find_duplicates`: 0–2 changed caught, 3+
 not). The fix adds a parameter clause, `head_distance.relative_distance`:
 the Frobenius distance between the two `[W | b]` matrices, rows aligned by
 model id, over the larger norm. `DEDUP_PARAM_DISTANCE` had to come from a
-measurement. `scripts/experiment_head_similarity.py` is the measurement,
+measurement. `scripts/experiments/experiment_head_similarity.py` is the measurement,
 fully offline on the cached SPROUT data.
 
 ### The first run measured the trainer, not the heads
@@ -483,7 +483,7 @@ capacity.
 **What a memoriser buys, per slice shape.** A slot from a benchmark of N_b
 questions with quota q_b is worth q_b / N_b per memorised question, so a
 C-question lookup table fills benchmarks in that order.
-`scripts/experiment_slice_memorization.py --capacity 2500` (closed form, the
+`scripts/experiments/experiment_slice_memorization.py --capacity 2500` (closed form, the
 slicer's own quotas):
 
 | `SLICE_SHARE_FACTOR` | quotas (aime, gsm8k, ifeval, math, mmlu) | small three | MMLU | memoriser's share |

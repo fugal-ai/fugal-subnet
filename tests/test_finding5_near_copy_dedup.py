@@ -17,7 +17,7 @@ Required behaviour, delivered by PR 5:
 
 Delivered by `head_distance.relative_distance`, the parameter and epsilon
 clauses in `dedup.py`, and `miner.caller_allowed`. Thresholds are measured by
-scripts/experiment_head_similarity.py and recorded in docs/decisions/HEAD_EFFICACY.md.
+scripts/experiments/experiment_head_similarity.py and recorded in docs/decisions/HEAD_EFFICACY.md.
 """
 from __future__ import annotations
 

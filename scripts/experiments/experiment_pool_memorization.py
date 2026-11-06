@@ -23,7 +23,7 @@ Two things decide it, and they are separate questions:
     learns is pool-specific? `gap` trains on K questions and reports accuracy
     on those same K (in-pool) against held-out questions (out-of-pool). This
     needs the SPROUT ground truth from
-    `scripts/experiment_routing_dataset.py`; `capacity` does not, and runs on
+    `scripts/experiments/experiment_routing_dataset.py`; `capacity` does not, and runs on
     the real pool's own embeddings.
 
 Both are fully offline. No paid API call happens anywhere in this file.
@@ -31,13 +31,13 @@ Both are fully offline. No paid API call happens anywhere in this file.
 Usage
 -----
     # embed the real pool once (GPU strongly advised)
-    python scripts/experiment_pool_memorization.py embed-pool --device cuda
+    python scripts/experiments/experiment_pool_memorization.py embed-pool --device cuda
 
     # (1) memorisation capacity, on the real pool
-    python scripts/experiment_pool_memorization.py capacity --json results/pool_capacity.json
+    python scripts/experiments/experiment_pool_memorization.py capacity --json results/pool_capacity.json
 
     # (2) in-pool vs out-of-pool, on SPROUT routing labels
-    python scripts/experiment_pool_memorization.py gap --json results/pool_gap.json
+    python scripts/experiments/experiment_pool_memorization.py gap --json results/pool_gap.json
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 # isort: off
 # Order is load-bearing: numpy and torch read the CPU-dispatch env vars once,

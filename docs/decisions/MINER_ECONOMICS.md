@@ -44,15 +44,15 @@ earning miners** — still more than any subnet on the network currently carries
 > `SLICE_SHARE_FACTOR`. The cost side below is unchanged; the revenue side's
 > ramp (how many epochs until a new subnet pays in full) and the constant
 > policies' zero are now different facts. Re-run
-> `scripts/model_miner_economics.py --sweep` against those constants before
+> `scripts/experiments/model_miner_economics.py --sweep` against those constants before
 > quoting the numbers below to a prospective miner.
 
 Reproduce every number here:
 
 ```bash
-python scripts/model_miner_economics.py --sweep         # base case + sweeps
-python scripts/model_miner_economics.py --live-chain    # re-read the chain
-python scripts/model_miner_economics.py --recompute-slice-tokens
+python scripts/experiments/model_miner_economics.py --sweep         # base case + sweeps
+python scripts/experiments/model_miner_economics.py --live-chain    # re-read the chain
+python scripts/experiments/model_miner_economics.py --recompute-slice-tokens
 ```
 
 No paid API calls. The script cannot make one — it never imports

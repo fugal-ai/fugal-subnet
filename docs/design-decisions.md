@@ -1,6 +1,9 @@
 # Fugal Subnet — First Principles Design Decisions
 
-Living document. Each step records the decision, the reasoning, and what to implement.
+Each step records the decision, the reasoning, and what to implement. Steps
+0–7 are the protocol v1 design (August–September 2026) and are kept as
+written; Step 8 is the protocol v2 decision (November 2026). The current
+rules, with what enforces each, are in `INVARIANTS.md`; this file is why.
 
 ---
 
@@ -320,12 +323,13 @@ Miner discovers which questions are in the pool and overfits.
 |---|---|---|
 | Step 3: TEE infrastructure | **Implemented** | `fugal_subnet/tee/` — attestation, runtime, confine, proof, verify, harness. TDX patterns forked from ThirtySpokes/Chutes (MIT). |
 | Step 3: TEE *bindings* | **Implemented** | Measurement from the quote's own registers, slice binding, head binding, bundle binding, cost consistency as rejection. `run_tee_attacks.py` keeps an exploit for each. |
-| Step 4: Evidence accumulation | **Implemented** | EWMA-decayed binomial, artifact-keyed reset, miss=0, effective-n capped by pool size, burn-in ramp. |
-| Step 2: Scoring formula | **Superseded 2026-09-08** | Now headroom above the constant-policy frontier (`docs/I3_DECISION.md`, `fugal_subnet/frontier.py`). The geometric mean and its w=0.9 derivation below are kept as the record of why a single-model reference could not work: a constant policy on a cheaper point of the same curve beat every router. |
-| Step 2: Cost model | **Implemented** | Pinned `data/models.json` as the consensus denominator; attested provider spend recorded alongside for drift detection. |
+| Step 4: Evidence accumulation | **Implemented (v1); replaced in v2** | v1: EWMA-decayed binomial, artifact-keyed reset, miss=0, effective-n capped by pool size, burn-in ramp. v2: the E″ miss rule (a miss before burn-in resets, after burn-in decays and restarts burn-in) and a 1,500-question burn-in to take a seat (`INVARIANTS.md`, "the v2 miss rule"). |
+| Step 2: Scoring formula | **Superseded twice** | 2026-09-08: headroom above the constant-policy frontier (`docs/I3_DECISION.md`, `fugal_subnet/frontier.py`), live on mainnet under v1. 2026-11 (Step 8): protocol v2 replaces it with one champion seat and a paired net-value test (`fugal_subnet/champion.py`). The geometric mean and its w=0.9 derivation are kept as the record of why a single-model reference could not work. |
+| Step 2: Cost model | **Implemented** | Pinned price tables (`data/models.json` v1, `data/models_v2.json` v2) and reviewed token manifests as the consensus denominator; attested provider spend recorded alongside for drift detection. v2 prices a policy from the cell's median attested tokens, not the frame's verbosity. |
 | — : Exploration + reference frame | **Implemented** | Nonce-derived quota recovers the counterfactual the TEE removes; frame pooled over time, not over miners. |
 | Step 5: Anti-gaming (held-out) | **Deferred, deliberately** | See below. |
-| Step 6: Weight-setting | Proportional | Fine for launch; revisit as the field grows. |
+| Step 5: Copying | **v1 dedup; v2 copy rule** | v1: three-clause resemblance dedup with registration seniority. v2: no resemblance test; a head belongs to the coldkey that first committed it, and a junior must beat every senior seat holder by the margin (`fugal_subnet/copy_rule.py`). |
+| Step 6: Weight-setting | **Proportional (v1); seats (v2)** | v1 pays the field in proportion to score. v2 pays 85/10/5 to the last three champions and burns the rest (Step 8). |
 
 ### The one thing deliberately not built
 
@@ -362,7 +366,48 @@ they were measured rather than reasoned about:
   router that lost 40% of quality at 1.095, above a perfect quality match at
   1.000 — which contradicts the product claim it was supposed to encode.
 
+## Step 8: Protocol v2 — one champion seat (decided November 2026)
+
+**Decision:** The miner share goes to one champion seat (85%) and the two
+champions before it (10%, 5%). A challenger takes the seat only by beating the
+champion on the same questions by a cost-adjusted margin (net value: accuracy
+gained, valued at 30 questions of a pinned anchor's spend, minus extra dollars;
+hard questions count double), with a 90% paired-bootstrap lower bound over a
+48-epoch window and at least 1,500 paired questions. A live champion holds with
+no margin. Copies cannot win: a copy is never measurably better than its source,
+and a junior head must beat every senior seat holder. Exact rules and the
+checks that hold them: `INVARIANTS.md`, the thirteen "v2 release" entries.
+
+**Reasoning:**
+- The product is the *best* router, not a field of adequate ones. Proportional
+  pay rewarded being near a curve; many near-equal heads, and their copies,
+  earned nearly as much as the best one, so the marginal reward for actually
+  being better was small (`MINER_ECONOMICS.md` models that regime).
+- A paired comparison on the same questions removes the question-mix noise that
+  made unpaired scores hard to separate (measured on mainnet reveals: paired
+  variance 0.23 of unpaired with shared cells).
+- Noise must not pay. Simulated with the shipped test: a head one accuracy
+  point better takes the seat in about six epochs; a head two points better at
+  the five-epoch floor; an equal head takes it in 25% of 48-epoch runs under
+  the margin, and would take it within six epochs every time without a
+  window. The window and margin are the price of not paying a lottery.
+- Nothing that pays reads the reference frame, so the frame's cold-start and
+  model-list changes cannot move pay.
+
+**Costs accepted, stated plainly:** a constant-policy head can be the first
+champion (the easiest seat there is to take); a champion can withhold a bad
+epoch at the cost of that epoch's whole share; a head that only ties a senior
+earns nothing even if independent; a champion's own replacement waits out a
+24-epoch retire bar unless it served beside the old head (`MINER_GUIDE.md`,
+"Updating Your Head").
+
+**Implication:** every head is retrained for the v2 model list; the flip is one
+activation block on every validator; v1 code is removed after the flip has held
+(`MAINNET_LAUNCH.md`).
+
 ## Open questions for further examination
+
+v1 (live until the activation block; moot after it):
 
 - Evidence half-life is 200 epochs and the frame's is 500. Both are guesses that
   should be calibrated on testnet, the same way the frame prior was.
@@ -374,3 +419,19 @@ they were measured rather than reasoned about:
   revisited once real routers exist.
 - Exploration is 5% of the slice. Enough to converge the frame in a reasonable
   number of epochs at moderate field sizes; unmeasured at very small ones.
+
+v2 (decisions for the owner before or soon after the flip; from the 2026-11
+review):
+
+- The high-water accuracy gate can lock a champion in after field-wide drift
+  (every challenger must match the seated champion's Wilson lower bound from
+  when it was seated, even if the whole field has moved).
+- A validator-side verification outage (collateral server down) breaks every
+  challenger's unbroken run and restarts its burn-in, through no miner's fault.
+- Confidence 90% vs 95%: 95% roughly halves the equal-head false take (25% over
+  48 epochs) and makes half-point improvements slower to recognise.
+- Whether a champion's own replacement should inherit its seat rather than face
+  the 24-epoch retire bar.
+- v2 economics: `MINER_ECONOMICS.md` models proportional pay; under seats the
+  answer is "is the champion net-positive, and is a challenger's burn-in worth
+  it", which has not been modelled.

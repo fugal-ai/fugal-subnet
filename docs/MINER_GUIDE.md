@@ -917,7 +917,10 @@ Use a second instance:
 2. **Bring up a second TD on the v2 image** (`<V2_IMAGE_DIGEST>`) **with the
    same hotkey**, beside the running v1 TD, and provision it as usual. It
    embeds and then **holds**: no axon and no commitment until the epoch before
-   `<ACTIVATION_BLOCK>`. The image reads the activation block itself. Do this
+   `<ACTIVATION_BLOCK>`. The image reads the activation block from
+   `FUGAL_V2_ACTIVATION_BLOCK` in its compose, so the v2 compose (and with it
+   the compose hash and the approved entry) carries the block; a compose
+   without it is a v1 miner. Do this
    days before the flip, not hours: the first boot needs Hugging Face for the
    pool and then several hours for the embeddings, and both are behind you
    once the TD is holding.

@@ -51,6 +51,18 @@ upstream override; and a new `code` block (`source_sha256`, `git_commit`)
 names the code in every reveal while staying outside the digest.
 **Every validator's consensus digest changes with this release**: upgrade
 together.
+### Changed — a live compose must be a frozen one; the activation block is part of the v2 compose
+
+Both `deploy/dstack/docker-compose*.yaml` were edited after the 2026-11-03c
+freeze (`FUGAL_POOL_CACHE_V2`) and matched none of the eight frozen
+app-compose files, so a miner deploying from the checkout would compute a
+compose hash no approved entry names. `scripts/check_safety_invariants.py`
+now refuses a live compose that no frozen file embeds, and
+`scripts/publish_approved_entry.py` refuses to write a note for a frozen file
+that does not match a live compose (`--allow-drift` overrides). The docs and
+`validator.env.example` now say where the activation block lives: in the
+validator's environment AND in the v2 miner compose, so choosing it fixes the
+v2 compose hash and the approved entry.
 
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 

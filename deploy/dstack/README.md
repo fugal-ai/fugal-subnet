@@ -47,7 +47,13 @@ whenever GCP rolls firmware; see the rotation doc for how a base rotation is run
 `docker-compose.yaml` in this directory is the mainnet compose (`finney`, netuid 70);
 `docker-compose.test.yaml` is its testnet twin (`test`, netuid 552) for rehearsals.
 Copy the one for your network into the project as `docker-compose.yaml`. Pin the
-image by digest.
+image by digest. From the protocol v2 release the compose also carries
+`FUGAL_V2_ACTIVATION_BLOCK=<block>`: the miner reads it from here, and it is
+therefore part of the compose hash, so the activation block is fixed by the
+approved entry itself (MINER_GUIDE § "Protocol v2").
+
+The pool embedding on first boot scales with the pool: the 13-hour figure
+below was measured on the v1 pool (21,553 questions); the v2 pool is 29,036.
 
 ## Identity → approved entry
 

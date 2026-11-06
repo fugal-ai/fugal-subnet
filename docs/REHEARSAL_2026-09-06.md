@@ -50,7 +50,7 @@ and observation (C). All infrastructure actions were authorised per step.
 | | |
 |---|---|
 | Miner image | `us-central1-docker.pkg.dev/fugal-tdx-test/fugal/miner@sha256:3430da97f5f9182f0d2e8f90f64da8c6ab859a995320591745d6c69d36a8541f`, Cloud Build from a clean checkout of `e284963`, 12 m 56 s |
-| Compose | `deploy/dstack/app-compose.frozen-2026-09-06.json`, 3182 bytes, byte-identical for TD1 and TD2 (TD2's `app.json` `name` had to be set to `fugal-miner`; the tool copies it into the compose) |
+| Compose | `deploy/dstack/app-compose.frozen-2026-09-06.json` (removed from the tree 2026-11-06 with the other September freezes; `git show 5cef673:deploy/dstack/app-compose.frozen-2026-09-06.json`), 3182 bytes, byte-identical for TD1 and TD2 (TD2's `app.json` `name` had to be set to `fugal-miner`; the tool copies it into the compose) |
 | Compose hash | `cf31a1a469c7f3a190deb00b4e010a1a619c933d4e28edcc45bb48753dce69d2`, recomputed by the coordinator from the raw bytes with `compute_app_identity.py --compose` |
 | Base measurement | `12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141` |
 | `FUGAL_TEE_MEASUREMENTS` | `12a1f2f5…9141:cf31a1a4…69d2`, on both validators |

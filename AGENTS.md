@@ -228,4 +228,4 @@ over the attested provisioning channel (`scripts/provision_td.py`).
   because in-container miners run without chain commitments
 - **Weight setting on local chain**: the chain's 100-block rate limit means
   consecutive `--once` runs may get "weights already set" — normal at local
-  testnet cadence, not an issue at one-hour mainnet epochs (300 blocks)
+  testnet cadence, not an issue at 72-minute mainnet epochs (tempo 360 × 12 s = 4320 s, 360 blocks)

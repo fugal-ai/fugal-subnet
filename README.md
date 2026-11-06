@@ -101,7 +101,7 @@ the attested provisioning channel; see the [Miner Guide](docs/MINER_GUIDE.md).
 ## How It Works
 
 1. **Epochs are aligned to chain blocks.** Every `EPOCH_INTERVAL/12` blocks
-   (300 blocks, one hour) is an epoch boundary. The boundary block's hash
+   is an epoch boundary (mainnet: tempo 360, so 360 blocks, 72 minutes). The boundary block's hash
    seeds a nonce that selects 300 questions from the pinned pool, filling the
    published category quotas (40% knowledge, 30% hard, 25% math, 5%
    instruction). Every honest validator derives the identical slice, and

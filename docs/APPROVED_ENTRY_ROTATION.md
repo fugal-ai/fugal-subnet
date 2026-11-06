@@ -85,10 +85,10 @@ down is a worse failure than one that needs an operator to run step 5.
 | `12a1f2f5…9141:12d945d2…3910` | `59039d01…692a` | `45729c2` | 2026-09-06 | 2026-09-07 (never verified; TDs recreated) |
 | `12a1f2f5…9141:00354525…ab0d` | `9d7916c3…e0a9` | `d9fa3a5` | 2026-09-07 | 2026-11-03 (private-registry image; pre-success-contract protocol; testnet only) |
 | `12a1f2f5…9141:41de1e4c…9e10` | `e4c2deff…6ca4` | `37495ae` | 2026-09-07 | 2026-11-03 (same) |
-| `f4be9383…aa427:dcd0dd8d…2d7f` (**test / 552**, warm-up; compose sets `FUGAL_EXPLORE_FRACTION=0.5`) | `3f6e3e2d…fda12` (`image-v2026.11.03b`, public ghcr) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
-| `f4be9383…aa427:ed2be85f…85c4` (**finney / 70**, mainnet) | `3f6e3e2d…fda12` (same image) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
-| `f4be9383…aa427:c9b5c43b…0dad8` (**test / 552**, warm-up twin) | `843460e6…4a6f8` (`image-v2026.11.03c`, public ghcr; #121 retries) | `1a0bce0` (image), this PR's merge (compose) | 2026-11-03 | — |
-| `f4be9383…aa427:9ab870cf…f166` (**finney / 70**, mainnet) | `843460e6…4a6f8` (same image) | `1a0bce0` (image), this PR's merge (compose) | 2026-11-03 (base re-measured on the first 03c TD, 23:16 UTC: unchanged) | — ; the 03b entry stays approved beside it for the 48 h window |
+| `f4be9383…aa427:dcd0dd8d…2d7f` (**test / 552**, warm-up; compose sets `FUGAL_EXPLORE_FRACTION=0.5`) | `3f6e3e2d…fda12` (`image-v2026.11.03b`, public ghcr) | `bac2a33` (image), `46507ce` (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
+| `f4be9383…aa427:ed2be85f…85c4` (**finney / 70**, mainnet) | `3f6e3e2d…fda12` (same image) | `bac2a33` (image), `46507ce` (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
+| `f4be9383…aa427:c9b5c43b…0dad8` (**test / 552**, warm-up twin) | `843460e6…4a6f8` (`image-v2026.11.03c`, public ghcr; #121 retries) | `1a0bce0` (image), `79ab299` (compose) | 2026-11-03 | — |
+| `f4be9383…aa427:9ab870cf…f166` (**finney / 70**, mainnet) | `843460e6…4a6f8` (same image) | `1a0bce0` (image), `79ab299` (compose) | 2026-11-03 (base re-measured on the first 03c TD, 23:16 UTC: unchanged) | — (the only live entries since 03b retired on 2026-11-06) |
 
 **03b retirement is a hard date.** The two `image-v2026.11.03b` entries retire at
 **2026-11-06 00:00 UTC**, published 2026-11-04, 48 h after the 03c release plus
@@ -143,8 +143,9 @@ entries retire at the activation block. The activation block itself travels in
 the v2 compose (`FUGAL_V2_ACTIVATION_BLOCK` in `deploy/dstack/docker-compose.yaml`,
 which the miner image reads), so choosing it is what fixes the v2 compose hash:
 freeze the compose after the block is chosen, not before, and publish that
-entry. `scripts/check_safety_invariants.py` refuses a live compose that no
-frozen app-compose embeds, so an edit after a freeze cannot ship unnoticed.
+entry. `scripts/check_safety_invariants.py` reports a live compose that no
+frozen app-compose embeds (a warning in CI, a failure with `--release`, the
+launch gate), so an edit after a freeze cannot ship unnoticed.
 
 ## What must not happen
 

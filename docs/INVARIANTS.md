@@ -33,7 +33,7 @@ here, and a check that enforces it.**
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior **and no external dependency** can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. Every call that leaves the process on the epoch path is bounded. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py`, `tests/test_collateral_timeout.py`, `check_safety_invariants.check_external_calls_bounded` |
 | **I7** | **Auditability.** Any divergence between two validators is diagnosable after the fact from published artifacts. | `fugal_subnet/fingerprint.py`, `environment` block in every `reveal.json` |
-| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (29 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
+| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (32 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
 | **I9** | **Reference-frame agreement.** Every validator derives the same reference frame from the same published exploration samples, and no single miner can materially move it. | `fugal_subnet/reference_frame.py` (order-independent accumulation), `check_determinism.py` `frame` stage, `tests/test_non_interference.py` |
 
 ## How TEE resolves prior gaps
@@ -2794,7 +2794,8 @@ silently alter the question pool.
 ## Known gaps
 
 **Pool memorization (open, bounded 2026-10-14).** The question pool is public
-and finite (~21K). A miner willing to pay once to evaluate every model on
+and finite (21,553 questions in v1; 29,036 in v2, where the slice fills
+category quotas first and the same share cap applies within a category). A miner willing to pay once to evaluate every model on
 every question could publish a head that encodes the resulting lookup rather
 than a routing policy. It would score well here and generalize to nothing.
 
@@ -2845,8 +2846,14 @@ pool that is deliberately not the pinned one — a local testnet, a rehearsal
 fixture — must declare it with `FUGAL_POOL_UNPINNED=1`, which logs a warning
 naming itself. `tests/test_pool_override_verified.py` holds it.
 
-**The approved measurement is reproducible but not durable (open, blocks
-`--live`).** `measurement_id` is sha256 over MRTD and RTMR0-2. Measured on real
+**The approved measurement is reproducible but not durable (superseded).**
+*Status 2026-11-06:* the record below predates two changes. RTMR0 was dropped
+from `measurement_id` (I8, "two changes made now"), so the machine shape no
+longer moves the base; and the durability answer is the dstack guest image
+plus the rotation procedure in `docs/APPROVED_ENTRY_ROTATION.md`, under which
+`--live` has run on mainnet since 2026-11-03 (the base did move once, with a
+GCP firmware roll, and was rotated by that procedure). Kept as the record of
+the gap. At the time: `measurement_id` was sha256 over MRTD and RTMR0-2. Measured on real
 TDX hardware rather than reasoned about: two independently created
 `c3-standard-4` instances, both pinned to `ubuntu-2404-noble-amd64-v20260903`,
 created 15 minutes apart with the first deleted in between, produced a
@@ -2888,8 +2895,8 @@ cannot score, derived from `config.HARNESS_ALLOW_EXEC` so that enabling
 execution re-includes the benchmarks in one place.
 `tests/test_grader_policy.py` fails if the policy and the pool drift apart
 again, in either direction. Putting them back is
-[CODE_BENCHMARK_PLAN.md](CODE_BENCHMARK_PLAN.md), and its final phase needs the
-measurement rotation procedure that does not exist yet.
+[CODE_BENCHMARK_PLAN.md](CODE_BENCHMARK_PLAN.md); its final phase needs the
+entry rotation procedure, which now exists (`docs/APPROVED_ENTRY_ROTATION.md`).
 
 **The model upstream is miner-controlled (fixed 2026-10-14; was OPEN, breaks I3).**
 
@@ -3055,13 +3062,14 @@ or a design and its allow-list.
 ## Running the checks
 
 ```bash
-python scripts/check_safety_invariants.py          # structural invariants + TEE safety
-python scripts/check_determinism.py                # I1, same-host
-python scripts/check_determinism.py --perturb      # I1, simulated second host
-python -m fugal_subnet.attacks.run_attacks         # I3, hostile model output
-python -m fugal_subnet.attacks.run_miner_attacks   # I2/I6, hostile miner input
-python -m fugal_subnet.attacks.run_tee_attacks     # I8/I3, forged proofs
-pytest -q                                          # I4, I9, evidence, TEE, end-to-end
+uv run python scripts/check_safety_invariants.py           # structural invariants + TEE safety
+uv run python scripts/check_safety_invariants.py --release # + the launch gate (composes frozen)
+uv run python scripts/check_determinism.py                 # I1, same-host
+uv run python scripts/check_determinism.py --perturb       # I1, simulated second host
+uv run python -m fugal_subnet.attacks.run_attacks          # I3, hostile model output
+uv run python -m fugal_subnet.attacks.run_miner_attacks    # I2/I6, hostile miner input
+uv run python -m fugal_subnet.attacks.run_tee_attacks      # I8/I3, forged proofs
+uv run pytest -q                                           # I4, I9, evidence, TEE, end-to-end
 ```
 
 All of these run in CI on every push. None requires a chain, a network, or API
@@ -3082,19 +3090,20 @@ every `set_weights` failed while the neurons reported success.
    consecutive epochs, identical scores, weights, reveals and frames (I1, I9).
 2. ~~Run miners on real Intel TDX VMs and verify DCAP attestation
    end-to-end~~ — **done**, GCP `c3-standard-4` under dstack 0.6.0-rc0.
-3. Publish approved entries and their rotation — the procedure is
-   `docs/APPROVED_ENTRY_ROTATION.md` (entries are `<base>:<compose_hash>`;
-   the base is sha256 over MRTD and RTMR1-2, RTMR0 excluded). The channel is
-   built (2026-10-14: `.github/workflows/image.yml` publishes the image by
-   digest, `scripts/publish_approved_entry.py` writes the note,
-   `scripts/fetch_approved_entries.py` verifies the signed tag). What remains
-   is the first signed release: a signing key in `deploy/keys/allowed_signers`
-   and a tag.
+3. ~~Publish approved entries and their rotation~~ — **done 2026-11-03**:
+   the procedure is `docs/APPROVED_ENTRY_ROTATION.md`, the channel is
+   `.github/workflows/image.yml` + `scripts/publish_approved_entry.py` +
+   `scripts/fetch_approved_entries.py`, the first signed releases are
+   `image-v2026.11.03b` and `03c`, and the 03b → 03c rotation ran to its
+   published retirement date (2026-11-06).
 4. ~~Decide I3 (`docs/I3_DECISION.md`) before launch~~ — **decided
    2026-09-08** (frontier scoring) and **re-fixed 2026-10-14** (raw-mean
    valuation, distinct-trial confidence; I3 subsections above).
 5. Second independent validator operator; coldkeys encrypted and off every
-   neuron host; monitoring with an alert channel.
+   neuron host; monitoring with an alert channel. *2026-11-06:* four
+   validators hold permits on netuid 70 and the alerting watch ships
+   (`deploy/systemd/fugal-watch.*`); whether the operators are independent is
+   an organisational fact, not a repository one.
 6. ~~Recalibrate the reference-frame prior from real testnet data.~~ The prior
    no longer values the frontier (I3, 2026-10-14). ~~What remains is to ship
    `data/reference_frame.json` and pin it.~~ Shipped 2026-11-03, built from
@@ -3103,21 +3112,26 @@ every `set_weights` failed while the neurons reported success.
 7. ~~Close or consciously accept the pool-memorization gap above.~~ Bounded
    2026-10-14 (`SLICE_SHARE_FACTOR`; a memoriser buys ~17% of a score) and
    the residual is accepted — see "Pool memorization" under Known gaps.
-8. Validate real TDX attestation on a confidential VM —
-   `docs/TDX_VALIDATION.md`. DCAP signature verification and `measurement_id`
-   matching are the only checks no local run can make; a consumer CPU cannot
-   produce a genuine quote. Mock mode is their absence, not a weaker form.
+8. ~~Validate real TDX attestation on a confidential VM~~ — **done** on GCP
+   `c3` under dstack 0.6.0-rc0 (`docs/TDX_VALIDATION.md`): proofs verified
+   `UpToDate`, a genuine proof refused against a retired entry; live on
+   mainnet since 2026-11-03.
 9. Validate the cost path against real OpenRouter —
-   `docs/LIVE_API_VALIDATION.md`. The pinned price table is deterministic, not
-   necessarily correct; only a live comparison distinguishes the two.
-10. First signed approved-entry release (`docs/APPROVED_ENTRY_ROTATION.md`,
-    "Publishing"): a signing key in `deploy/keys/allowed_signers` and an
-    `image-v<date>` tag. Validators then carry only `<base>:<compose_hash>`
-    entries; a bare base is refused.
-11. A public-read reveal bucket (`FUGAL_REVEAL_BUCKET`) on every validator.
-12. Confirm `config.FINNEY_GENESIS_HASH` against a finney node
-    (`subtensor.substrate.get_block_hash(0)`); a wrong value makes the
-    mock-on-finney guard inert.
+   `docs/LIVE_API_VALIDATION.md`. **Measured once** at account level (within
+   ~5% over four miner-epochs) and per model in the v2 token run
+   (`data/benchmark_tokens_protocol_v2.json`, `billing_check`). Repeat on the
+   pinned v2 pool before the flip (MAINNET_LAUNCH, "The v2 release").
+10. ~~First signed approved-entry release~~ — **done 2026-11-03** (item 3).
+11. ~~A public-read reveal bucket on every validator~~ — **done**: reveals
+    publish to `gs://fugal-reveals/70/<epoch_id>/reveal.json`
+    (`docs/MINER_GUIDE.md`, "Reading the published reveals").
+12. ~~Confirm `config.FINNEY_GENESIS_HASH` against a finney node~~ —
+    **confirmed 2026-11-05** (`get_block_hash(0)` on finney matches the
+    constant; review F-078).
+13. Protocol v2 (added 2026-11-06): `docs/MAINNET_LAUNCH.md`, "The v2
+    release, in order". A v2 epoch has run only on the local chain
+    (`dress_rehearsal.py --scenario v2_flip`, 16/16 on 2026-11-05); the
+    testnet rehearsal of the flip is what verifies it on a public chain.
 
 ## Success protocol transition
 

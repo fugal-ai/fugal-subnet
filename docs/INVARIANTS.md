@@ -40,7 +40,7 @@ here, and a check that enforces it.**
 
 ### I3 — RESOLVED 2026-09-08: the score is headroom above the constant-policy frontier
 
-**Status: decided (`docs/I3_DECISION.md`, option 3) and implemented.** The
+**Status: decided (`docs/decisions/I3_DECISION.md`, option 3) and implemented.** The
 score is no longer `quality^0.9 * thrift^0.1` against the best single model.
 It is the accuracy a miner achieves **above what any non-routing policy buys at
 the miner's own cost**, where the reference is the upper convex hull of the
@@ -1286,7 +1286,7 @@ per-proof allowance and a per-epoch budget, and a timeout records the proof
 as `unverifiable`; I6, "a bare timeout trades a visible halt for a silent
 fork"). The second is a standing policy, not a fix: every DCAP status is
 accepted so that cloud firmware lag does not drop honest miners
-(`OPEN_WORK.md` §4), and whether `dcap-qvl` 0.6.3 raises on `Revoked` is
+(`docs/decisions/OPEN_WORK.md` §4), and whether `dcap-qvl` 0.6.3 raises on `Revoked` is
 still unanswered. As found:
 
   - The `timeout=30` guards only the `ThreadPoolExecutor` branch, which runs
@@ -1666,7 +1666,7 @@ synchronous path. It was **ineffective on both branches**:
 
 Reading the code found a timeout and stopped there. Only running it showed the
 timeout was decorative — the same lesson recorded in the method note of
-`docs/OPEN_WORK.md`, arrived at again by the same route. The fix is
+`docs/decisions/OPEN_WORK.md`, arrived at again by the same route. The fix is
 `asyncio.wait_for` **inside** the coroutine, because it *cancels* the work
 rather than abandoning the wait: the loop unwinds, the worker thread finishes,
 and shutdown has nothing to wait for. One mechanism, both branches.
@@ -2030,7 +2030,7 @@ collected close to N shares for one TDX VM each. Diligence 2026-10, finding 5.
    threshold at zero (`neurons/miner.py`, `caller_allowed`). Mock stays open.
 2. **Parameter clause.** `head_distance.relative_distance`, rows aligned by
    model id; below `DEDUP_PARAM_DISTANCE` (0.2) two heads are one. Measured
-   (`docs/HEAD_EFFICACY.md`, experiment 3): independent heads sit at 0.42+,
+   (`docs/decisions/HEAD_EFFICACY.md`, experiment 3): independent heads sit at 0.42+,
    a copy nudged until 15 decisions change sits at 0.10. Renaming rows to
    dodge alignment fails at load, because every model id must be priced.
 3. **Epsilon rule.** `dedup.epsilon_disqualified`: a head agreeing with a
@@ -2816,7 +2816,7 @@ every question could publish a head that encodes the resulting lookup rather
 than a routing policy. It would score well here and generalize to nothing.
 
 What bounds it is head capacity: a linear head memorises about 2,000–2,500
-questions (`docs/HEAD_EFFICACY.md`, experiment 2). What the 2026-10-14
+questions (`docs/decisions/HEAD_EFFICACY.md`, experiment 2). What the 2026-10-14
 diligence review found (finding 6) is that the slicer undid that bound: equal
 per-benchmark quotas gave AIME, GSM8K and IFEval — 2,511 questions, confirmed
 memorisable as a set (experiment 4) — 180 of 300 slots, so a lookup table the
@@ -2912,7 +2912,7 @@ cannot score, derived from `config.HARNESS_ALLOW_EXEC` so that enabling
 execution re-includes the benchmarks in one place.
 `tests/test_grader_policy.py` fails if the policy and the pool drift apart
 again, in either direction. Putting them back is
-[CODE_BENCHMARK_PLAN.md](CODE_BENCHMARK_PLAN.md); its final phase needs the
+[CODE_BENCHMARK_PLAN.md](decisions/CODE_BENCHMARK_PLAN.md); its final phase needs the
 entry rotation procedure, which now exists (`docs/APPROVED_ENTRY_ROTATION.md`).
 
 **The model upstream is miner-controlled (fixed 2026-10-14; was OPEN, breaks I3).**
@@ -3059,7 +3059,7 @@ python scripts/dress_rehearsal.py --scenario all
 
 ### The production rehearsal on netuid 552 (2026-09-06/07)
 
-The record is `docs/REHEARSAL_2026-09-06.md`, every line labelled measured or
+The record is `docs/decisions/REHEARSAL_2026-09-06.md`, every line labelled measured or
 read. In one sentence: two `--live` validators on different CPU architectures
 scored three consecutive epochs from two dstack TDX miners' real, DCAP-verified
 proofs with byte-identical scores, weights and reveals, set those weights on
@@ -3094,7 +3094,7 @@ spend.
 
 ## Before mainnet
 
-See [OPEN_WORK.md](OPEN_WORK.md) for what is unfinished in the PCCS/collateral
+See [OPEN_WORK.md](decisions/OPEN_WORK.md) for what is unfinished in the PCCS/collateral
 work and what to do next, and [MAINNET_LAUNCH.md](MAINNET_LAUNCH.md) for the
 operational sequence. Item 1
 below was done on netuid 552 and turned up a defect no local run could: the
@@ -3113,7 +3113,7 @@ every `set_weights` failed while the neurons reported success.
    `scripts/fetch_approved_entries.py`, the first signed releases are
    `image-v2026.11.03b` and `03c`, and the 03b → 03c rotation ran to its
    published retirement date (2026-11-06).
-4. ~~Decide I3 (`docs/I3_DECISION.md`) before launch~~ — **decided
+4. ~~Decide I3 (`docs/decisions/I3_DECISION.md`) before launch~~ — **decided
    2026-09-08** (frontier scoring) and **re-fixed 2026-10-14** (raw-mean
    valuation, distinct-trial confidence; I3 subsections above).
 5. Second independent validator operator; coldkeys encrypted and off every

@@ -101,8 +101,8 @@ def main():
               "No model calls were purchased, no winner was selected, no shipped head was replaced, and no testnet reset or release publication was performed.", ""]
     if partial:
         lines += ["To render this explicitly limited report without resuming the deferred run:", "", "```bash",
-                  "python scripts/render_success_report.py --results docs/evaluation/success-contract \\",
-                  "  --partial-512 docs/evaluation/success-contract/partial-512.json \\",
+                  "python scripts/render_success_report.py --results docs/decisions/evaluation/success-contract \\",
+                  "  --partial-512 docs/decisions/evaluation/success-contract/partial-512.json \\",
                   "  --output /tmp/success-report.md", "```", ""]
     Path(args.output).write_text("\n".join(lines))
 

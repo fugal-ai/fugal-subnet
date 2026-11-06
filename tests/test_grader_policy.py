@@ -74,7 +74,7 @@ def test_the_pool_the_loader_returns_contains_no_unrunnable_checker():
         "questions whose checkers run candidate code while the harness grades "
         "with allow_exec=False, so they can never score above zero. The slicer "
         "equalises benchmarks, so this is a sixth of every graded slice, not a "
-        "rounding error. See docs/CODE_BENCHMARK_PLAN.md."
+        "rounding error. See docs/decisions/CODE_BENCHMARK_PLAN.md."
     )
 
 

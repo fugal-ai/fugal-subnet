@@ -19,7 +19,7 @@ The trained head was not the problem: it genuinely routed and beat chance by
 price/accuracy curve hands a cheaper point on the same curve a cost advantage
 for free, whatever exponent trades quality for cost; the break-even was a
 property of the constants alone (77.4% of the reference's accuracy at the
-thrift cap). docs/design-decisions.md keeps that derivation as the record.
+thrift cap). docs/decisions/design-decisions.md keeps that derivation as the record.
 
 The score is now headroom above the constant-policy frontier
 (fugal_subnet/frontier.py). This file pins the fact that made the change

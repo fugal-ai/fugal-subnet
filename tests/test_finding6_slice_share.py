@@ -9,7 +9,7 @@ slots, 60% of every score. Exploration uses the same slicer.
 
 Delivered by `SLICE_SHARE_FACTOR` in `select_slice`: a benchmark's quota is
 capped at the factor times its share of the pool. The numbers behind the
-factor are in docs/HEAD_EFFICACY.md, experiment 4.
+factor are in docs/decisions/HEAD_EFFICACY.md, experiment 4.
 """
 from __future__ import annotations
 

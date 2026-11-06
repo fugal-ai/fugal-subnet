@@ -212,7 +212,7 @@ cmdline and initrd — so a stock cloud image would need the approved list
 republished on every kernel package update. **A fixed, reproducibly-built guest
 image with a pinned kernel and initrd is still a prerequisite for `--live` on
 mainnet.** dstack now supplies exactly that, and provisioning has been proven
-end to end against a live TD (see [REHEARSAL_2026-09-06.md](REHEARSAL_2026-09-06.md) for what the
+end to end against a live TD (see [REHEARSAL_2026-09-06.md](decisions/REHEARSAL_2026-09-06.md) for what the
 rehearsal did and did not demonstrate). Approved entries are
 `<base>:<compose_hash>` pairs; the procedure for publishing and rotating them
 is [APPROVED_ENTRY_ROTATION.md](APPROVED_ENTRY_ROTATION.md). The live entries
@@ -400,11 +400,11 @@ Honest list, as of 2026-11-06:
 | | Status |
 |---|---|
 | Scoring path determinism across x86_64 and aarch64 | **verified** byte-identical (local, and on netuid 552 with real proofs: three consecutive scored epochs, identical weights on both hosts) |
-| Full pipeline against a real chain, multi-miner, multi-validator | **verified** — local chain, and public testnet with two dstack TDX miners and two validators (`docs/REHEARSAL_2026-09-06.md`) |
+| Full pipeline against a real chain, multi-miner, multi-validator | **verified** — local chain, and public testnet with two dstack TDX miners and two validators (`docs/decisions/REHEARSAL_2026-09-06.md`) |
 | Real DCAP verification and measurement matching | **verified** on real Intel TDX (GCP `c3`, dstack 0.6.0-rc0): proofs verified `UpToDate`, a genuine proof refused against a retired entry |
 | A reproducible TDX guest image with a stable measurement | **exists**: dstack 0.6.0-rc0 UKI on GCP, base `12a1f2f5…9141` in September across seven deploys and two instance sizes, `f4be9383…aa427` on 2026-11-03 after a GCP firmware change (image registers identical); the compose hash rotates with the image and the rotation procedure is `docs/APPROVED_ENTRY_ROTATION.md` |
 | Real OpenRouter billing vs the pinned price table | **measured once**, account-level: within ~5% over four miner-epochs; completions averaged 534 tokens against the 256 assumed, and exploration was ~60% of a cheap head's epoch cost |
-| A real trained head outscoring a random one | **measured** offline (`docs/HEAD_EFFICACY.md`) and on mainnet since 2026-11-04 (144 UIDs with non-zero incentive at block 9449357) |
+| A real trained head outscoring a random one | **measured** offline (`docs/decisions/HEAD_EFFICACY.md`) and on mainnet since 2026-11-04 (144 UIDs with non-zero incentive at block 9449357) |
 | Behaviour under adversarial miners over weeks | **never executed** |
 | Miner startup cost on a TD | **measured** on the current profile: 3 h 20 min (`c3-standard-8`) to 5–6 h (`c3-standard-4`) for the v1 pool; re-paid on every image rotation because the tool recreates the data disk; **unmeasured** for the v2 pool (29,036 questions) |
 | An end-to-end epoch under the success-contract runtime | **running on mainnet** since 2026-11-04 (protocol v1) |

@@ -48,7 +48,7 @@ REPO = Path(__file__).resolve().parent.parent
 #
 # Re-derive the chain rows with --live-chain and the cost rows with
 # --recompute-slice-tokens. If a re-derivation disagrees with a pin, the pin is
-# stale: update it here and say so in docs/MINER_ECONOMICS.md.
+# stale: update it here and say so in docs/decisions/MINER_ECONOMICS.md.
 # --------------------------------------------------------------------------
 
 CHAIN_SNAPSHOT_BLOCK = 9_009_022
@@ -410,7 +410,7 @@ def refresh_from_chain(args) -> list[str]:
         if pinned and abs(live - pinned) / pinned > 0.10:
             notes.append(
                 f"!! {name} drifted >10% from the pin ({pinned} -> {live:.6g}); "
-                f"update PINNED and docs/MINER_ECONOMICS.md"
+                f"update PINNED and docs/decisions/MINER_ECONOMICS.md"
             )
     return notes
 

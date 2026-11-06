@@ -15,13 +15,13 @@ SLICE_SIZE = int(os.getenv("FUGAL_SLICE_SIZE", "300"))
 # A benchmark's share of the slice may not exceed this factor times its share
 # of the pool. Equal per-benchmark quotas gave AIME, GSM8K and IFEval -- 2,511
 # questions, about what a linear head can memorise outright (measured,
-# docs/HEAD_EFFICACY.md) -- 180 of 300 slots, so 60% of every score was a
+# docs/decisions/HEAD_EFFICACY.md) -- 180 of 300 slots, so 60% of every score was a
 # lookup table away (diligence 2026-10, finding 6). Pure proportional draw
 # (factor 1) hands MMLU 65% of the slice and lets it dominate the routing
 # signal, which is what stratification existed to prevent. At 1.5 the three
 # small benchmarks hold 17% of the slice, MMLU 48%, and a 2,500-question
 # memoriser captures about 21% of a score instead of 64%; the table for other
-# factors is in docs/HEAD_EFFICACY.md, experiment 4. Consensus-critical (two
+# factors is in docs/decisions/HEAD_EFFICACY.md, experiment 4. Consensus-critical (two
 # neurons with different values select different questions), so it is in the
 # fingerprint's epoch block.
 SLICE_SHARE_FACTOR = float(os.getenv("FUGAL_SLICE_SHARE_FACTOR", "1.5"))
@@ -68,7 +68,7 @@ EPOCH_COLLECT_FRACTION = float(os.getenv("FUGAL_COLLECT_FRACTION", "0.5"))
 #
 # So the pool now excludes what the harness cannot score (see loader.load_all),
 # derived from this flag rather than hardcoded: turning execution on re-includes
-# the benchmarks in one place. Doing that safely is docs/CODE_BENCHMARK_PLAN.md.
+# the benchmarks in one place. Doing that safely is docs/decisions/CODE_BENCHMARK_PLAN.md.
 HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "", "false", "False")
 
 # How many model calls the miner's benchmark runs at once. Miner-side only:
@@ -198,13 +198,13 @@ WILSON_CONFIDENCE = float(os.getenv("FUGAL_WILSON_CONFIDENCE", "0.95"))
 # that is where headroom is largest — which is the product.
 #
 # WHY THIS REPLACED quality^0.9 * thrift^0.1 AGAINST THE BEST SINGLE MODEL.
-# Measured (docs/HEAD_EFFICACY.md): a head with W=0 that always called one
+# Measured (docs/decisions/HEAD_EFFICACY.md): a head with W=0 that always called one
 # mid-priced model scored 1.183 against the best trained router's 1.057. Any
 # quality-versus-cost tradeoff scored against ONE point of the frontier hands a
 # cheaper point a cost advantage for free; no exponent fixes that, because the
 # constant policy sits on the curve the exponent is trying to trade along. The
 # derivation of w=0.9 and the break-even analysis are kept in
-# docs/design-decisions.md as the record of why.
+# docs/decisions/design-decisions.md as the record of why.
 #
 # THE QUALITY FLOOR. "Match frontier quality" is the product claim, so a router
 # that gives up too much of the best model's accuracy has not delivered it
@@ -280,7 +280,7 @@ DEDUP_SIMILARITY_THRESHOLD = float(os.getenv("FUGAL_DEDUP_THRESHOLD", "0.99"))
 # (and agree on only 85-92% of decisions); copies of one head with 10%
 # multiplicative weight noise sit at 0.10 and change 0-15 of 300 decisions,
 # which the behavioural clause alone misses. 0.2 is the geometric midpoint of
-# that gap (docs/HEAD_EFFICACY.md, "Experiment 3").
+# that gap (docs/decisions/HEAD_EFFICACY.md, "Experiment 3").
 DEDUP_PARAM_DISTANCE = float(os.getenv("FUGAL_DEDUP_PARAM_DISTANCE", "0.2"))
 # Epsilon clause (Subnet 9's rule): a head that agrees with a SENIOR head on
 # at least DEDUP_EPSILON_AGREEMENT of decisions must beat its composite score
@@ -390,7 +390,7 @@ TEE_PCCS_URL = os.getenv("FUGAL_PCCS_URL", "https://pccs.phala.network").strip()
 # fetch, and the verify loop is serial over every UID. 256 stalled proofs still
 # cost 256 x this value, which overruns the 1800 s post-collection budget. The
 # per-proof bound stops the unbounded hang; it does not by itself satisfy I6 at
-# field scale. Bounding the aggregate is tracked in docs/OPEN_WORK.md.
+# field scale. Bounding the aggregate is tracked in docs/decisions/OPEN_WORK.md.
 # --- Benchmark pool size is a SECURITY parameter ---
 #
 # Nothing about the number 21,717 says "security", which is exactly why this

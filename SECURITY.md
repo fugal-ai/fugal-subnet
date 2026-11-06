@@ -50,7 +50,7 @@ Please do not exploit a vulnerability against public infrastructure, access data
   TD, and the code-execution graders (`exec_io`, `exec_unittest`) are disabled
   there (`FUGAL_HARNESS_ALLOW_EXEC=0`), so the code benchmarks are excluded
   from the pool. Re-enabling them needs the sandbox work in
-  `docs/CODE_BENCHMARK_PLAN.md`.
+  `docs/decisions/CODE_BENCHMARK_PLAN.md`.
 - A miner's container logs are not public (`public_logs=false` is required,
   because the TD holds an API key). The operator reads them only through the
   encrypted, attested pull in `tee/provision.py`, authorised by the session

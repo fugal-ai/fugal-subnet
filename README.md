@@ -177,7 +177,7 @@ in the repo until the activation block.
 - **[Validator Guide](docs/VALIDATOR_GUIDE.md)** — register, load the approved entries, run as a service, monitor epochs (no API key), the flip procedure
 - **[Mainnet Launch](docs/MAINNET_LAUNCH.md)** — the operational sequence, and the things that fail silently if you skip them
 - **[Consensus Invariants](docs/INVARIANTS.md)** — the properties the subnet rests on, what enforces each, and the known gaps
-- **[Design Decisions](docs/design-decisions.md)** — why the scoring, the reference frame and the TEE architecture are what they are
+- **[Decision records](docs/decisions/README.md)** — why the design is what it is: the design steps (Step 8 is protocol v2), the scoring decision, the experiments, the economics model, the first hardware rehearsal
 - **[TDX Validation](docs/TDX_VALIDATION.md)** — the attestation checks that need real confidential hardware, and how to run them
 - **[Live API Validation](docs/LIVE_API_VALIDATION.md)** — confirming the pinned price table against what OpenRouter actually bills
 

@@ -821,7 +821,7 @@ def scenario_b(report, subtensor, netuid, wallets, pool_path, procs):
     # -0.14 against a frontier made of single models that each scored above it.
     # Mainnet pays nothing until every hull model has FRONTIER_MIN_TRIALS (300)
     # trials, which is ~250 epochs here; the evidence that routers beat
-    # constant policies is docs/HEAD_EFFICACY.md and the live testnet, not this
+    # constant policies is docs/decisions/HEAD_EFFICACY.md and the live testnet, not this
     # stub. What the rehearsal CAN show: routing to better models buys
     # accuracy, and a constant cheap policy earns nothing (the quality floor).
     def _lcb(u):

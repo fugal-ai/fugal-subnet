@@ -262,7 +262,7 @@ is new: a fresh instance, or one recreated by `dstack-cloud deploy --delete`.
 Embedding a full pool can take hours. Historical measurements with the previous
 profile were about 13 hours on one thread and 7 h 39 m on four threads for
 ~21,500 questions. Those are **not measurements of the new 2048-token profile**.
-Use the [offline mechanism report](evaluation/success-contract/REPORT.md) and
+Use the [offline mechanism report](decisions/evaluation/success-contract/REPORT.md) and
 measure your actual pool before budgeting startup time.
 
 - `FUGAL_BACKBONE_THREADS=0` uses all available vCPUs. This is miner-side only;
@@ -871,7 +871,7 @@ models on the hardest sets are an extrapolation (its review record says so),
 so measure your own first epochs before you budget. The MeteringProxy inside
 the TEE records your exact costs, which are included in the attested proof.
 
-`docs/MINER_ECONOMICS.md` models whether this is net-positive and under what
+`docs/decisions/MINER_ECONOMICS.md` models whether this is net-positive and under what
 conditions; `scripts/model_miner_economics.py` lets you put your own numbers in.
 
 ## Moving from v1 to v2 (before the activation block)

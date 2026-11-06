@@ -16,11 +16,11 @@ stated as arithmetic.
 
 **Why not the best single model.** The previous score compared a miner's
 quality per dollar against ONE point of the frontier — the most accurate
-model. Measured (docs/HEAD_EFFICACY.md): a head with W=0 that always called
+model. Measured (docs/decisions/HEAD_EFFICACY.md): a head with W=0 that always called
 one mid-priced model scored 1.183 against the best trained router's 1.057,
 for free, because a cheaper point on the same curve gets a cost advantage
 over a dearer one whatever exponent trades quality for cost. The exponent
-derivation and the break-even analysis are kept in docs/design-decisions.md
+derivation and the break-even analysis are kept in docs/decisions/design-decisions.md
 as the record; they were correct about the corner they examined and silent
 about the middle of the curve.
 

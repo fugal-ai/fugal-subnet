@@ -141,7 +141,7 @@ means is recorded in the manifest's `review.amendments`.
 
 The completed 2048-token SPROUT evaluation and explicitly deferred 512-token
 comparison are recorded in
-[the offline mechanism report](evaluation/success-contract/REPORT.md), with
+[the offline mechanism report](decisions/evaluation/success-contract/REPORT.md), with
 machine-readable results, evaluated snapshots, and a nondeployable 2048-token
 bundle. Its historical model roster differs from the live subnet roster.
 

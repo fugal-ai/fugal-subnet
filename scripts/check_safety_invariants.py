@@ -465,7 +465,7 @@ def check_measured_registers_documented(errors: list[str]) -> None:
         r"(?:\s*(?:[,‖|]|and)\s*RTMR\s*(\d))?[^)]*\)", re.I)
 
     for rel in ("docs/MINER_GUIDE.md", "docs/INVARIANTS.md", "docs/VALIDATOR_GUIDE.md",
-                "docs/design-decisions.md", "AGENTS.md", "README.md"):
+                "docs/decisions/design-decisions.md", "AGENTS.md", "README.md"):
         path = ROOT / rel
         if not path.exists():
             continue

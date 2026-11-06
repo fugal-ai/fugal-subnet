@@ -87,7 +87,7 @@ from fugal_subnet.config import (  # noqa: E402
 )
 
 # The LEGACY score this experiment measured, kept verbatim so the numbers in
-# docs/HEAD_EFFICACY.md stay reproducible. Scoring moved to headroom above the
+# docs/decisions/HEAD_EFFICACY.md stay reproducible. Scoring moved to headroom above the
 # constant-policy frontier (fugal_subnet/frontier.py) because of what this
 # experiment found; these constants no longer exist in config.
 SCORE_QUALITY_CAP = 2.0

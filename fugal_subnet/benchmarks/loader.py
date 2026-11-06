@@ -84,7 +84,7 @@ def _drop_unscoreable(pool: list[dict]) -> list[dict]:
     harness cannot grade is not neutral: the miner still pays to answer it, and
     since the slicer equalises benchmarks it was a full sixth of every graded
     slice, punishing anyone who routed code to a capable model while no quality
-    was reachable. See docs/CODE_BENCHMARK_PLAN.md for putting them back.
+    was reachable. See docs/decisions/CODE_BENCHMARK_PLAN.md for putting them back.
     """
     from fugal_subnet.config import EXECUTION_CHECKERS, HARNESS_ALLOW_EXEC
 

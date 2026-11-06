@@ -258,16 +258,37 @@ def _v2_head(path: str, W, b, models) -> str:
     return path
 
 
-def write_head_v2(path: str, seed: int) -> str:
-    """A v2 router head over the three v2 rehearsal models."""
+def write_head_v2(path: str, seed: int, hidden_mean=None, scale: float = 20.0) -> str:
+    """A v2 router head over the three v2 rehearsal models that really routes.
+
+    The backbone's pooled hidden states are nearly collinear (pairwise cosine
+    0.997 on the fixture pool), so a random W at the v1 writer's 0.02 scale
+    moves the logits by about 0.001 per question and the head is a constant
+    router to whichever model its bias favours. Seed 24 favoured the cheapest
+    model, whose stub skill (0.30) is exactly CHAMPION_MIN_ACCURACY, and the
+    first champion sat on the floor: in one run it dipped to 0.2833 on the
+    take epoch, was correctly not paid, and the 90/10 payout check failed.
+
+    With `hidden_mean` (the cached embeddings' mean, saved by the warm-up)
+    the bias cancels the common direction and `scale` amplifies what is left,
+    so the head splits the fixture pool across all three models (seed 61:
+    63/63/74 of 200 on x86_64) and its expected accuracy on the stub ladder
+    is about 0.60, well clear of the floor. Without a mean it is the old
+    constant router.
+    """
     import numpy as np
 
     from fugal_subnet.config import HEAD_HIDDEN_DIM
 
     models = v2_models()
     rng = np.random.RandomState(seed)
-    W = (rng.randn(len(models), HEAD_HIDDEN_DIM) * 0.02).astype(np.float32)
-    b = rng.randn(len(models)).astype(np.float32)
+    if hidden_mean is None:
+        W = (rng.randn(len(models), HEAD_HIDDEN_DIM) * 0.02).astype(np.float32)
+        b = rng.randn(len(models)).astype(np.float32)
+    else:
+        mean = np.asarray(hidden_mean, dtype=np.float64).reshape(HEAD_HIDDEN_DIM)
+        W = (rng.randn(len(models), HEAD_HIDDEN_DIM) * scale).astype(np.float32)
+        b = (-(W.astype(np.float64) @ mean) + rng.randn(len(models)) * 0.5).astype(np.float32)
     return _v2_head(path, W, b, models)
 
 
@@ -1043,13 +1064,24 @@ def _warm_v2_embeddings(timeout: int = 2400) -> float:
     (neurons.miner._compute_hidden_states on loader.load_pool(2)).
     """
     t0 = time.time()
+    mean_path = os.path.join(RESULTS, "hidden_mean_v2.npy")
     code = ("import sys; sys.path.insert(0, '.'); "
+            "import numpy as np; "
             "from fugal_subnet.benchmarks.loader import load_pool; "
             "import neurons.miner as m; "
-            "print(m._compute_hidden_states(load_pool(2)).shape)")
+            "h = m._compute_hidden_states(load_pool(2)); "
+            f"np.save({mean_path!r}, np.asarray(h, dtype=np.float64).mean(axis=0))")
     subprocess.run([sys.executable, "-c", code], env=miner_env(), check=True,
                    timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return time.time() - t0
+
+
+def _v2_hidden_mean():
+    """The mean cached embedding of the v2 fixture pool, saved by the warm-up
+    (the same backbone the miners embed with), for `write_head_v2`."""
+    import numpy as np
+
+    return np.load(os.path.join(RESULTS, "hidden_mean_v2.npy"), allow_pickle=False)
 
 
 def _epoch_index_now(subtensor) -> int:
@@ -1149,12 +1181,16 @@ def scenario_v2_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v
 
     # v2 heads, over three v2 models against the v2 manifest: m1 always the
     # middle model, m2 always the strongest (it must beat the first champion
-    # by the margin), m3 an ordinary router.
+    # by the margin), m3 an ordinary router that splits the pool across all
+    # three (expected accuracy about 0.60 on the stub ladder, clear of the
+    # 0.30 floor either pre-flip head must hold to stay paid as a former
+    # champion; see write_head_v2).
     pool_v2 = os.path.join(RESULTS, "pool_v2.json")
     v2_heads = {
         "dr_m1": biased_head_v2(os.path.join(RESULTS, "head_v2f_v2_1.npz"), 1),
         "dr_m2": biased_head_v2(os.path.join(RESULTS, "head_v2f_v2_2.npz"), 2),
-        "dr_m3": write_head_v2(os.path.join(RESULTS, "head_v2f_v2_3.npz"), seed=24),
+        "dr_m3": write_head_v2(os.path.join(RESULTS, "head_v2f_v2_3.npz"), seed=61,
+                               hidden_mean=_v2_hidden_mean()),
     }
     uid = {ck: uid_of(subtensor, netuid, wallets[ck]) for ck in ("dr_m1", "dr_m2", "dr_m3")}
     serving: dict[str, tuple] = {ck: procs[-3 + i] for i, (ck, _, _) in enumerate(v1)}

@@ -1930,8 +1930,11 @@ Four changes, which ship together because they share the sample schema:
    identical answers are one observation, which is also what finding 3 (the
    prior's confidence filling on duplicates) needed. Reveals carry `coldkey`
    and `failed` per exploration entry so `rebuild_from_reveals` regroups the
-   same way; entries written before those fields existed are each their own
-   voter, which is what they were.
+   same way, and `frame_excluded_coldkeys`, the operators the detectors kept
+   out of the frame that epoch, so the replay drops the same voters (without
+   it a rebuilt validator re-admitted them and valued the frontier from a
+   different frame, found 2026-11-05); entries written before those fields
+   existed are each their own voter, which is what they were.
 
 **The assumption, stated plainly.** The frame is robust while honest coldkeys
 are a majority of those answering each question. Sybils are not a lever — the
@@ -1974,8 +1977,12 @@ the next rotation.
 
 1. **Both directions.** `|observed - expected| > margin`, against the frame
    as it stood before the epoch's samples are folded in (the call order in
-   `neurons/validator.py`). A miner serving itself gold and a miner dropping
-   its network during exploration are the same distance from plausible.
+   `neurons/validator.py`), where `expected` is each model's RAW mean and a
+   model counts only once the frame holds 8 trials of it (2026-11-05: judged
+   against the prior-pulled posterior from one trial, a cold frame flagged
+   every honest miner on some epochs and dropped their samples). A miner
+   serving itself gold and a miner dropping its network during exploration
+   are the same distance from plausible.
 2. **Cross-miner agreement, with no baseline.** `disagreeing_exploration`:
    while exploration is shared, every coldkey asks the same model the same
    question; per (question, model) with at least `EXPLORE_DISAGREE_MIN_VOTERS`
@@ -2030,11 +2037,20 @@ Diligence 2026-10, additional finding A2. `config.py` reads its constants from
 the environment, and the consensus digest covered five of them. A validator
 with `FUGAL_SCORE_QUALITY_FLOOR=0.5` exported scored the field by its own
 rules, and the digest two validators compare to explain a divergence said
-nothing. Now every `FUGAL_` variable `config.py` reads is in exactly one of
-three lists (`CONSENSUS_ENV_VARS`, `CONSENSUS_ENV_INPUTS`,
-`OPERATIONAL_ENV_VARS`; `check_every_env_constant_classified` fails CI on an
-unclassified one), the fingerprint carries a `scoring` block with every
-consensus constant's value as in effect, `consensus_digest` hashes it along
+nothing. Now every `FUGAL_` variable read anywhere under `fugal_subnet/` or
+`neurons/` is in exactly one of three lists (`CONSENSUS_ENV_VARS`,
+`CONSENSUS_ENV_INPUTS`, `OPERATIONAL_ENV_VARS`;
+`check_every_env_constant_classified` fails CI on an unclassified one — until
+2026-11-05 it scanned `config.py` alone, and `FUGAL_SKIP_BENCHMARKS`,
+`FUGAL_POOL_UNPINNED` and `FUGAL_OPENROUTER_BASE`, read elsewhere, were
+consensus-affecting and neither digested nor refused on finney), the
+fingerprint carries a `scoring` block with every consensus constant's value
+as in effect, an `epoch` block that now also names the pinned pool manifests,
+the skip list in effect and whether pool verification is switched off, and a
+`code` block (`source_sha256`, the miner's own `source_hash` algorithm, and
+the git commit) that is in the reveal but deliberately outside the digest, so
+two validators on different commits are a divergence only when a
+score-affecting input differs, `consensus_digest` hashes it along
 with the routing-protocol identity (which covers the price table), and
 `assert_consensus_overrides_allowed` refuses any consensus constant set in the
 environment on finney, identified by genesis hash as `--mock` is, in both
@@ -2670,8 +2686,11 @@ set), and the frame keeps **weighted sums** (`successes_w`, `trials_w`,
 verbosity read the weighted sums; the **raw trial count is never weighted**,
 because it counts how much has been measured, and that is what the
 frontier's confidence reads. A v1 frame has no weighted sums and serialises
-byte for byte as before; once a frame is weighted every later epoch keeps
-the weighted sums current.
+byte for byte as before; the first weighted epoch seeds the weighted sums
+from the raw history (every past trial at weight 1), so no estimate jumps at
+the transition (found 2026-11-05: without the seed a model with 300 raw
+trials was valued at its single newest sample), and once a frame is weighted
+every later epoch keeps the weighted sums current.
 
 In v2 the frame is informational (I3/I4, "v2 pays from the paired rule
 alone"): this keeps the exploration detectors and the published diagnostics
@@ -2704,6 +2723,13 @@ The validator uses it at startup when it has no local v2 state, or has a
 seat but lost its window, and `FUGAL_FRAME_BOOTSTRAP` names a directory of
 reveals. Per-head v1 evidence is not rebuilt (as before); only the burn-in
 counter is restored, into fresh records.
+
+**A malformed reveal is refused by name.** The replay validates every field it
+reads (lists where lists are expected, one routing index per question, every
+index inside the model space, well-formed epoch ids) and refuses the file by
+path and epoch rather than crashing or, for a non-list `models`, silently
+accepting it; a window missing one epoch is a different window from every
+peer's, so the operator fixes the file.
 
 **Exact only when the reveals are current.** Published reveals lag by the
 commit-reveal hold. A rebuild is exact when the newest reveal is the epoch

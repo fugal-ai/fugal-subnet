@@ -58,7 +58,17 @@ class V2Rebuild:
 
 def _epoch_index(epoch_id: str) -> int:
     # slicer.epoch_id_for_block is the only formatter: "e%08d".
-    return int(str(epoch_id).lstrip("e"))
+    text = str(epoch_id)
+    if not (text.startswith("e") and text[1:].isdigit()):
+        raise ValueError(f"epoch_id {text!r} is not of the form e<digits>")
+    return int(text[1:])
+
+
+def _require(cond: bool, epoch_id: str, what: str) -> None:
+    """A published reveal is someone else's file (I2): a field that is not the
+    shape the live epoch wrote is refused by name, never guessed at."""
+    if not cond:
+        raise ValueError(f"reveal {epoch_id}: {what}")
 
 
 def _load(source: str | os.PathLike | Iterable[str]) -> list[dict]:
@@ -74,8 +84,12 @@ def _load(source: str | os.PathLike | Iterable[str]) -> list[dict]:
         except Exception as e:  # noqa: BLE001 - one bad file must not lose the rest
             logger.warning("Skipping unreadable reveal %s: %s", path, e)
             continue
+        if not isinstance(reveal, Mapping):
+            logger.warning("Skipping reveal %s: not a JSON object", path)
+            continue
         if int(reveal.get("protocol_version", 1)) >= 2 and reveal.get("epoch_id"):
-            out.append(reveal)
+            _epoch_index(reveal["epoch_id"])        # malformed id: refuse by name, below
+            out.append(dict(reveal, _path=str(path)))
     return out
 
 
@@ -86,28 +100,48 @@ def epoch_from_reveal(
 ):
     """(EpochSlice, {head hash: HeadEpoch}) for one v2 reveal, exactly as the
     live epoch built them."""
-    models = list(reveal["models"])
-    questions = list(reveal["questions"])
-    cells = {(c["question_id"], c["model"]): float(c["grade"]) for c in reveal["shared_grades"]}
-    tokens = {(c["question_id"], c["model"]): float(c.get("completion_tokens", 0.0))
-              for c in reveal["shared_grades"]}
-    epoch = _epoch_index(reveal["epoch_id"])
-    sl = build_epoch_slice(epoch, questions, models, cells, tokens, prices, bench_category)
+    eid = str(reveal.get("epoch_id", "?"))
+    epoch = _epoch_index(eid)
+    models, questions, grades = reveal.get("models"), reveal.get("questions"), reveal.get("shared_grades")
+    _require(isinstance(models, list) and all(isinstance(m, str) for m in models),
+             eid, "`models` must be a list of model ids")
+    _require(isinstance(questions, list) and all(isinstance(q, Mapping) and "question_id" in q
+                                                 for q in questions),
+             eid, "`questions` must be a list of question objects")
+    _require(isinstance(grades, list) and all(isinstance(c, Mapping) for c in grades),
+             eid, "`shared_grades` must be a list of cells")
+    try:
+        cells = {(str(c["question_id"]), str(c["model"])): float(c["grade"]) for c in grades}
+        tokens = {(str(c["question_id"]), str(c["model"])): float(c.get("completion_tokens", 0.0))
+                  for c in grades}
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"reveal {eid}: a shared_grades cell is malformed ({e})") from None
+    sl = build_epoch_slice(epoch, list(questions), list(models), cells, tokens, prices,
+                           bench_category)
 
     # routing_decisions are per uid, in the global model index space, ORDERED
     # BY QUESTION ID (validator._extract_routing_decisions); realign them to
     # the slice's order.
     by_id = sorted(sl.question_ids)
-    serving = reveal.get("v2_state", {}).get("serving", {})
-    failed = reveal.get("failed", {})
-    decisions = reveal.get("routing_decisions", {})
+    v2_state = reveal.get("v2_state") or {}
+    serving = v2_state.get("serving") or {}
+    failed = reveal.get("failed") or {}
+    decisions = reveal.get("routing_decisions") or {}
+    _require(isinstance(serving, Mapping) and isinstance(failed, Mapping)
+             and isinstance(decisions, Mapping), eid, "serving, failed and routing_decisions must be maps")
     answers: dict[str, HeadEpoch] = {}
     for h in sorted(serving):
         uid = str(serving[h])
         if uid not in decisions:
             continue
-        routed_by_id = dict(zip(by_id, decisions[uid]))
-        bad = set(failed.get(uid, []))
+        row = decisions[uid]
+        _require(isinstance(row, list) and len(row) == len(by_id)
+                 and all(isinstance(x, int) and not isinstance(x, bool) for x in row),
+                 eid, f"routing_decisions[{uid}] must hold one model index per question")
+        _require(all(0 <= x < len(models) for x in row),
+                 eid, f"routing_decisions[{uid}] names a model index outside 0..{len(models) - 1}")
+        routed_by_id = dict(zip(by_id, row))
+        bad = set(failed.get(uid) or [])
         routed = np.array([routed_by_id[q] for q in sl.question_ids], dtype=np.int64)
         fail = np.array([q in bad for q in sl.question_ids], dtype=bool)
         answers[h] = HeadEpoch(routed=routed, failed=fail)
@@ -132,8 +166,13 @@ def rebuild_v2_from_reveals(
     for r in reveals:
         if _epoch_index(r["epoch_id"]) < oldest_kept:
             continue
-        sl, answers = epoch_from_reveal(r, prices, bench_category)
-        window = window.add_epoch(sl, answers)
+        try:
+            sl, answers = epoch_from_reveal(r, prices, bench_category)
+            window = window.add_epoch(sl, answers)
+        except ValueError as e:
+            # Fail closed, by name: a window missing one epoch is a different
+            # window from every peer's (I1), so the operator fixes the file.
+            raise ValueError(f"{r.get('_path', r.get('epoch_id'))}: {e}") from None
         replayed += 1
     state = dict(newest.get("v2_state") or {})
     rebuilt = V2Rebuild(

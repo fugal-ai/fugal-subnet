@@ -399,13 +399,21 @@ def _verify_against_manifest(pool: list[dict], skip: set, strict: bool) -> None:
         return
 
     if sorted(pinned.get("skip_benchmarks", [])) != sorted(skip):
-        logger.warning(
+        msg = (
             "Pool manifest was built with FUGAL_SKIP_BENCHMARKS=%s but this "
-            "process has %s — skipping content verification. The pools are "
-            "different by construction and will not agree.",
-            ",".join(pinned.get("skip_benchmarks", [])) or "(none)",
-            ",".join(sorted(skip)) or "(none)",
+            "process has %s: the pools are different by construction and will "
+            "not agree with the field." % (
+                ",".join(pinned.get("skip_benchmarks", [])) or "(none)",
+                ",".join(sorted(skip)) or "(none)",
+            )
         )
+        if strict:
+            # A live neuron on a different skip list scores a different pool
+            # from every peer; returning here with a warning disabled the one
+            # check that would have said so (review 2026-11-05, F-036).
+            raise RuntimeError(msg + " Unset FUGAL_SKIP_BENCHMARKS, or rebuild the "
+                               "manifest with scripts/build_pool_manifest.py.")
+        logger.warning("%s Skipping content verification.", msg)
         return
 
     actual_ids, actual_content = pool_hash(pool), content_hash(pool)

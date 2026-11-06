@@ -123,3 +123,29 @@ def test_create_still_requires_the_owner(monkeypatch):
 def test_the_flag_is_documented_as_optional(flag):
     text = SRC.read_text(encoding="utf-8")
     assert f'"{flag}", default=None' in text
+
+
+def test_without_an_epoch_interval_the_chains_tempo_decides(monkeypatch, capsys):
+    """A hard-coded 3600 default reported an aligned tempo-360 subnet as
+    MISALIGNED whenever the flag was forgotten (review F-077)."""
+    mod = _load(monkeypatch, _Subtensor())
+    monkeypatch.delenv("FUGAL_EPOCH_INTERVAL", raising=False)
+    monkeypatch.setattr(sys, "argv", ["provision_subnet.py", "--network", "finney",
+                                      "--netuid", "7", "--status"])
+    assert mod.main() == 0
+    out = capsys.readouterr().out
+    assert "ALIGNED" in out and "MISALIGNED" not in out
+
+
+def test_the_operator_scripts_follow_the_epochs_protocol_version():
+    """verify_live_miner must select and verify with the boundary-keyed version
+    (F-076); tdx_measurement's probe must name a hotkey, or verify_proof refuses
+    to run outside mock before the measurement is ever checked (F-075)."""
+    root = SRC.parents[1]
+    vl = (root / "scripts" / "verify_live_miner.py").read_text(encoding="utf-8")
+    assert "protocol_version_for_boundary(" in vl and "protocol_version=version" in vl
+    assert "scored_slice(version" in vl and "exploration_plan(version" in vl
+    assert "select_slice(" not in vl and "expected_exploration(" not in vl
+    tm = (root / "scripts" / "tdx_measurement.py").read_text(encoding="utf-8")
+    assert 'expected_hotkey="5TdxMeasurementProbe"' in tm and 'hotkey="5TdxMeasurementProbe"' in tm
+    assert "export FUGAL_TEE_MEASUREMENTS=" not in tm      # a bare base is refused by --live

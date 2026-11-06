@@ -4,16 +4,18 @@ From the activation block the miner share goes to a CHAMPION, and a head takes
 the seat only by beating the champion on the same questions:
 
     NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
-    V    = CHAMPION_ACCURACY_VALUE * the champion's own mean spend per question
-           over the same paired questions
+    V    = CHAMPION_ACCURACY_VALUE * the pinned anchor's expected spend per
+           question (config.CHAMPION_ANCHOR_MODEL; the champion's own spend
+           only when no anchor is given, which protocol v2 never does)
     u_i  = CHAMPION_HARD_WEIGHT on a hard question (the hard-reasoning
            category), else 1
     NV   = 100 * mean_i NV_i                       (percentage points)
 
 g is the shared cell grade (fugal_subnet/shared_grades.py) and s the policy's
-cost for the question from pinned prices and the frame's verbosity, so
-neither side of NV is a miner's self-report. V is measured from the window,
-so nothing about it is pinned in advance and it is rebuilt from reveals.
+spend for the question: the pool's prompt tokens plus the cell's coldkey-median
+attested completion tokens at the pinned prices (never the frame's verbosity),
+so neither side of NV is a miner's self-report. V comes from pinned files
+(the v2 token manifest and price table), so every validator prices the same.
 
 The challenger takes the seat when BOTH its point estimate and the one-sided
 paired-bootstrap lower bound of NV exceed CHAMPION_MARGIN points; the

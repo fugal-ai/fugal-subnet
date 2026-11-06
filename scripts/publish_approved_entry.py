@@ -43,10 +43,25 @@ def main() -> int:
                     help="frozen app-compose.json (hashed raw) or a docker-compose.yaml (listed only)")
     ap.add_argument("--base", default="", help="base measurement of the dstack image on the platform")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--allow-drift", action="store_true",
+                    help="publish a frozen compose that no live docker-compose*.yaml matches")
     args = ap.parse_args()
 
     raw = open(args.compose, "rb").read()
     compose_hash = hashlib.sha256(raw).hexdigest() if args.compose.endswith(".json") else ""
+    if compose_hash and not args.allow_drift:
+        # The frozen file must embed one of the live composes, or the entry
+        # names a compose nobody deploys from this checkout (review F-074).
+        import json as _json
+        embedded = _json.loads(raw.decode("utf-8")).get("docker_compose_file", "")
+        live_dir = os.path.join(ROOT, "deploy", "dstack")
+        live = {f: open(os.path.join(live_dir, f), encoding="utf-8").read()
+                for f in os.listdir(live_dir) if f.startswith("docker-compose") and f.endswith(".yaml")}
+        if embedded not in live.values():
+            print(f"{args.compose} does not embed any live deploy/dstack/docker-compose*.yaml; "
+                  "freeze the compose you deploy (or pass --allow-drift to publish anyway)",
+                  file=sys.stderr)
+            return 2
     entry = f"{args.base}:{compose_hash}" if args.base and compose_hash else "(complete after prepare)"
 
     print(f"# Approved entry {args.tag or ''}".rstrip())

@@ -47,19 +47,24 @@ def main() -> int:
 
     import bittensor as bt
 
-    from fugal_subnet.api import load_prices
-    from fugal_subnet.benchmarks.loader import load_all, pool_hash
+    from fugal_subnet.benchmarks.loader import load_pool, pool_hash
     from fugal_subnet.benchmarks.slicer import (
         blocks_per_epoch,
         derive_nonce,
         epoch_id_for_block,
         epoch_index_for_block,
-        select_slice,
+        protocol_version_for_boundary,
     )
-    from fugal_subnet.config import EPOCH_INTERVAL, EXPLORE_FRACTION, SLICE_SIZE
-    from fugal_subnet.exploration import expected_exploration
+    from fugal_subnet.config import (
+        EPOCH_INTERVAL,
+        EXPLORE_FRACTION,
+        SLICE_SIZE,
+        V2_ACTIVATION_BLOCK,
+    )
+    from fugal_subnet.epoch_plan import exploration_plan, scored_slice
     from fugal_subnet.logging_setup import configure_logging
     from fugal_subnet.protocol import FugalProofSynapse
+    from fugal_subnet.routing_protocol import models_for_protocol, price_table
     from fugal_subnet.tee.proof import BenchmarkProof
     from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
 
@@ -84,21 +89,26 @@ def main() -> int:
     bpe = blocks_per_epoch(EPOCH_INTERVAL)
     epoch_index = epoch_index_for_block(subtensor.get_current_block(), bpe)
     epoch_id = epoch_id_for_block(epoch_index)
-    block_hash = subtensor.get_block_hash(epoch_index * bpe)
+    boundary = epoch_index * bpe
+    block_hash = subtensor.get_block_hash(boundary)
     nonce = derive_nonce(epoch_id, block_hash)
+    # The epoch's inputs by its boundary-keyed protocol version, exactly as the
+    # validator picks them (neurons/validator.py, epoch_inputs): a v2 epoch is
+    # a different pool, price table, model space, selection and proof namespace.
+    version = protocol_version_for_boundary(boundary, V2_ACTIVATION_BLOCK)
 
-    pool = load_all()
-    print(f"pool {len(pool)} questions, pool_hash={pool_hash(pool)[:16]}")
-    questions = select_slice(nonce, pool, SLICE_SIZE)
+    pool = load_pool(version)
+    print(f"protocol v{version}: pool {len(pool)} questions, pool_hash={pool_hash(pool)[:16]}")
+    questions = scored_slice(version, nonce, pool, SLICE_SIZE)
     qids = [q["question_id"] for q in questions]
-    prices = load_prices()
+    prices = price_table(version)
+    pool_models = models_for_protocol(version)
     explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
-    explore_map = expected_exploration(
-        nonce, pool, set(qids), sorted(prices), explore_size,
-    )
+    explore_map = exploration_plan(version, nonce, pool, set(qids), pool_models, explore_size)
     gold = {q["question_id"]: q for q in pool}
+    del prices  # priced by the validator, not here; loaded to fail early if missing
 
-    print(f"epoch {epoch_id} boundary {epoch_index * bpe} nonce {nonce.hex()[:16]}")
+    print(f"epoch {epoch_id} boundary {boundary} nonce {nonce.hex()[:16]}")
     axon = metagraph.axons[args.uid]
     print(f"querying uid {args.uid} at {axon.ip}:{axon.port} ...")
 
@@ -135,6 +145,7 @@ def main() -> int:
             "expected_questions_hash": compute_questions_hash(qids),
             "expected_question_ids": qids,
             "expected_exploration": explore_map,
+            "protocol_version": version,
             "proof_hash": getattr(resp, "proof_hash", ""),
             "pool_hash": pool_hash(pool),
             "proof": json.loads(resp.proof_json),
@@ -164,6 +175,7 @@ def main() -> int:
         expected_hotkey=metagraph.hotkeys[args.uid],
         expected_proof_hash=getattr(resp, "proof_hash", ""),
         mock=mock,
+        protocol_version=version,
     )
 
     print(f"\nvalid : {result.valid}")

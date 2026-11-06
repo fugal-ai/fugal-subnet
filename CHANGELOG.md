@@ -4,6 +4,114 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — epoch artifacts are written atomically; the publisher refuses a partial reveal
+
+`commit.json` and `reveal.json` were written in place with `json.dump`, so a
+crash or a full disk mid-write left a truncated file that `publish_due_reveals`
+then uploaded and whose hash it committed on chain, and the `.published`
+marker stopped any later retry from replacing it. Both files now go through
+`write_json_atomic` (temp file, fsync, rename, like the state file), and the
+publisher refuses to upload or commit a reveal that does not parse as a
+complete reveal for its epoch.
+### Fixed — the neurons price v1 proofs from the copy the protocol identity hashes
+
+The validator priced v1 proofs from `data/models.json` while the protocol
+identity it stamps on every reveal hashes `fugal_subnet/routing_data/models.json`;
+the two are byte-identical today but nothing on the v1 path checked it. Both
+neurons now read `routing_protocol.price_table(1)` (the miner keeps the
+`FUGAL_MODEL_PRICES` override, which finney refuses), and
+`scripts/check_safety_invariants.py` requires the two copies to be identical,
+as it already did for the v2 table.
+### Fixed — a pool skip-list mismatch is refused in strict mode
+
+`loader._verify_against_manifest` returned early with a warning when the
+process's `FUGAL_SKIP_BENCHMARKS` differed from the list the manifest was
+built with, so a live neuron on its own skip list scored a pool nobody else
+had and the check that would have said so switched itself off. Strict mode
+(the live neurons) now refuses to start on a mismatch; non-strict keeps the
+warning.
+### Fixed — a frame rebuilt from reveals drops the voters the live epoch excluded
+
+The live validator keeps a flagged operator's exploration samples out of the
+reference frame (the two-sided detector) but published every observation and
+no exclusion list, so `rebuild_from_reveals` re-admitted the flagged voter and
+a validator that rebuilt its frame scored the field against a different
+frontier from its peers (I1). Reveals now carry `frame_excluded_coldkeys`
+and the replay applies it. Reveals from before the field re-admit as before.
+### Fixed — every `FUGAL_` variable the package reads is classified; the pool inputs are digested; the reveal names the code
+
+The classification check scanned `config.py` only, so `FUGAL_SKIP_BENCHMARKS`,
+`FUGAL_POOL_UNPINNED` (benchmarks/loader.py) and `FUGAL_OPENROUTER_BASE`
+(tee/runtime.py) changed which questions a neuron scores, or whether the pool
+is verified at all, without being in the consensus digest or refused on
+finney. The check now scans all of `fugal_subnet/` and `neurons/`; those three
+are consensus variables; the fingerprint's `epoch` block carries the pinned
+pool manifests' hashes, the skip list in effect, the unpinned flag and the
+upstream override; and a new `code` block (`source_sha256`, `git_commit`)
+names the code in every reveal while staying outside the digest.
+**Every validator's consensus digest changes with this release**: upgrade
+together.
+### Changed — a live compose must be a frozen one; the activation block is part of the v2 compose
+
+Both `deploy/dstack/docker-compose*.yaml` were edited after the 2026-11-03c
+freeze (`FUGAL_POOL_CACHE_V2`) and matched none of the eight frozen
+app-compose files, so a miner deploying from the checkout would compute a
+compose hash no approved entry names. `scripts/check_safety_invariants.py`
+now reports a live compose that no frozen file embeds (a warning in CI, a
+failure with `--release`: the launch gate), and
+`scripts/publish_approved_entry.py` refuses to write a note for a frozen file
+that does not match a live compose (`--allow-drift` overrides). The docs and
+`validator.env.example` now say where the activation block lives: in the
+validator's environment AND in the v2 miner compose, so choosing it fixes the
+v2 compose hash and the approved entry.
+### Fixed — operator scripts: protocol-aware verification, a probe that can pass, tempo-derived defaults
+
+`scripts/verify_live_miner.py` selected the slice and exploration with the v1
+functions over the v1 table, so from the activation block it computed a
+different slice from the validator and refused every v2 proof; it now picks
+the epoch's inputs by the boundary-keyed version as the validator does.
+`scripts/tdx_measurement.py --verify` built a proof with no hotkey, which
+`verify_proof` refuses outside mock before the measurement check runs, and
+told the operator to export a bare base that `--live` refuses; both corrected.
+`scripts/provision_subnet.py` and `scripts/watch_subnet.py` defaulted the
+epoch interval to 3600 (mainnet is 4320), reporting an aligned subnet as
+MISALIGNED when the flag was forgotten; they now take `FUGAL_EPOCH_INTERVAL`
+from the environment, else the chain's tempo x 12, and say which.
+### Docs — the v2 numbers and formulas the guides and comments still had wrong
+
+The v2 burn-in is 1500 questions (`V2_BURN_IN_QUESTIONS`), not 3000, in
+MINER_GUIDE, VALIDATOR_GUIDE (new table row), the min-paired-questions comment
+and `evidence.py`; V is 30 x the pinned anchor's expected spend (about $0.77),
+not the champion's own spend, in MINER_GUIDE, `config.py` and `champion.py`
+(whose docstring also said spend came from the frame's verbosity: it is the
+cell's attested completion tokens); the Omni-MATH hard threshold is
+difficulty >= 5 (`v2_sets.OMNI_HARD_DIFFICULTY`), not 7; the current published
+image is `image-v2026.11.03c`, the digest the composes pin.
+### Fixed — v2 rebuild refuses a malformed reveal by name; restored burn-in survives; the metagraph fallback is logged
+
+The startup rebuild from reveals crashed with KeyError/ValueError tracebacks
+on a truncated or malformed peer reveal and silently accepted a string
+`models`; it now validates what it reads and refuses the file by path and
+epoch. Records created to restore a head's E'' burn-in carried the head's
+first committing hotkey, so an owner serving from a newer hotkey lost the
+restored burn-in on its first verified proof; they now carry no hotkey (unknown,
+kept). When the pinned metagraph read at the collection block fails and the
+live one is used, the epoch log now records `metagraph_unpinned`, so a
+divergence that epoch is attributable from the published artifacts.
+### Fixed — the frame's first weighted epoch is continuous; the detector needs a measured model
+
+`accumulate_exploration` started the weighted (v2) sums empty, so the first
+weighted epoch valued every explored model at its single newest sample
+(0.863 -> 0.000 on the shipped frame) until the weighted sums refilled; the
+weighted sums now start from the raw history. `implausible_exploration`
+judged a miner against a model the frame had seen once, i.e. against the
+prior, so on a cold frame every honest miner on a good model was flagged on
+some epochs, its samples dropped and a false `exploration_excluded_from_frame`
+published; a model now counts only after `min_trials` (8) raw trials and
+at its raw mean (the frontier's valuation), not the prior-pulled posterior.
+**Consensus note (v1, live):** the detector decides which samples enter the
+frame, so validators must take this in the same inter-epoch window.
+
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 
 The wall-clock call deadline set a per-read timeout on the connection's socket.

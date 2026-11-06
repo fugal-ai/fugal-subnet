@@ -220,7 +220,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         prices = price_table(2)
         pool_models = models_for_protocol(2)
     else:
-        prices = load_prices(TEE_MODEL_PRICES_PATH or None)
+        # FUGAL_MODEL_PRICES is a consensus override (refused on finney); the
+        # default is the copy the protocol identity hashes, as on the validator.
+        prices = load_prices(TEE_MODEL_PRICES_PATH) if TEE_MODEL_PRICES_PATH else price_table(1)
         pool_models = sorted(prices)
     explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
     logger.info("Price table: %d models; exploration quota %d questions/epoch",

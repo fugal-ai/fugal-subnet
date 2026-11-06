@@ -589,7 +589,16 @@ def check_price_table_v2_pinned(errors: list[str]) -> None:
 
 
 def check_price_table_pinned(errors: list[str]) -> None:
-    """The consensus price table must match its pin, and be well-formed."""
+    """The consensus price table must match its pin, and be well-formed.
+
+    Both copies — data/models.json (reviewed, pinned here) and
+    fugal_subnet/routing_data/models.json (hashed into the protocol identity
+    and read by the neurons) — must be byte-identical, as for the v2 table.
+    """
+    copy = ROOT / "fugal_subnet" / "routing_data" / "models.json"
+    if copy.exists() and (ROOT / "data" / "models.json").exists() \
+            and copy.read_bytes() != (ROOT / "data" / "models.json").read_bytes():
+        errors.append("data/models.json and fugal_subnet/routing_data/models.json differ")
     path = ROOT / "data" / "models.json"
     if not path.exists():
         errors.append("data/models.json is missing — validators cannot price proofs")
@@ -810,6 +819,43 @@ def check_upstream_is_inside_the_measurement(errors: list[str]) -> None:
             )
 
 
+def check_live_composes_are_frozen(errors: list[str], root: Path | None = None) -> None:
+    """Each live compose (deploy/dstack/docker-compose*.yaml) must be, byte for
+    byte, the `docker_compose_file` of some frozen app-compose*.json.
+
+    The compose hash validators approve is sha256 of the frozen app-compose,
+    which embeds the compose text. A compose edited after its freeze yields a
+    hash no entry names: a miner deploying it is refused, and nothing says
+    why. Found 2026-11-05 (review F-074): both live composes gained
+    FUGAL_POOL_CACHE_V2 after the 2026-11-03c freeze and matched none of the
+    eight frozen files. Clear it by freezing the compose again
+    (`dstack-cloud prepare`, commit the app-compose.json, publish the entry)
+    or by reverting the compose change.
+    """
+    import json
+
+    root = root or ROOT
+    dstack = root / "deploy" / "dstack"
+    frozen_texts: dict[str, str] = {}
+    for path in sorted(dstack.glob("app-compose*.json")):
+        try:
+            frozen_texts[path.name] = json.loads(path.read_text(encoding="utf-8")).get(
+                "docker_compose_file", "")
+        except ValueError:
+            continue  # reported by check_upstream_is_inside_the_measurement
+    for live in sorted(dstack.glob("docker-compose*.yaml")):
+        text = live.read_text(encoding="utf-8")
+        if text not in frozen_texts.values():
+            digest = next((ln.strip().split("@sha256:")[-1][:12] for ln in text.splitlines()
+                           if "@sha256:" in ln), "?")
+            errors.append(
+                f"{live.relative_to(root)} (image {digest}...) is not the embedded compose of "
+                f"any frozen app-compose*.json: a miner deploying it gets a compose hash no "
+                "approved entry names. Freeze it (dstack-cloud prepare -> commit the "
+                "app-compose.json, publish the entry) or revert the change (I8)"
+            )
+
+
 def check_live_requires_app_identity(errors: list[str]) -> None:
     """A live validator must refuse a bare base approved entry at startup.
 
@@ -889,7 +935,16 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
     from fugal_subnet import config, fingerprint
 
     source = (ROOT / "fugal_subnet" / "config.py").read_text(encoding="utf-8")
-    read = set(re.findall(r'os\.getenv\(\s*"(FUGAL_[A-Z0-9_]+)"', source))
+    # Every read anywhere in the shipped code, not only config.py: the pool's
+    # skip list and the unpinned-pool switch lived in benchmarks/loader.py and
+    # were consensus-affecting, undigested and unrefused on finney until the
+    # scan was widened (review 2026-11-05, F-027).
+    pattern = re.compile(r'os\.(?:getenv|environ\.get)\(\s*"(FUGAL_[A-Z0-9_]+)"'
+                         r'|os\.environ\[\s*"(FUGAL_[A-Z0-9_]+)"\s*\](?!\s*=)')
+    read: set[str] = set()
+    for path in sorted(list((ROOT / "fugal_subnet").rglob("*.py")) + list((ROOT / "neurons").glob("*.py"))):
+        for a, b in pattern.findall(path.read_text(encoding="utf-8")):
+            read.add(a or b)
     lists = {
         "CONSENSUS_ENV_VARS": set(config.CONSENSUS_ENV_VARS),
         "CONSENSUS_ENV_INPUTS": set(config.CONSENSUS_ENV_INPUTS),
@@ -899,20 +954,28 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
         where = [k for k, v in lists.items() if name in v]
         if len(where) != 1:
             errors.append(
-                f"fugal_subnet/config.py: {name} is read but listed in "
+                f"{name} is read under fugal_subnet/ or neurons/ but listed in "
                 f"{where or 'no classification list'}; it must be in exactly one "
                 "of CONSENSUS_ENV_VARS, CONSENSUS_ENV_INPUTS, OPERATIONAL_ENV_VARS (I1)"
             )
     for k, v in lists.items():
         for name in sorted(v - read):
             errors.append(f"fugal_subnet/config.py: {k} lists {name}, which nothing reads")
+    # Consensus variables read outside config.py are covered by the epoch
+    # block, not by a module attribute; the attribute scan below is for the
+    # ones config.py defines.
+    outside = {"FUGAL_SKIP_BENCHMARKS", "FUGAL_POOL_UNPINNED", "FUGAL_OPENROUTER_BASE"}
 
     fp = fingerprint.environment_fingerprint()
     covered = set(fp["scoring"]) | {
         "SLICE_SIZE", "SLICE_SHARE_FACTOR", "EPOCH_INTERVAL", "EXPLORE_FRACTION",
         "EPOCH_COLLECT_FRACTION", "TEE_MODEL_PRICES_PATH",  # via routing_protocol
     }
-    for env_name in sorted(config.CONSENSUS_ENV_VARS):
+    for key in ("skip_benchmarks", "pool_unpinned", "pool_manifest_v1", "pool_manifest_v2",
+                "openrouter_base"):
+        if key not in fp["epoch"]:
+            errors.append(f"fingerprint epoch block lacks {key} (I1)")
+    for env_name in sorted(set(config.CONSENSUS_ENV_VARS) - outside):
         attr = re.search(
             rf'^([A-Z_]+)\s*=[^\n]*?os\.getenv\(\s*"{env_name}"', source, re.M | re.S,
         )
@@ -929,8 +992,21 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
             )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    """Every check is a hard failure, except the launch gate: the live composes
+    must match a frozen app-compose at launch (`--release`, the MAINNET_LAUNCH
+    gate and the image release), but between releases a compose legitimately
+    moves ahead of its freeze, so plain CI reports the drift as a warning
+    instead of staying red until the next image is signed."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Fugal safety invariants.")
+    parser.add_argument("--release", action="store_true",
+                        help="also fail on launch-gate drift (live composes not frozen)")
+    args = parser.parse_args(argv)
+
     errors: list[str] = []
+    launch_gate: list[str] = []
     check_np_load_calls(errors)
     check_runtime_annotations(errors)
     check_deserialize_contract(errors)
@@ -948,11 +1024,14 @@ def main() -> None:
     check_tee_safety(errors)
     check_upstream_is_inside_the_measurement(errors)
     check_live_requires_app_identity(errors)
+    check_live_composes_are_frozen(errors if args.release else launch_gate)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)
     check_documented_flags(errors)
     if errors:
         raise SystemExit("Safety invariant check failed:\n- " + "\n- ".join(errors))
+    for line in launch_gate:
+        print(f"WARNING (launch gate, fails with --release): {line}")
     print("Safety invariants passed.")
 
 

@@ -30,7 +30,7 @@ def test_v1_inputs_are_what_v1_always_loaded_and_v2_has_its_own():
     assert "price_table(2)" in block and "models_for_protocol(2)" in block
     assert "if live:\n                raise click.ClickException" in block
     # v1's own loading is untouched.
-    assert "benchmark_pool = load_all()" in SRC and "prices = load_prices()" in SRC
+    assert "benchmark_pool = load_all()" in SRC and "prices = price_table(1)" in SRC
 
 
 def test_v1_epoch_plan_is_byte_identical_to_the_v1_functions():

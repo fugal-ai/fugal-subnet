@@ -40,6 +40,23 @@ def compute_commit_hash(questions: list[dict], grader_hash: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def write_json_atomic(path: str, obj: object) -> None:
+    """Write `obj` as JSON so the file is either absent or complete, never partial.
+
+    A crash or a full disk during `json.dump` on the final path left a
+    truncated `reveal.json` that the publisher then uploaded and whose hash it
+    committed on chain, with the `.published` marker stopping the retry from
+    ever replacing it. Write to a sibling temp file, fsync, rename: the rename
+    is atomic and the bytes are on disk before it.
+    """
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def commit_epoch(epoch_id: str, questions: list[dict], block_hash: str) -> EpochCommitment:
     gh = grader_hash()
     commit_hash = compute_commit_hash(questions, gh)
@@ -55,8 +72,7 @@ def commit_epoch(epoch_id: str, questions: list[dict], block_hash: str) -> Epoch
     epoch_dir = os.path.join(EPOCH_DIR, epoch_id)
     os.makedirs(epoch_dir, exist_ok=True)
     commit_path = os.path.join(epoch_dir, "commit.json")
-    with open(commit_path, "w") as f:
-        json.dump(asdict(commitment), f, indent=2)
+    write_json_atomic(commit_path, asdict(commitment))
 
     logger.info("Epoch %s committed: %s", epoch_id, commit_hash)
     return commitment
@@ -75,6 +91,7 @@ def reveal_epoch(
     exploration: list[dict] | None = None,
     protocol_version: int = 1,
     v2_fields: dict | None = None,
+    frame_excluded_coldkeys: list[str] | None = None,
 ) -> bool:
     """Verify the commitment and publish the full epoch artifact.
 
@@ -137,6 +154,14 @@ def reveal_epoch(
             key=lambda e: (e.get("question_id", ""), e.get("model", ""),
                            e.get("coldkey", "")),
         ),
+        # The operators whose exploration samples the detectors kept OUT of
+        # the frame this epoch (reference_frame.implausible_exploration and
+        # disagreeing_exploration). Every observation above is published,
+        # excluded ones included, so a rebuild from this reveal can only
+        # reach the live frame if it knows which voters the live epoch
+        # dropped; before this field existed it re-admitted them and a
+        # rebuilt validator valued the frontier from a different frame (I1).
+        "frame_excluded_coldkeys": sorted(set(frame_excluded_coldkeys or [])),
         "scores": {str(k): v for k, v in scores.items()},
         "weights": {str(k): v for k, v in weights.items()},
         # What these numbers were computed with. Two validators publishing
@@ -162,8 +187,7 @@ def reveal_epoch(
             reveal[key] = fields[key]
 
     reveal_path = os.path.join(epoch_dir, "reveal.json")
-    with open(reveal_path, "w") as f:
-        json.dump(reveal, f, indent=2)
+    write_json_atomic(reveal_path, reveal)
 
     logger.info("Epoch %s revealed and verified: %s", epoch_id, expected)
     return True

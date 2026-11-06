@@ -165,3 +165,25 @@ def test_a_corrupt_file_with_no_backup_still_fails_loudly(tmp_path):
     pathlib.Path(path).write_text("nope")
     with pytest.raises(ValueError, match="Cannot resume"):
         mod.load_state(MinerRecord, path=path)
+
+
+# ------------------------------------------------ pinned metagraph --
+
+def test_a_failed_pinned_metagraph_read_is_reported_not_silent():
+    """The fallback to the live metagraph is a known divergence cause; the
+    epoch log has to carry it, so metagraph_at says whether it pinned."""
+    mod = _mod()
+
+    class _Pinned:
+        def metagraph(self, netuid, block=None):
+            return ("mg", block)
+
+    class _Pruned:
+        def metagraph(self, netuid, block=None):
+            raise RuntimeError("state pruned")
+
+    assert mod.metagraph_at(_Pinned(), 7, 123, "live") == (("mg", 123), True)
+    assert mod.metagraph_at(_Pruned(), 7, 123, "live") == ("live", False)
+    src = VALIDATOR.read_text(encoding="utf-8")
+    assert "metagraph_unpinned" in src
+    assert 'rec = MinerRecord(uid=uid, hotkey="", current_head_hash=h)' in src

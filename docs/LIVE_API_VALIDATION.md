@@ -8,26 +8,59 @@ without proving the *prices*.
 
 ## What is actually unverified
 
-Costs are priced from `data/models.json`, which is hash-pinned and is the
-consensus denominator: every validator prices every proof against it. That
+Costs are priced from the pinned price table of the epoch's protocol
+(`data/models.json` for v1, `data/models_v2.json` for v2) times the reviewed
+token means (`data/benchmark_tokens_*.json`); both are hash-pinned and are
+the consensus denominator: every validator prices every proof against them. That
 makes scoring deterministic, which is the point. It also means the table can be
 **internally consistent and externally wrong** — if a provider changes a price,
 nothing local notices.
 
 The proxy already records the provider's own reported cost alongside the table
 price (`APICallRecord.provider_cost_usd`, `MeteringProxy.provider_total_cost`),
-attested inside the enclave, precisely so the drift is detectable. It was
-looked at once, account-level, over four miner-epochs on netuid 552
-(2026-09-07): within ~5%, with completions averaging 534 tokens against the
-256 assumed (`MAINNET_LAUNCH.md`, "What is still unverified"). Per-proof
-comparison is still open.
+attested inside the enclave, precisely so the drift is detectable. It has been
+looked at twice:
 
-So the open question is narrow: **does the pinned table match what OpenRouter
-actually bills?**
+- **Account-level, 2026-09-07**, over four miner-epochs on netuid 552: within
+  ~5%, with completions averaging 534 tokens against the 256 then assumed.
+- **Per model, 2026-11-04**, the protocol v2 token run: 757 direct metered
+  calls through the harness path, 18 models x 40 questions, provider-billed
+  cost kept beside table-priced cost per row
+  (`data/observations/benchmark_tokens_protocol_v2.jsonl`). Billed $5.18
+  against $5.68 table-priced; five models' prices were re-pinned from the
+  measured effective price (the `billing_check` record inside
+  `data/benchmark_tokens_protocol_v2.json`).
+
+Mainnet proofs since 2026-11-04 carry `provider_cost_usd` per call, so a
+per-proof comparison is now possible from the validator's own epoch artifacts.
+The question stays narrow: **do the pinned table and token means match what
+OpenRouter actually bills, on the pinned pool?** The v2 run sampled from the
+open sets at the category mix, not the pinned pool itself; the re-measure on
+the pinned v2 pool before the flip is in `MAINNET_LAUNCH.md`, "The v2
+release".
+
+## Per model, the cheap way
+
+`scripts/record_token_observations.py` is what the v2 token run used: the same
+MeteringProxy and `_call_model` path as the benchmark, a deterministic
+stratified sample, provider-billed and table-priced cost per row, no response
+text, the key from a 0600 file, and a hard `--max-usd` stop. It defaults to
+`--mock`, which refuses the real upstream.
+
+```bash
+uv run python scripts/record_token_observations.py --live --protocol 2 \
+  --models data/models_v2.json --api-key-file ~/.fugal/openrouter.key \
+  --per-model 40 --max-usd 12          # [PAID ~$5-12]
+uv run python scripts/build_token_manifest.py --observations <out.jsonl> \
+  --models data/models_v2.json --output <candidate.json>
+```
+
+The candidate's `billing_check` is the comparison. Promoting it to `reviewed`
+is a consensus change (pin, `routing_data/` copy, CHANGELOG, review record).
 
 ## Running one live epoch
 
-This spends real money. Nothing in the default path can — there is no API key
+The whole-path alternative. This spends real money. Nothing in the default path can — there is no API key
 in any test or script, and `--mock` is the default for the miner and every script that can call a model (the validator, which calls none, defaults to `--live`).
 
 ```bash
@@ -61,8 +94,8 @@ Three outcomes:
 - **Within a few percent** — the table is good. Record the comparison and move
   on.
 - **Systematically off for one model** — that model's entry is stale. Update
-  `data/models.json` and its pin in `scripts/check_safety_invariants.py` in the
-  same commit, and say why.
+  the price table of that protocol and its pin in
+  `scripts/check_safety_invariants.py` in the same commit, and say why.
 - **Off for everything** — the pricing arithmetic is wrong, not the table. That
   is a code bug in `MeteringProxy.price_call`, and it changes every score.
 
@@ -79,6 +112,7 @@ Three outcomes:
 
 ## Cadence
 
-Re-run this whenever `data/models.json` changes, and periodically regardless:
+Re-run this whenever a price table or token manifest changes, before the
+protocol v2 flip on the pinned v2 pool, and periodically regardless:
 a pinned table is deterministic, not correct, and only a live comparison tells
 you which one you have.

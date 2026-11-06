@@ -273,6 +273,11 @@ def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
     frame; directory listing order is not deterministic and would silently
     produce different weights.
 
+    Reveals carry `frame_excluded_coldkeys`, the operators the live epoch's
+    detectors kept out of the frame; the replay drops the same voters, so it
+    reaches the frame the live validator held rather than one that re-admits
+    them.
+
     THE TRUST ASSUMPTION, stated plainly. A reveal is a JSON file. Replaying
     your OWN reveals after losing state is self-trusting and safe. Replaying
     someone else's is a snapshot: the exploration outcomes inside came from
@@ -326,7 +331,13 @@ def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
         # explored question's benchmark; the live epoch weighted its samples
         # by them, so the replay does too.
         weights = None
-        keyed = aggregate_observations(observations, with_question=True)
+        # The voters the live epoch kept out of the frame (the detectors'
+        # flags); a reveal from before the field existed excluded nobody the
+        # rebuild can know about, so the live frame is reproduced only for
+        # reveals that carry it.
+        excluded = {str(c) for c in (reveal.get("frame_excluded_coldkeys") or [])}
+        keyed = aggregate_observations(observations, exclude_coldkeys=excluded,
+                                       with_question=True)
         if int(reveal.get("protocol_version", 1)) >= 2 and "frame_mix_weights" in reveal:
             mix = reveal.get("frame_mix_weights") or {}
             bench_of = reveal.get("explore_benchmarks") or {}

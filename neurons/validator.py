@@ -1246,6 +1246,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 head_hashes, routing_for_reveal,
                 epoch_score_dicts, epoch_weight_map,
                 exploration=exploration_for_reveal,
+                frame_excluded_coldkeys=sorted({coldkey_of[uid] for uid in suspicious}),
                 protocol_version=protocol_version,
                 v2_fields=(
                     {**v2_result.reveal,

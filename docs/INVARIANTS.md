@@ -883,11 +883,18 @@ appears in the quote as `content_hash || 32 zero bytes`, which is exactly what
 `verify_proof` compares against. A different convention here would fail every
 live proof on a binding check that looks like tampering rather than a mismatch.
 
-### I8 — OPEN DECISION: the miner's per-instance data channel
+### I8 — the miner's per-instance data channel (decided: the attested push; was an OPEN DECISION)
 
-**Unresolved, and it changes what a miner's `app-compose.json` looks like, so it
-blocks packaging.** Recorded here rather than decided, because it is a product
-question and not a packaging one.
+*Status 2026-11-06:* decided and built. Per-miner data (head, hotkey keyfile,
+coldkeypub, API key) crosses an attested, encrypted push from the operator to
+the TD (`tee/provision.py`; the entries "the wallet crosses the attested
+channel" and "the attested channel was authenticated, not confidential"
+below), and nothing per-miner is in the compose. The analysis that led there
+is kept as written.
+
+**At the time: unresolved, and it changes what a miner's `app-compose.json`
+looks like, so it blocks packaging.** Recorded here rather than decided,
+because it is a product question and not a packaging one.
 
 The constraint chain, each link verified in dstack's source rather than inferred:
 
@@ -1273,8 +1280,14 @@ distinction is why this is an operational finding rather than a repeat of the
 Google Attestation Verifier decision, which was rejected because a live service
 returned a *verdict*. A mirror returns *evidence* we verify ourselves.
 
-**Two related defects in the same function**, found with it and not yet fixed
-because both are decisions rather than typos:
+**Two related defects in the same function**, found with it. *Status
+2026-11-06:* the first is fixed (every collateral fetch runs under a
+per-proof allowance and a per-epoch budget, and a timeout records the proof
+as `unverifiable`; I6, "a bare timeout trades a visible halt for a silent
+fork"). The second is a standing policy, not a fix: every DCAP status is
+accepted so that cloud firmware lag does not drop honest miners
+(`OPEN_WORK.md` §4), and whether `dcap-qvl` 0.6.3 raises on `Revoked` is
+still unanswered. As found:
 
   - The `timeout=30` guards only the `ThreadPoolExecutor` branch, which runs
     when an event loop is already running. On the validator's synchronous path
@@ -2824,8 +2837,9 @@ embeddings differ in the last bits would disagree on near-tie routing and
 diverge. Closing this properly needs either an agreed embedding artifact or
 held-out questions that are not in the public pool.
 
-**Benchmark pool reproducibility (open).** The pool is consensus state, and
-the default loader does not produce the same one for everybody. GPQA is a gated
+**Benchmark pool reproducibility (closed by the pinned manifest, 2026-09-06;
+residual below).** The pool is consensus state, and the default loader did
+not produce the same one for everybody. GPQA is a gated
 Hugging Face dataset, so `load_all()` raises for an operator without a token and
 returns a *larger* pool for one with it. LiveCodeBench loads zero questions on
 current `datasets` versions but loads normally for anyone who has manually

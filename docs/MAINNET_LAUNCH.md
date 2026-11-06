@@ -305,6 +305,35 @@ identical weight vectors.
 
 ---
 
+## The v2 release, in order
+
+The protocol v2 flip is three things that must agree: the code on every
+validator, one activation block, and one approved miner image whose compose
+carries that block. In order:
+
+1. Merge `release/v2` into `main`; cut the CHANGELOG `[Unreleased]` block into
+   `0.3.0` and bump `pyproject.toml`.
+2. Choose `<ACTIVATION_BLOCK>`: an epoch boundary (a multiple of 360 on
+   finney) at least 24 h ahead of the announcement, so miners can re-provision.
+3. Edit both `deploy/dstack/docker-compose*.yaml`: the v2 image digest (from
+   the `image-v*` release built from `main`) and
+   `FUGAL_V2_ACTIVATION_BLOCK=<ACTIVATION_BLOCK>`; drop the testnet twin's
+   `FUGAL_EXPLORE_FRACTION=0.5` (v2 pays nothing from the frame).
+4. `dstack-cloud prepare` each; commit the two files as
+   `app-compose.frozen-<tag>-{finney,test}.json`;
+   `scripts/check_safety_invariants.py --release` must pass.
+5. Measure the base on a fresh TD booted from the v2 image (it moved once when
+   GCP changed firmware); publish the two entries with
+   `scripts/publish_approved_entry.py` in a signed release.
+6. Every validator: upgrade to the release, set `FUGAL_V2_ACTIVATION_BLOCK`
+   and add the v2 entry beside the current one, restart, before the block.
+7. Every miner: re-provision on the v2 image before the block (the v2 miner
+   holds its head until the last v1 boundary, then commits it).
+8. After the block: `scripts/watch_subnet.py` for a few epochs; two
+   validators' reveals must agree byte for byte and carry `protocol_version: 2`.
+
+---
+
 ## After the flip: remove protocol v1
 
 Protocol v1 stays in the tree until no v1 epoch can occur, because one binary
@@ -330,6 +359,9 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   and the README's "v1 until the activation block" sentences
 - the v1 rehearsal scenarios in `scripts/dress_rehearsal.py` that only exist
   to prove the handover
+- the pre-v2 frozen files `app-compose.frozen-2026-11-03{b,c}-{finney,test}.json`
+  and their entries, once every validator has retired them
+  (`docs/APPROVED_ENTRY_ROTATION.md`)
 - release bookkeeping: the 0.3.0 CHANGELOG cut and `pyproject` version bump
   happen at the flip; the v1 removal is the release after it
 

@@ -259,7 +259,8 @@ warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every neuron.
 | `FUGAL_FRAME_HALF_LIFE` | `500` | Reference-frame decay half-life, in epochs |
 | `FUGAL_FRAME_PRIOR_STRENGTH` | `20` | Frame prior strength, in pseudo-observations |
 | `FUGAL_FRONTIER_MIN_TRIALS` | `300` | Distinct exploration observations per hull model before the frontier pays in full |
-| `FUGAL_BURN_IN_QUESTIONS` | `3000` | Scored questions before a fresh head reaches full score |
+| `FUGAL_BURN_IN_QUESTIONS` | `3000` | Scored questions before a fresh head reaches full score (v1) |
+| `FUGAL_V2_BURN_IN_QUESTIONS` | `1500` | Scored questions since the last reset or miss before a head can take a v2 seat (E'') |
 | `FUGAL_WILSON_CONFIDENCE` | `0.95` | Wilson LCB confidence level |
 | `FUGAL_SCORE_QUALITY_FLOOR` | `0.8` | Share of the frontier's best accuracy below which a head scores zero |
 | `FUGAL_MAX_WEIGHT_DELTA` | `0.3` | Max weight change per UID per epoch |
@@ -431,7 +432,7 @@ published reveals (`FUGAL_FRAME_BOOTSTRAP`) or has refilled for
   never before.
 - **Expect the miner share to burn for the first days.** Every head is new at
   the flip, and no head can take the seat until it has scored
-  `BURN_IN_QUESTIONS` (3000, about 10 epochs) in an unbroken run. Until then
+  `V2_BURN_IN_QUESTIONS` (1500, five epochs) in an unbroken run. Until then
   each epoch logs `v2 seat: empty` and the weight goes to the burn UID. This is
   intended, not a fault.
 

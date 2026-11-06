@@ -54,7 +54,7 @@ class Evidence:
     n_priced: float = 0.0
     # Protocol v2 (the E'' miss rule): scored questions since the last reset
     # or miss, NOT decayed, separate from n_total. Burn-in is complete when it
-    # reaches BURN_IN_QUESTIONS. -1 marks a record written before the field
+    # reaches V2_BURN_IN_QUESTIONS. -1 marks a record written before the field
     # existed; it reads as n_total (burn_in_progress), which is the migration:
     # at the flip every head keeps the burn-in its evidence already shows.
     burn_in_n: float = -1.0

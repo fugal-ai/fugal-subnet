@@ -7,6 +7,25 @@ subnet stays profitable for the **marginal** entrant up to a field of **~124
 earning miners** — still more than any subnet on the network currently carries
 (1–63 observed), but the margin is ~3.9×, not the 5.8× first reported.
 
+> **Protocol v1 only (November 2026).** Everything below models v1's
+> proportional pay, where every passing head takes a share of the pot in
+> proportion to its score. Protocol v2 pays seats instead: 85% of the miner
+> pot to the champion, 10% and 5% to the two champions before it, nothing to
+> anyone else (`design-decisions.md`, Step 8). The pot itself is unchanged by
+> the flip: 2,952 α/day to miners, about $3,490/day at the pinned prices
+> above (0.00491 τ/α, $240.91/τ). So under v2 the champion earns about
+> $2,970/day, seat 2 about $350, seat 3 about $175, against an epoch cost
+> computed from the v2 token manifest of $0.13 to $7.74 per 300-question epoch
+> (`MINER_GUIDE.md`, "Costs"; 20 epochs a day on mainnet) plus the
+> confidential VM: the champion is net-positive by a wide margin, the two
+> former champions are positive at any routing policy, and every other miner
+> runs at a loss, including a challenger through its five-epoch burn-in and
+> however long it takes to beat the champion by the margin. The questions
+> that matter for v2 are therefore "is a challenger's expected time to the
+> seat worth its loss until then" and "what alpha price keeps the champion
+> solvent", neither of which this document models. Re-deriving it for seats
+> is an open item (`design-decisions.md`, "Open questions", v2).
+>
 > **Revised 2026-09-06 after cross-review.** The first version quoted `pot /
 > cost` = 186 as the equilibrium. That is where the *average* miner breaks
 > even, and nobody decides to enter on the average: weights are

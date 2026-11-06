@@ -992,8 +992,21 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
             )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    """Every check is a hard failure, except the launch gate: the live composes
+    must match a frozen app-compose at launch (`--release`, the MAINNET_LAUNCH
+    gate and the image release), but between releases a compose legitimately
+    moves ahead of its freeze, so plain CI reports the drift as a warning
+    instead of staying red until the next image is signed."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Fugal safety invariants.")
+    parser.add_argument("--release", action="store_true",
+                        help="also fail on launch-gate drift (live composes not frozen)")
+    args = parser.parse_args(argv)
+
     errors: list[str] = []
+    launch_gate: list[str] = []
     check_np_load_calls(errors)
     check_runtime_annotations(errors)
     check_deserialize_contract(errors)
@@ -1011,12 +1024,14 @@ def main() -> None:
     check_tee_safety(errors)
     check_upstream_is_inside_the_measurement(errors)
     check_live_requires_app_identity(errors)
-    check_live_composes_are_frozen(errors)
+    check_live_composes_are_frozen(errors if args.release else launch_gate)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)
     check_documented_flags(errors)
     if errors:
         raise SystemExit("Safety invariant check failed:\n- " + "\n- ".join(errors))
+    for line in launch_gate:
+        print(f"WARNING (launch gate, fails with --release): {line}")
     print("Safety invariants passed.")
 
 

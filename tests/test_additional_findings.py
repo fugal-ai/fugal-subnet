@@ -104,10 +104,13 @@ def test_a_live_validator_refuses_an_overridden_consensus_constant(monkeypatch):
 def test_consensus_overrides_are_refused_on_finney_and_warned_elsewhere(monkeypatch, caplog):
     import logging
 
-    from fugal_subnet.config import FINNEY_GENESIS_HASH
+    from fugal_subnet.config import CONSENSUS_ENV_VARS, FINNEY_GENESIS_HASH
     from fugal_subnet.fingerprint import assert_consensus_overrides_allowed
 
-    monkeypatch.delenv("FUGAL_EXPLORE_FRACTION", raising=False)
+    # Start from no override at all. CI itself exports FUGAL_SKIP_BENCHMARKS
+    # (a consensus variable since review F-027) to keep the gated datasets out.
+    for name in CONSENSUS_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
     assert_consensus_overrides_allowed(FINNEY_GENESIS_HASH)  # nothing set: nothing to refuse
     assert_consensus_overrides_allowed(None)
 

@@ -155,8 +155,9 @@ def main() -> int:
     ap.add_argument("--network", default="test")
     ap.add_argument("--netuid", type=int, required=True)
     ap.add_argument("--epochs", type=int, default=3, help="Epoch boundaries to observe")
-    ap.add_argument("--epoch-interval", type=int,
-                    default=int(os.getenv("FUGAL_EPOCH_INTERVAL", "3600")))
+    ap.add_argument("--epoch-interval", type=int, default=None,
+                    help="FUGAL_EPOCH_INTERVAL the neurons run with (default: the environment, "
+                         "else the chain's tempo x 12)")
     ap.add_argument("--miners", default="", help="name=hotkey_ss58,...")
     ap.add_argument("--validators", default="", help="name=hotkey_ss58,...")
     ap.add_argument("--reveals", default="", help="name=/path/to/results/epochs,...")
@@ -182,6 +183,16 @@ def main() -> int:
 
     miners, validators, reveals = kv(args.miners), kv(args.validators), kv(args.reveals)
     subtensor = bt.Subtensor(network=args.network)
+    if args.epoch_interval is None:
+        env = os.getenv("FUGAL_EPOCH_INTERVAL", "").strip()
+        if env:
+            args.epoch_interval = int(env)
+        else:
+            from fugal_subnet.benchmarks.slicer import BLOCK_TIME_S
+            tempo = int(getattr(subtensor.get_subnet_hyperparameters(netuid=args.netuid),
+                                "tempo", 0) or 0)
+            args.epoch_interval = max(1, tempo) * BLOCK_TIME_S
+            print(f"epoch interval {args.epoch_interval}s from the chain's tempo {tempo}")
     bpe = blocks_per_epoch(args.epoch_interval)
     report = Report()
 

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 
@@ -309,8 +310,9 @@ def main() -> int:
                    help="Comma-separated wallet/hotkey pairs, e.g. w1/val1,w1/val2")
     p.add_argument("--miners", default="", help="Same format as --validators")
     p.add_argument("--stake", type=float, default=0.5, help="TAO to stake per validator")
-    p.add_argument("--epoch-interval", type=int, default=3600,
-                   help="FUGAL_EPOCH_INTERVAL the neurons will run with")
+    p.add_argument("--epoch-interval", type=int, default=None,
+                   help="FUGAL_EPOCH_INTERVAL the neurons will run with (default: the "
+                        "FUGAL_EPOCH_INTERVAL in the environment, else the chain's tempo x 12)")
     p.add_argument("--subnet-name", default="Fugal")
     p.add_argument("--description", default="Continuous cost-aware LLM router optimization")
     p.add_argument("--github", default="https://github.com/fugal-ai/fugal-subnet")
@@ -334,6 +336,21 @@ def main() -> int:
     logger.info("Network %s at block %d", args.network, subtensor.get_current_block())
 
     netuid = args.netuid
+    if args.epoch_interval is None:
+        # A hard-coded 3600 reported an aligned tempo-360 subnet (4320) as
+        # MISALIGNED whenever the flag was forgotten. Take the deployment's
+        # value, else what the chain's tempo implies, and say which.
+        env = os.getenv("FUGAL_EPOCH_INTERVAL", "").strip()
+        if env:
+            args.epoch_interval = int(env)
+            logger.info("epoch interval %d from FUGAL_EPOCH_INTERVAL", args.epoch_interval)
+        elif netuid is not None:
+            tempo = int(getattr(subtensor.get_subnet_hyperparameters(netuid=netuid), "tempo", 0) or 0)
+            args.epoch_interval = max(1, tempo) * BLOCK_TIME_S
+            logger.info("epoch interval %d from the chain's tempo %d x %d s",
+                        args.epoch_interval, tempo, BLOCK_TIME_S)
+        else:
+            args.epoch_interval = 3600
     if args.status:
         # Report only. No wallet is loaded: a validator host holds a hotkey
         # and never the owner coldkey, and it must still be able to ask the

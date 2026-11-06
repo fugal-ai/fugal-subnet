@@ -63,6 +63,19 @@ that does not match a live compose (`--allow-drift` overrides). The docs and
 `validator.env.example` now say where the activation block lives: in the
 validator's environment AND in the v2 miner compose, so choosing it fixes the
 v2 compose hash and the approved entry.
+### Fixed — operator scripts: protocol-aware verification, a probe that can pass, tempo-derived defaults
+
+`scripts/verify_live_miner.py` selected the slice and exploration with the v1
+functions over the v1 table, so from the activation block it computed a
+different slice from the validator and refused every v2 proof; it now picks
+the epoch's inputs by the boundary-keyed version as the validator does.
+`scripts/tdx_measurement.py --verify` built a proof with no hotkey, which
+`verify_proof` refuses outside mock before the measurement check runs, and
+told the operator to export a bare base that `--live` refuses; both corrected.
+`scripts/provision_subnet.py` and `scripts/watch_subnet.py` defaulted the
+epoch interval to 3600 (mainnet is 4320), reporting an aligned subnet as
+MISALIGNED when the flag was forgotten; they now take `FUGAL_EPOCH_INTERVAL`
+from the environment, else the chain's tempo x 12, and say which.
 
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 

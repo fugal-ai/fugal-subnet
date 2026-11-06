@@ -371,7 +371,7 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   and the README's "v1 until the activation block" sentences
 - the v1 rehearsal scenarios in `scripts/dress_rehearsal.py` that only exist
   to prove the handover
-- the pre-v2 frozen files `app-compose.frozen-2026-11-03{b,c}-{finney,test}.json`
+- the pre-v2 frozen files `app-compose.frozen-2026-11-03c-{finney,test}.json` (03b removed 2026-11-06, retired by its published date)
   and their entries, once every validator has retired them
   (`docs/APPROVED_ENTRY_ROTATION.md`)
 - release bookkeeping: the 0.3.0 CHANGELOG cut and `pyproject` version bump

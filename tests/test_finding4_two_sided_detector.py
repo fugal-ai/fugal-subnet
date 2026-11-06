@@ -79,3 +79,17 @@ def test_flagged_miners_are_excluded_from_the_frame_not_from_scoring():
     # The honest majority already wins the median; exclusion makes the flagged
     # miner's vote vanish entirely rather than merely be outvoted.
     assert without[0][1] == pytest.approx(1.0)
+
+
+def test_a_barely_measured_model_gives_no_basis_to_accuse():
+    """On a cold frame the expectation is the prior (0.5) and every honest
+    miner on a good model looks 40 points 'above' it. A model has to be
+    measured `min_trials` times before it counts (review F-061)."""
+    frame = ReferenceFrame()
+    frame.trials["good"], frame.successes["good"] = 2.0, 2.0          # two trials, both right
+    honest = [("good", True) for _ in range(10)]                       # a 90%+ model, honestly
+    assert not implausible_exploration(frame, {1: honest})
+    frame.trials["good"], frame.successes["good"] = 8.0, 7.0           # measured: 87.5%
+    assert not implausible_exploration(frame, {1: honest})
+    sandbag = [("good", False) for _ in range(10)]
+    assert 1 in implausible_exploration(frame, {1: sandbag})

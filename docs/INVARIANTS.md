@@ -1977,8 +1977,12 @@ the next rotation.
 
 1. **Both directions.** `|observed - expected| > margin`, against the frame
    as it stood before the epoch's samples are folded in (the call order in
-   `neurons/validator.py`). A miner serving itself gold and a miner dropping
-   its network during exploration are the same distance from plausible.
+   `neurons/validator.py`), where `expected` is each model's RAW mean and a
+   model counts only once the frame holds 8 trials of it (2026-11-05: judged
+   against the prior-pulled posterior from one trial, a cold frame flagged
+   every honest miner on some epochs and dropped their samples). A miner
+   serving itself gold and a miner dropping its network during exploration
+   are the same distance from plausible.
 2. **Cross-miner agreement, with no baseline.** `disagreeing_exploration`:
    while exploration is shared, every coldkey asks the same model the same
    question; per (question, model) with at least `EXPLORE_DISAGREE_MIN_VOTERS`
@@ -2682,8 +2686,11 @@ set), and the frame keeps **weighted sums** (`successes_w`, `trials_w`,
 verbosity read the weighted sums; the **raw trial count is never weighted**,
 because it counts how much has been measured, and that is what the
 frontier's confidence reads. A v1 frame has no weighted sums and serialises
-byte for byte as before; once a frame is weighted every later epoch keeps
-the weighted sums current.
+byte for byte as before; the first weighted epoch seeds the weighted sums
+from the raw history (every past trial at weight 1), so no estimate jumps at
+the transition (found 2026-11-05: without the seed a model with 300 raw
+trials was valued at its single newest sample), and once a frame is weighted
+every later epoch keeps the weighted sums current.
 
 In v2 the frame is informational (I3/I4, "v2 pays from the paired rule
 alone"): this keeps the exploration detectors and the published diagnostics

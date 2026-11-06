@@ -78,3 +78,23 @@ def test_mix_weights_restore_the_scored_share():
     # Weighted exploration shares equal scored shares.
     total = 2 * w["mmlu"] + 2 * w["ifeval"]
     assert 2 * w["ifeval"] / total == pytest.approx(5 / 35)
+
+
+def test_the_first_weighted_epoch_keeps_every_estimate_continuous():
+    """Before the fix a model with a long raw history was valued at its single
+    newest sample the moment the frame became weighted (0.863 -> 0.000 on the
+    shipped frame), and stayed there while the weighted sums refilled."""
+    from fugal_subnet.reference_frame import decay_factor
+
+    raw = accumulate_exploration(None, [("m/a", True, 10.0, 300.0)] * 9 + [("m/a", False, 10.0, 300.0)])
+    assert raw.frontier_accuracy("m/a") == pytest.approx(0.9) and not raw.weighted
+    first = accumulate_exploration(raw, [("m/a", False, 10.0, 2000.0)], weights=[1.0])
+    alpha = decay_factor(500)
+    # 10 decayed historical trials at weight 1, plus one new wrong answer.
+    assert first.trials_w["m/a"] == pytest.approx(10 * alpha + 1)
+    assert first.frontier_accuracy("m/a") == pytest.approx(9 * alpha / (10 * alpha + 1))
+    assert 0.8 < first.frontier_accuracy("m/a") < 0.9
+    assert first.avg_completion_tokens("m/a", 0) == pytest.approx(
+        (3000 * alpha + 2000) / (10 * alpha + 1))
+    # And it serialises / reloads as a weighted frame.
+    assert ReferenceFrame.from_dict(first.to_dict()).to_dict() == first.to_dict()

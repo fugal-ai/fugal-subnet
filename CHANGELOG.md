@@ -97,6 +97,19 @@ restored burn-in on its first verified proof; they now carry no hotkey (unknown,
 kept). When the pinned metagraph read at the collection block fails and the
 live one is used, the epoch log now records `metagraph_unpinned`, so a
 divergence that epoch is attributable from the published artifacts.
+### Fixed — the frame's first weighted epoch is continuous; the detector needs a measured model
+
+`accumulate_exploration` started the weighted (v2) sums empty, so the first
+weighted epoch valued every explored model at its single newest sample
+(0.863 -> 0.000 on the shipped frame) until the weighted sums refilled; the
+weighted sums now start from the raw history. `implausible_exploration`
+judged a miner against a model the frame had seen once, i.e. against the
+prior, so on a cold frame every honest miner on a good model was flagged on
+some epochs, its samples dropped and a false `exploration_excluded_from_frame`
+published; a model now counts only after `min_trials` (8) raw trials and
+at its raw mean (the frontier's valuation), not the prior-pulled posterior.
+**Consensus note (v1, live):** the detector decides which samples enter the
+frame, so validators must take this in the same inter-epoch window.
 
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 

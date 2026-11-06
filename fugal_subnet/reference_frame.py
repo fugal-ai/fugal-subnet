@@ -361,6 +361,7 @@ def implausible_exploration(
     per_miner: dict[int, list[tuple[str, bool]]],
     min_samples: int = 8,
     margin: float = 0.35,
+    min_trials: float = 8.0,
 ) -> dict[int, str]:
     """Miners whose exploration accuracy is implausible for the models they used,
     in EITHER direction.
@@ -391,6 +392,15 @@ def implausible_exploration(
     fakes only plausible accuracy evades it. `disagreeing_exploration` is the
     other half, and catches that miner when the other operators do not agree
     with it.
+
+    A model counts toward the expectation only once the frame holds
+    `min_trials` raw trials of it, and the expectation is its raw mean (the
+    frontier's valuation), not the prior-pulled posterior: judged against the
+    posterior from one trial, every honest miner on a 90% model sat 40 points
+    "above" a cold frame. Simulated on the v2 table from empty, every miner
+    was flagged on 2 of the first 120 epochs, each such epoch's samples were
+    dropped, and a false `exploration_excluded_from_frame` went into the
+    public log (review 2026-11-05, F-061).
     """
     if frame is None:
         return {}
@@ -408,9 +418,12 @@ def implausible_exploration(
         observed = 0.0
         measured = 0
         for model, outcomes in by_model.items():
-            if frame.trials.get(model, 0.0) < 1.0:
-                continue                      # frame has never seen it; no basis
-            expected += frame.accuracy(model) * len(outcomes)
+            if frame.trials.get(model, 0.0) < min_trials:
+                continue                      # not measured enough to judge against
+            # The RAW mean, not the posterior: the prior (20 pseudo-samples at
+            # 0.5) still pulls a 90% model to 0.69 at 20 trials, which is the
+            # false "above" on every honest miner that F-061 measured.
+            expected += frame.frontier_accuracy(model) * len(outcomes)
             observed += sum(outcomes)
             measured += len(outcomes)
         if measured < min_samples:
@@ -501,8 +514,10 @@ def accumulate_exploration(
 
     `weights` (protocol v2) are per-sample mix weights, aligned with
     `samples`; they enter only the weighted sums, never the raw trial count.
-    Once a frame carries weighted sums, later epochs keep them up to date
-    (weight 1 where none is given), so the two never drift apart.
+    The first time a frame is weighted, its weighted sums start from the raw
+    history (every past trial at weight 1), so no estimate jumps at the
+    transition; once a frame carries weighted sums, later epochs keep them up
+    to date (weight 1 where none is given), so the two never drift apart.
     """
     if weights is not None and len(weights) != len(samples):
         raise ValueError("weights must align with samples")
@@ -518,10 +533,23 @@ def accumulate_exploration(
     )
     keep_weighted = weights is not None or prev.weighted
     if keep_weighted:
-        out.successes_w = {m: v * alpha for m, v in prev.successes_w.items()}
-        out.trials_w = {m: v * alpha for m, v in prev.trials_w.items()}
-        out.prompt_tokens_w = {m: v * alpha for m, v in prev.prompt_tokens_w.items()}
-        out.completion_tokens_w = {m: v * alpha for m, v in prev.completion_tokens_w.items()}
+        if not prev.weighted:
+            # The first weighted epoch. Seeding the weighted sums from the raw
+            # history (weight 1 per past trial) keeps every estimate
+            # continuous: without this, a model with 300 raw trials was valued
+            # at its single newest sample the moment the frame became weighted
+            # (0.863 -> 0.000, completion 315 -> 2000 on the shipped frame;
+            # review 2026-11-05, F-059), and stayed there for hundreds of
+            # epochs while the weighted sums refilled.
+            base_s, base_t = prev.successes, prev.trials
+            base_p, base_c = prev.prompt_tokens, prev.completion_tokens
+        else:
+            base_s, base_t = prev.successes_w, prev.trials_w
+            base_p, base_c = prev.prompt_tokens_w, prev.completion_tokens_w
+        out.successes_w = {m: v * alpha for m, v in base_s.items()}
+        out.trials_w = {m: v * alpha for m, v in base_t.items()}
+        out.prompt_tokens_w = {m: v * alpha for m, v in base_p.items()}
+        out.completion_tokens_w = {m: v * alpha for m, v in base_c.items()}
     for i, (model, correct, p_tok, c_tok) in enumerate(samples):
         out.trials[model] = out.trials.get(model, 0.0) + 1.0
         out.successes[model] = out.successes.get(model, 0.0) + float(correct)

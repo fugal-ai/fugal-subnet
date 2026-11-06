@@ -535,13 +535,22 @@ who reaches port 8092 from replacing your session key and locking you out of
 your own logs. On a rehearsal miner, restart it with the new `--head-path`.
 
 **A new head starts its burn-in from zero.** It must score 1,500 questions in
-an unbroken run (five epochs) before it can take a seat. If the head you
-replace was the champion, its seat is kept open for it as a ghost for 24
-epochs (its owner committed a different head, so it is treated as retired),
-and the champion's share burns while the ghost stands unless a challenger beats
-the ghost by the margin. Retrain in big steps, not continuous tweaks: every
-recommit costs five epochs of burn-in, and a champion that recommits gives up
-its seat.
+an unbroken run (five epochs) before it can take a seat.
+
+**If the head you replace is the champion, read this first.** Committing a
+different head retires the old one: its seat becomes a 24-epoch ghost bar
+(`CHAMPION_GHOST_RETIRE`), the champion's share burns while the bar stands,
+the old head does not resume, and a head takes the seat past the bar only by
+beating the ghost by the margin on at least 1,500 questions they both
+answered. A head that only started after the old one retired has no such
+pairing, so it waits out the 24 epochs (about 29 hours), and so does
+everyone else. The way to upgrade a champion without that gap is to run the
+new head **beside** the old one for at least five epochs, on a second hotkey
+under the same coldkey (two hashes are two heads; only the same bytes count
+as a copy): it pairs with the champion epoch by epoch, takes the seat by the
+margin when it is measurably better, the old head drops to seat 2 and is
+still paid 10% while it serves, and you stop it afterwards. Retrain in big
+steps, not continuous tweaks: every recommit costs five epochs of burn-in.
 
 ## Scoring
 

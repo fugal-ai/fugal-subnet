@@ -2391,8 +2391,9 @@ previous, the one before), never across the field.
   share goes to the current champion; with no current champion it burns,
   along with the champion's own share. A seat no champion has filled yet is
   an empty seat and pays the champion.
-- **Seats are paid to the UID serving the seat's head.** A hotkey keeps every
-  seat it holds. One operator holds several seats only by having won each in
+- **Seats are paid to the UID serving the seat's head.** An owner (the
+  coldkey that first committed the head; the copy rule) keeps every seat its
+  heads hold. One operator holds several seats only by having won each in
   turn, so registering more hotkeys buys nothing: under proportional pay an
   operator with eight passing heads took eight shares, and under seats it
   takes at most the seats it has won.
@@ -2584,7 +2585,9 @@ protocol v2
   subnet, read from the commitments pinned at each boundary. Ties inside one
   block go to the lowest sha256("fugal-v2-owner:" ‖ hash ‖ ":" ‖ coldkey),
   which no hotkey address steers. A head never seen committed is junior to
-  every head that was.
+  every head that was. At the flip, every head committed at or before the
+  activation block ties at that block, broken by a salted hash
+  (`seniority(..., floor_block, salt)`; I3, "Pre-flip commits tie").
 - **A hash belongs to the coldkey that first committed it** (`classify`).
   The same hash under another coldkey is an exact copy and is ineligible; a
   hash a copier still commits stays on record as the author's, so a copier

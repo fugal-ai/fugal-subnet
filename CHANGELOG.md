@@ -22,6 +22,14 @@ neurons now read `routing_protocol.price_table(1)` (the miner keeps the
 `FUGAL_MODEL_PRICES` override, which finney refuses), and
 `scripts/check_safety_invariants.py` requires the two copies to be identical,
 as it already did for the v2 table.
+### Fixed — a pool skip-list mismatch is refused in strict mode
+
+`loader._verify_against_manifest` returned early with a warning when the
+process's `FUGAL_SKIP_BENCHMARKS` differed from the list the manifest was
+built with, so a live neuron on its own skip list scored a pool nobody else
+had and the check that would have said so switched itself off. Strict mode
+(the live neurons) now refuses to start on a mismatch; non-strict keeps the
+warning.
 
 ### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
 

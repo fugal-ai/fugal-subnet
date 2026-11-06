@@ -373,7 +373,7 @@ named epoch boundary, the **activation block**. The rules an epoch is scored
 under depend only on that epoch's boundary block
 (`slicer.protocol_version_for_boundary`), never on when a validator happens to
 run it. So a late or retried epoch is scored the same way on every peer.
-What changes for miners is in `docs/MINER_GUIDE.md`, "Protocol v2".
+What changes for miners is in `docs/MINER_GUIDE.md`, "Moving from v1 to v2".
 
 Values marked `<LIKE_THIS>` are published in the signed v2 release
 (`<V2_RELEASE_NOTE>`) at the announcement, at least 24 hours before the flip.

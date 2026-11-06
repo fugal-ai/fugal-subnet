@@ -25,7 +25,7 @@ the data the next router is trained on.
 This README describes **protocol v2**. The subnet runs the v1 rules until the
 published activation block (`docs/VALIDATOR_GUIDE.md`, "Protocol v2: flip
 procedure"); the differences a miner must act on are in
-`docs/MINER_GUIDE.md`, "Protocol v2".
+`docs/MINER_GUIDE.md`, "Moving from v1 to v2".
 
 ## Architecture
 

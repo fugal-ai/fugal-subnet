@@ -2,19 +2,21 @@
 
 Run a TEE miner on the Fugal subnet. Your miner runs benchmarks inside an Intel
 TDX confidential VM each epoch, producing hardware-attested proofs of routing
-quality. Better routers earn more emissions.
+quality. The best router holds the champion seat and earns most of the miner
+share.
 
-> **Protocol v2** switches on at an announced activation block and changes the
-> image, the model list, the benchmarks and the payout. Read
-> [Protocol v2](#protocol-v2) before the flip: every head must be retrained, and
-> the move needs a second instance to avoid losing epochs.
+> This guide describes **protocol v2**. Until the published activation block
+> the subnet scores by the v1 rules; the differences, and how to move a running
+> v1 miner without losing epochs, are in [Moving from v1 to v2](#moving-from-v1-to-v2-before-the-activation-block)
+> at the end. Every v1 head must be retrained for v2.
 
 ## What You're Building
 
 A **router head** — a small linear layer (~14KB to ~130KB `.npz` file, depending
 on model count) on a frozen
-Qwen3-0.6B backbone. Given a question's hidden state, your head picks which LLM
-should answer it. Each epoch, your miner:
+Qwen3-0.6B backbone. Given a question's hidden state, your head picks which of
+the 18 models in the pinned v2 price table (`data/models_v2.json`) should
+answer it. Each epoch, your miner:
 
 1. Derives the epoch nonce from the boundary block's hash (the validator derives the same one)
 2. Selects the epoch's question slice (deterministic, ~300 questions)
@@ -46,17 +48,14 @@ exact token counts and costs. Validators verify proofs — they never call model
 ## Setup
 
 ```bash
-# Clone and install
+# Clone and install, exactly the committed lock (how CI installs)
 git clone https://github.com/fugal-ai/fugal-subnet.git
 cd fugal-subnet
-python3 -m venv .venv
-source .venv/bin/activate
+uv sync --locked --extra dev
 
-# If cargo isn't installed (needed for bittensor build):
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-
-pip install -e .
+# Without uv: python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+# bittensor builds a Rust extension; if cargo is missing:
+#   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && source "$HOME/.cargo/env"
 ```
 
 ## Step 1: Create a Wallet
@@ -78,12 +77,17 @@ btcli subnet register \
 
 ## Step 3: Train a Head
 
+A head names models from the v2 price table and carries the v2 token
+statistics; a head over the v1 models is not scoreable from the activation
+block.
+
 ### Quick start (synthetic data, no API cost)
 
 ```bash
-python scripts/train_head.py \
+uv run python scripts/train_head.py \
   --synthetic --n-questions 300 \
-  --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
+  --prices data/models_v2.json --manifest data/benchmark_tokens_protocol_v2.json \
+  --models anthropic/claude-haiku-5.5 deepseek/deepseek-v4.1-flash openai/gpt-6.1-terra \
   --output data/synthetic_head_test.npz
 ```
 
@@ -93,10 +97,10 @@ manifest for the miner commands below.
 ### Success-head training (observed binary labels)
 
 ```bash
-python scripts/train_head.py \
+uv run python scripts/train_head.py \
   --matrix data/matrix.npz \
-  --manifest data/benchmark_tokens_v1.json \
-  --models openai/gpt-5.4-mini anthropic/claude-haiku-4.5 deepseek/deepseek-v4-flash \
+  --prices data/models_v2.json --manifest data/benchmark_tokens_protocol_v2.json \
+  --models anthropic/claude-haiku-5.5 deepseek/deepseek-v4.1-flash openai/gpt-6.1-terra \
   --output data/my_head.npz --epochs 100
 ```
 
@@ -106,17 +110,21 @@ uses masked binary cross-entropy, and selects a checkpoint by validation BCE.
 Exact duplicate prompts stay together in deterministic 60/20/20 splits. The
 held-out test split is reported only after checkpoint selection.
 
+There is no published label set: you label your own data, by calling the v2
+models on questions from the open sets the pool is built from (the benchmarks
+table below). The published reveals are the other source: every epoch's shared
+grades say which model answered which question correctly.
+
 Embeddings are computed with the pinned CPU float32 2048-token profile. An
 optional `--hidden-states` argument accepts a profile-tagged NPZ cache. There is
 no implicit random fallback. Synthetic training is explicitly test-only.
 
 Heads require the versioned success contract, not just W/b/models. See
 [the contract and transition guide](SUCCESS_CONTRACT.md) for metadata, archive
-limits, export, and the required fresh evidence namespace. The checked-in token
-manifest was reviewed on 2026-11-02 from 664 fresh metered calls (the record is
-in `SUCCESS_CONTRACT.md` and inside the file); your head's token statistics must
-match it exactly, which `train_head.py --manifest data/benchmark_tokens_v1.json`
-does for you.
+limits, export, and the required fresh evidence namespace. The v2 token manifest
+was reviewed on 2026-11-04 from 757 metered calls at the v2 answer budget (the
+record is inside the file); your head's token statistics must match it exactly,
+which `--manifest data/benchmark_tokens_protocol_v2.json` does for you.
 
 ## Step 4: Run the Miner
 
@@ -526,80 +534,181 @@ running miner changes nothing: that is deliberate, it is what keeps a stranger
 who reaches port 8092 from replacing your session key and locking you out of
 your own logs. On a rehearsal miner, restart it with the new `--head-path`.
 
-**Important:** Recommitting a new head resets your evidence accumulator. Your
-accumulated score drops to zero and must rebuild over epochs. Retrain in big
-steps, not continuous tweaks. This is by design — it makes dethroning expensive
-and rankings stable.
+**A new head starts its burn-in from zero.** It must score 1,500 questions in
+an unbroken run (five epochs) before it can take a seat. If the head you
+replace was the champion, its seat is kept open for it as a ghost for 24
+epochs (its owner committed a different head, so it is treated as retired),
+and the champion's share burns while the ghost stands unless a challenger beats
+the ghost by the margin. Retrain in big steps, not continuous tweaks: every
+recommit costs five epochs of burn-in, and a champion that recommits gives up
+its seat.
 
 ## Scoring
 
-You are scored on **the accuracy you add over the best non-routing policy at
-your own price**:
+**One champion seat.** The miner share does not go to the field in proportion
+to a score. It goes to a **champion**, and a head takes the seat only by beating
+the champion on the same questions. Every miner answers the same scored slice,
+so the comparison is question by question, over the last
+`CHAMPION_WINDOW_EPOCHS` (48) epochs:
 
 ```
-frontier(c) = best accuracy any single model, or random mixture of models,
-              achieves at cost-per-question c   (upper convex hull, from the
-              reference frame's exploration samples and the pinned price table)
-headroom    = wilson_lcb(your accuracy) - frontier(your cost per question)
-score       = max(0, headroom) * burn_in * frontier_confidence
-              (0 if wilson_lcb < 0.8 * the frontier's maximum accuracy)
+NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
+V    = CHAMPION_ACCURACY_VALUE (30) x the pinned anchor's expected spend per
+       question (CHAMPION_ANCHOR_MODEL, claude-fable-5.1: its mean tokens in the
+       reviewed v2 token manifest at the pinned v2 prices, about $0.026, so
+       V is about $0.77); the same V whoever holds the seat
+u_i  = CHAMPION_HARD_WEIGHT (2) on a question in the `hard` category, else 1
+NV   = 100 x mean_i NV_i                          (percentage points)
 ```
 
-**A constant policy scores zero.** Always calling one model, or flipping a coin
-between two, reads no question and sits on the frontier; it earns nothing, at
-any price. That is the point: the subnet pays for the value of reading the
-question and for nothing else. An earlier score (quality per dollar against the
-best single model) paid a head that always called one mid-priced model 12% more
-than the best trained router; `docs/design-decisions.md` keeps that history.
+- `g` is the **shared grade** of the (question, model) cell you routed to: the
+  median across operators (coldkeys) of every answer to that model on that
+  question. Two heads that pick the same model get the same grade, so
+  provider noise on a second call does not separate them. Your own failed call
+  still grades 0.
+- `s` is the cost of your choice under the pinned prices, from the cell's
+  median attested completion tokens. It is not your self-reported spend.
+- One extra correct answer is worth 30 questions of the anchor's spend.
+  Accuracy decides. Cost decides between heads of near-equal accuracy.
+- You take the seat when the one-sided paired-bootstrap lower bound of NV, at
+  `CHAMPION_CONFIDENCE` = 90% over `CHAMPION_BOOTSTRAP_RESAMPLES` = 2000
+  resamples, is above `CHAMPION_MARGIN` = **0.2 points**. The point estimate
+  must clear the margin too. The champion keeps its seat with no margin, so two
+  near-equal heads cannot trade it on noise.
+- The comparison counts only your current unbroken run since your commitment,
+  and needs at least `CHAMPION_MIN_PAIRED_QUESTIONS` (1500) questions paired
+  with the champion: five epochs. A head that is clearly better takes the seat
+  at that floor; a head one accuracy point better takes it in about six
+  epochs; an equal head almost never does.
+- Gates on a challenger, besides the margin: window accuracy at or above
+  `CHAMPION_MIN_ACCURACY` = **0.30**, and at or above the high-water mark (the
+  current champion's Wilson lower bound when it was seated). Once the window
+  holds `CHAMPION_HARD_GATE_MIN_QUESTIONS` (100) hard questions, the same
+  applies to hard-category accuracy. The per-call time gate
+  (`CHAMPION_TIME_GATE_FACTOR`) is not applied at launch.
 
-Three consequences worth internalising:
+**Who owns a head, and who is senior.** A head hash belongs to the **coldkey**
+that first committed it. The same bytes served under another coldkey are an
+exact copy: not paid, not measured, and unable to take or retire the head's
+seat. Running the same head on more hotkeys earns nothing, and a hotkey swap
+under the same coldkey keeps the head. Seniority is the block of the first
+commitment, with one exception that matters at launch: **every head committed
+at or before the activation block ties**, and the tie is broken by a hash over
+the activation boundary's block hash, the head and its owner
+(`copy_rule.seniority`; published each epoch as the reveal's `v2_seniority`).
+Committing days ahead buys nothing, and the order cannot be known until the
+activation block exists. Commits after the flip keep their real block.
 
-- **Cheap-and-smart is where the money is.** The frontier is low and steep at
-  low prices, so a router that gets frontier-quality answers out of cheap models
-  has the most headroom. Matching the best model at the best model's price has
-  almost none — a constant policy already does that.
-- **You cannot be scored against other miners.** The frontier is built from
-  the model pool (nonce-assigned exploration pooled over time), never from
-  heads. Nobody joining, leaving or copying changes your reference. Emissions
-  are relative afterwards, through Yuma, as on every subnet.
-- **Quality is still a requirement.** Below 80% of the frontier's best accuracy
-  you earn nothing however cheap you are: "same answers, less money" needs the
-  same answers.
+**The first champion.** With nobody seated, the most senior eligible head takes
+the seat: burned in, at or above the accuracy floor, and not an exact copy.
+There is no virtual champion to beat. Until some head is eligible the miner
+share burns. A better head then displaces the first champion by the margin,
+like any other.
 
-**Your own tradeoff is yours.** How much quality to give up per dollar is your
-training objective (`FUGAL_LAMBDA` is a miner-side hyperparameter); the subnet
-only decides what it pays for.
+**Copies cannot win.** A head is barred from taking a seat unless it also beats
+every more senior seat holder by the same margin, on the same paired test. A
+copy of the champion, or a lightly edited one, is never measurably better than
+its source, so it earns nothing; there is no resemblance test and no second
+margin, because none is needed.
 
-The frontier is built from *measured* per-model accuracy, pooled from
-exploration samples across all miners and many epochs. It is a fact about the
-model pool, not about the current field. While it is still cold (few
-exploration samples per model) scores are scaled down and the unassigned
-weight burns; nobody is paid for the frame's ignorance.
+**Payout: 85/10/5 across the last three champions.** `PAYOUT_SEAT_SHARES` =
+0.85 / 0.10 / 0.05 go to the current champion, the previous one and the one
+before. A seat pays only while its head is live this epoch and can hold a seat
+(verified, window accuracy at or above 0.30, not an exact copy). An unpaid
+seat's share goes to the current champion. With no current champion, the
+champion's share burns. Nothing that pays reads the reference frame: from the
+flip the whole miner share is paid by this rule, and the frame is published for
+information. `MAX_WEIGHT_DELTA` (0.3 per epoch) still limits how fast the
+weights on chain move, so a change of champion reaches the chain in full over
+about three epochs; the seat itself changes at once.
 
-Results are pooled across epochs via **evidence accumulation** (EWMA decay with
-Wilson LCB scoring). Your score stabilizes over time — a few lucky epochs won't
-rocket you to the top, and a few bad ones won't destroy you. Consistent quality
-wins.
+**Burn-in is to take a seat, not to hold it.** A head must score
+`V2_BURN_IN_QUESTIONS` (1500, five epochs) in an unbroken run before it can
+take a seat, first or by challenge. A seated champion that has to re-earn
+burn-in after a miss keeps its seat and its pay while it does.
 
-**Burn-in:** a freshly committed head ramps in over ~3000 scored questions
-(roughly 10 epochs). This is what stops a miner washing a bad record by
-recommitting: recovering costs the same evidence that earning the position did.
+**Missed epochs (the E″ rule).** If your miner misses an epoch (offline,
+timeout, proof rejected), that epoch is a miss. You cannot selectively skip bad
+epochs.
 
-**Exploration quota:** each epoch you also answer ~5% extra questions using a
-model the *nonce* chooses, not your head. These never count toward your
-accuracy or your cost — a forced random route is not a penalty — but a proof
-missing them, or routing them anywhere other than the assigned model, is
-rejected. Budget for the ~5%.
+- **Before burn-in**, a miss resets your evidence to zero.
+- **After burn-in**, a miss decays your evidence by one epoch of the evidence
+  half-life (`FUGAL_EVIDENCE_HALF_LIFE`, 200 epochs), with no zeros added, and
+  restarts the burn-in counter.
+- **A champion that misses** leaves a ghost bar for `CHAMPION_GHOST_OFF` (3)
+  epochs. While it stands, a challenger must beat the ghost by the margin, and
+  the champion's share burns. A champion that returns inside the window
+  resumes its seat and is paid at once. A champion whose owner commits a
+  different head leaves a ghost for `CHAMPION_GHOST_RETIRE` (24) epochs.
 
-**Miss = 0 accounting:** If your miner misses an epoch (offline, timeout, proof
-verification fails), that epoch counts as 0 correct out of n_expected. You
-cannot selectively skip bad epochs.
+**Exploration quota:** each epoch you also answer 5% extra questions using a
+model the *nonce* chooses, not your head. They never count toward your grades
+or your cost, but a proof missing them, or routing them anywhere other than the
+assigned model, is rejected. They feed the published reference frame, which in
+v2 is information for miners, not an input to pay. Budget for the 5%.
+
+**Every head starts from zero at the flip.** v2 is a new model list, so the
+flip resets everyone's evidence. No v1 record carries over into a v2 seat.
+
+## The v2 protocol: answers, models, benchmarks
+
+**Longer answers.** The harness asks for up to `HARNESS_MAX_TOKENS` = 16384
+completion tokens per call, reasoning included (v1: 2048). Each model runs at
+one pinned reasoning setting from the model list. Call deadlines nest so each
+layer reports before the next gives up: `PROXY_CALL_DEADLINE_S` = 420 s per
+call (retries included) inside `HARNESS_CALL_TIMEOUT_S` = 450 s. A 401, 402 or
+403 from the provider is never retried and is logged as
+`OPERATOR ACTION REQUIRED` (see "Your OpenRouter account is part of your
+miner", below). The one exception is OpenRouter's temporary in-flight-budget
+402, which is retried (see "A low balance also throttles concurrent calls").
+
+**More calls in flight.** `HARNESS_CONCURRENCY` is 24 (v1: 8). Reasoning models
+often run long at 16k: in the v2 token run, two cheap reasoners had p90
+completions at the cap. A latency model calibrated on that run puts the p95
+epoch of a head leaning on cheap reasoners at about 33 minutes with 8 in flight,
+which misses the collection block 36 minutes after the boundary. With 24 it is
+about 14 minutes (18 if providers are 30% slower). A head that sends everything
+to one slow model can still take about 30 minutes. Longer answers cost more. The cost per epoch at 16k has not
+been measured yet. Measure your own first epochs before you budget.
+
+**The model list** (`data/models_v2.json`, hash-pinned). Every model on it has at least three
+OpenRouter endpoints, is text-only, and runs at exactly one reasoning setting.
+The list has 18 models. x-ai/grok-4.7 was on the draft list and was removed
+before release: its provider does not bound reasoning by `max_tokens`, and one
+measured call billed 48,132 completion tokens against a 16,384 budget. It can
+return in v2.1, once the harness streams calls and can abort one at its
+deadline. A v1 head names v1 models, so **every head must be retrained** for v2. There
+is no published label set to retrain from: you label your own data.
+
+**Open benchmarks, by category.** The v2 pool is
+`fugal_subnet/benchmarks/pool_manifest_v2.json`: 29,036 questions from
+openly licensed sets, none gated, each with its licence in the manifest. The
+pool is split into four categories by `BENCHMARK_CATEGORY_V2`:
+
+| Category (`CATEGORY_TARGETS_V2`) | Share of the slice | Sets |
+|---|---|---|
+| `knowledge` | 40% | MMLU-Pro, MMLU |
+| `math` | 25% | MATH levels 3–5, Omni-MATH (difficulty < 5, integer answers) |
+| `hard` | 30% | SuperGPQA (hard), AIME 1983–2025, BeyondAIME, Omni-MATH (difficulty ≥ 5 on its 1–10 scale, integer answers; `v2_sets.OMNI_HARD_DIFFICULTY`) |
+| `instruction` | 5% | IFEval (the constraint kinds the pinned grader checks) |
+
+Inside `hard`, half the weight is the multiple-choice set and half is the
+integer olympiad math (`BENCHMARK_WEIGHT_V2`). Elsewhere a category splits by
+pool size. Miner and validator both choose each epoch's questions through
+`fugal_subnet/epoch_plan.py` with the epoch's protocol version. For v2,
+`epoch_plan.scored_slice` takes the category quotas first and then the
+benchmark quotas (`slicer.select_slice_v2`), and `epoch_plan.exploration_plan`
+draws exploration at the same mix. So the reference frame measures each model
+on the mix that is scored.
 
 ### Reading the published reveals
 
-Every epoch, the validator publishes a reveal: each miner's head hash, its
-routing decision on every scored question, the per-model correctness matrix,
-exploration observations, scores and weights. It is public-read:
+Every epoch, the validator publishes a reveal: the questions, each miner's
+head hash and its routing decision on every scored question, the shared
+grades (every (question, model) cell's grade and median completion tokens),
+each UID's failed calls, the seat decision with its comparison detail
+(`champion`, `v2_state`, `v2_seniority`), the exploration observations and
+the weights. It is public-read:
 
     https://storage.googleapis.com/fugal-reveals/70/<epoch_id>/reveal.json
     gs://fugal-reveals/70/<epoch_id>/reveal.json
@@ -711,56 +820,60 @@ means one request is larger than the whole budget; it is logged as
   communicate with the local MeteringProxy. No data exfiltration.
 - **On-chain commitment** — your head hash is committed before benchmarks run.
   Prevents mid-epoch head swaps.
-- **Dedup, three clauses** — heads are one head if their routing decisions
-  agree on 99% of the slice, OR their weights sit within a small relative
-  distance of each other (rows aligned by model id), OR they agree on 95% of
-  decisions and the junior one does not beat the senior's score by 0.5%. The
-  senior head — registration block, then commitment block — survives; the
-  rest are disqualified. Routing decisions are compared in a global model
-  index space, so renumbering your model list does not evade it, and nudging
-  a bias term until a few decisions change does not either.
+- **The copy rule** — only seats pay, a head is barred from a seat unless it
+  beats every more senior seat holder by the margin on the same questions, and
+  a head hash belongs to the coldkey that first committed it (the same bytes
+  under another coldkey are an exact copy and earn nothing). A copy is never
+  measurably better than its source, so copying cannot pay.
 - **Axon access** — in `--live` only hotkeys with at least
   `FUGAL_MIN_VALIDATOR_STAKE` (default 50) stake on the subnet, as the chain
   reports it, can query you; a validator permit alone does not. Your head is
   served in full to whoever can, so this is a speed bump in front of dedup,
   not the defence.
-- **Evidence accumulation** — miss=0 prevents selective publication.
+- **The E″ miss rule** — a missed epoch decays your evidence and restarts
+  burn-in; you cannot publish only your good epochs.
 
 ## Costs
 
-You pay for model inference each epoch. Cost depends on:
+You pay for model inference each epoch. Cost depends on which models your head
+routes to and how many tokens they write: at the v2 answer budget (16,384
+tokens, reasoning included) a cheap reasoning model can cost more per question
+than a dearer terse one.
 
-- How many questions are in the slice (~300 per epoch)
-- Which models your head routes to (cheaper models = lower cost)
-- Token counts per question
+**Epoch cost computed from the pinned v2 prices and the reviewed token
+manifest** (mean tokens per question from 40 metered calls per model), for a
+300-question slice, 20 epochs a day on mainnet:
 
-**Typical epoch cost, computed from the pinned price table** over real
-300-question slices (22,095 input tokens on average, 256-token completions):
+| If your head routed everything to | $/question | $/epoch | $/day |
+|---|---|---|---|
+| `openai/gpt-6-luna` (cheapest per question) | 0.0004 | 0.13 | 2.62 |
+| `anthropic/claude-haiku-5.5` | 0.0006 | 0.18 | 3.57 |
+| `deepseek/deepseek-v4.1-flash` | 0.0018 | 0.55 | 10.93 |
+| `anthropic/claude-sonnet-5.5` | 0.0057 | 1.72 | 34.41 |
+| an even mix of all 18 | 0.0060 | 1.81 | 36.12 |
+| `anthropic/claude-opus-5.5` | 0.0106 | 3.18 | 63.61 |
+| `anthropic/claude-fable-5.1` (the anchor, dearest) | 0.0258 | 7.74 | 154.85 |
 
-| If your head routed everything to | $/epoch | $/day at 24 epochs (3600 s testnet; mainnet runs 20 at 4320 s) |
-|---|---|---|
-| `deepseek/deepseek-v4-flash` (cheapest) | 0.014 | 0.34 |
-| `openai/gpt-5.4-mini` (mid) | 0.362 | 8.69 |
-| an even mix of all 17 | 0.549 | 13.17 |
-| `openai/gpt-5.5` (dearest) | 2.415 | 57.95 |
-
-A real head lands somewhere inside that range. Add ~$0.027/epoch for the
-exploration quota, which no routing strategy avoids, and your confidential VM
-(~$150/month for a GCP `c3-standard-4`). Completion length is the biggest
-uncertainty in the table and has not been measured against a live provider.
+A real head lands somewhere inside that range. Add the exploration quota (15
+questions at the nonce's choice of model, about $0.09 at the even mix) and your
+confidential VM (about $150/month for a GCP `c3-standard-4`). These are
+computed, not measured on a live key: the manifest's means for long-reasoning
+models on the hardest sets are an extrapolation (its review record says so),
+so measure your own first epochs before you budget. The MeteringProxy inside
+the TEE records your exact costs, which are included in the attested proof.
 
 `docs/MINER_ECONOMICS.md` models whether this is net-positive and under what
 conditions; `scripts/model_miner_economics.py` lets you put your own numbers in.
-The MeteringProxy inside the TEE records your exact costs, which are included in
-the attested proof.
 
-## Protocol v2
+## Moving from v1 to v2 (before the activation block)
 
-Protocol v2 changes the image, the model list, the benchmarks and how the
-miner share is paid. It switches on at one epoch boundary, the **activation
-block**, on every validator at once. Everything above this section describes
-v1, which applies until that block. This section says what changes at the flip
-and how to move without losing epochs.
+Protocol v2 switches on at one epoch boundary, the **activation block**, on
+every validator at once. Until then the subnet scores by the v1 rules:
+headroom above a constant-policy frontier built from the reference frame,
+paid to the field in proportion to score, with a 3,000-question burn-in and
+v1's own model list and pool. A v1 head names v1 models, so **every head must
+be retrained**. The v1 rules are recorded in `docs/INVARIANTS.md` and in this
+guide's history (`git log -- docs/MINER_GUIDE.md`); they are not repeated here.
 
 Values marked `<LIKE_THIS>` are not final, except `<V2_MODEL_LIST>`, which is
 final (`data/models_v2.json`). They are published together at the
@@ -773,136 +886,7 @@ v2 announcement, at least 24 hours before the flip, in a signed release:
 | `<V2_MODEL_LIST>` | the v2 model list and prices, `data/models_v2.json`, hash-pinned |
 | `<V2_RELEASE_NOTE>` | the signed release that names all of the above |
 
-### What changes at the flip
-
-**Longer answers.** The harness asks for up to `HARNESS_MAX_TOKENS` = 16384
-completion tokens per call, reasoning included (v1: 2048). Each model runs at
-one pinned reasoning setting from the model list. Call deadlines nest so each
-layer reports before the next gives up: `PROXY_CALL_DEADLINE_S` = 420 s per
-call (retries included) inside `HARNESS_CALL_TIMEOUT_S` = 450 s. A 401, 402 or
-403 from the provider is never retried and is logged as
-`OPERATOR ACTION REQUIRED` (see "Your OpenRouter account is part of your
-miner", above). The one exception is OpenRouter's temporary in-flight-budget
-402, which is retried (see "A low balance also throttles concurrent calls").
-
-**More calls in flight.** `HARNESS_CONCURRENCY` is 24 (v1: 8). Reasoning models
-often run long at 16k: in the v2 token run, two cheap reasoners had p90
-completions at the cap. A latency model calibrated on that run puts the p95
-epoch of a head leaning on cheap reasoners at about 33 minutes with 8 in flight,
-which misses the collection block 36 minutes after the boundary. With 24 it is
-about 14 minutes (18 if providers are 30% slower). A head that sends everything
-to one slow model can still take about 30 minutes. Longer answers cost more. The cost per epoch at 16k has not
-been measured yet. Measure your own first epochs before you budget.
-
-**A new model list.** `<V2_MODEL_LIST>`. Every model on it has at least three
-OpenRouter endpoints, is text-only, and runs at exactly one reasoning setting.
-The list has 18 models. x-ai/grok-4.7 was on the draft list and was removed
-before release: its provider does not bound reasoning by `max_tokens`, and one
-measured call billed 48,132 completion tokens against a 16,384 budget. It can
-return in v2.1, once the harness streams calls and can abort one at its
-deadline. A v1 head names v1 models, so **every head must be retrained** for v2. There
-is no published label set to retrain from: you label your own data.
-
-**Open benchmarks, by category.** The v2 pool is
-`fugal_subnet/benchmarks/pool_manifest_v2.json`: 29,036 questions from
-openly licensed sets, none gated, each with its licence in the manifest. The
-pool is split into four categories by `BENCHMARK_CATEGORY_V2`:
-
-| Category (`CATEGORY_TARGETS_V2`) | Share of the slice | Sets |
-|---|---|---|
-| `knowledge` | 40% | MMLU-Pro, MMLU |
-| `math` | 25% | MATH levels 3–5, Omni-MATH (difficulty < 5, integer answers) |
-| `hard` | 30% | SuperGPQA (hard), AIME 1983–2025, BeyondAIME, Omni-MATH (difficulty ≥ 5 on its 1–10 scale, integer answers; `v2_sets.OMNI_HARD_DIFFICULTY`) |
-| `instruction` | 5% | IFEval (the constraint kinds the pinned grader checks) |
-
-Inside `hard`, half the weight is the multiple-choice set and half is the
-integer olympiad math (`BENCHMARK_WEIGHT_V2`). Elsewhere a category splits by
-pool size. Miner and validator both choose each epoch's questions through
-`fugal_subnet/epoch_plan.py` with the epoch's protocol version. For v2,
-`epoch_plan.scored_slice` takes the category quotas first and then the
-benchmark quotas (`slicer.select_slice_v2`), and `epoch_plan.exploration_plan`
-draws exploration at the same mix. So the reference frame measures each model
-on the mix that is scored.
-
-**Champion scoring replaces headroom scoring.** In v2 the miner share does not
-go to the field in proportion to score. It goes to a **champion**, and a head
-takes the seat only by beating the champion on the same questions. Every miner
-answers the same scored slice, so the comparison is question by question:
-
-```
-NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
-V    = CHAMPION_ACCURACY_VALUE (30) x the pinned anchor's expected spend per
-       question (CHAMPION_ANCHOR_MODEL, claude-fable-5.1: its mean tokens in the
-       reviewed v2 token manifest at the pinned v2 prices, about $0.026, so
-       V is about $0.77); the same V whoever holds the seat
-u_i  = CHAMPION_HARD_WEIGHT (2) on a question in the `hard` category, else 1
-NV   = 100 x mean_i NV_i                          (percentage points)
-```
-
-- `g` is the **shared grade** of the (question, model) cell you routed to: the
-  median across operators (coldkeys) of every answer to that model on that
-  question. Two heads that pick the same model get the same grade, so
-  provider noise on a second call does not separate them. Your own failed call
-  still grades 0.
-- `s` is the cost of your choice under the pinned prices, from the cell's
-  median attested completion tokens. It is not your self-reported spend.
-- One extra correct answer is worth 30 questions of the champion's spend.
-  Accuracy decides. Cost decides between heads of near-equal accuracy.
-- You take the seat when the one-sided paired-bootstrap lower bound of NV, at
-  `CHAMPION_CONFIDENCE` = 90% over `CHAMPION_BOOTSTRAP_RESAMPLES` = 2000
-  resamples, is above `CHAMPION_MARGIN` = **0.2 points**. The point estimate
-  must clear the margin too. The champion keeps its seat with no margin, so two
-  near-equal heads cannot trade it on noise.
-- The comparison reads the last `CHAMPION_WINDOW_EPOCHS` (48) epochs. It counts
-  only your current unbroken run since your commitment, and needs at least
-  `CHAMPION_MIN_PAIRED_QUESTIONS` (1500) questions paired with the champion.
-- Gates on a challenger, besides the margin: window accuracy at or above
-  `CHAMPION_MIN_ACCURACY` = **0.30**, and at or above the high-water mark (the
-  current champion's Wilson lower bound when it was seated). Once the window
-  holds `CHAMPION_HARD_GATE_MIN_QUESTIONS` (100) hard questions, the same
-  applies to hard-category accuracy. The per-call time gate
-  (`CHAMPION_TIME_GATE_FACTOR`) is not applied at launch.
-- **The first champion.** With nobody seated, the most senior eligible head
-  takes the seat: burned in, at or above the accuracy floor, and not an exact
-  copy. In v2, seniority among heads is the **commitment block**: the hotkey
-  that committed a head hash first owns that hash. There is no virtual
-  champion to beat. Until some head is eligible the miner share burns.
-
-**Payout: 85/10/5 across the last three champions.** `PAYOUT_SEAT_SHARES` =
-0.85 / 0.10 / 0.05 go to the current champion, the previous one and the one
-before. A seat pays only while its head is live this epoch and can hold a seat
-(verified, window accuracy at or above 0.30, not an exact copy). An unpaid
-seat's share goes to the current champion. With no current champion, the
-champion's share burns. A head hash has one owner, the hotkey that committed
-it first, and a known hash keeps its owner. Only the owner's UID is measured
-as that head and paid for its seat. Another UID serving the same bytes is a
-copy: it is not paid, and it cannot take or retire the head's seat. Running the
-same head on more hotkeys earns nothing. The v2 payout does not read the reference
-frame's confidence: from the flip the whole miner share is paid by this rule,
-and the frame is published for information. `MAX_WEIGHT_DELTA` still limits
-how fast the weights move.
-
-**Burn-in is to take a seat, not to hold it.** A head must score
-`V2_BURN_IN_QUESTIONS` (1500, five epochs) in an unbroken run before it can
-take a seat, first or by challenge (v1 epochs keep `BURN_IN_QUESTIONS`, 3000). A seated champion that has to re-earn
-burn-in after a miss keeps its seat and its pay while it does.
-
-**Missed epochs (the E″ rule; changed in v2).**
-
-- **Before burn-in**, a miss resets your evidence to zero.
-- **After burn-in**, a miss decays your evidence by one epoch of the evidence
-  half-life (`FUGAL_EVIDENCE_HALF_LIFE`, 200 epochs), with no zeros added, and
-  restarts the burn-in counter.
-- **A champion that misses** leaves a ghost bar for `CHAMPION_GHOST_OFF` (3)
-  epochs. While it stands, a challenger must beat the ghost by the margin, and
-  the champion's share burns. A champion that returns inside the window
-  resumes its seat and is paid at once. A champion whose owner commits a
-  different head leaves a ghost for `CHAMPION_GHOST_RETIRE` (24) epochs.
-
-**Every head starts from zero.** v2 is a new model list, so the flip resets
-everyone's evidence. No v1 record carries over into a v2 seat.
-
-### How to move
+### How to move without losing epochs
 
 The v2 image cannot reuse the v1 embedding cache. An image upgrade is
 `dstack-cloud deploy --delete`, which discards the data disk, so the v2
@@ -961,5 +945,7 @@ shipped compose does this). On a stock VM the configfs-tsm interface is tried
 first and `tdx-quote-generator` is only a fallback — and a stock VM cannot
 produce a proof validators accept anyway (see Step 4).
 
-**Low scores** — Retrain with more data, try different model selections.
-Evidence accumulation means scores improve with consistency over epochs.
+**Not taking the seat** — read the reveal's `champion` detail: it says, per
+head, which gate failed or the NV and its lower bound against the champion.
+Five epochs of unbroken burn-in come first; after that, only a head that is
+measurably better than the champion on the same questions takes the seat.

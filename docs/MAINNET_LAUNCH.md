@@ -11,14 +11,17 @@ the design.
 
 ## The subnet: finney netuid 70
 
-Registered at block 9364303 (2026-10-26). Read from the chain at block 9422441
-(2026-11-03 02:27 UTC): `start_call` **not yet called**; tempo 360, so every
-neuron runs `FUGAL_EPOCH_INTERVAL=4320`; commit-reveal enabled with a one-epoch
-reveal period; registration open; owner cut 18%; subnet identity unset. Network
-immunity from deregistration ends at block 9796303 (about 2026-12-25); after
-that the chain prunes the non-immune subnet with the lowest *moving* alpha
-price whenever a new subnet registers, and the moving price stays at 0 until
-`start_call`. Every value here moves — re-read it with `--status` before acting.
+Registered at block 9364303 (2026-10-26). **Live under protocol v1.** Read
+from the chain at block 9449357 (2026-11-06 15:13 UTC): `active` True; tempo
+360, so every neuron runs `FUGAL_EPOCH_INTERVAL=4320` (ALIGNED); commit-reveal
+enabled with a one-epoch reveal period; registration open; 256 UIDs, 4
+validators with permits, 194 routable miner axons, 144 UIDs with non-zero
+incentive. The first scored mainnet epochs ran on 2026-11-04 (e00026193 and
+following; `MINER_GUIDE.md`, "A failed model call scores as a wrong answer").
+Network immunity from deregistration ends at block 9796303 (about 2026-12-25);
+after that the chain prunes the non-immune subnet with the lowest *moving*
+alpha price whenever a new subnet registers. Every value here moves — re-read
+it with `--status` before acting.
 The deploy files already name this target: `deploy/dstack/docker-compose.yaml`
 (the testnet twin for rehearsals is `docker-compose.test.yaml`, which also
 sets the warm-up's `FUGAL_EXPLORE_FRACTION=0.5`) and the `validator.env.example`
@@ -34,6 +37,11 @@ the label to say "mainnet", or refreshing the price table between the warm-up
 and the launch, is a new identity that rejects the frame. The word "testnet"
 in it is a historical name, not a network setting; the network is `--network`
 and `FUGAL_NETWORK`.
+
+Protocol v2 has its own identity, `routing_protocol.identity_v2()`: the label
+`fugal-success-v2` with the v2 token manifest and `data/models_v2.json`. A v2
+reveal or frame cannot be mistaken for a v1 one, and the v1 identity is
+untouched by the flip.
 
 ---
 
@@ -134,7 +142,10 @@ Two things make the default loader non-reproducible:
 Both are now closed by the pinned manifest (`fugal_subnet/benchmarks/
 pool_manifest.json`): `load_all()` skips the gated and unpinned benchmarks by
 name and refuses to start unless the pool it built matches the manifest's
-content hash. Leave `FUGAL_BENCHMARK_POOL` unset on every neuron; a pool file is
+content hash. The v2 pool (`pool_manifest_v2.json`, 29,036 questions from
+open sets only, none gated) is loaded by `load_pool(2)` the same way; a dstack
+miner caches it on its encrypted volume after the first verified load
+(`FUGAL_POOL_CACHE_V2`) and re-verifies it on every read. Leave `FUGAL_BENCHMARK_POOL` unset on every neuron; a pool file is
 accepted only if it verifies against the same manifest, and a deliberately
 different pool must declare `FUGAL_POOL_UNPINNED=1` (local rehearsals only).
 
@@ -204,22 +215,23 @@ mainnet.** dstack now supplies exactly that, and provisioning has been proven
 end to end against a live TD (see [OPEN_WORK.md](OPEN_WORK.md) for what the
 rehearsal did and did not demonstrate). Approved entries are
 `<base>:<compose_hash>` pairs; the procedure for publishing and rotating them
-is [APPROVED_ENTRY_ROTATION.md](APPROVED_ENTRY_ROTATION.md). **No entry exists
-yet for a runtime a current validator would accept**: the four recorded there
-are 2026-09-06/07 testnet images from before the success-contract transition.
-The first `image-v*` release creates the first. With an entry
+is [APPROVED_ENTRY_ROTATION.md](APPROVED_ENTRY_ROTATION.md). The live entries
+are those of the signed `image-v2026.11.03c` release (one per network; the
+frozen app-compose files beside the composes in `deploy/dstack/` are their
+bytes), carried by every mainnet validator since 2026-11-03. The v2 image gets
+its own pair at the flip ("The v2 release, in order", below). With an entry
 published, `--live` is the only honest mode; `--mock` accepts unattested
 proofs and is for local rehearsals. See [TDX_VALIDATION.md](TDX_VALIDATION.md).
 
 ### 6. Miner startup cost
 
-Backbone embeddings for the pool (21,553 questions since the code benchmarks
-were excluded) took **13.2 hours** on an x86_64 laptop and **36 hours** on a
-4-core aarch64 VM **under the legacy embedding profile**; the 2048-token
-profile shipped since 2026-09-21 is heavier per question and has not been
-timed on a TD (MINER_GUIDE, "The first boot embeds the whole pool"). Both measured on real
-pool prompts, which average 330 characters: 0.46 q/s and 0.167 q/s
-respectively. This is startup cost before the miner answers its first query.
+Backbone embeddings for the v1 pool (21,553 questions) under the current
+2048-token profile took **3 h 20 min on a `c3-standard-8`** and about 5 to 6
+hours on a `c3-standard-4` (measured on mainnet TDs, 2026-11; MINER_GUIDE,
+"How to move"). The v2 pool is 29,036 questions, about 35% more. Under the
+legacy profile the same pool took 13.2 hours on an x86_64 laptop and 36 hours
+on a 4-core aarch64 VM, measured on real pool prompts averaging 330
+characters. This is startup cost before the miner answers its first query.
 
 Beware benchmarking this with synthetic prompts. Short ones give 2.5 q/s and
 0.8 q/s — five times too optimistic — because cost scales with sequence length
@@ -383,7 +395,7 @@ could be automated. **Do not do that on mainnet.**
 
 ## What is still unverified
 
-Honest list, as of this branch:
+Honest list, as of 2026-11-06:
 
 | | Status |
 |---|---|
@@ -392,7 +404,8 @@ Honest list, as of this branch:
 | Real DCAP verification and measurement matching | **verified** on real Intel TDX (GCP `c3`, dstack 0.6.0-rc0): proofs verified `UpToDate`, a genuine proof refused against a retired entry |
 | A reproducible TDX guest image with a stable measurement | **exists**: dstack 0.6.0-rc0 UKI on GCP, base `12a1f2f5…9141` in September across seven deploys and two instance sizes, `f4be9383…aa427` on 2026-11-03 after a GCP firmware change (image registers identical); the compose hash rotates with the image and the rotation procedure is `docs/APPROVED_ENTRY_ROTATION.md` |
 | Real OpenRouter billing vs the pinned price table | **measured once**, account-level: within ~5% over four miner-epochs; completions averaged 534 tokens against the 256 assumed, and exploration was ~60% of a cheap head's epoch cost |
-| A real trained head outscoring a random one | **measured** offline (`docs/HEAD_EFFICACY.md`); on chain only two synthetic heads have been scored |
+| A real trained head outscoring a random one | **measured** offline (`docs/HEAD_EFFICACY.md`) and on mainnet since 2026-11-04 (144 UIDs with non-zero incentive at block 9449357) |
 | Behaviour under adversarial miners over weeks | **never executed** |
-| Miner startup cost on a TD | **measured on the legacy profile**: 7 h 39 m to embed the pool at four threads on a `c3-standard-4`; re-paid on every image rotation because the tool recreates the data disk. **Unmeasured** for the 2048-token profile |
-| An end-to-end epoch under the success-contract runtime (protocol since 2026-09-21) | **never executed** on any chain; the runbook is `SUCCESS_CONTRACT.md` |
+| Miner startup cost on a TD | **measured** on the current profile: 3 h 20 min (`c3-standard-8`) to 5–6 h (`c3-standard-4`) for the v1 pool; re-paid on every image rotation because the tool recreates the data disk; **unmeasured** for the v2 pool (29,036 questions) |
+| An end-to-end epoch under the success-contract runtime | **running on mainnet** since 2026-11-04 (protocol v1) |
+| A protocol v2 epoch on a public chain | **never executed**: rehearsed only on the local chain (`dress_rehearsal.py --scenario v2_flip`, 16/16 on 2026-11-05) |

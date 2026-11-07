@@ -16,7 +16,14 @@ not redistribute them. Build it from a machine that can reach Hugging Face and
 copy it to your neurons; the sha256 printed here is what to compare.
 
     python scripts/export_pool.py                       # writes data/benchmarks/pool.json.gz
+    python scripts/export_pool.py --protocol 2          # writes data/benchmarks/pool_v2.json.gz
     python scripts/export_pool.py --out /tmp/pool.json.gz
+
+Protocol v2 has its own pool (`load_all_v2`, verified against
+pool_manifest_v2.json; FUGAL_POOL_FILE_V2 to place it elsewhere). A validator
+with FUGAL_V2_ACTIVATION_BLOCK set loads it at startup, so place it before the
+restart that sets the block. The output is byte-reproducible (sorted, gzip
+mtime 0): two operators building the same pool get the same sha256.
 
 No API spend. Hugging Face access is needed to build, never to run.
 """

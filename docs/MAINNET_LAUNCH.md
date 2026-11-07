@@ -126,6 +126,15 @@ prefers the file, verifies it against the pinned manifest at startup, and
 never touches Hugging Face. Do not publish the file: the datasets carry their
 own licences.
 
+**Protocol v2 has its own pool, and a validator needs it before the flip.**
+With `FUGAL_V2_ACTIVATION_BLOCK` set, the validator loads the v2 pool at
+startup and refuses to start in `--live` if it cannot (`neurons/validator.py`).
+So export it too (`python scripts/export_pool.py --protocol 2`) and place
+`data/benchmarks/pool_v2.json.gz` (or point `FUGAL_POOL_FILE_V2` at it) on
+every validator **before** the restart that sets the block. Without it, every
+validator rebuilds 29,036 questions from Hugging Face on that restart, and an
+upstream outage then is a validator that does not start.
+
 The pool is consensus state: the slice is drawn from it, so a validator and a
 miner with different pools disagree on every question and every proof fails on
 `questions_hash` — an error that names the symptom and never the cause.
@@ -369,6 +378,9 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   once every validator runs v2 unconditionally
 - the v1 sections of `MINER_GUIDE.md`, `VALIDATOR_GUIDE.md`, `INVARIANTS.md`
   and the README's "v1 until the activation block" sentences
+- the `--protocol 1` defaults of `scripts/export_pool.py`,
+  `scripts/build_pool_manifest.py` and `scripts/record_token_observations.py`:
+  default to 2 at the flip, and drop the flag with v1
 - the v1 rehearsal scenarios a–e in `scripts/dress_rehearsal.py`: they are the
   only chain tests of a steady-state network (two validators agreeing, many
   epochs, the real backbone), so replace them with v2 equivalents (seat,

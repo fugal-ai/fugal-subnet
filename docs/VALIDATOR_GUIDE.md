@@ -246,6 +246,7 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
 | `FUGAL_FRAME_BOOTSTRAP` | — | Directory of published reveals to rebuild the reference frame from when there is no local state; otherwise the shipped `data/reference_frame.json` is required in `--live` |
 | `FUGAL_POOL_FILE` | `data/benchmarks/pool.json.gz` | Where the materialised pool built by `scripts/export_pool.py` is looked for; verified against the manifest on load |
+| `FUGAL_POOL_FILE_V2` | `data/benchmarks/pool_v2.json.gz` | The same for the protocol v2 pool (`scripts/export_pool.py --protocol 2`). Place it before setting `FUGAL_V2_ACTIVATION_BLOCK`: with the block set the validator loads the v2 pool at startup, and in `--live` refuses to start if it cannot |
 | `FUGAL_ARCHIVE_ENDPOINTS` | — | Comma-separated archive-capable subtensor endpoints. **Set it on mainnet**: the validator pins reads to the boundary and collection blocks, and a non-archive node refuses blocks older than ~300 |
 | `FUGAL_FALLBACK_ENDPOINTS` | — | Comma-separated endpoints the SDK falls back to when the primary drops |
 | `FUGAL_WEIGHTS_SET_RETRIES` | `3` | In-epoch re-submits of `set_weights` after a failure, while blocks remain and the rate limit allows |

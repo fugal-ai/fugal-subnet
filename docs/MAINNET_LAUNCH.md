@@ -362,8 +362,15 @@ The release:
    Steps 7–13 with the test compose and a testnet block a few hours out; two
    or more validators and two or three miners through the flip;
    `scripts/watch_subnet.py` must show v1 → v2, a first seat, and identical
-   reveals. v2 has only run on a local chain. Choose the finney block only
-   after this passes.
+   reveals. It is also the first real run of the TD tooling, so run each:
+   `scripts/provision_td.py --inspect` (the base and compose hash the release
+   names) and a push; `scripts/fetch_approved_entries.py --network test`;
+   `scripts/verify_live_miner.py` against a provisioned miner (PASS) and with
+   the old entry and `--expect-reject` (refused); and
+   `scripts/tdx_measurement.py --verify` on a plain TDX VM. v2 has only run on
+   a local chain. Choose the finney block only after this passes.
+   Testnet's validator still carries the September base (`12a1f2f5…`); give it
+   the test entry from the signed v2 release first.
 7. Choose `<ACTIVATION_BLOCK>`: an epoch boundary (a multiple of 360 on
    finney) at least 24 h ahead of the announcement, so miners can re-provision.
 8. Edit both `deploy/dstack/docker-compose*.yaml`: the v2 image digest (from

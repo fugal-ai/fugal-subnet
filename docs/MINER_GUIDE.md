@@ -146,8 +146,9 @@ exist.
 
 ```bash
 # A deterministic OpenAI-compatible stand-in for OpenRouter, from the pool's
-# own gold answers. No key, no spend.
-python scripts/stub_upstream.py --port 8799 &
+# own gold answers. No key, no spend. It needs the pool the miner uses:
+python scripts/export_pool.py --protocol 2      # data/benchmarks/pool_v2.json.gz
+python scripts/stub_upstream.py --pool data/benchmarks/pool_v2.json.gz --port 8799 &
 
 FUGAL_OPENROUTER_BASE=http://127.0.0.1:8799 python neurons/miner.py \
   --netuid <NETUID> \

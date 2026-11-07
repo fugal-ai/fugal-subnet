@@ -4,11 +4,13 @@
 may sign an approved-entry release tag, `<email> <key type> <public key>`.
 It is committed here so the trust root lives in the same reviewed history as
 the code it approves. `scripts/fetch_approved_entries.py` verifies a tag
-against it with `git tag -v` and nothing else.
+against it with `git tag -v` and nothing else, and reads the approved entries
+from the signed tag message.
 
 To add a signer: append their SSH signing public key, in a reviewed pull
 request. To sign a tag: `git config gpg.format ssh`, `git config
-user.signingkey ~/.ssh/<key>.pub`, then `git tag -s <tag>`.
+user.signingkey ~/.ssh/<key>.pub`, then `git tag -s <tag> -F tag-message.txt`
+with the message `scripts/publish_approved_entry.py --tag-message` writes.
 
 The first key was added 2026-11-03: the release key `release@fugalai.com`,
 ED25519, fingerprint `SHA256:MpaQWZxhrW77AJg8HAR2TxgFrag5HAo+i9oDnUiIBO8`,

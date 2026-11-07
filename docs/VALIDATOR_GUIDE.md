@@ -443,7 +443,7 @@ Do not fill them in from anywhere else.
      `Protocol v2 activation: boundary block <ACTIVATION_BLOCK> (epoch index N); v1 rules before it`.
 3. **Add the v2 approved entry beside the v1 entries** in
    `FUGAL_TEE_MEASUREMENTS`, from `scripts/fetch_approved_entries.py --tag
-   <V2_IMAGE_TAG>`, and restart. Follow the transition window in
+   <V2_IMAGE_TAG> --network finney` (`--network test` on testnet 552), and restart. Follow the transition window in
    `docs/APPROVED_ENTRY_ROTATION.md`: every validator carries **both** before
    any miner moves. Before the flip a v2 miner holds its axon, so no v2 proof
    arrives early. Carrying the entry early costs nothing, and carrying it late

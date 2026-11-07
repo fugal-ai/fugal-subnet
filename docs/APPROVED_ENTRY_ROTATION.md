@@ -62,18 +62,27 @@ The channel, built 2026-10-14 (diligence finding 7):
 2. **Compose.** Run `dstack-cloud prepare` with that compose (README in
    `deploy/dstack/`), commit the frozen `app-compose.json`, and have a second
    person recompute its hash from the committed bytes.
-3. **Note.** `python scripts/publish_approved_entry.py --digest <digest>
-   --commit <sha> --compose deploy/dstack/app-compose.frozen-<date>.json
-   --base <base> --tag image-v<date>` prints the note with the completed entry.
-4. **Sign.** `git tag -s image-v<date>` with a key listed in
-   `deploy/keys/allowed_signers` (SSH signing; the file is the trust root and
-   is added to by reviewed pull request), push the tag, and
-   `gh release create image-v<date> --notes-file notes.md --verify-tag`.
+3. **Note and tag message.** `python scripts/publish_approved_entry.py
+   --digest <digest> --commit <sha> --base <base> --tag image-v<date>
+   --compose deploy/dstack/app-compose.frozen-<tag>-finney.json
+   --compose deploy/dstack/app-compose.frozen-<tag>-test.json
+   --tag-message tag-message.txt > notes.md` writes both networks' entries:
+   one `approved-entry <network>: <base>:<compose_hash>` line each in the tag
+   message, mirrored in the note.
+4. **Sign.** `git tag -s image-v<date> -F tag-message.txt` with a key listed
+   in `deploy/keys/allowed_signers` (SSH signing; the file is the trust root
+   and is added to by reviewed pull request), push the tag, and
+   `gh release create image-v<date> --notes-file notes.md --verify-tag`. The
+   entries are what the tag signs; the note is for people.
 5. **Validators.** `python scripts/fetch_approved_entries.py --tag
-   image-v<date>` verifies the tag signature against the committed signers and
-   prints the `FUGAL_TEE_MEASUREMENTS` line. It never edits the environment;
-   adding the entry alongside the current one, restarting, and retiring the
-   old one after the window below is the operator's act.
+   image-v<date> --network <finney|test>` verifies the tag signature against
+   the committed signers, reads that network's entry from the signed message
+   (refusing a note that disagrees), and prints the `FUGAL_TEE_MEASUREMENTS`
+   line. It never edits the environment; adding the entry alongside the
+   current one, restarting, and retiring the old one after the window below
+   is the operator's act. Releases whose tag message carries no entry lines
+   (`image-v2026.11.03b`, `03c`) are refused by it; validators keep the
+   entries they already run from those.
 
 A validator does not check GitHub at startup. Its environment is
 authoritative, on purpose: a validator that cannot start because GitHub is

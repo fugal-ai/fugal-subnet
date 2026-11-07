@@ -210,7 +210,7 @@ distribution of statuses across a live field.
 The budget is half the epoch because collection starts halfway in, and verify,
 score, weight-setting and the reveal all share what remains.
 
-`scripts/bench_verify_throughput.py` reproduces all of it, including the
+`scripts/experiments/bench_verify_throughput.py` reproduces all of it, including the
 abstention model. Its RTT sweep marks the one measured row and labels the rest
 as swept.
 

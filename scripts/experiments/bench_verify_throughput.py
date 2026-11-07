@@ -12,7 +12,7 @@ RTT is a property of somebody else's service and cannot be measured into a
 single honest number. The question is not "how slow is it" but "which miner
 counts still fit inside the budget, under which RTT assumptions".
 
-No network. No spend. Run:  uv run python scripts/bench_verify_throughput.py
+No network. No spend. Run:  uv run python scripts/experiments/bench_verify_throughput.py
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ from fugal_subnet.config import (
     EPOCH_INTERVAL,
     HEAD_HIDDEN_DIM,
     SLICE_SIZE,
+    TEE_COLLATERAL_TIMEOUT,
 )
 from fugal_subnet.exploration import expected_exploration
 from fugal_subnet.tee import harness as harness_mod
@@ -53,13 +54,11 @@ SKILL = {"a/cheap": 0.3, "b/mid": 0.6, "c/expensive": 0.9}
 #   0.25  a healthy remote PCCS, one region away
 #   1.0   a loaded public endpoint
 #   3.0   a degraded one
-#   30.0  a black-holing service. NOT bounded by the `timeout=30` in
-#         verify_dcap: that guard is on the ThreadPoolExecutor branch,
-#         which a synchronous validator never takes. Measured -- on the
-#         validator's path `loop.is_running()` is False, so it calls
-#         `run_until_complete` with no timeout of its own, and the only
-#         bound is whatever the Rust HTTP client applies internally.
-RTT_SWEEP = [0.05, 0.25, 0.69, 1.0, 3.0, 30.0]
+#   TEE_COLLATERAL_TIMEOUT  a black-holing service: the per-proof bound
+#         (FUGAL_COLLATERAL_TIMEOUT, 10 s by default), read from config so
+#         this row is the real worst case. Before that bound existed a stalled
+#         fetch was unbounded on the validator's path (tests/test_collateral_timeout.py).
+RTT_SWEEP = [0.05, 0.25, 0.69, 1.0, 3.0, TEE_COLLATERAL_TIMEOUT]
 
 # The one row that is not a guess. Measured on a c3-standard-8 dstack CVM in
 # GCP us-central1 against Phala's PCCS: 788 ms cold, then 688 and 699 ms warm

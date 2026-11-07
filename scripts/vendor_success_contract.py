@@ -40,8 +40,13 @@ def main():
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)
         source["test_snapshot"][name] = hashlib.sha256(data).hexdigest()
+    # NOTICE verbatim, like the code: Apache-2.0 §4(d) carries core's
+    # third-party attributions (OpenFugu, the Sakana papers, Qwen3) into
+    # anything that redistributes it, and the wheel ships vendor/NOTICE. A
+    # hand-written summary stood here, outside this pipeline and its proof.
     for name, target in (("fugal/success_contract.py", "success_contract.py"),
-                         ("data/success_conformance.json", "conformance.json")):
+                         ("data/success_conformance.json", "conformance.json"),
+                         ("NOTICE", "NOTICE")):
         (vendor / target).write_bytes(content[name])
         source["files"][name] = {"vendored": target, "sha256": hashlib.sha256(content[name]).hexdigest()}
     (vendor / "LICENSE").write_bytes(content["LICENSE"])

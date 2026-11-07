@@ -20,7 +20,20 @@ What it checks, per epoch:
              read correctly finds nothing
   agreement  every validator's published reveal for the epoch agrees, compared
              through fugal_subnet.consensus, which is the same audit anyone
-             outside the subnet can run on the published artifacts
+             outside the subnet can run on the published artifacts, and the
+             reveals are identical apart from `environment` (v2's shared
+             grades and seat included)
+  protocol   with an activation block (--v2-activation-block, default
+             FUGAL_V2_ACTIVATION_BLOCK), each reveal says protocol_version 1
+             before it and 2 from it, and the v2 seat event is printed
+
+An epoch is judged only once it is --settle-blocks old (340 by default), because
+a healthy validator sets weights late: after collection at boundary +
+FUGAL_COLLECT_FRACTION x epoch (180 on a 360-block epoch), and after up to its
+1800 s (150-block) post-collection budget verifying and scoring, so as late as
+~boundary + 330. Judging earlier reports "did not set weights this epoch" for a
+validator that has not got there yet; measured on finney/70, 2026-11-07, at
+30 blocks in, validators that set weights at +194 and +237 were failed.
 """
 from __future__ import annotations
 
@@ -66,8 +79,70 @@ def load_reveal(root: str, epoch_id: str) -> dict | None:
         return None
 
 
+def ready_to_judge(block: int, bpe: int, settle_blocks: int) -> bool:
+    """True once the current epoch is old enough that its weights are set."""
+    return block % bpe >= max(0, min(settle_blocks, bpe - 1))
+
+
+def check_reveals(report, epoch_id, boundary_block, validator_hotkeys, hk_to_uid,
+                  reveal_roots, activation_block=None) -> None:
+    """Agreement, and the protocol version, from the validators' published reveals."""
+    from fugal_subnet.consensus import ValidatorReport, compute_consensus
+
+    expected_version = (2 if activation_block is not None and boundary_block >= activation_block
+                        else 1)
+    reveals, reports = {}, []
+    for name, root in reveal_roots.items():
+        rv = load_reveal(root, epoch_id)
+        if rv is None:
+            report.check(False, f"reveal published by {name}",
+                         f"no {epoch_id}/reveal.json under {root}")
+            continue
+        report.check(True, f"reveal published by {name}")
+        reveals[name] = rv
+        if activation_block is not None:
+            seen = int(rv.get("protocol_version", 1))
+            report.check(seen == expected_version,
+                         f"{name}'s reveal is protocol v{expected_version}",
+                         f"protocol_version {seen}, activation block {activation_block}")
+        if "champion" in rv:
+            seat = rv.get("champion") or {}
+            print(f"    {name}: seat {seat.get('event', '-')} "
+                  f"champion {str(seat.get('champion') or '-')[:12]}", flush=True)
+        reports.append(ValidatorReport(
+            validator_uid=hk_to_uid.get(validator_hotkeys.get(name, ""), -1),
+            epoch_id=epoch_id,
+            scores={int(k): float(v) for k, v in rv.get("scores", {}).items()},
+            weights={int(k): float(v) for k, v in rv.get("weights", {}).items()},
+            commit_hash=rv.get("commit_hash", ""),
+        ))
+    if len(reports) < 2:
+        return
+    digests = {name: rv.get("consensus_digest") for name, rv in reveals.items()}
+    uniq = {d for d in digests.values() if d}
+    report.check(len(uniq) <= 1,
+                 "validators share one consensus environment digest",
+                 ", ".join(f"{k}={str(v)[:12]}" for k, v in digests.items()))
+    res = compute_consensus(reports)
+    report.check(res.is_valid and not res.outlier_validators,
+                 "validators agree on scores and weights",
+                 "; ".join(res.divergence_flags) or "no divergence")
+    exact = all(r.weights == reports[0].weights for r in reports)
+    report.check(exact, "validator weight vectors are byte-identical",
+                 json.dumps(reports[0].weights, sort_keys=True)[:160])
+    # Everything a validator publishes except its own environment must match:
+    # in v2 that is the shared grades and the seat, which scores and weights
+    # alone do not show.
+    comparable = {name: json.dumps({k: v for k, v in rv.items() if k != "environment"},
+                                   sort_keys=True) for name, rv in reveals.items()}
+    differ = sorted(n for n, c in comparable.items() if c != next(iter(comparable.values())))
+    report.check(not differ, "validator reveals are identical (environment aside)",
+                 f"differ from {next(iter(comparable))}: {', '.join(differ)}" if differ else "")
+
+
 def check_epoch(report, subtensor, netuid, epoch_id, boundary_block,
-                miner_hotkeys, validator_hotkeys, reveal_roots) -> None:
+                miner_hotkeys, validator_hotkeys, reveal_roots,
+                activation_block=None) -> None:
     from fugal_subnet.commitments import get_commitments_with_blocks
 
     print(f"\n--- epoch {epoch_id} (boundary block {boundary_block}) ---", flush=True)
@@ -113,40 +188,10 @@ def check_epoch(report, subtensor, netuid, epoch_id, boundary_block,
                      f"validator {name} set weights this epoch",
                      f"LastUpdate {last_update} vs boundary {boundary_block}")
 
-    # Cross-validator agreement, from the published artifacts.
-    if len(reveal_roots) >= 2:
-        from fugal_subnet.consensus import ValidatorReport, compute_consensus
-
-        reports = []
-        for name, root in reveal_roots.items():
-            rv = load_reveal(root, epoch_id)
-            if rv is None:
-                report.check(False, f"reveal published by {name}",
-                             f"no {epoch_id}/reveal.json under {root}")
-                continue
-            report.check(True, f"reveal published by {name}")
-            reports.append(ValidatorReport(
-                validator_uid=hk_to_uid.get(validator_hotkeys.get(name, ""), -1),
-                epoch_id=epoch_id,
-                scores={int(k): float(v) for k, v in rv.get("scores", {}).items()},
-                weights={int(k): float(v) for k, v in rv.get("weights", {}).items()},
-                commit_hash=rv.get("commit_hash", ""),
-            ))
-        if len(reports) >= 2:
-            digests = {name: (load_reveal(root, epoch_id) or {}).get("consensus_digest")
-                       for name, root in reveal_roots.items()}
-            uniq = {d for d in digests.values() if d}
-            report.check(len(uniq) <= 1,
-                         "validators share one consensus environment digest",
-                         ", ".join(f"{k}={str(v)[:12]}" for k, v in digests.items()))
-
-            res = compute_consensus(reports)
-            report.check(res.is_valid and not res.outlier_validators,
-                         "validators agree on scores and weights",
-                         "; ".join(res.divergence_flags) or "no divergence")
-            exact = all(r.weights == reports[0].weights for r in reports)
-            report.check(exact, "validator weight vectors are byte-identical",
-                         json.dumps(reports[0].weights, sort_keys=True)[:160])
+    # Cross-validator agreement and protocol version, from the published artifacts.
+    if reveal_roots:
+        check_reveals(report, epoch_id, boundary_block, validator_hotkeys, hk_to_uid,
+                      reveal_roots, activation_block)
 
 
 def main() -> int:
@@ -162,6 +207,14 @@ def main() -> int:
     ap.add_argument("--validators", default="", help="name=hotkey_ss58,...")
     ap.add_argument("--reveals", default="", help="name=/path/to/results/epochs,...")
     ap.add_argument("--timeout", type=int, default=7200)
+    ap.add_argument("--settle-blocks", type=int, default=340,
+                    help="Judge an epoch only once it is this many blocks old (validators set "
+                         "weights late in the epoch; see the module docstring). 0 = at once")
+    ap.add_argument("--v2-activation-block", type=int,
+                    default=int(os.environ["FUGAL_V2_ACTIVATION_BLOCK"])
+                    if os.environ.get("FUGAL_V2_ACTIVATION_BLOCK", "").strip() else None,
+                    help="Expect protocol_version 2 in reveals from this boundary "
+                         "(default: FUGAL_V2_ACTIVATION_BLOCK)")
     args = ap.parse_args()
 
     import bittensor as bt
@@ -197,7 +250,9 @@ def main() -> int:
     report = Report()
 
     print(f"Watching netuid {args.netuid} on {args.network}: epoch = {bpe} blocks "
-          f"({args.epoch_interval}s nominal), observing {args.epochs} boundaries")
+          f"({args.epoch_interval}s nominal), observing {args.epochs} boundaries, judging "
+          f"each {min(args.settle_blocks, bpe - 1)} blocks in"
+          + (f", v2 from block {args.v2_activation_block}" if args.v2_activation_block else ""))
 
     seen: set[str] = set()
     deadline = time.time() + args.timeout
@@ -209,14 +264,13 @@ def main() -> int:
             time.sleep(30)
             continue
         # Give the neurons time to finish the epoch before judging it: the
-        # validator queries, verifies, scores and only then sets weights.
-        elapsed_in_epoch = block - idx * bpe
-        if elapsed_in_epoch < min(bpe - 1, 30):
+        # validator collects, verifies, scores and only then sets weights.
+        if not ready_to_judge(block, bpe, args.settle_blocks):
             time.sleep(30)
             continue
         seen.add(epoch_id)
         check_epoch(report, subtensor, args.netuid, epoch_id, idx * bpe,
-                    miners, validators, reveals)
+                    miners, validators, reveals, args.v2_activation_block)
 
     if len(seen) < args.epochs:
         report.check(False, "observed the requested number of epochs",

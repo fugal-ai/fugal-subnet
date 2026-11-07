@@ -17,6 +17,17 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class ProofError(Exception):
+    """The vendored files are not the pinned core commit's files."""
+
+
+def require(condition, message):
+    # Not `assert`: python -O strips asserts, and the script would then print
+    # "proven" having checked nothing.
+    if not condition:
+        raise ProofError(message)
+
+
 def object_id(kind, data):
     return hashlib.sha1(f"{kind} {len(data)}\0".encode() + data).hexdigest()
 
@@ -33,22 +44,22 @@ def tree_entries(data):
 
 def verify_source(source, proof, file_data):
     commit = base64.b64decode(proof["commit"], validate=True)
-    assert object_id("commit", commit) == source["commit"], "core commit object mismatch"
+    require(object_id("commit", commit) == source["commit"], "core commit object mismatch")
     trees = {name: base64.b64decode(value, validate=True) for name, value in proof["trees"].items()}
     root_oid = commit.splitlines()[0].decode().removeprefix("tree ")
-    assert object_id("tree", trees[""]) == root_oid, "core root tree mismatch"
+    require(object_id("tree", trees[""]) == root_oid, "core root tree mismatch")
     for name, data in trees.items():
         if not name:
             continue
         path = PurePosixPath(name)
         parent = "" if str(path.parent) == "." else str(path.parent)
         expected = tree_entries(trees[parent])[path.name]
-        assert object_id("tree", data) == expected, f"core directory tree mismatch: {name}"
+        require(object_id("tree", data) == expected, f"core directory tree mismatch: {name}")
     for name, data in file_data.items():
         path = PurePosixPath(name)
         parent = "" if str(path.parent) == "." else str(path.parent)
         expected = tree_entries(trees[parent])[path.name]
-        assert object_id("blob", data) == expected, f"core source blob mismatch: {name}"
+        require(object_id("blob", data) == expected, f"core source blob mismatch: {name}")
 
 
 def main():
@@ -61,12 +72,12 @@ def main():
     data = {}
     for name, spec in source["files"].items():
         data[name] = (vendor / spec["vendored"]).read_bytes()
-        assert hashlib.sha256(data[name]).hexdigest() == spec["sha256"], name
+        require(hashlib.sha256(data[name]).hexdigest() == spec["sha256"], f"vendored file does not match SOURCE.json sha256: {name}")
     for name, expected in source["test_snapshot"].items():
         snapshot = (ROOT / "tests/core_snapshot" / name).read_bytes()
-        assert hashlib.sha256(snapshot).hexdigest() == expected, name
+        require(hashlib.sha256(snapshot).hexdigest() == expected, f"test snapshot does not match SOURCE.json sha256: {name}")
         if name in data:
-            assert data[name] == snapshot, name
+            require(data[name] == snapshot, f"vendored file differs from its test snapshot: {name}")
         data[name] = snapshot
     proof = json.loads((vendor / "source_proof.json").read_text())
     verify_source(source, proof, data)
@@ -83,9 +94,7 @@ def main():
     if args.core:
         for name, content in data.items():
             expected = subprocess.check_output(["git", "show", source["commit"] + ":" + name], cwd=args.core)
-            assert content == expected, name
-    for name in ("models.json", "benchmark_tokens_v1.json"):
-        assert (ROOT / "data" / name).read_bytes() == (ROOT / "fugal_subnet/routing_data" / name).read_bytes(), name
+            require(content == expected, f"differs from the --core checkout at the pinned commit: {name}")
     print(f"Success contract and serving test snapshot proven at core {source['commit']}")
 
 

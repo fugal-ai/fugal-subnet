@@ -559,17 +559,41 @@ def check_one_accuracy_definition_on_the_consensus_path(errors: list[str]) -> No
                 )
 
 
+ROUTING_DATA_REQUIRED = (
+    "models.json", "models_v2.json",
+    "benchmark_tokens_v1.json", "benchmark_tokens_protocol_v2.json",
+)
+
+
+def check_routing_data_mirrors_data(errors: list[str]) -> None:
+    """Every file under fugal_subnet/routing_data/ is byte-identical to its copy
+    in data/ (CLAUDE.md rule 7).
+
+    routing_data/ is what the neurons read and what the protocol identity
+    hashes; data/ is the reviewed copy the pins are checked against. A
+    difference means the pins check one file and consensus uses another.
+    """
+    mirror = ROOT / "fugal_subnet" / "routing_data"
+    names = set(ROUTING_DATA_REQUIRED)
+    if mirror.is_dir():
+        names |= {p.name for p in mirror.iterdir() if p.is_file()}
+    for name in sorted(names):
+        copy, reviewed = mirror / name, ROOT / "data" / name
+        missing = [str(p.relative_to(ROOT)) for p in (copy, reviewed) if not p.exists()]
+        if missing:
+            errors.append(f"{', '.join(missing)} missing (routing_data/ and data/ must both hold {name})")
+        elif copy.read_bytes() != reviewed.read_bytes():
+            errors.append(f"data/{name} and fugal_subnet/routing_data/{name} differ")
+
+
 def check_price_table_v2_pinned(errors: list[str]) -> None:
-    """The v2 table matches its pin, both copies are identical, ids are unique,
-    and every entry pins exactly one valid reasoning setting."""
+    """The v2 table matches its pin, ids are unique, and every entry pins
+    exactly one valid reasoning setting. (Its routing_data/ copy is
+    checked by check_routing_data_mirrors_data.)"""
     a = ROOT / "data" / "models_v2.json"
-    b = ROOT / "fugal_subnet" / "routing_data" / "models_v2.json"
-    for path in (a, b):
-        if not path.exists():
-            errors.append(f"{path.relative_to(ROOT)} is missing")
-            return
-    if a.read_bytes() != b.read_bytes():
-        errors.append("data/models_v2.json and fugal_subnet/routing_data/models_v2.json differ")
+    if not a.exists():
+        errors.append("data/models_v2.json is missing")
+        return
     actual = hashlib.sha256(a.read_bytes()).hexdigest()
     if actual != PINNED_PRICE_TABLE_V2_SHA256:
         errors.append(f"data/models_v2.json: hash {actual[:16]}... does not match pin "
@@ -590,15 +614,8 @@ def check_price_table_v2_pinned(errors: list[str]) -> None:
 
 def check_price_table_pinned(errors: list[str]) -> None:
     """The consensus price table must match its pin, and be well-formed.
-
-    Both copies — data/models.json (reviewed, pinned here) and
-    fugal_subnet/routing_data/models.json (hashed into the protocol identity
-    and read by the neurons) — must be byte-identical, as for the v2 table.
+    (Its routing_data/ copy is checked by check_routing_data_mirrors_data.)
     """
-    copy = ROOT / "fugal_subnet" / "routing_data" / "models.json"
-    if copy.exists() and (ROOT / "data" / "models.json").exists() \
-            and copy.read_bytes() != (ROOT / "data" / "models.json").read_bytes():
-        errors.append("data/models.json and fugal_subnet/routing_data/models.json differ")
     path = ROOT / "data" / "models.json"
     if not path.exists():
         errors.append("data/models.json is missing — validators cannot price proofs")
@@ -1011,6 +1028,7 @@ def main(argv: list[str] | None = None) -> None:
     check_runtime_annotations(errors)
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
+    check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)
     check_collateral_endpoint_explicit(errors)

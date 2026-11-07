@@ -332,26 +332,55 @@ The protocol v2 flip is three things that must agree: the code on every
 validator, one activation block, and one approved miner image whose compose
 carries that block. In order:
 
-1. Merge `release/v2` into `main`; cut the CHANGELOG `[Unreleased]` block into
+Before the image (each changes what the image measures or carries):
+
+1. **Re-measure the v2 token means on the pinned v2 pool** [PAID ~$5–12, owner
+   approval]. The shipped means were measured on a stand-in sample, not the
+   pinned v2 pool. `scripts/record_token_observations.py --live --protocol 2`,
+   then `scripts/build_token_manifest.py`, reviewed and promoted into both
+   copies (`LIVE_API_VALIDATION.md`). It goes first because the token manifest
+   is hashed into the protocol identity. If a constant or a cost moves,
+   re-check every doc that quotes the v2 numbers.
+2. **Embed Google's TPM intermediate certificates in the v2 miner image.**
+   Without them a Google certificate rotation, or a region other than
+   us-central1, fails every proof.
+3. **Add a second release signing key** on a separate device, and a
+   key-rotation paragraph in `deploy/keys/README.md`. One key on one machine
+   is one lost laptop from no signed release.
+
+The release:
+
+4. Merge `release/v2` into `main`; cut the CHANGELOG `[Unreleased]` block into
    `0.3.0` and bump `pyproject.toml`.
-2. Choose `<ACTIVATION_BLOCK>`: an epoch boundary (a multiple of 360 on
+5. Build and sign the v2 image **from `main`** (`image-v*` release). The draft
+   `image-v2026.11.05b` targets `main` but is tagged on `release/v2`; do not
+   publish it.
+6. **Rehearse the flip on testnet (netuid 552) first** [PAID: GCP TDX VMs].
+   Steps 7–13 with the test compose and a testnet block a few hours out; two
+   or more validators and two or three miners through the flip;
+   `scripts/watch_subnet.py` must show v1 → v2, a first seat, and identical
+   reveals. v2 has only run on a local chain. Choose the finney block only
+   after this passes.
+7. Choose `<ACTIVATION_BLOCK>`: an epoch boundary (a multiple of 360 on
    finney) at least 24 h ahead of the announcement, so miners can re-provision.
-3. Edit both `deploy/dstack/docker-compose*.yaml`: the v2 image digest (from
-   the `image-v*` release built from `main`) and
-   `FUGAL_V2_ACTIVATION_BLOCK=<ACTIVATION_BLOCK>`; drop the testnet twin's
-   `FUGAL_EXPLORE_FRACTION=0.5` (v2 pays nothing from the frame).
-4. `dstack-cloud prepare` each; commit the two files as
+8. Edit both `deploy/dstack/docker-compose*.yaml`: the v2 image digest (from
+   step 5) and `FUGAL_V2_ACTIVATION_BLOCK=<ACTIVATION_BLOCK>`; drop the
+   testnet twin's `FUGAL_EXPLORE_FRACTION=0.5` (v2 pays nothing from the
+   frame). Uncomment `FUGAL_V2_ACTIVATION_BLOCK` in
+   `deploy/env/validator.env.example` with the real value.
+9. `dstack-cloud prepare` each; commit the two files as
    `app-compose.frozen-<tag>-{finney,test}.json`;
    `scripts/check_safety_invariants.py --release` must pass.
-5. Measure the base on a fresh TD booted from the v2 image (it moved once when
-   GCP changed firmware); publish the two entries with
-   `scripts/publish_approved_entry.py` in a signed release.
-6. Every validator: upgrade to the release, set `FUGAL_V2_ACTIVATION_BLOCK`
-   and add the v2 entry beside the current one, restart, before the block.
-7. Every miner: re-provision on the v2 image before the block (the v2 miner
-   holds its head until the last v1 boundary, then commits it).
-8. After the block: `scripts/watch_subnet.py` for a few epochs; two
-   validators' reveals must agree byte for byte and carry `protocol_version: 2`.
+10. Measure the base on a fresh TD booted from the v2 image (it moved once when
+    GCP changed firmware); publish the two entries with
+    `scripts/publish_approved_entry.py` in a signed release.
+11. Every validator: place the v2 pool file (`export_pool.py --protocol 2`,
+    §3), upgrade to the release, set `FUGAL_V2_ACTIVATION_BLOCK` and add the
+    v2 entry beside the current one, restart, before the block.
+12. Every miner: re-provision on the v2 image before the block (the v2 miner
+    holds its head until the last v1 boundary, then commits it).
+13. After the block: `scripts/watch_subnet.py` for a few epochs; two
+    validators' reveals must agree byte for byte and carry `protocol_version: 2`.
 
 ---
 

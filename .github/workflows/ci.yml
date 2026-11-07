@@ -183,7 +183,7 @@ jobs:
           python-version: '3.12'
       - run: python subnet/scripts/check_success_vendor.py --materialize-core
       - run: pip install numpy
-      - name: Both modules reproduce core fixtures
+      - name: Vendored contract reproduces core fixtures
         run: python subnet/scripts/check_success_fixtures.py
       - name: Install CPU embedding dependencies
         run: |

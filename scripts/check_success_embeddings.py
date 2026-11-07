@@ -15,7 +15,6 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--core", required=True)
     p.add_argument("--backbone", required=True)
-    p.add_argument("--output")
     args = p.parse_args()
     os.environ.setdefault("FUGAL_BACKBONE_THREADS", "4")
     # isort: off
@@ -52,21 +51,18 @@ def main():
     np.testing.assert_allclose(core_hidden, batched, atol=1e-5, rtol=1e-5)
     np.testing.assert_allclose(single, batched, atol=1e-5, rtol=1e-5)
     from fugal_subnet.head_eval import load_head_from_npz
-    from fugal_subnet.routing_protocol import benchmark_costs
+    from fugal_subnet.routing_protocol import BENCHMARK_LAMBDA, benchmark_costs
     from fugal_subnet.tee.harness import _route_question
     head = load_head_from_npz((ROOT / "tests/fixtures/success_bundle/head.npz").read_bytes())
     costs = benchmark_costs(head)
-    expected = core.rank(core.predictions(head.W, head.b, core_hidden), costs, 1)[:, 0]
+    expected = core.rank(core.predictions(head.W, head.b, core_hidden), costs, BENCHMARK_LAMBDA)[:, 0]
     actual = [_route_question(head, h, costs) for h in batched]
     np.testing.assert_array_equal(expected, actual)
     result = {"core_commit": json.loads((ROOT / "fugal_subnet/vendor/SOURCE.json").read_text())["commit"],
               "profile_id": core.PROFILE_ID, "token_ids_equal": True,
               "core_subnet_max_abs": float(np.max(np.abs(core_hidden-batched))),
               "batch_single_max_abs": float(np.max(np.abs(single-batched))),
-              "atol": 1e-5, "rtol": 1e-5, "selected_indices": actual}
-    result["selected_indices"] = [int(i) for i in actual]
-    if args.output:
-        Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
+              "atol": 1e-5, "rtol": 1e-5, "selected_indices": [int(i) for i in actual]}
     print(json.dumps(result, indent=2))
     del tok, model
     release_backbone()

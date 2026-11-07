@@ -52,10 +52,13 @@ uv run python scripts/record_token_observations.py --live --protocol 2 \
   --models data/models_v2.json --api-key-file ~/.fugal/openrouter.key \
   --per-model 40 --max-usd 12          # [PAID ~$5-12]
 uv run python scripts/build_token_manifest.py --observations <out.jsonl> \
-  --models data/models_v2.json --output <candidate.json>
+  --models data/models_v2.json --output <candidate.json> \
+  --worker-profile "<how, when and on what sample it was measured>"
 ```
 
-The candidate's `billing_check` is the comparison. Promoting it to `reviewed`
+`record_token_observations.py` prints the provider-billed and table-priced
+totals; the reviewer writes them into the manifest's `review` record as
+`billing_check`, which is the comparison. Promoting the candidate to `reviewed`
 is a consensus change (pin, `routing_data/` copy, CHANGELOG, review record).
 
 ## Running one live epoch

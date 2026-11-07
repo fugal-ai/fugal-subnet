@@ -64,3 +64,20 @@ def test_checked_in_observations_reproduce_the_reviewed_manifest():
     assert actual == expected
     mirror = json.loads((root / "fugal_subnet/routing_data/benchmark_tokens_v1.json").read_text())
     assert mirror == shipped
+
+
+def test_checked_in_observations_reproduce_the_reviewed_v2_manifest():
+    """The v2 token manifest, the same way: the builder's output over the
+    checked-in v2 observations plus a human's `status` and `review`. It is
+    not hash-pinned, so this is the only thing that stops a hand-edited mean
+    (in both copies at once) from re-pricing every v2 route."""
+    root = Path(__file__).resolve().parents[1]
+    shipped = json.loads((root / "data/benchmark_tokens_protocol_v2.json").read_text())
+    assert shipped["status"] == "reviewed"
+    assert shipped["review"]["date"] and shipped["review"]["billing_check"]
+    actual = build([root / "data/observations/benchmark_tokens_protocol_v2.jsonl"],
+                   [m["id"] for m in shipped["models"]], shipped["worker_profile"])
+    expected = dict(shipped)
+    expected.pop("review")
+    expected["status"] = "candidate"
+    assert actual == expected

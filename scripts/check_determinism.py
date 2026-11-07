@@ -87,9 +87,12 @@ def run_pipeline(seed: int) -> dict:
     every float and every hash after that point is the real one: the real
     harness routes, the real verifier checks, the real reference frame
     accumulates, the real scorer scores.
-    """
-    import hashlib
 
+    The harness runs in protocol v1 pricing mode here, because v2 pricing
+    needs a head built against the real pinned manifest. scripts/rehearsal_v2.py
+    and tests/ cover that path; the v2 stages below (selection, copy rule,
+    shared grades, the whole v2 epoch) are exercised on these proofs.
+    """
     import numpy as np
 
     from fugal_subnet import success_test_fixtures as success_fixtures
@@ -336,7 +339,7 @@ def run_pipeline(seed: int) -> dict:
     v2_uids = sorted(proof_objs, reverse=True)
     from fugal_subnet.copy_rule import Commitment, CopyState
     v2 = run_v2_epoch(
-        epoch_index=1, epoch_id="e00000001", boundary_block=300, blocks_per_epoch=300,
+        epoch_index=1, epoch_id=epoch_id_for_block(1), boundary_block=300, blocks_per_epoch=300,
         questions=questions, pool_models=sorted(prices), prices=prices,
         verified_proofs={u: proof_objs[u] for u in v2_uids},
         head_hashes={u: head_hashes[u] for u in v2_uids},

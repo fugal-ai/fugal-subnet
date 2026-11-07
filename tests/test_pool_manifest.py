@@ -219,3 +219,46 @@ def test_an_absent_manifest_is_never_silent(monkeypatch, tmp_path, caplog):
 
     with pytest.raises(RuntimeError, match="No pool manifest"):
         loader._verify_against_manifest([{"question_id": "q"}], set(), strict=True)
+
+
+# --- The builder must describe the pool the loader builds -------------------
+
+def test_the_builder_records_the_skip_list_the_loader_applies(monkeypatch):
+    """Unset, the loader skips the pinned list; the builder read the env var
+    alone and recorded []. --check then failed on the correct pool, and a
+    rebuild would have pinned 'skip nothing' into the live v1 manifest."""
+    import scripts.build_pool_manifest as bpm
+    from fugal_subnet.benchmarks.loader import _default_skip, _manifest_path
+
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+    pinned = sorted(json.load(open(_manifest_path(), encoding="utf-8"))["skip_benchmarks"])
+    assert bpm.effective_skip() == sorted(_default_skip()) == pinned
+    monkeypatch.setenv("FUGAL_SKIP_BENCHMARKS", "")
+    assert bpm.effective_skip() == []
+
+
+def test_the_builder_writes_the_files_the_loader_reads(tmp_path, monkeypatch):
+    """Not cwd-relative: from any directory the builder targets the package
+    data the loader verifies against."""
+    import os
+
+    import scripts.build_pool_manifest as bpm
+    from fugal_subnet.benchmarks.loader import _manifest_path, manifest_path_v2
+
+    monkeypatch.chdir(tmp_path)
+    assert os.path.isabs(bpm.MANIFEST_PATH) and os.path.isabs(bpm.MANIFEST_PATH_V2)
+    assert bpm.MANIFEST_PATH == _manifest_path() and bpm.MANIFEST_PATH_V2 == manifest_path_v2()
+    assert os.path.exists(bpm.MANIFEST_PATH) and os.path.exists(bpm.MANIFEST_PATH_V2)
+
+
+def test_the_builder_reads_export_pool_output(tmp_path):
+    import gzip
+
+    import scripts.build_pool_manifest as bpm
+
+    pool = [{"question_id": "q1", "prompt": "p", "gold": "1", "grader_id": "numeric_final",
+             "benchmark": "mmlu", "metadata": {}}]
+    (tmp_path / "pool.json").write_text(json.dumps(pool), encoding="utf-8")
+    with gzip.open(tmp_path / "pool.json.gz", "wt", encoding="utf-8") as f:
+        json.dump(pool, f)
+    assert bpm.read_pool(str(tmp_path / "pool.json")) == bpm.read_pool(str(tmp_path / "pool.json.gz")) == pool

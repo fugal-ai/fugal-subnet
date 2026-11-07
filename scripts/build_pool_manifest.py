@@ -23,23 +23,49 @@ carry their own licences and this repo does not redistribute them.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Ships INSIDE the package: the loader reads it at startup, and data/ is not
-# in the wheel. See fugal_subnet.benchmarks.loader._manifest_path.
-MANIFEST_PATH = os.path.join("fugal_subnet", "benchmarks", "pool_manifest.json")
-
-
 # content_hash lives in the package, not here: load_all() calls it at
 # startup, and a consensus function reachable only from a checkout is one
 # an installed validator does not have.
-from fugal_subnet.benchmarks.loader import content_hash  # noqa: E402
+from fugal_subnet.benchmarks.loader import (  # noqa: E402
+    _default_skip,
+    _manifest_path,
+    content_hash,
+    manifest_path_v2,
+)
 
-__all__ = ["content_hash", "build"]
+__all__ = ["content_hash", "build", "effective_skip"]
+
+# The files the LOADER reads (package data), so this writes exactly what the
+# neurons verify against, from any working directory. These were paths
+# relative to the cwd: run from anywhere but the repo root, --check failed
+# and a rebuild wrote a stray manifest the loader never reads.
+MANIFEST_PATH = _manifest_path()
+
+
+def effective_skip() -> list[str]:
+    """The skip list the loader applies: FUGAL_SKIP_BENCHMARKS when set (empty
+    means skip nothing), the pinned manifest's list when not.
+
+    Read from the env var alone, an unset variable gave [] while the loader
+    skipped the pinned ['gpqa', 'livecode']: --check failed on the correct
+    pool, and a rebuild would have pinned "skip nothing", so every neuron's
+    next start would load gpqa and livecode and build a different pool.
+    """
+    return sorted(_default_skip())
+
+
+def read_pool(path: str) -> list[dict]:
+    """A materialised pool: JSON, or the .json.gz scripts/export_pool.py writes."""
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def build(pool: list[dict], skip: list[str]) -> dict:
@@ -64,7 +90,7 @@ def build(pool: list[dict], skip: list[str]) -> dict:
 V2_DATASETS = ("TIGER-Lab/MMLU-Pro", "cais/mmlu", "EleutherAI/hendrycks_math", "KbsdJames/Omni-MATH",
                "m-a-p/SuperGPQA", "qq8933/AIME_1983_2024", "opencompass/AIME2025",
                "ByteDance-Seed/BeyondAIME", "google/IFEval")
-MANIFEST_PATH_V2 = os.path.join("fugal_subnet", "benchmarks", "pool_manifest_v2.json")
+MANIFEST_PATH_V2 = manifest_path_v2()
 
 
 def build_v2(pool: list[dict]) -> dict:
@@ -95,18 +121,20 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="Verify only; write nothing")
-    ap.add_argument("--from-file", help="Use a materialised pool JSON instead of loading")
+    ap.add_argument("--from-file",
+                    help="Use a materialised pool (JSON, or .json.gz from export_pool.py) instead of loading")
     ap.add_argument("--out", default=None)
     ap.add_argument("--protocol", type=int, default=1, choices=(1, 2))
     args = ap.parse_args()
     if args.protocol == 2:
         from fugal_subnet.benchmarks.loader import build_pool_v2
         out = args.out or MANIFEST_PATH_V2
-        pool = json.load(open(args.from_file, encoding="utf-8")) if args.from_file else build_pool_v2(strict=True)
+        pool = read_pool(args.from_file) if args.from_file else build_pool_v2(strict=True)
         built = build_v2(pool)
         print(json.dumps({k: built[k] for k in ("n_questions", "pool_hash", "content_hash")}, indent=1))
         if args.check:
-            pinned = json.load(open(out, encoding="utf-8"))
+            with open(out, encoding="utf-8") as f:
+                pinned = json.load(f)
             same = all(pinned.get(k) == built[k] for k in built)
             print("v2 manifest matches" if same else "v2 manifest MISMATCH")
             return 0 if same else 1
@@ -119,10 +147,9 @@ def main() -> int:
 
     from fugal_subnet.benchmarks.loader import load_all
 
-    skip = sorted(s for s in os.getenv("FUGAL_SKIP_BENCHMARKS", "").split(",") if s)
+    skip = effective_skip()
     if args.from_file:
-        with open(args.from_file, encoding="utf-8") as f:
-            pool = json.load(f)
+        pool = read_pool(args.from_file)
     else:
         # strict=False deliberately: this is the tool that RESOLVES a manifest
         # mismatch, so it must not be blocked by one. Requiring a valid manifest

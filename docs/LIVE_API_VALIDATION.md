@@ -51,7 +51,7 @@ text, the key from a 0600 file, and a hard `--max-usd` stop. It defaults to
 uv run python scripts/record_token_observations.py --live --protocol 2 \
   --models data/models_v2.json --api-key-file ~/.fugal/openrouter.key \
   --per-model 40 --max-usd 12          # [PAID ~$5-12]
-uv run python scripts/build_token_manifest.py --observations <out.jsonl> \
+uv run python scripts/build_token_manifest.py --observations results/token_observations_protocol2.jsonl \
   --models data/models_v2.json --output <candidate.json> \
   --worker-profile "<how, when and on what sample it was measured>"
 ```

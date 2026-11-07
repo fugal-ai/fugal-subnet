@@ -111,3 +111,36 @@ def test_the_budget_stops_scheduling(tmp_path, monkeypatch):
     totals = mod.record(MeteringProxy(), scheduled, str(tmp_path / "o.jsonl"), max_usd=3.0,
                         concurrency=1, provenance={})
     assert totals["rows"] == 3, totals   # $1 each, cap $3: the fourth call is never made
+
+
+def test_protocol_2_measures_the_v2_pool_models_and_categories(monkeypatch):
+    """--protocol 2 sampled the v1 pool with the v1 slice method unless two
+    extra flags were given, and the documented v2 command gave neither: the
+    paid v2 re-measure would have priced v2 models on v1 questions (D-010)."""
+    from fugal_subnet.benchmarks import loader
+    from fugal_subnet.config import BENCHMARK_CATEGORY_V2
+
+    mod = _load()
+    v1_pool, v2_pool = [{"question_id": "v1"}], [{"question_id": "v2"}]
+    monkeypatch.setattr(loader, "load_all", lambda strict=True: v1_pool)
+    monkeypatch.setattr(loader, "load_all_v2", lambda strict=True: v2_pool)
+
+    table, pool, categories = mod.resolve_inputs(2)
+    assert pool is v2_pool
+    assert categories == dict(BENCHMARK_CATEGORY_V2)
+    v2_ids = [r["id"] for r in json.loads((ROOT / "data" / "models_v2.json").read_text())]
+    assert [r["id"] for r in table] == v2_ids
+
+    table, pool, categories = mod.resolve_inputs(1)
+    assert pool is v1_pool and categories is None
+    assert [r["id"] for r in table] == [r["id"] for r in json.loads((ROOT / "data" / "models.json").read_text())]
+
+
+def test_the_default_output_is_never_checked_in_data():
+    """It defaulted to data/observations/benchmark_tokens_v2.jsonl, v1's shipped
+    evidence: a v2 run appended into it, and a re-measure resumed past every
+    pair already there and made no calls."""
+    mod = _load()
+    for protocol in (1, 2):
+        out = pathlib.Path(mod.DEFAULT_OUT.format(protocol=protocol))
+        assert out.parent == ROOT / "results", out

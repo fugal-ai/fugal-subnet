@@ -369,8 +369,10 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   once every validator runs v2 unconditionally
 - the v1 sections of `MINER_GUIDE.md`, `VALIDATOR_GUIDE.md`, `INVARIANTS.md`
   and the README's "v1 until the activation block" sentences
-- the v1 rehearsal scenarios in `scripts/dress_rehearsal.py` that only exist
-  to prove the handover
+- the v1 rehearsal scenarios a–e in `scripts/dress_rehearsal.py`: they are the
+  only chain tests of a steady-state network (two validators agreeing, many
+  epochs, the real backbone), so replace them with v2 equivalents (seat,
+  payout, copy rule, two-validator agreement) first, then remove the v1 ones
 - the pre-v2 frozen files `app-compose.frozen-2026-11-03c-{finney,test}.json` (03b removed 2026-11-06, retired by its published date)
   and their entries, once every validator has retired them
   (`docs/APPROVED_ENTRY_ROTATION.md`)

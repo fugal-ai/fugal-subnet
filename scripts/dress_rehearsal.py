@@ -404,8 +404,15 @@ def validator_env(state_path: str, extra_env=None) -> dict:
 
 def run_validator_once(coldkey: str, netuid: int, state_path: str,
                        log_path: str, timeout: int = 300, extra_env=None) -> dict:
-    """Run one real validator epoch; return its parsed epoch-log entry."""
+    """Run one real validator epoch; return the entry it appended, or {}.
+
+    Only a line this run appended counts. A validator whose epoch raises logs
+    the error, appends nothing and still exits 0, so reading the last line
+    unconditionally would hand back the PREVIOUS epoch's entry as this one's.
+    """
     env = validator_env(state_path, extra_env)
+    log_file = os.path.join(os.path.dirname(state_path), "epochs.jsonl")
+    lines_before = len(_epoch_log_lines(log_file))
     with open(log_path, "a", encoding="utf-8") as log:
         subprocess.run(
             [sys.executable, "neurons/validator.py",
@@ -415,13 +422,19 @@ def run_validator_once(coldkey: str, netuid: int, state_path: str,
             stdout=log, stderr=subprocess.STDOUT, env=env,
             text=True, timeout=timeout,
         )
-    log_file = os.path.join(os.path.dirname(state_path), "epochs.jsonl")
-    if not os.path.exists(log_file):
+    lines = _epoch_log_lines(log_file)
+    if len(lines) <= lines_before:
+        print(f"    validator {os.path.basename(os.path.dirname(state_path))} appended "
+              f"no epoch-log entry (see {os.path.basename(log_path)})", flush=True)
         return {}
-    with open(log_file, encoding="utf-8") as f:
-        lines = [ln for ln in f.read().splitlines() if ln.strip()]
-    return json.loads(lines[-1]) if lines else {}
+    return json.loads(lines[-1])
 
+
+def _epoch_log_lines(path: str) -> list[str]:
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return [ln for ln in f.read().splitlines() if ln.strip()]
 
 
 # ── chain fixtures ────────────────────────────────────────────────────────────
@@ -1520,7 +1533,6 @@ def main() -> int:
             subtensor0, target, EPOCH_INTERVAL_S,
         )
         print("\nScenario harness ready.\n", flush=True)
-        # Scenario bodies are added below; see run_scenarios().
         rc = run_scenarios(args, report)
     finally:
         if not args.keep_chain:

@@ -290,8 +290,11 @@ tempo-aligned and refuses to register into one that is not, because without
 refused while the neurons log success.
 
 ```bash
-# 1a. Owner half (whoever holds the owner coldkey): identity, start_call,
+# 1a. Owner half (whoever holds the owner coldkey): start_call and
 #     hyperparameters. Idempotent — safe to re-run after any partial failure.
+#     Without --yes it only prints what it would change. Tempo and identity
+#     change only with --set-tempo / --set-identity: never on a live subnet
+#     by accident.
 python scripts/provision_subnet.py --network finney --netuid 70 \
   --owner-wallet <owner> --epoch-interval 4320 --yes
 

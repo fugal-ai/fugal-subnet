@@ -1,7 +1,8 @@
 """The protocol v2 flip rehearsal (scripts/rehearsal_v2.py, dress_rehearsal v2_flip).
 
 Two halves. The in-process harness runs here in full: whatever of v2 is on the
-branch must hold across the flip, and whatever is not is skipped, never failed.
+branch must hold across the flip; every v2 piece is on the branch, so nothing
+may be skipped (a skip means a rename or a break, and fails the run).
 The chain scenario needs Docker, so its CHECKS are exercised here on synthetic
 epoch rows shaped like what the shipped validator publishes: a correct run
 passes every row, and a run where the validators diverge is caught.
@@ -32,15 +33,17 @@ def test_offline_rehearsal_has_no_failures():
     report = _load("dress_rehearsal").Report()
     rv2.run_offline(report, run_v1_pipeline=False)
     assert not report.failed, report.failed
-    passed = [r for r in report.rows if r[2] is True]
-    # Activation and shared grades are on release/v2, so the flip, digest,
-    # v1-unchanged, agreement and restart rows always run.
-    assert len(passed) >= 9, report.rows
+    # Every v2 piece is on this branch: a skipped row means a probe stopped
+    # finding a renamed or broken function, and its checks silently stopped.
+    skipped = [r for r in report.rows if r[2] is None]
+    assert not skipped, skipped
+    # 20 rows less the one check_determinism row run_v1_pipeline=False drops.
+    assert len(report.rows) == 19, [r[1] for r in report.rows]
 
 
 def test_release_v2_pieces_are_detected():
     f = _load("rehearsal_v2").probe_features()
-    assert f["activation"].present and f["shared_grades"].present
+    assert all(p.present for p in f.values()), [p.name for p in f.values() if not p.present]
 
 
 def test_missing_names_every_absent_piece():
@@ -178,6 +181,7 @@ def test_chain_checks_skip_what_the_branch_lacks():
     skipped = [r for r in report.rows if r[2] is None]
     assert not report.failed, report.failed
     assert len(skipped) == 7  # six seat/payout rows and the E'' evidence row
+    assert report.summary() == 1  # a skip is not a pass
 
 
 def test_chain_checks_fail_clearly_without_the_copy_rule_state():

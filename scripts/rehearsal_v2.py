@@ -5,8 +5,7 @@ The chain half lives in `scripts/dress_rehearsal.py --scenario v2_flip`: the
 shipped neurons against the local Docker chain across an activation block. This
 file is the half that needs no chain and no Docker. It drives the real v2
 modules (activation, shared grades, update_scores with the E'' miss rule, the
-champion seat, the 85/10/5 payout, and the validator's v2 epoch when it is
-wired) through a scripted timeline that crosses the flip:
+champion seat, the 85/10/5 payout, and the validator's v2 epoch) through a scripted timeline that crosses the flip:
 
     python scripts/rehearsal_v2.py            # offline, seconds, no spend
 
@@ -29,12 +28,14 @@ proof in the opposite order and is killed mid-epoch at F+8 and restarted from
 its persisted state), and a control without it.
 
 SHORTENED FOR THE REHEARSAL, and only here: burn-in is 120 questions (3
-epochs at 40) instead of BURN_IN_QUESTIONS (3,000), and a take needs 80 paired
+epochs at 40) instead of V2_BURN_IN_QUESTIONS (1,500; v1's BURN_IN_QUESTIONS,
+3,000, is patched to the same 120), and a take needs 80 paired
 questions instead of CHAMPION_MIN_PAIRED_QUESTIONS (1,500). Every other v2
 constant is the shipped default.
 
-Parts that depend on code not yet on the branch are SKIPPED with the reason,
-never failed: the harness runs against release/v2 as the pieces land.
+Every v2 piece is on this branch, so a piece the probe cannot find means a
+rename or a break: its checks are SKIPPED with the reason, and a skip fails
+the run (dress_rehearsal.Report.summary).
 """
 from __future__ import annotations
 
@@ -171,7 +172,7 @@ PRICES = {"sim/cheap": (1e-8, 4e-8), "sim/mid": (1e-7, 4e-7), "sim/strong": (2e-
 COMPLETION_TOKENS = {"sim/cheap": 200, "sim/mid": 300, "sim/strong": 400}
 BENCH_CATEGORY = {"mmlu": "knowledge", "math": "math", "aime": "hard", "ifeval": "instruction"}
 SLICE = 40
-BURN_IN = 120              # rehearsal only; shipped BURN_IN_QUESTIONS is 3000
+BURN_IN = 120              # rehearsal only; shipped V2_BURN_IN_QUESTIONS is 1500 (v1: 3000)
 MIN_PAIRED = 80            # rehearsal only; shipped CHAMPION_MIN_PAIRED_QUESTIONS is 1500
 BURN_UID = 0
 EPOCH_INTERVAL = 3600      # 300 blocks
@@ -942,8 +943,7 @@ def main() -> int:
     print("=" * 78)
     print("FUGAL v2 FLIP REHEARSAL (offline) — real v2 modules, no chain, no spend")
     print("=" * 78)
-    report = Report(pass_message="the v2 flip holds in process (skipped rows need code "
-                                 "not yet on this branch).")
+    report = Report(pass_message="the v2 flip holds in process.")
     run_offline(report, run_v1_pipeline=not args.no_v1_pipeline)
     return report.summary()
 

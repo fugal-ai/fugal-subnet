@@ -66,7 +66,9 @@ class Report:
     def __init__(self, pass_message: str = "the shipped binaries work against a real chain.") -> None:
         self.pass_message = pass_message
         # ok is True (pass), False (fail) or None (skipped: the code it checks
-        # is not on this branch yet; never a failure).
+        # was not found). A skip FAILS the run: every v2 piece is on this
+        # branch, so a missing one means a rename or a break, and a run that
+        # skipped its seat and payout checks must not print PASS.
         self.rows: list[tuple[str, str, bool | None, str]] = []
 
     def check(self, scenario: str, name: str, ok: bool, detail: str = "") -> bool:
@@ -100,6 +102,10 @@ class Report:
         print(f"{passed} passed, {len(failed)} failed, {len(skipped)} skipped")
         if failed:
             print("\nFAIL — the subnet is not ready.")
+            return 1
+        if skipped:
+            print("\nFAIL — checks were skipped because code they test was not found "
+                  "(a rename or a break); a skipped check is not a pass.")
             return 1
         print(f"\nPASS — {self.pass_message}")
         return 0
@@ -1038,7 +1044,8 @@ def scenario_e(report, subtensor, netuid, wallets, pool_path, procs, stub):
 #                                       not a capped step towards it)
 #
 # What it needs from the branch, probed at start (scripts/rehearsal_v2.py,
-# probe_features); anything absent is SKIPPED with the reason, never failed:
+# probe_features); anything absent is SKIPPED with the reason, and a skip
+# fails the run (Report.summary):
 #   activation, shared grades       on release/v2
 #   the validator's v2 epoch wiring  seat, payout and resume checks
 #   the E'' miss rule                the evidence checks on a miss

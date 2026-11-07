@@ -373,6 +373,9 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   only chain tests of a steady-state network (two validators agreeing, many
   epochs, the real backbone), so replace them with v2 equivalents (seat,
   payout, copy rule, two-validator agreement) first, then remove the v1 ones
+- `scripts/rehearsal_v2.py` and `dress_rehearsal.py --scenario v2_flip` test
+  the crossing: keep their seat, payout and miss checks as plain v2 tests,
+  drop the flip timeline and the `probe_features` skip machinery
 - the pre-v2 frozen files `app-compose.frozen-2026-11-03c-{finney,test}.json` (03b removed 2026-11-06, retired by its published date)
   and their entries, once every validator has retired them
   (`docs/APPROVED_ENTRY_ROTATION.md`)

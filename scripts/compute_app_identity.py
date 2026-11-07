@@ -7,22 +7,25 @@ it. The app half is a property of this repository, so it can be computed here â€
 which means **what code the subnet accepts is reviewable in a pull request**
 rather than requiring someone to hold a quote and read hex out of a register.
 
-    python scripts/compute_app_identity.py                       # this checkout
-    python scripts/compute_app_identity.py --base <measurement>  # full entry
-    python scripts/compute_app_identity.py --compose app-compose.json
+    # The approved entry, for a frozen dstack compose (the only live shape):
+    python scripts/compute_app_identity.py \
+        --compose deploy/dstack/app-compose.frozen-<tag>-finney.json --base <base>
 
-Two identities exist because two deployment shapes exist, and they are not
-interchangeable:
+    # The miner's advisory runtime identity, for inspection only:
+    python scripts/compute_app_identity.py
+
+Two identities exist, and only one of them is an approved entry:
+
+  compose hash       sha256 of the app-compose.json raw bytes, extended into
+                     RTMR3 by dstack's *initrd*, which is itself measured into
+                     RTMR2. That is what makes it evidence, and it is the only
+                     app half a live entry may carry: <base>:<compose_hash>.
 
   runtime identity   sha384(source || pool || grader || upstream), extended into
-                     RTMR3 by the miner itself. What a Fugal miner produces today
-                     on a stock image. Advisory: on an unmeasured filesystem an
-                     attacker extends whatever value is expected.
-
-  compose hash       sha256 of the normalised app-compose, extended into RTMR3 by
-                     dstack's *initrd* â€” which is itself measured into RTMR2. That
-                     is what makes it evidence rather than advisory, and it is the
-                     whole reason for adopting a locked image.
+                     RTMR3 by the miner process itself. ADVISORY: on an
+                     unmeasured filesystem an attacker extends whatever value is
+                     expected, so it is never an approved entry. This mode prints
+                     it for inspection and debugging, and prints no entry line.
 
 The compose hash is sha256 of the file's RAW BYTES. It was normalised JSON here
 until a real dstack-generated app-compose.json falsified that; see
@@ -103,8 +106,9 @@ def compose_hash(path: str) -> tuple[str, str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--base", default="", help="Base measurement, to print a full entry")
-    ap.add_argument("--compose", default="", help="app-compose.json, for a dstack deployment")
+    ap.add_argument("--base", default="", help="Base measurement, to print a full entry (needs --compose)")
+    ap.add_argument("--compose", default="",
+                    help="Frozen app-compose.json: its compose hash is the app half of a live entry")
     ap.add_argument("--pool", default="", help="Pool JSON (default: the configured loader)")
     ap.add_argument("--upstream", default=os.getenv(
         "FUGAL_OPENROUTER_BASE", "https://openrouter.ai/api/v1"))
@@ -138,6 +142,14 @@ def main() -> int:
         print(f"RTMR3 after one extend from a fresh TD: {expected_rtmr3(identity)}")
 
     print()
+    if not args.compose:
+        # Never an entry line here: a runtime identity is advisory (see the
+        # module docstring), and an operator pasting it into
+        # FUGAL_TEE_MEASUREMENTS would approve something nothing measures.
+        print("ADVISORY ONLY: a runtime identity is never an approved entry. Live "
+              "entries are <base>:<compose_hash>; run with --compose "
+              "<frozen app-compose.json> --base <base>.")
+        return 2 if args.base else 0
     if args.base:
         print("FUGAL_TEE_MEASUREMENTS entry:")
         print(f"  {args.base}:{identity}")

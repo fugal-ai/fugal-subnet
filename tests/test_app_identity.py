@@ -83,3 +83,27 @@ def test_compose_hash_changes_with_the_content(tmp_path):
     p.write_text(json.dumps({"image": "repo@sha256:bbb"}), encoding="utf-8")
     second, _ = script.compose_hash(str(p))
     assert first != second, "a different app must produce a different compose hash"
+
+
+def test_only_a_compose_hash_is_ever_printed_as_an_approved_entry(tmp_path, capsys, monkeypatch):
+    """The runtime identity is advisory (an unmeasured filesystem extends any
+    value), so the no-compose mode must never print a FUGAL_TEE_MEASUREMENTS
+    line for an operator to paste. It used to, given --base."""
+    import sys
+
+    script = _script()
+    compose = tmp_path / "app-compose.json"
+    compose.write_bytes(b'{"runner": "docker-compose"}')
+    monkeypatch.setattr(sys, "argv", ["x", "--compose", str(compose), "--base", "b" * 96])
+    assert script.main() == 0
+    assert "FUGAL_TEE_MEASUREMENTS entry:" in capsys.readouterr().out
+
+    monkeypatch.setenv("FUGAL_POOL_UNPINNED", "1")
+    pool = tmp_path / "pool.json"
+    pool.write_text(json.dumps([{"question_id": "q", "prompt": "p", "gold": "1",
+                                 "grader_id": "numeric_final", "benchmark": "mmlu",
+                                 "metadata": {}}]), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["x", "--pool", str(pool), "--base", "b" * 96])
+    assert script.main() == 2
+    out = capsys.readouterr().out
+    assert "FUGAL_TEE_MEASUREMENTS entry:" not in out and "ADVISORY ONLY" in out

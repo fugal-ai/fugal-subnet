@@ -11,18 +11,28 @@
 #
 #   1. The environment was hand-rolled instead of `uv sync --locked`, so it
 #      drifted from the lockfile and from CI's extras.
-#   2. The steps were a hand-copied SUBSET. CONTRIBUTING.md still lists three
-#      commands; CI runs eight, in two different environments.
+#   2. The steps were a hand-copied SUBSET of CI's, in fewer environments.
 #
-# So the steps are not written here at all -- they are READ OUT OF
-# .github/workflows/ci.yml. A step added to CI is picked up on the next run
-# with no edit to this file, which is the only version of "keep them in sync"
-# that survives contact with a repo three people are editing.
+# So the steps of the `test`, `tee-verifier` and `quality` jobs are not
+# written here at all -- they are READ OUT OF .github/workflows/ci.yml (every
+# `uv run` / `uv build` line). A step added to those jobs is picked up on the
+# next run with no edit to this file.
+#
+# What it does NOT run, on purpose:
+#   - success-contract: CI runs it with plain `python` and a 1.2 GB backbone
+#     download. The two cheap steps (vendor provenance, numeric fixtures) run
+#     here, written out below; the backbone steps
+#     (verify_success_contract.py, check_success_embeddings.py) do not.
+#   - container: `docker build` of the image.
+# A change to the backbone path, the vendored contract or the Dockerfile still
+# needs CI (or those commands by hand) before it is known green.
 #
 # Usage:
-#   scripts/gate.sh          # both environments, every step
+#   scripts/gate.sh          # every job below
 #   scripts/gate.sh test     # just CI's `test` job (no DCAP verifier)
 #   scripts/gate.sh tee      # just CI's `tee-verifier` job
+#   scripts/gate.sh quality  # just CI's `quality` job (ruff, pip-audit, build)
+#   scripts/gate.sh success  # just the two cheap success-contract checks
 #
 # Exit code is 0 only if every step of every selected job passed.
 #
@@ -36,7 +46,7 @@ WHICH="${1:-all}"
 FAILED=0
 
 steps_for() {
-  # Emit one `uv run ...` command per line for the named job in ci.yml.
+  # Emit one `uv run ...` / `uv build ...` command per line for the named job in ci.yml.
   uv run --quiet python - "$1" <<'PY'
 import sys, pathlib
 try:
@@ -55,13 +65,13 @@ for step in ci["jobs"][job].get("steps", []):
         line = line.strip()
         # Only the project's own commands. `uv sync` is the environment and is
         # applied separately; anything else is CI plumbing.
-        if line.startswith("uv run") and "uv sync" not in line:
+        if line.startswith(("uv run", "uv build")) and "uv sync" not in line:
             print(line)
 PY
 }
 
-run_job() {           # run_job <ci job name> <label> <uv sync args...>
-  local job="$1" label="$2"; shift 2
+run_steps() {         # run_steps <label> <newline-separated steps> <uv sync args...>
+  local label="$1" steps="$2"; shift 2
   echo ""
   echo "================================================================"
   echo "  $label"
@@ -69,6 +79,11 @@ run_job() {           # run_job <ci job name> <label> <uv sync args...>
   echo "================================================================"
   if ! uv sync --locked "$@" >/dev/null 2>&1; then
     echo "FAIL  could not create the environment"; FAILED=1; return
+  fi
+  # Zero steps is a failure, never a pass: a renamed CI job or a broken
+  # reader would otherwise print GATE GREEN having run nothing.
+  if [ -z "${steps//[[:space:]]/}" ]; then
+    echo "FAIL  no steps found"; FAILED=1; return
   fi
   while IFS= read -r cmd; do
     [ -z "$cmd" ] && continue
@@ -81,8 +96,25 @@ run_job() {           # run_job <ci job name> <label> <uv sync args...>
       echo "$out" | tail -20 | sed 's/^/        /'
       FAILED=1
     fi
-  done < <(steps_for "$job")
+  done <<< "$steps"
 }
+
+run_job() {           # run_job <ci job name> <label> <uv sync args...>
+  local job="$1" label="$2" steps; shift 2
+  if ! steps=$(steps_for "$job"); then
+    echo ""; echo "FAIL  could not read the steps of CI job '$job' from ci.yml"; FAILED=1; return
+  fi
+  run_steps "$label" "$steps" "$@"
+}
+
+case "$WHICH" in
+  all|test|tee|quality|success) ;;
+  *) echo "unknown job '$WHICH' (use: all, test, tee, quality, success)" >&2; exit 2 ;;
+esac
+
+if [ "$WHICH" = "all" ] || [ "$WHICH" = "quality" ]; then
+  run_job quality "CI job: quality (ruff, pip-audit, build)" --extra dev
+fi
 
 if [ "$WHICH" = "all" ] || [ "$WHICH" = "test" ]; then
   # CI's `test` job. Deliberately WITHOUT --extra tee: verify_dcap takes a
@@ -93,6 +125,15 @@ fi
 
 if [ "$WHICH" = "all" ] || [ "$WHICH" = "tee" ]; then
   run_job tee-verifier "CI job: tee-verifier (DCAP verifier installed)" --extra dev --extra tee
+fi
+
+if [ "$WHICH" = "all" ] || [ "$WHICH" = "success" ]; then
+  # CI's `success-contract` job runs with plain `python`, so these are written
+  # out rather than read. Without --materialize-core: that flag git-inits
+  # tests/core_snapshot, which only CI's throwaway checkout should do.
+  run_steps "CI job: success-contract (cheap checks; no backbone)" \
+    "uv run python scripts/check_success_vendor.py
+uv run python scripts/check_success_fixtures.py" --extra dev
 fi
 
 # Leave the developer with the fuller environment regardless of what ran, so a

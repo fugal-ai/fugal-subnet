@@ -24,8 +24,8 @@ scripts/gate.sh
 That is the whole gate, and it is the only thing worth trusting before pushing.
 
 **Do not hand-roll a subset.** This section used to list three commands run
-against whatever `python` was on the path. CI runs nine, in **two different
-environments**, and the gap has already cost a red `main`: `dcap-qvl` lives in
+against whatever `python` was on the path. CI runs far more, in **several
+different environments**, and the gap has already cost a red `main`: `dcap-qvl` lives in
 the optional `[tee]` extra, a local `.venv` happened to have it, and tests that
 imported it unconditionally passed locally nine times and failed in CI. A venv
 that drifts from the lockfile hides exactly the failures CI exists to find.
@@ -40,9 +40,12 @@ that drifts from the lockfile hides exactly the failures CI exists to find.
   them. A step added to CI is picked up on the next run with no edit here, so
   this document cannot fall behind CI again the way it just did.
 
-`scripts/gate.sh test` or `scripts/gate.sh tee` runs one job's environment if
-you are iterating. Exit status is 0 only if every step of every selected job
-passed.
+`scripts/gate.sh test|tee|quality|success` runs one job if you are iterating.
+Exit status is 0 only if every step of every selected job passed.
+
+It does not run the backbone-download half of CI's `success-contract` job or
+the `docker build`. A change to the backbone path, the vendored contract or the
+Dockerfile is known green only once CI says so.
 
 None of it requires a chain or paid API calls. For a local chain run of the
 shipped neurons (Docker required, no spend):

@@ -221,11 +221,10 @@ over the attested provisioning channel (`scripts/provision_td.py`).
   first run, or once via `scripts/export_pool.py`. GPQA (gated) and LiveCodeBench
   are skipped by the pinned manifest. **Never set `FUGAL_SKIP_BENCHMARKS` on a
   neuron**: it replaces the manifest's skip list and the pool diverges silently
-- **Local chain**: `scripts/dress_rehearsal.py` (the shipped neurons as real
-  processes) or `docker compose -f docker-compose.localnet.yml up --build` (one in-container epoch). The
-  rehearsal sets `FUGAL_POOL_UNPINNED=1` for its fixture pool; the compose demo
-  builds a synthetic pool in-process and sets `FUGAL_REQUIRE_COMMITMENT=0`
-  because in-container miners run without chain commitments
+- **Local chain**: `scripts/dress_rehearsal.py` runs the shipped neurons as
+  real processes on a pinned local subtensor (Docker); its chain helpers are in
+  `scripts/setup_local_testnet.py`. It sets `FUGAL_POOL_UNPINNED=1` for its
+  fixture pool
 - **Weight setting on local chain**: the chain's 100-block rate limit means
   consecutive `--once` runs may get "weights already set" — normal at local
   testnet cadence, not an issue at 72-minute mainnet epochs (tempo 360 × 12 s = 4320 s, 360 blocks)

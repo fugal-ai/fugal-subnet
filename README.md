@@ -50,9 +50,6 @@ uv run python scripts/dress_rehearsal.py --scenario all
 # seat, a take, a ghost and a resume
 uv run python scripts/dress_rehearsal.py --scenario v2_flip
 
-# Or the single-command container demo (chain + miner + validator, one epoch)
-docker compose -f docker-compose.localnet.yml up --abort-on-container-exit
-
 # Provision a subnet on a real network (test or finney) — idempotent
 uv run python scripts/provision_subnet.py --network test --netuid <N> \
   --owner-wallet <wallet> --status

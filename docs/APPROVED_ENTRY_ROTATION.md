@@ -173,8 +173,8 @@ launch gate), so an edit after a freeze cannot ship unnoticed.
 From any machine holding a registered hotkey:
 
 ```bash
-python scripts/verify_live_miner.py --netuid <N> --uid <uid> \
-    --coldkey <wallet> --measurements <new entry>          # PASS
+python scripts/verify_live_miner.py --network <finney|test> --netuid <N> --uid <uid> \
+    --coldkey <validator wallet> --hotkey <its hotkey> --measurements <new entry>   # PASS
 python scripts/verify_live_miner.py ... --measurements <old entry> --expect-reject   # PASS after the miner moved
 ```
 

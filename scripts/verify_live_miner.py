@@ -5,12 +5,16 @@ Answers a question an operator actually has — *is this miner producing valid
 attested proofs right now?* — without setting weights, touching validator state,
 or interfering with a running subnet. The full live path in isolation:
 
-    axon query -> DCAP signature -> measurement in approved set -> report_data
-    binds the proof body -> slice, exploration, head and cost bindings
+    axon query -> head commitment on chain -> bundle (proof + head) ->
+    DCAP signature -> measurement in approved set -> report_data binds the
+    proof body -> slice, exploration, head and cost bindings
 
-    python scripts/verify_live_miner.py --netuid 552 --uid 5 \\
-        --coldkey fugal_owner2 --hotkey default \\
-        --measurements a1ecb627...  [--expect-reject]
+    python scripts/verify_live_miner.py --network test --netuid 552 --uid 5 \\
+        --coldkey <validator wallet> --hotkey <its hotkey> \\
+        --measurements <base>:<compose_hash>  [--expect-reject]
+
+Query as a registered validator hotkey: miners refuse other callers. The
+approved entry comes from `scripts/fetch_approved_entries.py --network test`.
 
 `--expect-reject` inverts the assertion, which is how the negative control is
 run: the same genuine proof against a DIFFERENT approved set must be refused.
@@ -27,6 +31,39 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
+def resolve_epoch_interval(flag, subtensor, netuid: int) -> int:
+    """--epoch-interval, else FUGAL_EPOCH_INTERVAL, else the chain's tempo x 12 s.
+
+    It used to be config.EPOCH_INTERVAL, which is 3600 unless the variable is
+    set; finney/70 runs 4320, so without it this asked every miner for an
+    epoch it was not serving (e00031524 against e00026270, 2026-11-07) and
+    reported each one as returning no proof.
+    """
+    if flag:
+        return int(flag)
+    env = os.getenv("FUGAL_EPOCH_INTERVAL", "").strip()
+    if env:
+        return int(env)
+    from fugal_subnet.benchmarks.slicer import BLOCK_TIME_S
+    tempo = int(getattr(subtensor.get_subnet_hyperparameters(netuid=netuid), "tempo", 0) or 0)
+    return max(1, tempo) * BLOCK_TIME_S
+
+
+def check_commitment(commitments: dict, hotkey: str, weights_hash: str,
+                     boundary: int) -> tuple[bool, str]:
+    """The validator's rule: the served head's hash committed on chain at or
+    before the boundary block (neurons/validator.py). A later commit is
+    unscoreable by design: the nonce is knowable by then."""
+    data, block = commitments.get(hotkey, ("", 0))
+    if not data:
+        return False, "no head commitment on chain"
+    if data != weights_hash:
+        return False, f"committed {data[:12]}... but served {weights_hash[:12]}..."
+    if not 0 < block <= boundary:
+        return False, f"committed at block {block}, after the boundary {boundary}"
+    return True, f"committed at block {block} <= boundary {boundary}"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -36,8 +73,12 @@ def main() -> int:
     ap.add_argument("--coldkey", required=True, help="Wallet to query as")
     ap.add_argument("--hotkey", default="default")
     ap.add_argument("--measurements", default="",
-                    help="Comma-separated approved measurement_ids. Empty means "
+                    help="Comma-separated approved entries, <base>:<compose_hash> "
+                         "(scripts/fetch_approved_entries.py prints them). Empty means "
                          "mock mode, which skips the hardware checks entirely.")
+    ap.add_argument("--epoch-interval", type=int, default=None,
+                    help="FUGAL_EPOCH_INTERVAL the subnet runs (default: the environment, "
+                         "else the chain's tempo x 12)")
     ap.add_argument("--expect-reject", action="store_true",
                     help="Assert the proof is REFUSED (negative control)")
     ap.add_argument("--timeout", type=int, default=120)
@@ -55,9 +96,10 @@ def main() -> int:
         epoch_index_for_block,
         protocol_version_for_boundary,
     )
+    from fugal_subnet.commitments import get_commitments_with_blocks
     from fugal_subnet.config import (
-        EPOCH_INTERVAL,
         EXPLORE_FRACTION,
+        REQUIRE_COMMITMENT,
         SLICE_SIZE,
         V2_ACTIVATION_BLOCK,
     )
@@ -65,7 +107,6 @@ def main() -> int:
     from fugal_subnet.logging_setup import configure_logging
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.routing_protocol import models_for_protocol, price_table
-    from fugal_subnet.tee.proof import BenchmarkProof
     from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
 
     configure_logging("INFO")
@@ -86,7 +127,8 @@ def main() -> int:
     subtensor = bt.Subtensor(network=args.network)
     metagraph = subtensor.metagraph(args.netuid)
 
-    bpe = blocks_per_epoch(EPOCH_INTERVAL)
+    epoch_interval = resolve_epoch_interval(args.epoch_interval, subtensor, args.netuid)
+    bpe = blocks_per_epoch(epoch_interval)
     epoch_index = epoch_index_for_block(subtensor.get_current_block(), bpe)
     epoch_id = epoch_id_for_block(epoch_index)
     boundary = epoch_index * bpe
@@ -108,7 +150,7 @@ def main() -> int:
     gold = {q["question_id"]: q for q in pool}
     del prices  # priced by the validator, not here; loaded to fail early if missing
 
-    print(f"epoch {epoch_id} boundary {boundary} nonce {nonce.hex()[:16]}")
+    print(f"epoch {epoch_id} ({bpe}-block epochs) boundary {boundary} nonce {nonce.hex()[:16]}")
     axon = metagraph.axons[args.uid]
     print(f"querying uid {args.uid} at {axon.ip}:{axon.port} ...")
 
@@ -147,12 +189,32 @@ def main() -> int:
             "expected_exploration": explore_map,
             "protocol_version": version,
             "proof_hash": getattr(resp, "proof_hash", ""),
+            "weights_hash": getattr(resp, "weights_hash", ""),
+            "head_npz_b64": getattr(resp, "head_npz_b64", ""),
             "pool_hash": pool_hash(pool),
             "proof": json.loads(resp.proof_json),
         }, f)
     print(f"proof saved to {saved} — verifiable offline from here on")
 
-    proof = BenchmarkProof.from_dict(json.loads(resp.proof_json))
+    # The validator's head checks, by the validator's own code: the bundle
+    # parser (proof + head bytes, size-bounded) and the on-chain commitment.
+    # Without them a miner whose head was never committed passed here and
+    # failed every real validator.
+    from neurons.validator import _get_bundle_for_uid
+    hotkey = metagraph.hotkeys[args.uid]
+    weights_hash = getattr(resp, "weights_hash", "")
+    committed_ok, committed_detail = check_commitment(
+        get_commitments_with_blocks(subtensor, args.netuid), hotkey, weights_hash, boundary)
+    print(f"head commitment: {committed_detail}")
+    bundle = _get_bundle_for_uid(args.uid, resp)
+    if bundle is None:
+        print("FAIL: the bundle is incomplete or malformed (proof and head both "
+              "required), so a validator rejects it before verification")
+        return 0 if args.expect_reject else 1
+    proof, head_bytes = bundle
+    if REQUIRE_COMMITMENT and not committed_ok:
+        print(f"FAIL: a validator rejects this proof before verification: {committed_detail}")
+        return 0 if args.expect_reject else 1
     approved = {m.strip() for m in args.measurements.split(",") if m.strip()}
     mock = not approved
     print(f"proof received: {len(proof.results)} results, "
@@ -172,8 +234,10 @@ def main() -> int:
         # relayed by anyone who can read it off that miner's axon. This script
         # lagged the verifier's contract for a while and refused every live
         # proof; found on the first real one (2026-09-07).
-        expected_hotkey=metagraph.hotkeys[args.uid],
+        expected_hotkey=hotkey,
         expected_proof_hash=getattr(resp, "proof_hash", ""),
+        expected_weights_hash=weights_hash,
+        head_bytes=head_bytes,
         mock=mock,
         protocol_version=version,
     )

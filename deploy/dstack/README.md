@@ -122,7 +122,8 @@ Verify from outside, as a validator would:
 
 ```bash
 nc -vz <ip> 8091
-python scripts/verify_live_miner.py --netuid 552 --uid <uid> --coldkey <any registered> \
-    --measurements <base>:<compose_hash>
+python scripts/verify_live_miner.py --network test --netuid 552 --uid <uid> \
+    --coldkey <validator wallet> --hotkey <its hotkey> \
+    --measurements <base>:<compose_hash>   # a live miner answers only validator-staked hotkeys
 python scripts/verify_live_miner.py ... --measurements <base>:<wrong_hash> --expect-reject
 ```

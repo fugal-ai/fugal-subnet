@@ -44,12 +44,14 @@ PINNED_PRICE_TABLE_V2_SHA256 = (
 # data/reference_frame.json is the bootstrap reference frame: decayed
 # exploration counts every live validator starts from, so the frontier every
 # miner is scored against is valued from it. Consensus state like models.json.
-# None means the file must not exist yet; once scripts/build_bootstrap_frame.py
-# produces it, pin the digest it prints here in the same commit and say why.
+# None means the file must not exist yet; a builder (build_frame_from_calls.py,
+# or build_bootstrap_frame.py from reveals) prints the digest to pin here in
+# the same commit, saying why.
 # Pinned 2026-11-03: built by scripts/build_frame_from_calls.py from
 # data/observations/bootstrap_frame_calls_v1.jsonl (17 models x up to 300 direct,
 # logged, graded calls; mistral stopped at 80 after upstream 429s and is not on
-# the hull). Rebuild with --build-only --batch 6000 to reproduce this digest.
+# the hull). `build_frame_from_calls.py --build-only` reproduces this digest
+# (one undecayed batch, the default; tests/test_frame_from_calls.py).
 PINNED_BOOTSTRAP_FRAME_SHA256: str | None = (
     "c31417505fe7a80e253a11261665fa5f7e63343d28f963f3ed96da2dd521a1c0"
 )
@@ -930,8 +932,9 @@ def check_bootstrap_frame_pinned(errors: list[str]) -> None:
     if digest != PINNED_BOOTSTRAP_FRAME_SHA256:
         errors.append(
             f"data/reference_frame.json: sha256 {digest[:16]}... does not match the "
-            "pin; rebuild with scripts/build_bootstrap_frame.py and update the pin "
-            "in the same commit, saying why (I1)"
+            "pin. Restore it (git checkout), or rebuild with "
+            "scripts/build_frame_from_calls.py --build-only; a deliberately new "
+            "frame updates the pin in the same commit, saying why (I1)"
         )
 
 

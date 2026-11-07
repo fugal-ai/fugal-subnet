@@ -109,5 +109,5 @@ def test_live_validators_must_start_from_the_shipped_frame(tmp_path):
 
     missing = str(tmp_path / "reference_frame.json")
     assert load_bootstrap(missing).trials == {}
-    with pytest.raises(FileNotFoundError, match="build_bootstrap_frame"):
+    with pytest.raises(FileNotFoundError, match="Restore the shipped file"):
         load_bootstrap(missing, require=True)

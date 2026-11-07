@@ -8,8 +8,11 @@ subnet needs FRONTIER_MIN_TRIALS distinct observations per model before it pays
 in full -- at fifteen exploration slots over seventeen models that is weeks of
 epochs. A bootstrap frame measured on testnet makes epoch 1 look like epoch 300.
 
-This script is the only sanctioned way to produce `data/reference_frame.json`.
-It replays reveals through the same `rebuild_from_reveals` a validator uses
+One of two builders. The SHIPPED frame is built by
+`scripts/build_frame_from_calls.py --build-only` from a committed call log
+(tests/test_frame_from_calls.py proves it reproduces the pin). This one builds
+a CANDIDATE from published reveals, attested samples, for review and a new
+pin. It replays reveals through the same `rebuild_from_reveals` a validator uses
 (one vote per coldkey, one sample per distinct question and model, decay per
 epoch), prints what it measured so a reviewer can sanity-check every model's
 accuracy against what they know of it, and writes the file. The file is
@@ -17,8 +20,7 @@ hash-pinned in scripts/check_safety_invariants.py because it is consensus
 state: every validator must load the same one, so a change to it is a change
 to every score and goes through review like data/models.json.
 
-    python scripts/build_bootstrap_frame.py --reveals results/success-v1/epochs
-    python scripts/build_bootstrap_frame.py --reveals /path/to/val2/epochs --out data/reference_frame.json
+    python scripts/build_bootstrap_frame.py --reveals /path/to/epochs --out candidate_frame.json
 
 No network, no API spend.
 """

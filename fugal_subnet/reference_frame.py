@@ -632,9 +632,9 @@ BOOTSTRAP_FRAME_PATH = os.path.join(
 def load_bootstrap(path: str | None = None, require: bool = False) -> ReferenceFrame:
     """Load the shipped bootstrap frame, or an empty one if absent.
 
-    The bootstrap is real measured evidence (built by
-    scripts/build_bootstrap_frame.py from testnet reveals and hash-pinned),
-    not a prior: it is decayed exploration counts, so the frontier is valued
+    The bootstrap is real measured evidence (the shipped file is built by
+    `scripts/build_frame_from_calls.py --build-only` from a committed call log,
+    and hash-pinned), not a prior: it is decayed exploration counts, so the frontier is valued
     from it exactly as from live samples and pays from epoch 1 instead of
     after FRONTIER_MIN_TRIALS distinct observations per model.
 
@@ -652,9 +652,12 @@ def load_bootstrap(path: str | None = None, require: bool = False) -> ReferenceF
             raise FileNotFoundError(
                 f"No bootstrap reference frame at {path}. A live validator with no "
                 "accumulated frame must start from the shipped one, or it scores the "
-                "field against a different frontier from every other validator. Build "
-                "it with scripts/build_bootstrap_frame.py, or set FUGAL_FRAME_BOOTSTRAP "
-                "to a directory of published reveals."
+                "field against a different frontier from every other validator. Restore "
+                "the shipped file from this release (git checkout -- "
+                "data/reference_frame.json), or set FUGAL_FRAME_BOOTSTRAP to the published "
+                "reveals every validator uses. Do not build your own: a frame built from "
+                "your own reveals differs from the pinned one, and nothing at runtime "
+                "would tell you."
             ) from None
         logger.info("No bootstrap reference frame at %s — starting from the prior", path)
         return ReferenceFrame()

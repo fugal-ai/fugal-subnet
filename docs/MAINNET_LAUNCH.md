@@ -378,6 +378,8 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   once every validator runs v2 unconditionally
 - the v1 sections of `MINER_GUIDE.md`, `VALIDATOR_GUIDE.md`, `INVARIANTS.md`
   and the README's "v1 until the activation block" sentences
+- `scripts/build_frame_from_calls.py` and `scripts/build_bootstrap_frame.py`:
+  the reference frame is v1-only (v2 scores on shared grades, never a frame)
 - the `--protocol 1` defaults of `scripts/export_pool.py`,
   `scripts/build_pool_manifest.py` and `scripts/record_token_observations.py`:
   default to 2 at the flip, and drop the flag with v1

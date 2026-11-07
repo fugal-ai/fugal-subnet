@@ -169,14 +169,17 @@ with RTMR1 and RTMR2 identical between the two dates and MRTD/RTMR0 changed:
 the image is the same, the cloud's TDX firmware is not. The base is a
 measurement of image **and** platform; take it from a live TD when you publish.
 
-Run this on the TD to print the measurement of the image you are about to
-approve. Quote generation needs write access to configfs, so run it as root:
+Read it from a TD booted from the image you are about to approve. A dstack
+TD gives no shell and the image carries no `scripts/`, so it is read from
+outside, over the TD's attested channel:
 
 ```bash
-sudo -E $(which uv) run python scripts/tdx_measurement.py
+python scripts/provision_td.py --inspect --address http://<td-ip>:8092
 ```
 
-That is the `base` half. The `app_identity` half is the compose hash of the
+That prints `base_measurement`: the `base` half. (`scripts/tdx_measurement.py`
+prints the measurement of the plain TDX VM it runs on, which is not the miner
+image's; its job is the two checks below.) The `app_identity` half is the compose hash of the
 frozen `app-compose.json` the miner image was deployed with
 (`scripts/compute_app_identity.py --compose deploy/dstack/app-compose.frozen-<date>.json
 --base <base>` prints the full entry). Add the PAIR to the validator's

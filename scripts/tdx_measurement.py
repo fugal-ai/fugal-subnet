@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Print this TD's measurement, and verify the two checks only real TDX can.
+"""Validate the verifier on real TDX: the two checks no other environment can make.
 
-Run this ON a confidential VM. See docs/TDX_VALIDATION.md.
+Run this ON a confidential VM you have a shell on (a plain GCP c3 / Azure
+DCesv5 TDX VM; see docs/TDX_VALIDATION.md).
 
-    python scripts/tdx_measurement.py            # print measurement_id
+    python scripts/tdx_measurement.py            # print this VM's measurement_id
     python scripts/tdx_measurement.py --verify   # assert the two live checks
+
+IT DOES NOT MEASURE THE APPROVED MINER IMAGE. Live entries name the base of
+the dstack miner image, and this cannot run there: the image carries no
+scripts/ and a dstack TD gives no shell. The base half of an entry comes from
+`scripts/provision_td.py --inspect` on a TD booted from that image, and is
+published in the signed release (scripts/fetch_approved_entries.py). The
+number printed here is this VM's own measurement, for diagnosis.
 
 Everything else in this repo is exercised by scripts/dress_rehearsal.py against
 a real chain. These two cannot be: they need genuine Intel-signed quotes and
@@ -51,9 +59,9 @@ def main() -> int:
     print(f"rtmr1           : {quote.rtmr1}")
     print(f"rtmr2           : {quote.rtmr2}")
     print(f"\nmeasurement_id  : {measurement}")
-    print("\nThis is the BASE half of an approved entry. A bare base is refused by")
-    print("--live; pair it with the compose hash of the frozen app-compose.json:")
-    print(f"  python scripts/compute_app_identity.py --compose <app-compose.json> --base {measurement}")
+    print("\nThis is THIS VM's measurement, not the dstack miner image's. The base half")
+    print("of an approved entry comes from `scripts/provision_td.py --inspect` on a TD")
+    print("booted from that image (docs/APPROVED_ENTRY_ROTATION.md).")
 
     if not args.verify:
         return 0
@@ -103,10 +111,17 @@ def main() -> int:
         expected_hotkey="5TdxMeasurementProbe",
         mock=False,
     )
-    rejected = (not result.valid) and "Unapproved runtime image" in result.reason
-    print(f"  [{'PASS' if rejected else 'FAIL'}] an unapproved image is rejected "
-          f"despite a genuine quote")
-    if not rejected:
+    if getattr(result, "unverifiable", False):
+        # Same as the first check: an unreachable collateral endpoint judged
+        # nothing, and calling it "I8 is not enforced" would send the operator
+        # after the wrong fault.
+        print(f"  [SKIP] the unapproved-image probe could not be judged: {result.reason}")
+        rejected = None
+    else:
+        rejected = (not result.valid) and "Unapproved runtime image" in result.reason
+        print(f"  [{'PASS' if rejected else 'FAIL'}] an unapproved image is rejected "
+              f"despite a genuine quote")
+    if rejected is False:
         failures.append(
             f"unapproved image was NOT rejected: valid={result.valid} "
             f"reason={result.reason!r}"

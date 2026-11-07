@@ -219,8 +219,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             "--live requires FUGAL_TEE_MEASUREMENTS. With no approved "
             "measurement every proof fails the runtime-image check, so this "
             "validator would score every miner zero and set weights to match. "
-            "Get the value from `scripts/tdx_measurement.py` on the approved "
-            "TDX image (see docs/TDX_VALIDATION.md)."
+            "Get the approved entry from the signed image release: "
+            "`scripts/fetch_approved_entries.py --tag <image tag> --network "
+            "<finney|test>` (docs/APPROVED_ENTRY_ROTATION.md)."
         )
 
     # Say which entries are active, at startup, in the log. During a rotation

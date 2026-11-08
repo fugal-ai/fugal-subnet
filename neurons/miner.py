@@ -365,20 +365,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         # and register the axon only from the activation block.
         from fugal_subnet.benchmarks.slicer import validate_activation_block
         validate_activation_block(V2_ACTIVATION_BLOCK, blocks_per_epoch)
-        # Validators read commitments at each epoch's BOUNDARY block, so a commit
-        # that lands after the last v1 boundary is invisible to that v1 epoch
-        # (its proof is still checked against the old head) and visible at the
-        # flip boundary. COMMIT_AFTER_BOUNDARY_BLOCKS keeps it clear of the
-        # boundary block itself.
-        from fugal_subnet.config import (
-            COMMIT_AFTER_BOUNDARY_BLOCKS,
-            COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS,
-        )
-        commit_at = V2_ACTIVATION_BLOCK - blocks_per_epoch + COMMIT_AFTER_BOUNDARY_BLOCKS
+        commit_at, commit_deadline = _v2_commit_window(V2_ACTIVATION_BLOCK, blocks_per_epoch)
         _wait_for_block(subtensor, commit_at, "commit the v2 head (after the last v1 boundary)")
         committed = _commit_before_deadline(
-            subtensor, wallet, netuid, weights_hash,
-            deadline=V2_ACTIVATION_BLOCK - COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS,
+            subtensor, wallet, netuid, weights_hash, deadline=commit_deadline,
         )
         _wait_for_block(subtensor, V2_ACTIVATION_BLOCK, "serve the axon (the v2 flip)")
 
@@ -585,6 +575,24 @@ def _my_uid(metagraph, hotkey_ss58: str, netuid: int) -> int:
             "(scripts/provision_subnet.py --miners ...) before starting the miner"
         )
     return metagraph.hotkeys.index(hotkey_ss58)
+
+
+def _v2_commit_window(activation_block: int, blocks_per_epoch: int) -> tuple[int, int]:
+    """(commit_at, deadline) for the v2 head's on-chain commitment.
+
+    One hotkey holds ONE commitment, and validators read it at each epoch's
+    BOUNDARY block. So the v2 head is committed just after the last v1
+    boundary (that v1 epoch still checks its proof against the old head, and
+    the flip boundary sees the new one), COMMIT_AFTER_BOUNDARY_BLOCKS clear of
+    the boundary block itself, and by COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS
+    before the activation block so it is on chain when the flip boundary is
+    read.
+    """
+    from fugal_subnet.config import COMMIT_AFTER_BOUNDARY_BLOCKS, COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS
+
+    last_v1_boundary = int(activation_block) - int(blocks_per_epoch)
+    return (last_v1_boundary + COMMIT_AFTER_BOUNDARY_BLOCKS,
+            int(activation_block) - COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS)
 
 
 def _wait_for_block(subtensor, block: int, purpose: str, poll_s: float = 30.0) -> None:

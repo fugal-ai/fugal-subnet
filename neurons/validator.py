@@ -396,7 +396,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         mix_weights,
     )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
-    from fugal_subnet.commitments import seniority_key
     from fugal_subnet.config import (
         PAYOUT_SEAT_SHARES,
         TEE_COLLATERAL_EPOCH_BUDGET,
@@ -429,7 +428,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
     from fugal_subnet.tee.attestation import CollateralBudget, verification_order
     from fugal_subnet.tee.proof import BenchmarkProof
-    from fugal_subnet.tee.verify import verify_proof
     from fugal_subnet.v2_epoch import (
         run_v2_epoch,
         seat_params_from_config,
@@ -811,121 +809,38 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # rotates each epoch instead of settling on the same miners.
             order = verification_order(nonce_hex, len(responses))
 
+            checks = _EpochChecks(
+                boundary_block=boundary_block,
+                require_commitment=REQUIRE_COMMITMENT,
+                approved_measurements=approved_measurements,
+                questions_hash=expected_questions_hash,
+                nonce_hex=nonce_hex,
+                slice_gold=slice_gold,
+                question_ids=expected_question_ids,
+                explore_map=explore_map,
+                mock=mock,
+                collateral_budget=collateral_budget,
+                protocol_version=protocol_version,
+            )
             for uid in order:
-                resp = responses[uid]
-                if resp is None or not hasattr(resp, "proof_hash") or not resp.proof_hash:
-                    continue
-
                 hotkey_ss58 = metagraph.hotkeys[uid] if uid < len(metagraph.hotkeys) else ""
-                weights_hash = getattr(resp, "weights_hash", "")
-
-                # Check on-chain commitment
-                committed = chain_commitments.get(hotkey_ss58, ("", 0))
-                has_valid_commitment = (
-                    committed[0] == weights_hash
-                    and 0 < committed[1] <= boundary_block
+                checked = _check_response(
+                    uid, responses[uid], hotkey_ss58,
+                    chain_commitments.get(hotkey_ss58, ("", 0)),
+                    registration_block_of(metagraph, uid), checks,
                 )
-                if has_valid_commitment:
-                    # Seniority from chain state at the boundary: the hotkey's
-                    # registration block first, its commitment block second.
-                    # A retrained author keeps rank over whoever copied its
-                    # previous head, and every validator derives the same
-                    # order (commitments.seniority_key).
-                    commit_blocks[uid] = seniority_key(
-                        registration_block_of(metagraph, uid), committed[1],
-                    )
-                elif REQUIRE_COMMITMENT:
+                if checked.seniority is not None:
+                    commit_blocks[uid] = checked.seniority
+                if checked.status == "invalid":
                     n_invalid += 1
-                    logger.warning(
-                        "UID %d proof rejected: weights_hash %s... not committed on-chain "
-                        "at or before boundary block %d",
-                        uid, weights_hash[:12], boundary_block,
-                    )
-                    continue
-                else:
-                    commit_blocks[uid] = math.inf
-
-                try:
-                    bundle = _get_bundle_for_uid(uid, resp)
-                except Exception as e:
-                    n_invalid += 1
-                    logger.warning("UID %d: failed to get bundle: %s", uid, e)
-                    continue
-
-                if bundle is None:
-                    n_invalid += 1
-                    continue
-                proof, head_bytes = bundle
-
-                # Every binding is passed explicitly. A check the validator does
-                # not supply an expectation for is a check that does not happen.
-                # Defence in depth. verify_proof is contracted not to raise on
-                # miner input, but the cost of being wrong about that is the
-                # whole epoch, so a bug there must cost one miner instead.
-                try:
-                    result = verify_proof(
-                        proof,
-                        approved_measurements=approved_measurements,
-                        expected_questions_hash=expected_questions_hash,
-                        expected_nonce=nonce_hex,
-                        gold_answers=slice_gold,
-                        expected_question_ids=expected_question_ids,
-                        expected_exploration=explore_map,
-                        expected_weights_hash=weights_hash,
-                        # The hotkey of the uid we actually queried. A proof
-                        # naming a different one was produced for somebody else.
-                        expected_hotkey=metagraph.hotkeys[uid],
-                        expected_proof_hash=getattr(resp, "proof_hash", ""),
-                        head_bytes=head_bytes,
-                        mock=mock,
-                        collateral_budget=collateral_budget,
-                        protocol_version=protocol_version,
-                    )
-                except ImportError:
-                    raise
-                except Exception as e:  # noqa: BLE001 - one miner, not the epoch
-                    n_invalid += 1
-                    logger.warning(
-                        "UID %d proof verification raised %s: %s — rejecting this "
-                        "miner, not the epoch", uid, type(e).__name__, e,
-                    )
-                    continue
-
-                if not result.valid:
-                    # Skip either way — the miner is not scored this epoch, and
-                    # falls through to apply_miss like any absent miner. What
-                    # changes is what gets RECORDED, and that is not cosmetic:
-                    # an operator reading "247 invalid" hunts an attack, while
-                    # "247 unverifiable" points at their own egress.
-                    #
-                    # Skipping is also the only I6-compatible choice. Abandoning
-                    # the epoch instead would let one miner with an unknown
-                    # FMSPC stop every validator publishing at once, because the
-                    # collection point is a deterministic block — a subnet kill
-                    # switch for the price of one registration.
-                    if getattr(result, "unverifiable", False):
-                        n_unverifiable += 1
-                        logger.warning(
-                            "UID %d proof could not be checked: %s — NOT counted "
-                            "as invalid; this validator never judged it",
-                            uid, result.reason,
-                        )
-                    else:
-                        n_invalid += 1
-                        logger.warning(
-                            "UID %d proof failed verification: %s", uid, result.reason,
-                        )
-                    continue
-
-                if result.warnings:
-                    for w in result.warnings:
-                        logger.info("UID %d proof warning: %s", uid, w)
-
-                verified_proofs[uid] = proof
-                verified_heads[uid] = head_bytes
-                # Keyed on the hash the attestation forced to be true, not the
-                # value the miner asserted over the axon.
-                head_hashes[uid] = proof.weights_hash
+                elif checked.status == "unverifiable":
+                    n_unverifiable += 1
+                elif checked.status == "valid":
+                    verified_proofs[uid] = checked.proof
+                    verified_heads[uid] = checked.head_bytes
+                    # Keyed on the hash the attestation forced to be true, not
+                    # the value the miner asserted over the axon.
+                    head_hashes[uid] = checked.proof.weights_hash
 
             # Diagnostics only: keep the verified heads on private disk. Feeds
             # no score, hash, reveal or fingerprint, and can't fail the epoch.
@@ -1494,6 +1409,141 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0)
+
+
+class _EpochChecks(NamedTuple):
+    """What every proof this epoch is checked against.
+
+    Every binding is passed explicitly. A check the validator does not supply
+    an expectation for is a check that does not happen.
+    """
+    boundary_block: int
+    require_commitment: bool
+    approved_measurements: set
+    questions_hash: str
+    nonce_hex: str
+    slice_gold: dict
+    question_ids: set
+    explore_map: dict
+    mock: bool
+    collateral_budget: object
+    protocol_version: int
+
+
+class _Checked(NamedTuple):
+    """One miner's response, checked.
+
+    status: "absent" (no proof offered), "invalid" (rejected), "unverifiable"
+    (this validator could not check it) or "valid". `seniority` is set once the
+    commitment check has passed, whatever happens after it.
+    """
+    status: str
+    seniority: float | None = None
+    proof: object = None
+    head_bytes: bytes | None = None
+
+
+def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_block: int,
+                    checks: _EpochChecks) -> _Checked:
+    """Check one miner's response: its on-chain commitment, its bundle, its proof.
+
+    Never raises on miner input: whatever a miner sends costs that miner, never
+    the epoch (I6). The one exception is ImportError, which is this validator's
+    own installation and not the miner's doing.
+    """
+    from fugal_subnet.commitments import seniority_key
+    from fugal_subnet.tee.verify import verify_proof
+
+    if resp is None or not hasattr(resp, "proof_hash") or not resp.proof_hash:
+        return _Checked("absent")
+    if not hotkey:
+        # Responses and hotkeys come from the same metagraph, so this does not
+        # happen; if it did, there is no hotkey to bind the proof to.
+        logger.warning("UID %d: no hotkey in the metagraph; proof not checked", uid)
+        return _Checked("invalid")
+    weights_hash = getattr(resp, "weights_hash", "")
+
+    # The on-chain commitment, read at the boundary block.
+    if committed[0] == weights_hash and 0 < committed[1] <= checks.boundary_block:
+        # Seniority from chain state at the boundary: the hotkey's
+        # registration block first, its commitment block second. A retrained
+        # author keeps rank over whoever copied its previous head, and every
+        # validator derives the same order (commitments.seniority_key).
+        seniority = seniority_key(registration_block, committed[1])
+    elif checks.require_commitment:
+        logger.warning(
+            "UID %d proof rejected: weights_hash %s... not committed on-chain "
+            "at or before boundary block %d",
+            uid, weights_hash[:12], checks.boundary_block,
+        )
+        return _Checked("invalid")
+    else:
+        seniority = math.inf
+
+    try:
+        bundle = _get_bundle_for_uid(uid, resp)
+    except Exception as e:  # noqa: BLE001 - one miner, not the epoch
+        logger.warning("UID %d: failed to get bundle: %s", uid, e)
+        return _Checked("invalid", seniority)
+    if bundle is None:
+        return _Checked("invalid", seniority)
+    proof, head_bytes = bundle
+
+    # Defence in depth. verify_proof is contracted not to raise on miner
+    # input, but the cost of being wrong about that is the whole epoch, so a
+    # bug there must cost one miner instead.
+    try:
+        result = verify_proof(
+            proof,
+            approved_measurements=checks.approved_measurements,
+            expected_questions_hash=checks.questions_hash,
+            expected_nonce=checks.nonce_hex,
+            gold_answers=checks.slice_gold,
+            expected_question_ids=checks.question_ids,
+            expected_exploration=checks.explore_map,
+            expected_weights_hash=weights_hash,
+            # The hotkey of the uid we actually queried. A proof naming a
+            # different one was produced for somebody else.
+            expected_hotkey=hotkey,
+            expected_proof_hash=getattr(resp, "proof_hash", ""),
+            head_bytes=head_bytes,
+            mock=checks.mock,
+            collateral_budget=checks.collateral_budget,
+            protocol_version=checks.protocol_version,
+        )
+    except ImportError:
+        raise
+    except Exception as e:  # noqa: BLE001 - one miner, not the epoch
+        logger.warning(
+            "UID %d proof verification raised %s: %s — rejecting this "
+            "miner, not the epoch", uid, type(e).__name__, e,
+        )
+        return _Checked("invalid", seniority)
+
+    if not result.valid:
+        # Not scored either way, and falls through to apply_miss like any
+        # absent miner. What changes is what gets RECORDED, and that is not
+        # cosmetic: an operator reading "247 invalid" hunts an attack, while
+        # "247 unverifiable" points at their own egress.
+        #
+        # Skipping is also the only I6-compatible choice. Abandoning the epoch
+        # instead would let one miner with an unknown FMSPC stop every
+        # validator publishing at once, because the collection point is a
+        # deterministic block — a subnet kill switch for the price of one
+        # registration.
+        if getattr(result, "unverifiable", False):
+            logger.warning(
+                "UID %d proof could not be checked: %s — NOT counted "
+                "as invalid; this validator never judged it",
+                uid, result.reason,
+            )
+            return _Checked("unverifiable", seniority)
+        logger.warning("UID %d proof failed verification: %s", uid, result.reason)
+        return _Checked("invalid", seniority)
+
+    for w in result.warnings or ():
+        logger.info("UID %d proof warning: %s", uid, w)
+    return _Checked("valid", seniority, proof, head_bytes)
 
 
 def _get_bundle_for_uid(uid, resp):

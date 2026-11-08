@@ -103,9 +103,10 @@ def test_a_v2_proof_verifies_only_under_v2_and_a_v1_proof_only_under_v1():
 
 
 def test_the_validator_verifies_with_the_epochs_version():
-    call = SRC[SRC.index("result = verify_proof("):]
-    call = call[:call.index("\n                    )")]
-    assert "protocol_version=protocol_version" in call
+    helper = SRC[SRC.index("def _check_response("):SRC.index("def _get_bundle_for_uid(")]
+    assert "protocol_version=checks.protocol_version" in helper
+    loop = SRC[SRC.index("            checks = _EpochChecks("):SRC.index("            for uid in order:")]
+    assert "protocol_version=protocol_version" in loop
 
 
 def test_the_head_cost_profile_is_checked_for_the_epochs_version():

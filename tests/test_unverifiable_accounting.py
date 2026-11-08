@@ -14,13 +14,9 @@ FMSPC stop every validator publishing simultaneously.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict
-from pathlib import Path
 
 from fugal_subnet.epoch_logger import EpochLog
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def _log(**kw) -> EpochLog:
@@ -49,46 +45,45 @@ def test_the_field_survives_serialisation():
     assert round_tripped["n_heads_unverifiable"] == 12
 
 
-def test_validator_counts_unverifiable_before_calling_anything_invalid():
+def _check_with(monkeypatch, result):
+    from types import SimpleNamespace
+
+    from fugal_subnet.tee import verify as verify_mod
+    from neurons import validator
+
+    monkeypatch.setattr(verify_mod, "verify_proof", lambda proof, **kw: result)
+    monkeypatch.setattr(validator, "_get_bundle_for_uid", lambda uid, resp: (object(), b"h"))
+    resp = SimpleNamespace(proof_hash="p", weights_hash="w")
+    checks = validator._EpochChecks(
+        boundary_block=10, require_commitment=False, approved_measurements=set(),
+        questions_hash="", nonce_hex="", slice_gold={}, question_ids=set(), explore_map={},
+        mock=False, collateral_budget=None, protocol_version=1)
+    return validator._check_response(1, resp, "5Hotkey", ("", 0), 0, checks)
+
+
+def test_validator_counts_unverifiable_before_calling_anything_invalid(monkeypatch):
     """The regression this guards is a future refactor collapsing the branch.
 
     Re-merging the counters would restore the exact failure the split exists to
     remove -- 247 honest miners logged as invalid during an endpoint outage,
-    sending an operator hunting an attack that never happened.
+    sending an operator hunting an attack that never happened. The epoch loop
+    counts each status apart (tests/test_validator_verify.py checks the loop).
     """
-    src = (ROOT / "neurons" / "validator.py").read_text(encoding="utf-8")
-
-    branch = re.search(
-        r"if not result\.valid:(.*?)\n                    continue",
-        src, re.DOTALL,
-    )
-    assert branch, "the invalid branch in the verify loop moved or was renamed"
-    body = branch.group(1)
-
-    assert "unverifiable" in body, (
-        "the verify loop no longer distinguishes unverifiable proofs — an "
-        "outage would again be recorded as mass fraud"
-    )
-    assert "n_unverifiable += 1" in body
-    assert "n_invalid += 1" in body
+    from types import SimpleNamespace
+    unverifiable = SimpleNamespace(valid=False, unverifiable=True, reason="pccs down", warnings=[])
+    rejected = SimpleNamespace(valid=False, unverifiable=False, reason="bad quote", warnings=[])
+    assert _check_with(monkeypatch, unverifiable).status == "unverifiable"
+    assert _check_with(monkeypatch, rejected).status == "invalid"
 
 
-def test_an_unverifiable_proof_never_stops_the_epoch():
+def test_an_unverifiable_proof_never_stops_the_epoch(monkeypatch):
     """I6: no miner behaviour may stop a validator setting weights.
 
-    The unverifiable branch must fall through to the same `continue` as any
-    other unscored miner. A `raise`, `break` or early return there would hand
-    every registered miner a subnet kill switch, because the crafted-FMSPC path
-    into `unverifiable` is miner-reachable.
+    The unverifiable outcome must come back like any other unscored miner's. A
+    raise there would hand every registered miner a subnet kill switch, because
+    the crafted-FMSPC path into `unverifiable` is miner-reachable.
     """
-    src = (ROOT / "neurons" / "validator.py").read_text(encoding="utf-8")
-    branch = re.search(
-        r"if not result\.valid:(.*?)\n                    continue",
-        src, re.DOTALL,
-    ).group(1)
-
-    for forbidden in ("raise", "break", "return"):
-        assert not re.search(rf"\b{forbidden}\b", branch), (
-            f"'{forbidden}' in the unverifiable branch would let one miner stop "
-            "the epoch — see I6 and the kill-switch retraction in INVARIANTS"
-        )
+    from types import SimpleNamespace
+    out = _check_with(monkeypatch, SimpleNamespace(valid=False, unverifiable=True,
+                                                   reason="unknown FMSPC", warnings=[]))
+    assert out.status == "unverifiable" and out.proof is None

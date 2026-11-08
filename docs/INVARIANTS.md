@@ -33,7 +33,7 @@ here, and a check that enforces it.**
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior **and no external dependency** can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. Every call that leaves the process on the epoch path is bounded. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py`, `tests/test_collateral_timeout.py`, `check_safety_invariants.check_external_calls_bounded` |
 | **I7** | **Auditability.** Any divergence between two validators is diagnosable after the fact from published artifacts. | `fugal_subnet/fingerprint.py`, `environment` block in every `reveal.json` |
-| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (32 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
+| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (34 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
 | **I9** | **Reference-frame agreement.** Every validator derives the same reference frame from the same published exploration samples, and no single miner can materially move it. | `fugal_subnet/reference_frame.py` (order-independent accumulation), `check_determinism.py` `frame` stage, `tests/test_non_interference.py` |
 
 ## How TEE resolves prior gaps
@@ -1246,8 +1246,12 @@ An approved-list entry is `<base_measurement>:<app_identity>`. (Written
 2026-09; since 2026-10-14 a bare `<base_measurement>` is **refused** outside
 mock — see "The model upstream is miner-controlled" under Known gaps — and the
 app half that is enforced is the sha256 of the frozen `app-compose.json`'s raw
-bytes, replayed out of the RTMR3 log. The sha384 `runtime_identity` below is the
-advisory userspace extend; the shape argument is unchanged.)
+bytes, replayed out of the RTMR3 log. That is the only live app half:
+`parse_approved(require_app=True)` accepts exactly 64 hex in each half, and
+`verify_proof` checks nothing but a compose hash read from a log that replays
+to the quote, so a proof with no log is refused. The sha384 `runtime_identity`
+below was a userspace extend the miner's own code performs, so it is evidence
+of nothing and is not accepted live; the shape argument is unchanged.)
 
     base_measurement = sha256(MRTD || RTMR1 || RTMR2)     what booted
     app_identity     = sha384(source || pool || grader || upstream)   what ran
@@ -3250,8 +3254,8 @@ check entirely and a live validator only *warned* about one. Now:
 Mock mode still accepts a bare base: a local testnet binds no application, and
 dress rehearsal depends on it. The § "I8 — verified on hardware: the upstream
 binding" section above describes the single-extend `runtime_identity`, which
-remains advisory on an unlocked image; the compose-hash path is the enforced
-one. The analysis below is kept as the record of the gap.
+is not accepted live (only a compose hash replayed out of the log is); the
+compose-hash path is the only one. The analysis below is kept as the record of the gap.
 
 `fugal_subnet/tee/runtime.py` reads the endpoint the metering proxy calls from
 `FUGAL_OPENROUTER_BASE`, an environment variable, inside the miner's own TD. The

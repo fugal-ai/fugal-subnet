@@ -246,6 +246,18 @@ on the DCAP library. Honest TDs are unaffected (both real GCP quotes checked).
 Also: tests pin the quote version and minimum length checks; an unused
 `TDXQuote.report_data_bytes` property is removed.
 
+### Security — live verification accepts only a compose hash replayed from the log
+
+`parse_approved(require_app=True)` accepted any app half, and `verify_proof`
+checked a non-compose-hash half by comparing RTMR3 with one extend of it, an
+extend the miner's own code can perform. Live entries are now exactly
+`<64-hex base>:<64-hex compose hash>` (case-insensitive), the single-extend
+comparison is gone, and a live proof without an event log is refused. The
+live validator refuses to start with any other entry shape. `run_tee_attacks`
+now runs its control and every case through the live shape (entry + event
+log), with cases for a runtime-identity entry and a proof with no log;
+`tests/test_app_identity_chain.py` holds the chain through `verify_proof`.
+
 ### Security — the event-log replay binds each digest to its payload
 
 `attestation.replay_event_log` proved that the chain of digests in a miner's

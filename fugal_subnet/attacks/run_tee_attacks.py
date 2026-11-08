@@ -28,10 +28,11 @@ import numpy as np
 from fugal_subnet.routing_protocol import MANIFEST_PATH
 from fugal_subnet.tee import verify as verify_mod
 from fugal_subnet.tee.attestation import (
-    expected_rtmr3,
+    dstack_event_digest,
     measurement_id,
     parse_quote,
-    runtime_identity,
+    replay_event_log,
+    replay_rtmr,
 )
 from fugal_subnet.tee.proof import (
     BenchmarkProof,
@@ -64,13 +65,22 @@ def _quote(report_data: bytes, mrtd: bytes, rtmr3: bytes = b"\x00" * 48) -> byte
 
 
 BASE = measurement_id(parse_quote(_quote(b"\x00" * 64, HONEST_MRTD)))
-# The honest application identity and the register a fresh TD reaches after
-# extending it once. The approved entry is the PAIR: a bare base is no longer a
-# live configuration (diligence 2026-10, finding 1), so the control must carry
-# an app identity or the suite would be testing a rejected setup.
-APP_ID = runtime_identity("src", "pool", "grader", "https://openrouter.ai/api/v1")
-HONEST_RTMR3 = bytes.fromhex(expected_rtmr3(APP_ID))
-APPROVED = {f"{BASE}:{APP_ID}"}
+# The live shape, and the only one: the approved entry is <base>:<compose
+# hash>, and the proof carries the RTMR3 event log that names the compose hash
+# and replays to the register in the quote. The control and every attack run
+# through it, so the suite tests the verifier the way a live validator runs it.
+COMPOSE = hashlib.sha256(b"the approved app-compose.json").hexdigest()
+OTHER_COMPOSE = hashlib.sha256(b"a compose the miner wrote").hexdigest()
+
+
+def _ev(name, payload_hex, version=2):
+    return {"imr": 3, "event": name, "event_payload": payload_hex,
+            "digest": dstack_event_digest(name, bytes.fromhex(payload_hex), version)}
+
+
+_HONEST_LOG = [_ev("compose-hash", COMPOSE), _ev("instance-id", "beef")]
+HONEST_RTMR3 = bytes.fromhex(replay_event_log(_HONEST_LOG)[0])
+APPROVED = {f"{BASE}:{COMPOSE}"}
 
 
 def _qr(qid, model="deepseek/deepseek-v4-flash", correct=True, cost=0.001, explore=False):
@@ -112,6 +122,7 @@ def _verify(proof, **over):
         expected_weights_hash=HEAD_HASH,
         expected_hotkey=HONEST_HOTKEY,
         head_bytes=HEAD,
+        event_log=_HONEST_LOG,
         mock=False,
     )
     kw.update(over)
@@ -276,33 +287,16 @@ def a_duplicate_results():
 # register the CPU signed, so every attack here is a way of trying to be
 # believed without reproducing it.
 
-from fugal_subnet.tee.attestation import (  # noqa: E402
-    dstack_event_digest,
-    replay_event_log,
-    replay_rtmr,
-)
-
-_HONEST_LOG = [
-    {"imr": 3, "event": "compose-hash", "event_payload": "abcd",
-     "digest": dstack_event_digest("compose-hash", bytes.fromhex("abcd"))},
-    {"imr": 3, "event": "instance-id", "event_payload": "beef",
-     "digest": dstack_event_digest("instance-id", bytes.fromhex("beef"))},
-]
-_HONEST_RTMR3 = bytes.fromhex(replay_event_log(_HONEST_LOG)[0])
-APPROVED_APP = {f"{BASE}:abcd"}
-
-
-def _verify_log(log, rtmr3=_HONEST_RTMR3, approved=None):
+def _verify_log(log, rtmr3=HONEST_RTMR3, approved=None):
     proof = _proof([_qr(q) for q in SLICE], rtmr3=rtmr3)
-    return _verify(proof, approved_measurements=approved or APPROVED_APP,
+    return _verify(proof, approved_measurements=approved or APPROVED,
                    event_log=log)
 
 
 def a_forged_event_log():
     """Claim an approved compose hash in a log that does not reproduce RTMR3."""
     forged = [dict(_HONEST_LOG[0]),
-              {"imr": 3, "event": "instance-id", "event_payload": "0bad",
-               "digest": dstack_event_digest("instance-id", bytes.fromhex("0bad"))}]
+              _ev("instance-id", "0bad")]
     return _verify_log(forged)
 
 
@@ -312,27 +306,18 @@ def a_relabelled_compose_payload():
     that checks only the register reads the relabelled field and approves an
     application nobody approved. This VERIFIED on the real fixtures until the
     replay bound each digest to its (name, payload) (2026-11-05)."""
-    other = [
-        {"imr": 3, "event": "compose-hash", "event_payload": "dead",
-         "digest": dstack_event_digest("compose-hash", bytes.fromhex("dead"))},
-        dict(_HONEST_LOG[1]),
-    ]
+    other = [_ev("compose-hash", OTHER_COMPOSE), dict(_HONEST_LOG[1])]
     rtmr3 = bytes.fromhex(replay_event_log(other)[0])
-    forged = [dict(other[0], event_payload="abcd"), other[1]]   # approved value, genuine digest
+    forged = [dict(other[0], event_payload=COMPOSE), other[1]]   # approved value, genuine digest
     return _verify_log(forged, rtmr3=rtmr3)
 
 
 def a_relabelled_compose_payload_v1_encoding():
     """The same relabel against a log in dstack's v1 event encoding, which is
     what the real GCP fixtures use (tests/fixtures/attestation_*.bin)."""
-    other = [
-        {"imr": 3, "event": "compose-hash", "event_payload": "dead",
-         "digest": dstack_event_digest("compose-hash", bytes.fromhex("dead"), 1)},
-        {"imr": 3, "event": "instance-id", "event_payload": "beef",
-         "digest": dstack_event_digest("instance-id", bytes.fromhex("beef"), 1)},
-    ]
+    other = [_ev("compose-hash", OTHER_COMPOSE, 1), _ev("instance-id", "beef", 1)]
     rtmr3 = bytes.fromhex(replay_event_log(other)[0])
-    forged = [dict(other[0], event_payload="abcd"), other[1]]
+    forged = [dict(other[0], event_payload=COMPOSE), other[1]]
     return _verify_log(forged, rtmr3=rtmr3)
 
 
@@ -341,13 +326,8 @@ def a_second_compose_hash_event():
     initrd's genuine one (the guest agent's EmitEvent on a newer base). Every
     digest is genuine and the log replays; a last-wins read would believe the
     application's own claim. A name that appears twice is refused."""
-    log = [
-        {"imr": 3, "event": "compose-hash", "event_payload": "dead",
-         "digest": dstack_event_digest("compose-hash", bytes.fromhex("dead"))},
-        dict(_HONEST_LOG[1]),
-        {"imr": 3, "event": "compose-hash", "event_payload": "abcd",
-         "digest": dstack_event_digest("compose-hash", bytes.fromhex("abcd"))},
-    ]
+    log = [_ev("compose-hash", OTHER_COMPOSE), dict(_HONEST_LOG[1]),
+           _ev("compose-hash", COMPOSE)]
     rtmr3 = bytes.fromhex(replay_rtmr([e["digest"] for e in log]))
     return _verify_log(log, rtmr3=rtmr3)
 
@@ -361,18 +341,12 @@ def a_resplit_compose_hash_name():
     i = 0
     while (mine := hashlib.sha256(b'{"compose": %d}' % i).digest())[0] != ord(":"):
         i += 1
-    approved = "ab" * 32
-
-    def v1(name, payload):
-        return {"imr": 3, "event": name, "event_payload": payload.hex(),
-                "digest": dstack_event_digest(name, payload, 1)}
-
-    genuine = [v1("compose-hash", mine), v1("instance-id", bytes.fromhex("beef")),
-               v1("compose-hash", bytes.fromhex(approved))]
+    genuine = [_ev("compose-hash", mine.hex(), 1), _ev("instance-id", "beef", 1),
+               _ev("compose-hash", COMPOSE, 1)]
     rtmr3 = bytes.fromhex(replay_rtmr([e["digest"] for e in genuine]))
     forged = [dict(genuine[0], event="compose-hash:", event_payload=mine[1:].hex()),
               genuine[1], genuine[2]]
-    return _verify_log(forged, rtmr3=rtmr3, approved={f"{BASE}:{approved}"})
+    return _verify_log(forged, rtmr3=rtmr3)
 
 
 def a_reordered_event_log():
@@ -404,11 +378,7 @@ def a_unapproved_app_in_a_valid_log():
     application is still not ours. This is the check the whole locked-image
     argument exists to make.
     """
-    other = [
-        {"imr": 3, "event": "compose-hash", "event_payload": "dead",
-         "digest": dstack_event_digest("compose-hash", bytes.fromhex("dead"))},
-        dict(_HONEST_LOG[1]),
-    ]
+    other = [_ev("compose-hash", OTHER_COMPOSE), dict(_HONEST_LOG[1])]
     rtmr3 = bytes.fromhex(replay_event_log(other)[0])
     return _verify_log(other, rtmr3=rtmr3)
 
@@ -432,14 +402,24 @@ def a_smuggled_colon_in_the_approved_entry():
 def a_oversized_event_log():
     """Allocation through the log (I2). Bounded at the protocol edge, but the
     replay must not be quadratic or a crash on a large one."""
-    big = [dict(_HONEST_LOG[0]) for _ in range(20_000)]
+    big = [_ev(f"e{i}", "00") for i in range(20_000)]
     return _verify_log(big)
 
 
-def a_single_extend_identity_mismatch():
-    """No log supplied: the register must still replay from an approved identity."""
-    proof = _proof([_qr(q) for q in SLICE], rtmr3=b"\x11" * 48)
-    return _verify(proof, approved_measurements={f"{BASE}:{APP_ID}"}, event_log=None)
+def a_runtime_identity_entry():
+    """An approved entry whose app half is a 96-hex runtime identity, and a
+    bare quote whose RTMR3 is one extend of exactly that value. Nothing in the
+    image measures who wrote the extend, so the miner's own code writes the
+    expected value. Only a compose hash replayed out of the log is evidence."""
+    identity = hashlib.sha384(b"src|pool|grader|upstream").hexdigest()
+    proof = _proof([_qr(q) for q in SLICE], rtmr3=bytes.fromhex(replay_rtmr([identity])))
+    return _verify(proof, approved_measurements={f"{BASE}:{identity}"}, event_log=None)
+
+
+def a_proof_without_an_event_log():
+    """A bare quote with the honest register and no log to replay it from."""
+    proof = _proof([_qr(q) for q in SLICE])
+    return _verify(proof, event_log=None)
 
 
 def a_bare_base_approves_any_app():
@@ -553,7 +533,8 @@ ATTACKS = [
     ("smuggle a colon to drop the app requirement", "I8",
      a_smuggled_colon_in_the_approved_entry),
     ("20k-entry event log", "I2", a_oversized_event_log),
-    ("single-extend identity mismatch", "I8", a_single_extend_identity_mismatch),
+    ("a runtime-identity app half, extended by the miner", "I8", a_runtime_identity_entry),
+    ("a bare quote with no event log", "I8", a_proof_without_an_event_log),
     ("bare base entry, miner-chosen application", "I8", a_bare_base_approves_any_app),
     ("rogue TPM intermediate carried in the proof", "I8", a_rogue_tpm_intermediate),
     ("supplied cert named as the pinned root", "I8", a_supplied_cert_named_as_the_root),

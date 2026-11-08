@@ -43,12 +43,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 
 from fugal_subnet.config import EXPLORE_FAIL_MARGIN
 from fugal_subnet.tee.attestation import (
     CollateralUnavailable,
-    expected_rtmr3,
     extract_report_data,
     measurement_id,
     parse_quote,
@@ -64,6 +64,10 @@ from fugal_subnet.tee.proof import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Both halves of a live entry: measurement_id() is a sha256, and the app half is
+# the sha256 of the frozen app-compose.json, replayed out of the RTMR3 log.
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass
@@ -90,7 +94,7 @@ def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
     An entry is either
 
         <base>                 the image is approved, nothing is required of RTMR3
-        <base>:<app_identity>  and the runtime identity must also match
+        <base>:<compose_hash>  and the compose hash in the RTMR3 log must match
 
     Two halves rather than one hash, because they have different lifecycles and
     different approvers. The base rotates when the image or kernel changes,
@@ -109,6 +113,11 @@ def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
     (diligence 2026-10, finding 1). `require_app=True` makes a bare base a
     loud ValueError; the live validator passes it at startup, and
     `verify_proof` refuses a bare-base match outside mock regardless.
+
+    `require_app=True` also holds both halves to the one live shape, 64 hex
+    each (case-insensitive, stored lower-case). Anything else is a typo that
+    would match no proof, or an identity the live verifier cannot check, and
+    either way the operator would see the whole field refused with no hint.
 
     THE APP IDENTITY IS NEVER AN RTMR3 VALUE, and storing one here would be a
     subtle, expensive mistake. A measured image extends RTMR3 several times
@@ -129,7 +138,7 @@ def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
         if not entry:
             continue
         base, sep, app = entry.partition(":")
-        base, app = base.strip(), app.strip()
+        base, app = base.strip().lower(), app.strip().lower()
         # A colon with nothing after it is a typo, not an intention, and
         # interpreting it as the weaker form silently disables the app binding
         # while the operator believes they configured one. That is the exact
@@ -151,6 +160,11 @@ def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
                 "identity. A bare base approves ANY application on that image, "
                 "including one whose model upstream the miner chose. Live entries "
                 "must be '<base>:<compose_hash>' (docs/APPROVED_ENTRY_ROTATION.md)."
+            )
+        if require_app and not (_HEX64.fullmatch(base) and _HEX64.fullmatch(app)):
+            raise ValueError(
+                f"Approved measurement {entry!r} is not '<base>:<compose_hash>' "
+                "with 64 hex characters in each half (docs/APPROVED_ENTRY_ROTATION.md)."
             )
         out.setdefault(base, set())
         if app:
@@ -610,15 +624,14 @@ def verify_proof(
                 f"not among {len(approved)} approved measurements",
             )
 
-        # 3b. Runtime identity, when the approved entry names one.
-        #     RTMR3 is an EXTEND, not a set — the register holds
-        #     SHA384(SHA384(...zeros || first) || second)..., never the value
-        #     written. So this replays from zero and compares the result to what
-        #     the CPU signed, which is also what makes an untrusted extend log
-        #     safe to read later: a log that does not reproduce the quote's
-        #     register is discarded before any field of it is believed.
-        required_apps = approved[measured]
-        if not required_apps:
+        # 3b. The application, from the compose hash in the RTMR3 event log.
+        #     RTMR3 is an EXTEND, not a set, and a dstack TD extends it nine
+        #     times during boot, including `instance-id`, which changes on
+        #     every deploy. So the register is never compared to a fixed value:
+        #     the log is replayed from zero, the result must equal what the CPU
+        #     signed, and only then is the compose-hash payload read. A log that
+        #     does not reproduce the register is discarded whole.
+        if not approved[measured]:
             # A bare base says nothing about the application, and the
             # application is what fixes the model upstream. Outside mock that
             # is the upstream-substitution exploit with every signature intact
@@ -632,66 +645,40 @@ def verify_proof(
                 "app identity, so the application (and its model upstream) is "
                 "unchecked. Live verification requires <base>:<compose_hash>.",
             )
-        if required_apps:
-            if event_log:
-                # A measured image extends RTMR3 several times during boot, so
-                # the register is a chain and the log is the only description of
-                # it. Replay first, compare to the quote, and only then read a
-                # field: a log that does not reproduce what the CPU signed is
-                # discarded whole rather than partially believed.
-                try:
-                    replayed, events = replay_event_log(event_log, imr=3)
-                except ValueError as e:
-                    return VerifyResult(False, f"Malformed TDX event log: {e}")
-                if replayed != quote.rtmr3:
-                    return VerifyResult(
-                        False,
-                        f"Event log does not reproduce RTMR3: replayed "
-                        f"{replayed[:16]}... but the quote says "
-                        f"{quote.rtmr3[:16]}...",
-                    )
-                app_seen = events.get("compose-hash", b"").hex()
-                if app_seen not in required_apps:
-                    return VerifyResult(
-                        False,
-                        f"Unapproved application: compose-hash {app_seen[:16]}... "
-                        f"not among {len(required_apps)} approved for this image",
-                    )
-            elif any(len(a) == 64 for a in required_apps):
-                # A 64-hex identity is a dstack compose hash, and a dstack TD
-                # extends RTMR3 NINE times during boot — including `instance-id`,
-                # WHICH CHANGES ON EVERY DEPLOY. Two honest miners running the
-                # identical approved compose therefore produce DIFFERENT RTMR3
-                # values, and so does one miner after a redeploy. Measured on two
-                # real deploys: same compose, different RTMR3.
-                #
-                # So RTMR3 can never be compared to a fixed value for this shape,
-                # and without the log there is nothing to replay. Refusing is the
-                # only correct answer; falling through to the single-extend
-                # comparison below would reject an honest miner on their second
-                # deploy and look exactly like an attack.
-                return VerifyResult(
-                    False,
-                    "Approved entry names a compose hash but the proof carries no "
-                    "TDX event log. RTMR3 on a measured image is a chain that "
-                    "includes per-deploy values, so it can only be checked by "
-                    "replaying the log — never by comparison.",
-                )
-            else:
-                # No log: the single-extend case a Fugal miner produces today,
-                # where the whole chain is one runtime_identity from a zeroed
-                # register. A fresh TD really does start from zero — a GCP
-                # confidential VM stop/start yields a new TD with RTMR3 cleared,
-                # measured twice — so a miner cannot accumulate extends across
-                # restarts to reach a chosen value.
-                candidates = {expected_rtmr3(app) for app in required_apps}
-                if quote.rtmr3 not in candidates:
-                    return VerifyResult(
-                        False,
-                        f"Runtime identity mismatch: RTMR3 {quote.rtmr3[:16]}... "
-                        f"replays from none of the {len(required_apps)} approved "
-                        f"runtime identities for this image",
-                    )
+        # Only a compose hash is checkable: it is the one app identity the
+        # replayed log carries. Any other app half approves nothing.
+        required_apps = {a for a in approved[measured] if _HEX64.fullmatch(a)}
+        if not required_apps:
+            return VerifyResult(
+                False,
+                f"Approved entry for image {measured[:16]}... names no compose "
+                "hash. Live verification requires <base>:<compose_hash>.",
+            )
+        if not event_log:
+            return VerifyResult(
+                False,
+                "The proof carries no TDX event log. RTMR3 on a measured image is "
+                "a chain that includes per-deploy values, so the application can "
+                "only be checked by replaying the log, never by comparison.",
+            )
+        try:
+            replayed, events = replay_event_log(event_log, imr=3)
+        except ValueError as e:
+            return VerifyResult(False, f"Malformed TDX event log: {e}")
+        if replayed != quote.rtmr3:
+            return VerifyResult(
+                False,
+                f"Event log does not reproduce RTMR3: replayed "
+                f"{replayed[:16]}... but the quote says "
+                f"{quote.rtmr3[:16]}...",
+            )
+        app_seen = events.get("compose-hash", b"").hex()
+        if app_seen not in required_apps:
+            return VerifyResult(
+                False,
+                f"Unapproved application: compose-hash {app_seen[:16]}... "
+                f"not among {len(required_apps)} approved for this image",
+            )
 
     return VerifyResult(
         valid=True,

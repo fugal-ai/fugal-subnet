@@ -393,7 +393,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.benchmarks.slicer import (
         collect_block_for_epoch,
         epoch_index_for_block,
-        mix_weights,
     )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
     from fugal_subnet.config import (
@@ -413,13 +412,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.pricing import policy_cost_total, question_input_tokens
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.reference_frame import (
-        Observation,
         ReferenceFrame,
         accumulate_exploration,
-        aggregate_observations,
         best_model,
-        disagreeing_exploration,
-        implausible_exploration,
         load_bootstrap,
         rebuild_from_reveals,
         reference_cost,
@@ -886,72 +881,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # contribution to a long-running estimate, so the reference a miner
             # is measured against does not lurch when the field size changes.
             timer.start_phase("frame")
-            # One Observation per answer, voted by COLDKEY and collapsed to one
-            # sample per (question, model) by aggregate_observations: failed
-            # calls dropped, one vote per operator, median across operators.
-            # Every miner answers the same questions, so without this each
-            # copy was a fresh trial and a coalition moved the frame by its
-            # share of the field (diligence 2026-10, finding 2).
             coldkeys = getattr(metagraph, "coldkeys", None) or []
-            observations = [
-                Observation(
-                    question_id=r.question_id, model=r.routed_model,
-                    correct=bool(r.correct), prompt_tokens=int(r.prompt_tokens),
-                    completion_tokens=int(r.completion_tokens), failed=bool(r.failed),
-                    coldkey=str(coldkeys[uid]) if uid < len(coldkeys) else f"uid-{uid}",
-                )
-                for uid, proof in verified_proofs.items()
-                for r in proof.exploration_results
-            ]
-            # Detection BEFORE folding this epoch's samples in, so a miner is
-            # compared against history rather than against a frame it has
-            # just contributed to. Two detectors: accuracy implausible for the
-            # nonce-chosen models in either direction, and disagreement with
-            # the other operators on the same questions. The only consequence
-            # is that a flagged operator's samples stay OUT of the frame this
-            # epoch. Never a score: I4 says a miner's score cannot depend on
-            # other miners, and the frame is the one thing built from everyone
-            # — keeping a flagged miner's samples out of it protects every
-            # other miner's reference rather than moving anyone's score
-            # (diligence 2026-10, finding 4).
-            coldkey_of = {
-                uid: str(coldkeys[uid]) if uid < len(coldkeys) else f"uid-{uid}"
-                for uid in verified_proofs
-            }
-            suspicious = implausible_exploration(frame, {
-                uid: [(r.routed_model, r.correct) for r in proof.exploration_results]
-                for uid, proof in verified_proofs.items()
-            })
-            suspicious.update(disagreeing_exploration({
-                uid: [(r.question_id, r.routed_model, r.correct)
-                      for r in proof.exploration_results if not r.failed]
-                for uid, proof in verified_proofs.items()
-            }, coldkey_of))
-            for uid, why in sorted(suspicious.items()):
-                logger.warning(
-                    "UID %d exploration excluded from the reference frame this "
-                    "epoch: %s. Its score is untouched (I4).", uid, why,
-                )
-            keyed = aggregate_observations(
-                observations,
-                exclude_coldkeys={coldkey_of[uid] for uid in suspicious},
-                with_question=True,
-            )
-            samples = [row[1:] for row in keyed]
-            # Protocol v2: weight each exploration observation by its
-            # benchmark's scored share over its exploration share this epoch
-            # (slicer.mix_weights), so the frame estimates every model on the
-            # scored mix. The raw trial count is not weighted (it is what the
-            # frontier's confidence reads). The frame is informational in v2;
-            # this keeps it honest for the detectors and the diagnostics.
-            mix: dict[str, float] = {}
-            bench_of: dict[str, str] = {}
-            sample_weights = None
-            if protocol_version >= 2:
-                explored_qs = [gold_answers[q] for q in sorted(explore_map) if q in gold_answers]
-                mix = mix_weights(questions, explored_qs)
-                bench_of = {q["question_id"]: str(q.get("benchmark", "")) for q in explored_qs}
-                sample_weights = [mix.get(bench_of.get(row[0], ""), 1.0) for row in keyed]
+            fi = _frame_input(frame, verified_proofs, coldkeys, protocol_version, questions,
+                              explore_map, gold_answers)
+            observations, coldkey_of, suspicious = fi.observations, fi.coldkey_of, fi.suspicious
+            samples, sample_weights, mix, bench_of = (
+                fi.samples, fi.sample_weights, fi.mix, fi.bench_of)
 
             # EPOCH-LOCAL from here to save_state. `frame`, `scoring_state`,
             # `prev_uids` and `prev_weights` are the validator's durable state
@@ -1409,6 +1344,97 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0)
+
+
+class _FrameInput(NamedTuple):
+    observations: list         # every exploration answer, tagged with its coldkey (the reveal)
+    coldkey_of: dict           # uid -> coldkey, for every verified miner
+    suspicious: dict           # uid -> why its exploration stays out of the frame
+    samples: list              # one (model, correct, tokens...) per (question, model)
+    sample_weights: list | None
+    mix: dict                  # v2: benchmark -> scored share / exploration share
+    bench_of: dict             # v2: explored question -> benchmark
+
+
+def _frame_input(frame, verified_proofs: dict, coldkeys, protocol_version: int, questions: list,
+                 explore_map: dict, gold_answers: dict) -> _FrameInput:
+    """This epoch's contribution to the reference frame, and who is kept out of it.
+
+    One Observation per answer, voted by COLDKEY and collapsed to one sample
+    per (question, model) by aggregate_observations: failed calls dropped, one
+    vote per operator, median across operators. Every miner answers the same
+    questions, so without this each copy was a fresh trial and a coalition
+    moved the frame by its share of the field (diligence 2026-10, finding 2).
+
+    Detection runs BEFORE this epoch's samples are folded in, so a miner is
+    compared against history rather than against a frame it has just
+    contributed to. Two detectors: accuracy implausible for the nonce-chosen
+    models in either direction, and disagreement with the other operators on
+    the same questions. The only consequence is that a flagged operator's
+    samples stay OUT of the frame this epoch. Never a score: I4 says a miner's
+    score cannot depend on other miners, and the frame is the one thing built
+    from everyone. Keeping a flagged miner's samples out protects every other
+    miner's reference rather than moving anyone's score (diligence 2026-10,
+    finding 4).
+
+    Protocol v2 weights each sample by its benchmark's scored share over its
+    exploration share this epoch (slicer.mix_weights), so the frame estimates
+    every model on the scored mix. The raw trial count is not weighted (it is
+    what the frontier's confidence reads). The frame is informational in v2;
+    this keeps it honest for the detectors and the diagnostics.
+    """
+    from fugal_subnet.benchmarks.slicer import mix_weights
+    from fugal_subnet.reference_frame import (
+        Observation,
+        aggregate_observations,
+        disagreeing_exploration,
+        implausible_exploration,
+    )
+
+    coldkey_of = {
+        uid: str(coldkeys[uid]) if uid < len(coldkeys) else f"uid-{uid}"
+        for uid in verified_proofs
+    }
+    observations = [
+        Observation(
+            question_id=r.question_id, model=r.routed_model,
+            correct=bool(r.correct), prompt_tokens=int(r.prompt_tokens),
+            completion_tokens=int(r.completion_tokens), failed=bool(r.failed),
+            coldkey=coldkey_of[uid],
+        )
+        for uid, proof in verified_proofs.items()
+        for r in proof.exploration_results
+    ]
+    suspicious = implausible_exploration(frame, {
+        uid: [(r.routed_model, r.correct) for r in proof.exploration_results]
+        for uid, proof in verified_proofs.items()
+    })
+    suspicious.update(disagreeing_exploration({
+        uid: [(r.question_id, r.routed_model, r.correct)
+              for r in proof.exploration_results if not r.failed]
+        for uid, proof in verified_proofs.items()
+    }, coldkey_of))
+    for uid, why in sorted(suspicious.items()):
+        logger.warning(
+            "UID %d exploration excluded from the reference frame this "
+            "epoch: %s. Its score is untouched (I4).", uid, why,
+        )
+    keyed = aggregate_observations(
+        observations,
+        exclude_coldkeys={coldkey_of[uid] for uid in suspicious},
+        with_question=True,
+    )
+    samples = [row[1:] for row in keyed]
+    mix: dict[str, float] = {}
+    bench_of: dict[str, str] = {}
+    sample_weights = None
+    if protocol_version >= 2:
+        explored_qs = [gold_answers[q] for q in sorted(explore_map) if q in gold_answers]
+        mix = mix_weights(questions, explored_qs)
+        bench_of = {q["question_id"]: str(q.get("benchmark", "")) for q in explored_qs}
+        sample_weights = [mix.get(bench_of.get(row[0], ""), 1.0) for row in keyed]
+    return _FrameInput(observations, coldkey_of, suspicious, samples, sample_weights,
+                       mix, bench_of)
 
 
 class _EpochChecks(NamedTuple):

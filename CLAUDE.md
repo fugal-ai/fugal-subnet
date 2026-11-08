@@ -42,8 +42,7 @@ rules.
 ```bash
 # Lint, and the full suite the way CI runs it (no API spend)
 uv run ruff check .
-uv run pytest -q
-uv run python tests/test_integration.py
+uv run pytest -q                      # -m "not slow" for a quick local loop
 
 # Attack suites (grader output, hostile miner input, forged TEE proofs)
 uv run python -m fugal_subnet.attacks.run_attacks

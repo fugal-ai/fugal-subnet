@@ -182,8 +182,7 @@ to reach.
 
 ```bash
 # The full suite, the way CI runs it (no API spend, no chain needed)
-uv run pytest -q
-uv run python tests/test_integration.py
+uv run pytest -q                      # -m "not slow" for a quick local loop
 
 # Lint, safety invariants (pins, no-pickle, env classification; --release adds the launch gate)
 uv run ruff check .

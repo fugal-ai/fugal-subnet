@@ -51,11 +51,8 @@ jobs:
       - name: Smoke-test real Bittensor Axon annotations
         run: uv run python scripts/check_bittensor_axon.py
 
-      - name: Run unit and regression tests
+      - name: Run unit, regression and integration tests
         run: uv run pytest -q
-
-      - name: Run integration suite
-        run: uv run python tests/test_integration.py
 
       - name: Run grader attack suite
         run: uv run python -m fugal_subnet.attacks.run_attacks

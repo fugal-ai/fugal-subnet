@@ -1,4 +1,4 @@
-"""Integration checks against the mock bittensor SDK, no chain and no spend.
+"""Integration checks across the shared pieces, on the real bittensor SDK; no chain and no spend.
 
 Covers the pieces the neurons share: head artifact loading and validation, the
 inline proof bundle surviving the synapse's field caps, the dendrite round trip,
@@ -509,29 +509,3 @@ def test_unpriced_and_expensive_models():
     assert composite(frugal, frontier) > composite(lavish, frontier)
     print("  Expensive routing costs the miner, not the validator")
     print("  [PASS] Unpriced and expensive models")
-
-
-def main():
-    print("=" * 60)
-    print("GATE D — Integration Test")
-    print("=" * 60)
-
-    test_miner_loads_head()
-    test_synapse_roundtrip()
-    test_dendrite_query_flow()
-    test_commit_reveal()
-    test_weight_capping()
-    test_epoch_logger()
-    test_consensus()
-    test_head_security()
-    test_cost_efficiency_cap()
-    test_stratified_slicer()
-    test_unpriced_and_expensive_models()
-
-    print("\n" + "=" * 60)
-    print("ALL TESTS PASS")
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    main()

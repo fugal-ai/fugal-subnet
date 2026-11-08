@@ -5,12 +5,15 @@ Usage:
     python neurons/validator.py --netuid 1 --coldkey fugal_validator --hotkey default
     python neurons/validator.py --netuid 1 --coldkey fugal_validator --hotkey default --once
 
-Validators no longer call models. Each epoch:
-1. Derive nonce from block hash, select question slice
-2. Query miners for TEE-attested proofs (FugalProofSynapse)
-3. Verify each proof (DCAP attestation, measurements, nonce, questions, costs)
-4. Score from verified proof results using evidence accumulation
-5. Dedup, weight-setting, reveal
+Validators never call models. Each epoch:
+1. Read head commitments at the boundary; derive the nonce; select the slice
+   (protocol v1 or v2 by the boundary, slicer.protocol_version_for_boundary)
+2. Query miners for TEE-attested proofs (FugalProofSynapse) at the collection block
+3. Verify each proof (commitment, bundle, DCAP, approved entry, nonce, slice,
+   exploration, head and cost bindings)
+4. Score: v1, evidence and the frontier composite; v2, shared coldkey-median
+   grades, the paired comparison window, the champion seat and the 85/10/5 payout
+5. Weights (set on chain, commit-reveal aware), the reveal, state saved atomically
 
 Miners run benchmarks inside Intel TDX VMs and pay for their own inference.
 The validator's only cost is bandwidth and compute for verification.
@@ -24,10 +27,6 @@ import math
 import os
 import sys
 import time
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 # isort: off
 import fugal_subnet.determinism  # noqa: F401
@@ -165,6 +164,80 @@ def axon_gate_notice(stake: float, permit: bool, threshold: float) -> str | None
     )
 
 
+def _check_live_configuration(live: bool, approved, activation_block, epoch_interval: int,
+                              category_map) -> None:
+    """Refuse, before any chain connection, a configuration that would make this
+    validator score differently from its peers or score everyone zero.
+
+    - --live needs FUGAL_TEE_MEASUREMENTS. With no approved entry every proof
+      fails the runtime-image check and every miner is set to zero weight:
+      fail-closed is right for the check, but silently deweighting the subnet
+      is not how to learn the variable is unset.
+    - The entries are parsed and LOGGED, so a rotation's two validators can be
+      compared from their logs, and a malformed entry (a bare trailing colon
+      would silently accept any application) fails here rather than at the
+      first proof. A bare base is refused in --live: the application fixes the
+      model upstream, so a bare base approves a TD whose upstream the miner
+      chose (diligence 2026-10, finding 1).
+    - The activation block must be an epoch boundary (docs/INVARIANTS.md, "I1 —
+      protocol v2 activates at one named boundary"), and v2 needs its category
+      map, without which no question is "hard" and the hard weight never applies.
+    - --live needs a REVIEWED token manifest for every protocol it can score:
+      v1's always, v2's once the activation block is set (the v2 one was not
+      checked; a candidate from a re-measure would have been scored).
+    """
+    if live and not approved:
+        raise click.ClickException(
+            "--live requires FUGAL_TEE_MEASUREMENTS. With no approved "
+            "measurement every proof fails the runtime-image check, so this "
+            "validator would score every miner zero and set weights to match. "
+            "Get the approved entry from the signed image release: "
+            "`scripts/fetch_approved_entries.py --tag <image tag> --network "
+            "<finney|test>` (docs/APPROVED_ENTRY_ROTATION.md)."
+        )
+    if approved:
+        from fugal_subnet.tee.verify import parse_approved
+        try:
+            parsed = parse_approved(approved, require_app=live)
+        except ValueError as e:
+            raise click.ClickException(f"FUGAL_TEE_MEASUREMENTS: {e}") from e
+        described = [
+            f"{base[:12]}…:{app[:12]}…" if app else f"{base[:12]}… (bare base: any app)"
+            for base, apps in sorted(parsed.items())
+            for app in (sorted(apps) or [""])
+        ]
+        logger.info("Approved entries: %d — %s", len(described), "; ".join(described))
+
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
+    bpe = blocks_per_epoch(epoch_interval)
+    try:
+        validate_activation_block(activation_block, bpe)
+    except ValueError as e:
+        raise click.ClickException(f"FUGAL_V2_ACTIVATION_BLOCK: {e}") from e
+    if activation_block is not None and not category_map:
+        msg = ("FUGAL_V2_ACTIVATION_BLOCK is set but config.BENCHMARK_CATEGORY_V2 is "
+               "missing: v2 cannot tell hard questions apart")
+        if live:
+            raise click.ClickException(msg)
+        logger.warning(msg)
+    if activation_block is None:
+        logger.info("Protocol v2 activation: not set; v1 rules apply to every epoch")
+    else:
+        logger.info("Protocol v2 activation: boundary block %d (epoch index %d); v1 rules "
+                    "before it", activation_block, activation_block // bpe)
+
+    if live:
+        from fugal_subnet.routing_protocol import manifest_path
+        from fugal_subnet.vendor import success_contract as contract
+        for version in ((1, 2) if activation_block is not None else (1,)):
+            try:
+                contract.validate_manifest(json.loads(manifest_path(version).read_text()),
+                                           deployable=True)
+            except ValueError as e:
+                raise click.ClickException(
+                    f"protocol v{version} token manifest is not deployable: {e}") from e
+
+
 @click.command()
 @click.option("--network", default=lambda: os.getenv("FUGAL_NETWORK", "test"),
               help="Network: finney, test, local")
@@ -209,86 +282,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         "Operation mode: %s",
         "LIVE (requires real TDX attestation)" if live else "mock (accepts unattested proofs)",
     )
-    # A live validator with no approved measurements rejects every proof it
-    # ever receives — `measurement_id(quote) in approved` can never hold against
-    # an empty set — and then sets every miner to zero weight. Fail-closed is
-    # the right default for the check itself, but silently deweighting the whole
-    # subnet is not an acceptable way to learn the variable is unset.
-    if live and not TEE_APPROVED_MEASUREMENTS:
-        raise click.ClickException(
-            "--live requires FUGAL_TEE_MEASUREMENTS. With no approved "
-            "measurement every proof fails the runtime-image check, so this "
-            "validator would score every miner zero and set weights to match. "
-            "Get the approved entry from the signed image release: "
-            "`scripts/fetch_approved_entries.py --tag <image tag> --network "
-            "<finney|test>` (docs/APPROVED_ENTRY_ROTATION.md)."
-        )
-
-    # Say which entries are active, at startup, in the log. During a rotation
-    # two validators are meant to carry the same two entries, and until this
-    # line the only evidence of what a validator had loaded was its env file —
-    # a divergence between validators was diagnosable only by logging in to
-    # each host. Parsed here too, before any chain connection, so a malformed
-    # entry (a bare trailing colon would silently accept any application)
-    # fails at startup rather than at the first proof.
-    # A bare base entry is REFUSED in live mode, not warned about. The
-    # application is what fixes the model upstream; a bare base approves a TD
-    # whose upstream the miner chose, which is perfect accuracy at near-zero
-    # attested cost with every signature intact (diligence 2026-10, finding
-    # 1). It used to be a warning, and a warning is a request addressed to the
-    # operator about something the adversary controls.
-    if TEE_APPROVED_MEASUREMENTS:
-        from fugal_subnet.tee.verify import parse_approved
-        try:
-            parsed_entries = parse_approved(TEE_APPROVED_MEASUREMENTS, require_app=live)
-        except ValueError as e:
-            raise click.ClickException(f"FUGAL_TEE_MEASUREMENTS: {e}") from e
-        described = [
-            f"{base[:12]}…:{app[:12]}…" if app else f"{base[:12]}… (bare base: any app)"
-            for base, apps in sorted(parsed_entries.items())
-            for app in (sorted(apps) or [""])
-        ]
-        logger.info("Approved entries: %d — %s", len(described), "; ".join(described))
-
-    # Protocol v2 flips at one named epoch boundary on every validator. Checked
-    # before any chain connection, so a block that is not a boundary fails at
-    # startup rather than producing an epoch whose rules depend on where a
-    # validator looked (docs/INVARIANTS.md, "I1 — protocol v2 activates at one
-    # named boundary").
-    from fugal_subnet.benchmarks.slicer import (
-        blocks_per_epoch as _bpe_for_activation,
-    )
-    from fugal_subnet.benchmarks.slicer import validate_activation_block
+    from fugal_subnet import config as _cfg
     from fugal_subnet.config import V2_ACTIVATION_BLOCK
-    try:
-        validate_activation_block(V2_ACTIVATION_BLOCK, _bpe_for_activation(EPOCH_INTERVAL))
-    except ValueError as e:
-        raise click.ClickException(f"FUGAL_V2_ACTIVATION_BLOCK: {e}") from e
-    from fugal_subnet import config as _config_for_v2
-    if V2_ACTIVATION_BLOCK is not None and not getattr(
-        _config_for_v2, "BENCHMARK_CATEGORY_V2", None
-    ):
-        # Without the category map no question is "hard" and the hard weight
-        # silently never applies; a live validator refuses rather than score
-        # v2 differently from its peers.
-        msg = ("FUGAL_V2_ACTIVATION_BLOCK is set but config.BENCHMARK_CATEGORY_V2 is "
-               "missing: v2 cannot tell hard questions apart")
-        if live:
-            raise click.ClickException(msg)
-        logger.warning(msg)
-    if V2_ACTIVATION_BLOCK is None:
-        logger.info("Protocol v2 activation: not set; v1 rules apply to every epoch")
-    else:
-        logger.info(
-            "Protocol v2 activation: boundary block %d (epoch index %d); v1 rules before it",
-            V2_ACTIVATION_BLOCK, V2_ACTIVATION_BLOCK // _bpe_for_activation(EPOCH_INTERVAL),
-        )
+    _check_live_configuration(
+        live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, EPOCH_INTERVAL,
+        getattr(_cfg, "BENCHMARK_CATEGORY_V2", None),
+    )
 
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
-    if not mock:
-        from fugal_subnet.routing_protocol import MANIFEST_PATH
-        from fugal_subnet.vendor import success_contract as contract
-        contract.validate_manifest(json.loads(MANIFEST_PATH.read_text()), deployable=True)
     # Consensus overrides are checked against the chain's genesis hash once the
     # chain is connected (below): refused on finney, warned about elsewhere.
     assert_environment(strict=live, consensus_overrides=False)

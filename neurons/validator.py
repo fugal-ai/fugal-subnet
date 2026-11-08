@@ -1611,6 +1611,7 @@ def set_weights_with_retry(subtensor, wallet, netuid: int, my_uid: int, uids, we
 
     attempts = WEIGHTS_SET_RETRIES if attempts is None else attempts
     msg = ""
+    raised = False
     for attempt in range(1, max(1, attempts) + 1):
         try:
             since = int(subtensor.blocks_since_last_update(netuid, my_uid))
@@ -1619,6 +1620,14 @@ def set_weights_with_retry(subtensor, wallet, netuid: int, my_uid: int, uids, we
             since, limit = -1, -1
             logger.warning("Could not read the weights rate limit: %s", e)
         if 0 <= since <= limit:
+            if raised:
+                # An earlier attempt raised, and the chain now says this UID
+                # updated within the rate limit: that attempt may have landed
+                # before the connection dropped. Read it back rather than
+                # report a failure while the weights are on chain.
+                landed, detail = confirm_weights_on_chain(subtensor, netuid, my_uid, uids, weights)
+                if landed:
+                    return True, f"an attempt that raised had landed: {detail}"
             return False, (f"rate limit: {since} blocks since this UID's last update, "
                            f"limit {limit}; the chain would refuse the extrinsic")
         try:
@@ -1627,6 +1636,8 @@ def set_weights_with_retry(subtensor, wallet, netuid: int, my_uid: int, uids, we
                 wait_for_inclusion=True, wait_for_finalization=True,
             )
         except Exception as e:  # noqa: BLE001 - a dropped connection is a failed attempt
+            raised = True
+            logger.warning("set_weights raised on attempt %d", attempt, exc_info=True)
             response = (False, f"set_weights raised {type(e).__name__}: {e}")
         success, msg = response
         if success:

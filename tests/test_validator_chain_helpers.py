@@ -222,3 +222,48 @@ def test_set_weights_that_always_raises_fails_after_its_attempts(monkeypatch):
     chain = _Setter([ConnectionError("down")] * 5)
     ok, msg = set_weights_with_retry(chain, None, 1, 0, [0], [1.0], deadline_block=100, attempts=3)
     assert not ok and chain.calls == 3 and "raised ConnectionError" in msg
+
+
+class _LandsThenDrops(_Setter):
+    """The first attempt lands on chain and then the connection drops: the
+    SDK raises, and the chain now reports this UID as just updated."""
+
+    def __init__(self, on_chain_row, cr=False):
+        super().__init__([ConnectionError("dropped while waiting for finalization")])
+        self.row, self.cr, self.readbacks = on_chain_row, cr, 0
+
+    def blocks_since_last_update(self, netuid, uid):
+        return 2 if self.calls else 1000
+
+    def commit_reveal_enabled(self, netuid):
+        return self.cr
+
+    def weights(self, netuid):
+        self.readbacks += 1
+        return [(0, self.row)]
+
+
+def test_an_attempt_that_raised_but_landed_is_a_success(monkeypatch):
+    """Without the readback, the rate limit made this a failure while the
+    weights were on chain, and the cap baseline fell an epoch behind peers
+    (independent review, 2026-11-08)."""
+    monkeypatch.setattr(validator.time, "sleep", lambda s: None)
+    chain = _LandsThenDrops(on_chain_row=[(0, 65535)])
+    ok, msg = set_weights_with_retry(chain, None, 1, 0, [0], [1.0], deadline_block=100, attempts=3)
+    assert ok and "had landed" in msg and chain.calls == 1 and chain.readbacks == 1
+
+
+def test_an_attempt_that_raised_and_did_not_land_is_still_a_failure(monkeypatch):
+    monkeypatch.setattr(validator.time, "sleep", lambda s: None)
+    chain = _LandsThenDrops(on_chain_row=[(5, 65535)])          # someone else's weights
+    ok, msg = set_weights_with_retry(chain, None, 1, 0, [0], [1.0], deadline_block=100, attempts=3)
+    assert not ok and msg.startswith("rate limit")
+
+
+def test_the_rate_limit_alone_reads_nothing_back(monkeypatch):
+    class Limited(_LandsThenDrops):
+        def blocks_since_last_update(self, netuid, uid):
+            return 2
+    chain = Limited(on_chain_row=[(0, 65535)])
+    ok, msg = set_weights_with_retry(chain, None, 1, 0, [0], [1.0], deadline_block=100, attempts=3)
+    assert not ok and msg.startswith("rate limit") and chain.calls == 0 and chain.readbacks == 0

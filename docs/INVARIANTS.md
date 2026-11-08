@@ -33,7 +33,7 @@ here, and a check that enforces it.**
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
 | **I6** | **Liveness.** No miner behavior **and no external dependency** can stop a validator completing an epoch and setting weights, and the validator collects at a point where proofs can exist. Every call that leaves the process on the epoch path is bounded. | `run_miner_attacks.py`, property test P1, TEE proof timeout, `slicer.collect_block_for_epoch`, `tests/test_collection_point.py`, `tests/test_collateral_timeout.py`, `check_safety_invariants.check_external_calls_bounded` |
 | **I7** | **Auditability.** Any divergence between two validators is diagnosable after the fact from published artifacts. | `fugal_subnet/fingerprint.py`, `environment` block in every `reveal.json` |
-| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `run_tee_attacks.py` (34 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
+| **I8** | **TEE integrity.** Every claim a proof makes is bound to something the miner cannot forge: the hardware's own measurement registers, or a hash chain rooted in the attestation. No miner-influenced code executes inside the enclave that produces the proof. | `fugal_subnet/tee/verify.py`, `attestation.measurement_id`, `tests/test_app_identity_chain.py` (the app-identity chain through `verify_proof`), `run_tee_attacks.py` (34 cases, in CI), `check_tee_safety`, `config.HARNESS_ALLOW_EXEC`, `tests/test_grader_policy.py` |
 | **I9** | **Reference-frame agreement.** Every validator derives the same reference frame from the same published exploration samples, and no single miner can materially move it. | `fugal_subnet/reference_frame.py` (order-independent accumulation), `check_determinism.py` `frame` stage, `tests/test_non_interference.py` |
 
 ## How TEE resolves prior gaps
@@ -904,7 +904,11 @@ register. So a name containing `:` is refused (dstack's names never contain
 one; checked on both real logs), and so is a name that appears twice: the
 initrd extends each event once before any container runs, and a second one
 can only be the application's. `tests/test_tee.py`, `tests/test_dstack_blob.py`
-(on the real logs) and four `run_tee_attacks` cases hold it.
+(on the real logs) and four `run_tee_attacks` cases hold it, and
+`tests/test_app_identity_chain.py` holds every link of the chain through
+`verify_proof` itself, including the log the live validator actually reads
+(the one inside the miner's attestation): each check, disabled on its own,
+fails that file without the attack suite.
 
 **Do not re-serialise.** Fields are in insertion order, not sorted. dstack's
 bytes happen to equal `json.dumps(obj, indent=2)` exactly, and that is asserted

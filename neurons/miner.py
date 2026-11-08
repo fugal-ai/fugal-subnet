@@ -463,13 +463,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                 if not block_hash:
                     continue
 
-                # Don't start an epoch that can't finish: a proof that misses the
-                # collection block is a miss, and the calls are paid for anyway.
-                # Seen at a cutover: three runs started after their collection block.
-                from fugal_subnet.benchmarks.slicer import collect_block_for_epoch
-                from fugal_subnet.config import EPOCH_COLLECT_FRACTION, LATE_START_MARGIN_BLOCKS
-                deadline = collect_block_for_epoch(epoch_index, blocks_per_epoch, EPOCH_COLLECT_FRACTION)
-                if current_block > deadline - LATE_START_MARGIN_BLOCKS:
+                start, deadline = _should_start_epoch(current_block, epoch_index, blocks_per_epoch)
+                if not start:
+                    from fugal_subnet.config import LATE_START_MARGIN_BLOCKS
                     logger.info("Skipping epoch %d: %d blocks to its collection block %d, fewer than %d",
                                 epoch_index, deadline - current_block, deadline, LATE_START_MARGIN_BLOCKS)
                     last_epoch_index = epoch_index
@@ -492,7 +488,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     explore_size=explore_size,
                     hotkey=my_hotkey,
                     protocol_version=protocol,
-                    prices=prices if protocol == 2 else None,
+                    # The table this miner routes and explores over, in both
+                    # protocols. v1 passed None, so the proxy priced with its
+                    # default even when FUGAL_MODEL_PRICES (testnet only) had
+                    # changed the list main() uses.
+                    prices=prices,
+                    block_now=subtensor.get_current_block,
                 )
                 consecutive_failures = 0
             except Exception:
@@ -575,6 +576,34 @@ def _my_uid(metagraph, hotkey_ss58: str, netuid: int) -> int:
             "(scripts/provision_subnet.py --miners ...) before starting the miner"
         )
     return metagraph.hotkeys.index(hotkey_ss58)
+
+
+def _should_start_epoch(current_block: int, epoch_index: int,
+                        blocks_per_epoch: int) -> tuple[bool, int]:
+    """(start, collection block). Don't start an epoch that can't finish: a
+    proof that misses the collection block is a miss, and its calls are paid
+    for anyway (seen at a cutover: three runs started after their collection
+    block). Start only with at least LATE_START_MARGIN_BLOCKS to go."""
+    from fugal_subnet.benchmarks.slicer import collect_block_for_epoch
+    from fugal_subnet.config import EPOCH_COLLECT_FRACTION, LATE_START_MARGIN_BLOCKS
+
+    deadline = collect_block_for_epoch(epoch_index, blocks_per_epoch, EPOCH_COLLECT_FRACTION)
+    return current_block <= deadline - LATE_START_MARGIN_BLOCKS, deadline
+
+
+def _log_readiness(epoch_id: str, ready_block: int, collect_block: int) -> None:
+    """Say whether this epoch's proof was ready when validators collect.
+
+    "My miner earns nothing" is usually "my proof was late", and that is
+    invisible unless the miner says so.
+    """
+    if ready_block <= collect_block:
+        logger.info("Epoch %s: proof ready at block %d, %d blocks before collection (%d)",
+                    epoch_id, ready_block, collect_block - ready_block, collect_block)
+    else:
+        logger.warning("Epoch %s: proof LATE by %d blocks (ready at %d, collected at %d). "
+                       "Validators will not see it; cut the slice's cost or latency.",
+                       epoch_id, ready_block - collect_block, ready_block, collect_block)
 
 
 def _v2_commit_window(activation_block: int, blocks_per_epoch: int) -> tuple[int, int]:
@@ -667,8 +696,10 @@ def _run_epoch(
     hotkey,
     protocol_version=1,
     prices=None,
+    block_now=None,
 ):
-    """Run a single benchmark epoch."""
+    """Run a single benchmark epoch; `block_now` (the chain's current block)
+    lets it report whether the proof was ready by the collection block."""
     from fugal_subnet.benchmarks.slicer import derive_nonce, epoch_id_for_block
     from fugal_subnet.tee.harness import run_benchmark
 
@@ -729,6 +760,11 @@ def _run_epoch(
             epoch_id, proof.n_correct, proof.n_total,
             proof.accuracy * 100, proof.total_cost_usd,
         )
+        if block_now is not None:
+            try:
+                _log_readiness(epoch_id, block_now(), collect_block)
+            except Exception as e:  # noqa: BLE001 - a report, never a reason to drop the proof
+                logger.debug("Could not read the block to report readiness: %s", e)
     finally:
         proxy.stop()
 

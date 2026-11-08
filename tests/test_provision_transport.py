@@ -274,6 +274,15 @@ def test_unseal_refuses_plaintext_and_malformed_envelopes():
         unseal(td, {"nonce": "zz", "epk": "00", "iv": "00", "ct": "00"})
 
 
+def _free_port():
+    """A port nothing is listening on. Fixed ports collided when two test runs
+    shared a machine (two suites at once failed 7 tests between them)."""
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def _real_receiver(monkeypatch, port):
     """Run the actual `serve()` with the attest call stubbed: the quote is not
     what these tests are about, the receiver's own refusals are."""
@@ -298,24 +307,25 @@ def _post(url, body):
 
 
 def test_real_receiver_attests_over_nonce_and_key_then_accepts_one_sealed_push(monkeypatch):
-    store, server, calls = _real_receiver(monkeypatch, 18093)
+    port = _free_port()
+    store, server, calls = _real_receiver(monkeypatch, port)
     try:
         nonce = provision.new_nonce()
-        ans = _post("http://127.0.0.1:18093/provision/attest", {"nonce": nonce})
+        ans = _post(f"http://127.0.0.1:{port}/provision/attest", {"nonce": nonce})
         pub = bytes.fromhex(ans["pubkey"])
         assert calls["rd"] == report_data_for(nonce, pub), "quote must cover nonce || sha256(pubkey)"
 
         # Plaintext is refused even with a good nonce.
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post("http://127.0.0.1:18093/provision", {**PAYLOAD, "nonce": nonce})
+            _post(f"http://127.0.0.1:{port}/provision", {**PAYLOAD, "nonce": nonce})
         assert e.value.code == 400
         assert not store.ready
 
         # The nonce was consumed by that attempt; a fresh attest is required.
         nonce = provision.new_nonce()
-        ans = _post("http://127.0.0.1:18093/provision/attest", {"nonce": nonce})
+        ans = _post(f"http://127.0.0.1:{port}/provision/attest", {"nonce": nonce})
         env, key = seal(PAYLOAD, bytes.fromhex(ans["pubkey"]), nonce)
-        assert _post("http://127.0.0.1:18093/provision", env) == {"provisioned": True}
+        assert _post(f"http://127.0.0.1:{port}/provision", env) == {"provisioned": True}
         assert store.ready and store.session_key == key
 
         # Replaying the same envelope is refused. Since 2026-11-02 the receiver
@@ -323,13 +333,13 @@ def test_real_receiver_attests_over_nonce_and_key_then_accepts_one_sealed_push(m
         # the nonce at all; the spent-nonce rule still stands underneath it
         # (the plaintext attempt above consumed its nonce pre-provisioning).
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post("http://127.0.0.1:18093/provision", env)
+            _post(f"http://127.0.0.1:{port}/provision", env)
         assert e.value.code == 409 and "already provisioned" in e.value.read().decode()
 
         # A never-attested nonce is refused too, for the same reason.
         env2, _ = seal(PAYLOAD, bytes.fromhex(ans["pubkey"]), provision.new_nonce())
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post("http://127.0.0.1:18093/provision", env2)
+            _post(f"http://127.0.0.1:{port}/provision", env2)
         assert e.value.code == 409
     finally:
         server.shutdown()
@@ -338,30 +348,31 @@ def test_real_receiver_attests_over_nonce_and_key_then_accepts_one_sealed_push(m
 def test_logs_are_operator_only_and_encrypted(monkeypatch):
     import logging
 
-    store, server, _ = _real_receiver(monkeypatch, 18094)
+    port = _free_port()
+    store, server, _ = _real_receiver(monkeypatch, port)
     try:
         # Nobody without the session key gets anything, not even a 200.
         with pytest.raises(urllib.error.HTTPError) as e:
-            urllib.request.urlopen("http://127.0.0.1:18094/provision/logs", timeout=5)
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/provision/logs", timeout=5)
         assert e.value.code == 403
 
         nonce = provision.new_nonce()
-        ans = _post("http://127.0.0.1:18094/provision/attest", {"nonce": nonce})
+        ans = _post(f"http://127.0.0.1:{port}/provision/attest", {"nonce": nonce})
         env, key = seal(PAYLOAD, bytes.fromhex(ans["pubkey"]), nonce)
-        _post("http://127.0.0.1:18094/provision", env)
+        _post(f"http://127.0.0.1:{port}/provision", env)
         logging.getLogger("fugal.test").warning("a line the operator should see: %d", 7)
 
-        seq, lines = pull_logs("http://127.0.0.1:18094", key)
+        seq, lines = pull_logs(f"http://127.0.0.1:{port}", key)
         assert any("a line the operator should see: 7" in ln for ln in lines)
         assert seq >= 1
         # Incremental: nothing new since seq.
-        seq2, more = pull_logs("http://127.0.0.1:18094", key, since=seq)
+        seq2, more = pull_logs(f"http://127.0.0.1:{port}", key, since=seq)
         assert more == [] and seq2 == seq
 
         # A wrong key is refused at the token, before any bytes are sealed.
         with pytest.raises(urllib.error.HTTPError) as e:
             req = urllib.request.Request(
-                "http://127.0.0.1:18094/provision/logs",
+                f"http://127.0.0.1:{port}/provision/logs",
                 headers={"Authorization": f"Bearer {log_token(b'x' * 32)}"})
             urllib.request.urlopen(req, timeout=5)
         assert e.value.code == 403
@@ -395,6 +406,7 @@ def test_miner_blocks_until_provisioned_then_returns_the_head(monkeypatch):
     head = b"\x93NUMPY-not-really-but-bytes"
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr("fugal_subnet.tee.dstack_client.attest", lambda rd, path="": b"\x00" * 8)
+    monkeypatch.setattr("fugal_subnet.tee.provision.PROVISION_PORT", _free_port())
 
     result = {}
 
@@ -408,8 +420,7 @@ def test_miner_blocks_until_provisioned_then_returns_the_head(monkeypatch):
     time.sleep(0.6)
     assert "head" not in result, "returned before anything was pushed"
 
-    from fugal_subnet.tee.provision import PROVISION_PORT
-    base = f"http://127.0.0.1:{PROVISION_PORT}"
+    base = f"http://127.0.0.1:{provision.PROVISION_PORT}"
     nonce = provision.new_nonce()
     ans = _post(f"{base}/provision/attest", {"nonce": nonce})
     env, _ = seal({
@@ -435,7 +446,8 @@ def test_a_pushed_wallet_lands_in_tmpfs_with_private_modes(monkeypatch, tmp_path
 
     miner = importlib.import_module("neurons.miner")
     monkeypatch.setenv("FUGAL_PROVISIONED_WALLET_DIR", str(tmp_path / "shm"))
-    monkeypatch.setattr("fugal_subnet.tee.provision.PROVISION_PORT", 18092)
+    port = _free_port()
+    monkeypatch.setattr("fugal_subnet.tee.provision.PROVISION_PORT", port)
     monkeypatch.setattr("fugal_subnet.tee.dstack_client.attest", lambda rd, path="": b"\x00" * 8)
 
     keyfile = b'{"accountId":"0x00","ss58Address":"5Fk","secretPhrase":"not real"}'
@@ -451,13 +463,13 @@ def test_a_pushed_wallet_lands_in_tmpfs_with_private_modes(monkeypatch, tmp_path
     t.start()
     time.sleep(0.6)
     nonce = provision.new_nonce()
-    ans = _post("http://127.0.0.1:18092/provision/attest", {"nonce": nonce})
+    ans = _post(f"http://127.0.0.1:{port}/provision/attest", {"nonce": nonce})
     env, _ = seal({
         "head_b64": base64.b64encode(b"head").decode(),
         "hotkey_keyfile_b64": base64.b64encode(keyfile).decode(),
         "coldkeypub_b64": base64.b64encode(coldpub).decode(),
     }, bytes.fromhex(ans["pubkey"]), nonce)
-    _post("http://127.0.0.1:18092/provision", env)
+    _post(f"http://127.0.0.1:{port}/provision", env)
     t.join(timeout=10)
 
     root = result.get("wallet_path")
@@ -477,27 +489,28 @@ def test_the_receiver_takes_one_push_and_then_refuses_both_paths(monkeypatch):
     session key — whoever reached the port after provisioning could lock the
     real operator out of the logs — and the attest endpoint stayed open as a
     quote oracle for the life of the miner."""
-    store, server, _ = _real_receiver(monkeypatch, 18095)
+    port = _free_port()
+    store, server, _ = _real_receiver(monkeypatch, port)
     try:
         nonce = provision.new_nonce()
-        ans = _post("http://127.0.0.1:18095/provision/attest", {"nonce": nonce})
+        ans = _post(f"http://127.0.0.1:{port}/provision/attest", {"nonce": nonce})
         env, key = seal(PAYLOAD, bytes.fromhex(ans["pubkey"]), nonce)
-        assert _post("http://127.0.0.1:18095/provision", env) == {"provisioned": True}
+        assert _post(f"http://127.0.0.1:{port}/provision", env) == {"provisioned": True}
         assert store.session_key == key
 
         # A fresh, correctly sealed second push is refused and changes nothing.
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post("http://127.0.0.1:18095/provision/attest", {"nonce": provision.new_nonce()})
+            _post(f"http://127.0.0.1:{port}/provision/attest", {"nonce": provision.new_nonce()})
         assert e.value.code == 409
         env2, key2 = seal(PAYLOAD, bytes.fromhex(ans["pubkey"]), provision.new_nonce())
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post("http://127.0.0.1:18095/provision", env2)
+            _post(f"http://127.0.0.1:{port}/provision", env2)
         assert e.value.code == 409 and "already provisioned" in e.value.read().decode()
         assert store.session_key == key and store.session_key != key2
 
         # The operator's log path still works under the original key.
         req = urllib.request.Request(
-            "http://127.0.0.1:18095/provision/logs?since=0",
+            f"http://127.0.0.1:{port}/provision/logs?since=0",
             headers={"Authorization": f"Bearer {provision.log_token(key)}"})
         with urllib.request.urlopen(req, timeout=5) as r:
             assert r.status == 200
@@ -512,9 +525,10 @@ def test_the_receiver_takes_one_push_and_then_refuses_both_paths(monkeypatch):
 def test_an_oversized_body_is_refused_before_it_is_read(monkeypatch):
     import socket
 
-    _store, server, _ = _real_receiver(monkeypatch, 18096)
+    port = _free_port()
+    _store, server, _ = _real_receiver(monkeypatch, port)
     try:
-        s = socket.create_connection(("127.0.0.1", 18096), timeout=5)
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
         s.sendall(b"POST /provision HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
                   b"Content-Length: 999999999\r\n\r\n")       # header only, no body
         head = s.recv(4096).decode(errors="replace")
@@ -530,11 +544,12 @@ def test_a_half_open_connection_does_not_stall_other_clients(monkeypatch):
     import socket
 
     monkeypatch.setattr(provision, "_HANDLER_TIMEOUT_S", 2)
-    store, server, _ = _real_receiver(monkeypatch, 18097)
+    port = _free_port()
+    store, server, _ = _real_receiver(monkeypatch, port)
     try:
-        idle = socket.create_connection(("127.0.0.1", 18097), timeout=5)   # says nothing
+        idle = socket.create_connection(("127.0.0.1", port), timeout=5)   # says nothing
         nonce = provision.new_nonce()
-        ans = _post("http://127.0.0.1:18097/provision/attest", {"nonce": nonce})   # must not block
+        ans = _post(f"http://127.0.0.1:{port}/provision/attest", {"nonce": nonce})   # must not block
         assert "pubkey" in ans
         idle.close()
     finally:

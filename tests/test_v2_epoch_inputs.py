@@ -9,15 +9,17 @@ SRC = pathlib.Path(__file__).resolve().parents[1].joinpath("neurons", "validator
 
 def test_the_validator_selects_questions_only_through_epoch_plan():
     loop = SRC[SRC.index("            # --- SLICE ---"):SRC.index("            # --- COMMIT ---")]
-    assert "scored_slice(protocol_version, nonce, benchmark_pool, SLICE_SIZE)" in loop
-    assert "exploration_plan(\n                protocol_version, nonce, benchmark_pool" in loop
+    assert "_epoch_slice(protocol_version, epoch_id, block_hash, benchmark_pool," in loop
+    helper = SRC[SRC.index("def _epoch_slice("):SRC.index("@click.command()")]
+    assert "scored_slice(protocol_version, nonce, pool, slice_size)" in helper
+    assert "exploration_plan(protocol_version, nonce, pool," in helper
     assert "select_slice(" not in SRC and "expected_exploration_map(" not in SRC
 
 
 def test_epoch_inputs_are_picked_by_the_version_before_selection():
     loop = SRC[SRC.index("            # --- SLICE ---"):SRC.index("            # --- COMMIT ---")]
     pick = loop.index("epoch_inputs[protocol_version]")
-    assert pick < loop.index("scored_slice(")
+    assert pick < loop.index("_epoch_slice(")
     assert "benchmark_pool, gold_answers, prices, pool_models, model_index = (" in loop
     assert "if protocol_version not in epoch_inputs:" in loop
 

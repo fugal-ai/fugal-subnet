@@ -27,6 +27,7 @@ import math
 import os
 import sys
 import time
+from typing import NamedTuple
 
 # isort: off
 import fugal_subnet.determinism  # noqa: F401
@@ -256,6 +257,69 @@ def _check_live_configuration(live: bool, approved, activation_block, epoch_inte
                     f"protocol v{version} token manifest is not deployable: {e}") from e
 
 
+def _epoch_to_run(current_block: int, blocks_per_epoch: int, last_epoch_index: int,
+                  once: bool) -> int | None:
+    """The epoch to run at `current_block`, or None to wait for the next one.
+
+    Each epoch is scored once: running one already written again would fold
+    its evidence, its misses and the frame's decay in a second time. `--once`
+    is the exception, an operator's deliberate re-run of the current epoch.
+    """
+    from fugal_subnet.benchmarks.slicer import epoch_index_for_block
+    epoch_index = epoch_index_for_block(current_block, blocks_per_epoch)
+    if epoch_index <= last_epoch_index and not once:
+        return None
+    return epoch_index
+
+
+def _epoch_boundary(subtensor, epoch_index: int, blocks_per_epoch: int,
+                    activation_block: int | None) -> tuple[int, str, str, int]:
+    """(boundary block, its hash, epoch id, protocol version) of an epoch.
+
+    All four come from the boundary block, never the current one, so every
+    peer and every retry of the epoch derives the same nonce, id and rules.
+    The id has one source, slicer.epoch_id_for_block (I1).
+    """
+    from fugal_subnet.benchmarks.slicer import epoch_id_for_block, protocol_version_for_boundary
+    boundary_block = epoch_index * blocks_per_epoch
+    return (boundary_block, subtensor.get_block_hash(boundary_block),
+            epoch_id_for_block(epoch_index),
+            protocol_version_for_boundary(boundary_block, activation_block))
+
+
+class _SlicePlan(NamedTuple):
+    nonce: bytes
+    questions: list
+    question_ids: list
+    questions_hash: str
+    explore_map: dict
+    slice_gold: dict
+
+
+def _epoch_slice(protocol_version: int, epoch_id: str, block_hash: str, pool: list,
+                 gold_answers: dict, pool_models: list, slice_size: int,
+                 explore_size: int) -> _SlicePlan:
+    """This epoch's scored questions, exploration targets and the gold for them.
+
+    The miner selects with the same epoch_plan functions on the same versioned
+    pool and model list, or every proof fails on questions_hash. The gold is
+    for the assigned questions only: handing over the whole pool would let a
+    proof reference any question in it and still verify.
+    """
+    from fugal_subnet.benchmarks.slicer import derive_nonce
+    from fugal_subnet.epoch_plan import exploration_plan, scored_slice
+    from fugal_subnet.tee.verify import compute_questions_hash
+    nonce = derive_nonce(epoch_id, block_hash)
+    questions = scored_slice(protocol_version, nonce, pool, slice_size)
+    question_ids = [q["question_id"] for q in questions]
+    explore_map = exploration_plan(protocol_version, nonce, pool, set(question_ids),
+                                   pool_models, explore_size)
+    slice_gold = {qid: gold_answers[qid]
+                  for qid in list(question_ids) + list(explore_map) if qid in gold_answers}
+    return _SlicePlan(nonce, questions, question_ids, compute_questions_hash(question_ids),
+                      explore_map, slice_gold)
+
+
 @click.command()
 @click.option("--network", default=lambda: os.getenv("FUGAL_NETWORK", "test"),
               help="Network: finney, test, local")
@@ -328,11 +392,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.benchmarks.slicer import (
         collect_block_for_epoch,
-        derive_nonce,
-        epoch_id_for_block,
         epoch_index_for_block,
         mix_weights,
-        protocol_version_for_boundary,
     )
     from fugal_subnet.commit_reveal import commit_epoch, reveal_epoch
     from fugal_subnet.commitments import seniority_key
@@ -348,7 +409,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         detect_anomalies,
         write_epoch_log,
     )
-    from fugal_subnet.epoch_plan import exploration_plan, scored_slice
     from fugal_subnet.frontier import build_frontier
     from fugal_subnet.head_eval import HeadScore, load_head_from_npz
     from fugal_subnet.pricing import policy_cost_total, question_input_tokens
@@ -369,7 +429,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
     from fugal_subnet.tee.attestation import CollateralBudget, verification_order
     from fugal_subnet.tee.proof import BenchmarkProof
-    from fugal_subnet.tee.verify import compute_questions_hash, verify_proof
+    from fugal_subnet.tee.verify import verify_proof
     from fugal_subnet.v2_epoch import (
         run_v2_epoch,
         seat_params_from_config,
@@ -621,21 +681,19 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     while True:
         try:
             current_block = subtensor.get_current_block()
-            epoch_index = epoch_index_for_block(current_block, blocks_per_epoch)
-
-            if epoch_index <= last_epoch_index and not once:
+            epoch_index = _epoch_to_run(current_block, blocks_per_epoch, last_epoch_index, once)
+            if epoch_index is None:
                 time.sleep(30)
                 continue
-            if epoch_index <= last_epoch_index and once:
+            if epoch_index <= last_epoch_index:
                 logger.warning("Epoch %d already processed — running again (--once)", epoch_index)
 
-            boundary_block = epoch_index * blocks_per_epoch
-            block_hash = subtensor.get_block_hash(boundary_block)
-            epoch_id = epoch_id_for_block(epoch_index)
-            # Decided by the boundary block, so every peer and every retry of
-            # this epoch scores it under the same rules. Nothing branches on it
-            # yet: the v2 rules land behind it one change at a time.
-            protocol_version = protocol_version_for_boundary(boundary_block, V2_ACTIVATION_BLOCK)
+            # Everything from the boundary block, so every peer and every retry
+            # of this epoch derives the same nonce and scores it under the same
+            # rules (v1 or v2).
+            boundary_block, block_hash, epoch_id, protocol_version = _epoch_boundary(
+                subtensor, epoch_index, blocks_per_epoch, V2_ACTIVATION_BLOCK,
+            )
 
             timer = EpochTimer()
             metagraph = subtensor.metagraph(netuid)
@@ -672,22 +730,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             benchmark_pool, gold_answers, prices, pool_models, model_index = (
                 epoch_inputs[protocol_version]
             )
-            nonce = derive_nonce(epoch_id, block_hash)
-            questions = scored_slice(protocol_version, nonce, benchmark_pool, SLICE_SIZE)
-            question_ids = [q["question_id"] for q in questions]
-            expected_questions_hash = compute_questions_hash(question_ids)
+            plan = _epoch_slice(protocol_version, epoch_id, block_hash, benchmark_pool,
+                                gold_answers, pool_models, SLICE_SIZE, explore_size)
+            nonce, questions, question_ids = plan.nonce, plan.questions, plan.question_ids
+            expected_questions_hash = plan.questions_hash
             expected_question_ids = set(question_ids)
-            explore_map = exploration_plan(
-                protocol_version, nonce, benchmark_pool, expected_question_ids,
-                pool_models, explore_size,
-            )
-            # Gold for the assigned slice only. Handing over the whole pool
-            # would let a proof reference any question in it and still verify.
-            slice_gold = {
-                qid: gold_answers[qid]
-                for qid in list(question_ids) + list(explore_map)
-                if qid in gold_answers
-            }
+            explore_map, slice_gold = plan.explore_map, plan.slice_gold
             logger.info("Slice: %d questions, hash=%s...",
                         len(questions), expected_questions_hash[:16])
 

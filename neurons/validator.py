@@ -1583,6 +1583,12 @@ def set_weights_with_retry(subtensor, wallet, netuid: int, my_uid: int, uids, we
     the epoch's weights (validator review 2026-11-02, finding 3). Now the rate
     limit is read first so the log says why, and a failed submit is retried up
     to WEIGHTS_SET_RETRIES times while `deadline_block` has not passed.
+
+    The SDK catches errors inside the extrinsic itself, but its pre-flight
+    chain reads (the UID lookup, the commit-reveal check, the rate limit in its
+    retry condition) are outside that, so a dropped connection there RAISES out
+    of set_weights. That is one failed attempt here, retried like any other,
+    not a failed epoch (which would re-query and re-score the whole epoch).
     """
     from fugal_subnet.config import WEIGHTS_SET_RETRIES
 
@@ -1598,10 +1604,13 @@ def set_weights_with_retry(subtensor, wallet, netuid: int, my_uid: int, uids, we
         if 0 <= since <= limit:
             return False, (f"rate limit: {since} blocks since this UID's last update, "
                            f"limit {limit}; the chain would refuse the extrinsic")
-        response = subtensor.set_weights(
-            wallet=wallet, netuid=netuid, uids=uids, weights=weights,
-            wait_for_inclusion=True, wait_for_finalization=True,
-        )
+        try:
+            response = subtensor.set_weights(
+                wallet=wallet, netuid=netuid, uids=uids, weights=weights,
+                wait_for_inclusion=True, wait_for_finalization=True,
+            )
+        except Exception as e:  # noqa: BLE001 - a dropped connection is a failed attempt
+            response = (False, f"set_weights raised {type(e).__name__}: {e}")
         success, msg = response
         if success:
             return True, str(msg or "")

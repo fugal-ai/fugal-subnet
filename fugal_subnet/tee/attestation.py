@@ -72,10 +72,6 @@ class TDXQuote:
     report_data: str
     raw: bytes
 
-    @property
-    def report_data_bytes(self) -> bytes:
-        return bytes.fromhex(self.report_data)
-
 
 def parse_quote(data: bytes) -> TDXQuote:
     """Parse a raw TDX v4 quote binary into structured fields."""
@@ -101,6 +97,18 @@ def parse_quote(data: bytes) -> TDXQuote:
         raw=data,
         **fields,
     )
+
+
+def td_is_debug(quote: TDXQuote) -> bool:
+    """True if the TD was launched with the DEBUG attribute.
+
+    A debug TD's host can read and write its memory and registers, so nothing
+    it attests is evidence: the quote is genuine and the content is whatever
+    the host wanted. TDATTRIBUTES is a little-endian 64-bit field and DEBUG is
+    bit 0. Checked here rather than left to the DCAP library, whose behaviour
+    on a debug quote has not been observed, or to the cloud's offering.
+    """
+    return bool(bytes.fromhex(quote.td_attributes)[0] & 0x01)
 
 
 def measurement_id(quote: TDXQuote) -> str:

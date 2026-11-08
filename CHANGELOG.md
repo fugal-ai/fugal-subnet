@@ -4,6 +4,15 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — a quote from a debug TD is refused
+
+`verify_proof` now refuses a quote whose TDATTRIBUTES DEBUG bit is set (a
+debug TD's host can read and change its memory), in every mode and before any
+collateral fetch. It previously relied on the cloud offering no debug TDs and
+on the DCAP library. Honest TDs are unaffected (both real GCP quotes checked).
+Also: tests pin the quote version and minimum length checks; an unused
+`TDXQuote.report_data_bytes` property is removed.
+
 ### Fixed — epoch artifacts are written atomically; the publisher refuses a partial reveal
 
 `commit.json` and `reveal.json` were written in place with `json.dump`, so a

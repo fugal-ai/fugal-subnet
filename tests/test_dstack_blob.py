@@ -93,3 +93,14 @@ def test_a_corrupted_layout_is_caught_by_the_tpm_magic():
     blob[2] ^= 0xFF                      # damage the quote length
     with pytest.raises(ScaleError):
         decode_dstack_attestation(bytes(blob))
+
+
+@pytest.mark.parametrize("name", ["A", "B"])
+def test_a_real_gcp_td_is_not_a_debug_td(name):
+    """Real hardware sets another attribute bit (SEPT_VE_DISABLE, bit 28); the
+    debug check must read bit 0 only, or it would refuse every honest miner."""
+    from fugal_subnet.tee.attestation import td_is_debug
+
+    quote = parse_quote(decode_dstack_attestation(_blob(name))["quote"])
+    assert int.from_bytes(bytes.fromhex(quote.td_attributes), "little") == 1 << 28
+    assert not td_is_debug(quote)

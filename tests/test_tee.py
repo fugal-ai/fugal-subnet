@@ -712,6 +712,59 @@ def test_parse_quote_rejects_non_tdx():
         parse_quote(bytes(bad))
 
 
+def test_parse_quote_rejects_other_versions():
+    """The field offsets are v4's. A v5 quote has a body header before the
+    TD report, so reading it at v4 offsets yields shifted, wrong registers."""
+    import struct
+    for version in (3, 5):
+        bad = bytearray(_mock_quote(b"x" * 64))
+        struct.pack_into("<H", bad, 0, version)
+        with pytest.raises(ValueError, match="Unsupported quote version"):
+            parse_quote(bytes(bad))
+
+
+def test_parse_quote_rejects_a_quote_shorter_than_the_td_report():
+    """A quote that ends inside the TD report would yield truncated fields."""
+    quote = _mock_quote(b"x" * 64)
+    parse_quote(quote[:632])                      # header + full report: parses
+    with pytest.raises(ValueError, match="expected at least 632"):
+        parse_quote(quote[:631])
+    with pytest.raises(ValueError, match="too short"):
+        extract_report_data(quote[:631])
+
+
+def _with_debug_bit(quote: bytes) -> bytes:
+    q = bytearray(quote)
+    q[168] |= 0x01                                # TDATTRIBUTES bit 0: DEBUG
+    return bytes(q)
+
+
+def test_td_is_debug_reads_bit_0_of_td_attributes():
+    from fugal_subnet.tee.attestation import td_is_debug
+
+    quote = _mock_quote(b"x" * 64)
+    assert not td_is_debug(parse_quote(quote))
+    assert td_is_debug(parse_quote(_with_debug_bit(quote)))
+    # Another attribute bit alone (SEPT_VE_DISABLE, bit 28, set on real GCP
+    # TDs) is not DEBUG.
+    q = bytearray(quote)
+    q[171] |= 0x10
+    assert not td_is_debug(parse_quote(bytes(q)))
+
+
+def test_verify_proof_refuses_a_debug_td():
+    """Checked in every mode: it costs nothing and needs no hardware."""
+    proof = _make_proof()
+    gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
+    kw = dict(approved_measurements={"approved_measurement_1"},
+              expected_questions_hash=proof.questions_hash,
+              expected_nonce=proof.nonce, gold_answers=gold, mock=True)
+    assert verify_proof(proof, **kw).valid
+    proof.attestation_quote = _with_debug_bit(proof.attestation_quote)
+    result = verify_proof(proof, **kw)
+    assert not result.valid and "DEBUG TD" in result.reason
+
+
 # --- runtime identity in the approved list (I8) --------------------------------
 
 def test_parse_approved_accepts_bare_and_paired_entries():

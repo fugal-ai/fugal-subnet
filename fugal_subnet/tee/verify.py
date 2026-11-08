@@ -42,6 +42,7 @@ from fugal_subnet.tee.attestation import (
     measurement_id,
     parse_quote,
     replay_event_log,
+    td_is_debug,
     verify_dcap,
 )
 from fugal_subnet.tee.proof import (
@@ -344,6 +345,16 @@ def verify_proof(
         report_data = extract_report_data(attestation_quote)
     except ValueError as e:
         return VerifyResult(False, f"Invalid attestation quote: {e}")
+
+    # 2a. A debug TD's host can read and change its memory, so its quote proves
+    #     nothing about what ran. Free, so it runs in every mode, before any
+    #     network fetch.
+    if td_is_debug(quote):
+        return VerifyResult(
+            False,
+            "The quote comes from a DEBUG TD: its host can read and change the "
+            "TD's memory, so nothing it attests is evidence",
+        )
 
     content_hash = proof.content_hash()
     expected_report_data = bytes.fromhex(content_hash).ljust(64, b"\x00")[:64]

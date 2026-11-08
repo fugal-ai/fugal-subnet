@@ -1835,6 +1835,7 @@ The full chain a proof must satisfy:
 
 ```
 Intel DCAP signature          -> the quote is genuine, from real TDX hardware
+TDATTRIBUTES.DEBUG clear      -> the host could not read or change the TD
 measurement_id(quote)         -> the image that ran is the published one
 report_data == content_hash   -> the proof body is what that image produced
 weights_hash == commitment    -> the head that ran was committed before the nonce
@@ -1843,6 +1844,14 @@ result ids == assigned slice  -> those answers are to the questions we asked
 exploration == nonce targets  -> the sampling quota was actually performed
 per-question costs == total   -> the cost figures are internally consistent
 ```
+
+The DEBUG line is checked by `attestation.td_is_debug` in `verify_proof`, in
+every mode, before any fetch (2026-11-08). Until then it rested on two things
+outside the repo: Google offering no debug TDs (every live proof carries
+Google's TPM half), and the DCAP library probably refusing them (its binary
+carries "Debug mode is enabled"; never observed on a real debug quote).
+`tests/test_tee.py::test_verify_proof_refuses_a_debug_td`, and
+`tests/test_dstack_blob.py` confirms both real GCP quotes read as non-debug.
 
 Each line was, at some point, absent — and `run_tee_attacks.py` keeps an
 executable exploit for each, because every one of them fails *silently*: the

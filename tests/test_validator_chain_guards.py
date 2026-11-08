@@ -158,6 +158,51 @@ def test_state_from_a_release_with_extra_fields_still_loads(tmp_path, caplog):
     assert any("some_future_field" in r.message for r in caplog.records)
 
 
+def test_a_crash_between_the_two_renames_resumes_from_the_backup(tmp_path, monkeypatch, caplog):
+    """save_state moves the file to .bak, then renames the new one in. A crash
+    between the two left no state file, and load_state started from scratch:
+    empty evidence and the bootstrap frame while every peer kept its history."""
+    mod = _mod()
+    from fugal_subnet.scoring import MinerRecord
+    path = str(tmp_path / "state.json")
+    mod.save_state(_records(mod), [1], [1.0], 5, None, path=path)
+
+    real_replace = mod.os.replace
+
+    def crash_on_the_second_rename(src, dst):
+        if src.endswith(".tmp"):
+            raise SystemExit("power loss")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", crash_on_the_second_rename)
+    with pytest.raises(SystemExit):
+        mod.save_state(_records(mod), [1], [1.0], 6, None, path=path)
+    monkeypatch.setattr(mod.os, "replace", real_replace)
+    assert not pathlib.Path(path).exists() and pathlib.Path(path + ".bak").exists()
+
+    state = mod.load_state(MinerRecord, path=path)
+    assert state["last_epoch_index"] == 5 and state["records"][1].hotkey == "hk1"
+    assert any("missing" in r.message and "move both files aside" in r.message
+               for r in caplog.records)
+
+
+def test_no_file_and_no_backup_is_a_first_start(tmp_path):
+    mod = _mod()
+    from fugal_subnet.scoring import MinerRecord
+    state = mod.load_state(MinerRecord, path=str(tmp_path / "state.json"))
+    assert state["last_epoch_index"] == -1 and state["records"] == {}
+
+
+def test_a_backup_that_cannot_be_loaded_says_how_to_start_fresh(tmp_path):
+    mod = _mod()
+    from fugal_subnet.scoring import MinerRecord
+    path = str(tmp_path / "state.json")
+    pathlib.Path(path + ".bak").write_text('{"records": {}}')     # another protocol's state
+    with pytest.raises(ValueError, match="namespace") as e:
+        mod.load_state(MinerRecord, path=path)
+    assert "move both files aside" in str(e.value)
+
+
 def test_a_corrupt_file_with_no_backup_still_fails_loudly(tmp_path):
     mod = _mod()
     from fugal_subnet.scoring import MinerRecord

@@ -84,25 +84,43 @@ def load_state(records_cls, path: str | None = None) -> dict:
     copy, `<path>.bak`, with a loud warning: one epoch of stale evidence is a
     small divergence, and deleting the file was the only recovery before,
     which is a large one (I1).
+
+    A MISSING file with a `.bak` beside it is the same case: save_state moves
+    the current file to `.bak` and then renames the new one in, so a crash
+    between the two leaves only the `.bak`. Starting fresh there would be the
+    large divergence (empty evidence, bootstrap frame), so it resumes from the
+    `.bak` too. A deliberate fresh start moves both files aside. Only no file
+    and no `.bak` is a first start.
     """
     path = path or STATE_PATH
+    bak = path + ".bak"
     try:
         with open(path) as f:
             raw = json.load(f)
         return _parse_state(raw, records_cls)
     except FileNotFoundError:
-        return _empty_state()
+        if not os.path.exists(bak):
+            return _empty_state()
+        problem = "missing (a save was interrupted between its two renames)"
+        cause = None
     except Exception as e:
-        bak = path + ".bak"
-        if os.path.exists(bak):
-            logger.error(
-                "Validator state %s is unreadable (%s); resuming from the previous "
-                "epoch's copy %s. This validator is one epoch behind its peers until "
-                "it catches up.", path, e, bak,
-            )
-            with open(bak) as f:
-                return _parse_state(json.load(f), records_cls)
-        raise ValueError(f"Cannot resume validator state {path}: {e}") from e
+        if not os.path.exists(bak):
+            raise ValueError(f"Cannot resume validator state {path}: {e}") from e
+        problem, cause = f"unreadable ({e})", e
+    logger.error(
+        "Validator state %s is %s; resuming from the previous epoch's copy %s. This "
+        "validator is one epoch behind its peers until it catches up. To start fresh "
+        "on purpose, move both files aside.", path, problem, bak,
+    )
+    try:
+        with open(bak) as f:
+            return _parse_state(json.load(f), records_cls)
+    except Exception as e:
+        raise ValueError(
+            f"Cannot resume validator state: {path} is {problem} and its previous copy "
+            f"{bak} cannot be loaded either ({e}). To start fresh on purpose, move "
+            "both files aside."
+        ) from (cause or e)
 
 
 def _empty_state() -> dict:

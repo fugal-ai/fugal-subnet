@@ -189,7 +189,8 @@ PRs. The transition uses one success protocol, not simultaneous policy support.
    and price snapshot. Generate actual TDX/dstack measurements on the target runtime;
    update approved measurements through the existing operator review process.
    Never invent a measurement or reuse approval for a different runtime.
-4. Start with fresh `results/success-v1/validator_state.json` and
+4. Start with fresh `results/success-v1/validator_state.json` (move its `.bak`
+   aside too, or the validator resumes from it) and
    `results/success-v1/epochs`, empty validator evidence and reference frame, and
    profile-tagged embedding caches. Update any service-level path overrides too.
    Old state, frame snapshots, reveals and proofs are rejected by protocol identity;

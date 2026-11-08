@@ -239,3 +239,13 @@ def test_a_request_larger_than_the_whole_budget_is_an_operator_error(monkeypatch
 def test_any_other_402_is_still_the_balance_and_never_retried(monkeypatch, fast, body):
     status, data, hits, records = _run(monkeypatch, [(402, None, body)])
     assert status == 502 and hits == 1 and records == []
+
+
+@pytest.mark.parametrize("status", [400, 404, 422])
+def test_an_error_outside_the_retry_list_fails_on_the_first_try(monkeypatch, fast, status):
+    """Only PROXY_RETRYABLE_STATUS is retried. A 400 (bad request) or a 404 (a
+    model OpenRouter no longer serves) will fail again, so retrying it spends
+    up to PROXY_RETRY_BUDGET_S per call and can cost the miner the epoch.
+    (A planted `retryable = True` survived the whole suite.)"""
+    status_out, data, hits, records = _run(monkeypatch, [(status, None)] * 5)
+    assert status_out == 502 and hits == 1 and records == []

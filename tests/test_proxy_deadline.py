@@ -259,3 +259,22 @@ def test_https_calls_work_and_still_end_at_the_deadline(short_deadline, monkeypa
             assert json.loads(body)["choices"][0]["message"]["content"] == "42"
     finally:
         srv.shutdown()
+
+
+def test_a_call_whose_deadline_has_passed_never_dials():
+    """The deadline is checked before connecting: a call started with no time
+    left raises UpstreamDeadline (what the proxy reports as a timeout) and the
+    upstream never sees a request. (A planted no-op for that check survived the
+    whole suite: the watchdog alone does not give this.)"""
+    seen = {}
+    hits = []
+    srv = _server("normal", seen)
+    orig = srv.RequestHandlerClass.do_POST
+    srv.RequestHandlerClass.do_POST = lambda self: (hits.append(1), orig(self))
+    try:
+        with pytest.raises(rt.UpstreamDeadline):
+            rt._post_with_deadline(_req(srv), time.monotonic() - 1.0)
+        time.sleep(0.2)
+        assert hits == []
+    finally:
+        srv.shutdown()

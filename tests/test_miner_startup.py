@@ -69,3 +69,51 @@ def test_a_push_with_no_head_stops_the_miner_with_a_named_error(monkeypatch):
         serve_forever=lambda: None))
     with pytest.raises(click.ClickException, match="provisioned without a head"):
         miner._await_provisioning(coldkey="c", hotkey="h")
+
+
+def test_static_checks_run_before_secrets_arrive_and_before_the_embedding():
+    """The unroutable-IP refusal and the registration check ran only after
+    the pool was embedded (hours); for a v2 image the IP check ran only at the
+    flip, after the v2 head was committed (independent review, 2026-11-08)."""
+    calls = _main_call_lines()
+    assert calls["_assert_axon_ip_routable"] < calls["_await_provisioning"]
+    assert calls["_await_provisioning"] < calls["_assert_registered"]
+    assert calls["_assert_registered"] < calls["_compute_hidden_states"]
+    # The UID is still read again after the embedding, where it is used.
+    assert calls["_my_uid"] > calls["_compute_hidden_states"]
+    # And the IP checked is the one the axon will serve.
+    fn = next(n for n in ast.parse(SRC).body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    (ip_check,) = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                   and getattr(n.func, "id", "") == "_assert_axon_ip_routable"]
+    assert ast.unparse(ip_check.args[0]) == "os.getenv('FUGAL_AXON_IP')"
+    assert "external_ip = os.getenv('FUGAL_AXON_IP')" in ast.unparse(fn)
+
+
+@pytest.mark.parametrize("ip", ["127.0.0.1", "0.0.0.0", "::1"])
+def test_an_unroutable_axon_ip_is_refused(ip):
+    with pytest.raises(click.ClickException, match="not routable"):
+        miner._assert_axon_ip_routable(ip)
+
+
+@pytest.mark.parametrize("ip", [None, "", "34.120.5.6"])
+def test_a_routable_or_unset_axon_ip_passes(ip):
+    miner._assert_axon_ip_routable(ip)
+
+
+def test_the_registration_check_refuses_and_closes_its_connection(monkeypatch):
+    import bittensor as bt
+
+    closed = []
+    monkeypatch.setattr(bt, "Wallet", lambda name, hotkey, path: types.SimpleNamespace(
+        hotkey=types.SimpleNamespace(ss58_address="5mine")))
+    monkeypatch.setattr(bt, "Subtensor", lambda network: types.SimpleNamespace(
+        metagraph=lambda netuid: types.SimpleNamespace(hotkeys=["5other"]),
+        close=lambda: closed.append(True)))
+    with pytest.raises(click.ClickException, match="not registered"):
+        miner._assert_registered("test", 552, "c", "h", None)
+    assert closed == [True]
+    monkeypatch.setattr(bt, "Subtensor", lambda network: types.SimpleNamespace(
+        metagraph=lambda netuid: types.SimpleNamespace(hotkeys=["5other", "5mine"]),
+        close=lambda: closed.append(True)))
+    miner._assert_registered("test", 552, "c", "h", None)
+    assert closed == [True, True]

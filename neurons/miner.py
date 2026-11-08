@@ -168,6 +168,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # both: a misconfigured TD received the API key and hotkey, embedded for
     # hours, and only then said no.
     _assert_chain_allows(network, mock)
+    _assert_axon_ip_routable(os.getenv("FUGAL_AXON_IP"))
 
     if await_provisioning:
         # The wallet arrives over the same channel: the TD signs serve_axon and
@@ -239,6 +240,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     logger.info("Head loaded: %s (%d bytes)", head_path or "(pushed over the attested channel)", len(head_data))
     logger.info("Weights hash: %s", weights_hash[:16])
+
+    # Registered? Checked before the embedding (which can take hours) as well
+    # as after it, where the UID is read for serving: a registration can be
+    # lost while the pool embeds.
+    _assert_registered(network, netuid, coldkey, hotkey, wallet_path)
 
     # Once, at startup — not per epoch. See _compute_hidden_states.
     logger.info("Computing backbone embeddings for %d questions...", len(pool))
@@ -372,18 +378,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         )
         _wait_for_block(subtensor, V2_ACTIVATION_BLOCK, "serve the axon (the v2 flip)")
 
-    external_ip = os.getenv("FUGAL_AXON_IP")
-    if external_ip and _is_unroutable(external_ip):
-        # The chain rejects loopback and unspecified addresses for serve_axon
-        # at pool validation (Custom error 11), before the extrinsic executes.
-        # bt.Axon.serve() swallows that, so the only symptom is an axon that
-        # stays at 0.0.0.0 and a miner that silently earns nothing. A setting
-        # that guarantees that is a startup error, not a log line.
-        raise click.ClickException(
-            f"FUGAL_AXON_IP={external_ip} is not routable: the chain rejects "
-            "serve_axon for it and no validator could ever reach this miner. Set "
-            "it to an address validators can connect to."
-        )
+    external_ip = os.getenv("FUGAL_AXON_IP")   # routable: checked at startup
     # Fail before serving if something else already holds the port. bt.Axon
     # runs its server in a thread and a bind failure there does not surface:
     # the miner goes on to register the address on chain and log success while
@@ -565,6 +560,43 @@ def _serve_axon_once(axon, subtensor, netuid: int):
     except Exception as e:  # noqa: BLE001 - reported; the registered address is the verdict
         logger.warning("axon.serve() failed: %s", e)
     return subtensor.metagraph(netuid)
+
+
+def _assert_axon_ip_routable(external_ip: str | None) -> None:
+    """Refuse an FUGAL_AXON_IP the chain would reject, at startup.
+
+    The chain rejects loopback and unspecified addresses for serve_axon at pool
+    validation (Custom error 11), before the extrinsic executes. bt.Axon.serve()
+    swallows that, so the only symptom is an axon that stays at 0.0.0.0 and a
+    miner that silently earns nothing. A setting that guarantees that is a
+    startup error, and it is static, so it is checked before the operator's
+    secrets arrive and before hours of embedding, not when the axon is served.
+    """
+    if external_ip and _is_unroutable(external_ip):
+        raise click.ClickException(
+            f"FUGAL_AXON_IP={external_ip} is not routable: the chain rejects "
+            "serve_axon for it and no validator could ever reach this miner. Set "
+            "it to an address validators can connect to."
+        )
+
+
+def _assert_registered(network: str, netuid: int, coldkey: str, hotkey: str,
+                       wallet_path) -> None:
+    """Refuse an unregistered hotkey before embedding the pool (hours), on a
+    connection that is closed again rather than kept idle through it."""
+    import bittensor as bt
+
+    wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
+    subtensor = bt.Subtensor(network=network)
+    try:
+        _my_uid(subtensor.metagraph(netuid), wallet.hotkey.ss58_address, netuid)
+    finally:
+        close = getattr(subtensor, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as e:  # noqa: BLE001 - closing an idle socket
+                logger.debug("closing the pre-embedding connection: %s", e)
 
 
 def _my_uid(metagraph, hotkey_ss58: str, netuid: int) -> int:

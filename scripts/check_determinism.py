@@ -204,6 +204,15 @@ def run_pipeline(seed: int) -> dict:
         # hashes. Pin it here so the check measures the routing, grading and
         # scoring arithmetic rather than the clock.
         proof.timestamp = 0.0
+        # Per-call latency is wall clock too, and also attested (each result's
+        # latency_ms is in content_hash). The stubbed calls take 0 ms on an
+        # idle host and 1 ms under load, so unpinned it made the two children
+        # disagree on `proof` whenever the machine was busy (reproduced under
+        # CPU load, 2026-11-08). Pinned like the timestamp; it decides nothing
+        # downstream.
+        for r in proof.results:
+            if r.latency_ms is not None:
+                r.latency_ms = 0
         proof.attestation_quote = TEERuntime(mock=True).generate_attestation(
             bytes.fromhex(proof.content_hash())
         )

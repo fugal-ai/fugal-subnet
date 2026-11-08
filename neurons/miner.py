@@ -2,8 +2,11 @@
 """Fugal subnet TEE miner — runs benchmarks inside Intel TDX, publishes proofs.
 
 Usage:
-    python neurons/miner.py --netuid 1 --coldkey miner --hotkey default \\
-        --head-path data/my_head.npz --benchmark-pool data/pool.json
+    python neurons/miner.py --network test --netuid <N> --coldkey miner --hotkey default \\
+        --head-path data/my_head.npz              # --mock (default): no spend
+
+    # A dstack TD (deploy/dstack/): --live --await-provisioning, the head,
+    # hotkey and API key pushed over the attested channel (scripts/provision_td.py)
 
 Each epoch:
   1. Wait for epoch boundary (new block hash)
@@ -152,13 +155,19 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     from fugal_subnet.config import (
         EPOCH_INTERVAL,
         EXPLORE_FRACTION,
-        MIN_VALIDATOR_STAKE,
         SLICE_SIZE,
         TEE_MODEL_PRICES_PATH,
         TEE_PROXY_PORT,
     )
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.tee.runtime import TEERuntime
+
+    # Refuse a forbidden configuration (mock on finney, a consensus override
+    # in the environment) BEFORE asking the operator for secrets and before
+    # embedding the pool (3 h 20 min on a c3-standard-8). It used to run after
+    # both: a misconfigured TD received the API key and hotkey, embedded for
+    # hours, and only then said no.
+    _assert_chain_allows(network, mock)
 
     if await_provisioning:
         # The wallet arrives over the same channel: the TD signs serve_axon and
@@ -237,30 +246,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     logger.info("Embeddings ready: %s (backbone released)", hidden_states.shape)
 
     wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
+    # A fresh connection: the embedding above can take hours, longer than an
+    # idle websocket is worth trusting.
     subtensor = bt.Subtensor(network=network)
-    # The miner keeps --mock as its default because --live spends real money
-    # on inference; what it must never do is run mock on mainnet.
-    from fugal_subnet.fingerprint import (
-        assert_consensus_overrides_allowed,
-        assert_mock_allowed,
-        chain_genesis_hash,
-    )
-    try:
-        genesis = chain_genesis_hash(subtensor)
-        assert_mock_allowed(genesis, mock)
-        # A consensus constant in the environment (the compose sets
-        # FUGAL_EXPLORE_FRACTION=0.5 for the testnet warm-up) is refused on
-        # finney and warned about elsewhere, as on the validator.
-        assert_consensus_overrides_allowed(genesis)
-    except RuntimeError as e:
-        raise click.ClickException(str(e)) from e
     metagraph = subtensor.metagraph(netuid)
 
     my_hotkey = wallet.hotkey.ss58_address
-    if my_hotkey not in metagraph.hotkeys:
-        logger.error("Hotkey %s not registered on netuid %d", my_hotkey, netuid)
-        return
-    my_uid = metagraph.hotkeys.index(my_hotkey)
+    my_uid = _my_uid(metagraph, my_hotkey, netuid)
     logger.info("Miner UID %d on %s netuid %d", my_uid, network, netuid)
 
     # NOTE: the on-chain commitment is deliberately NOT made here. Chains rate
@@ -530,6 +522,47 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         axon.stop()
         tee_runtime.teardown()
         logger.info("Miner shutdown complete")
+
+
+def _assert_chain_allows(network: str, mock: bool) -> None:
+    """Refuse what this chain forbids: --mock on finney (mock accepts
+    unattested proofs), and a consensus constant overridden in the environment
+    (refused on finney, warned about elsewhere, as on the validator). Keyed on
+    the chain's genesis hash, so renaming the network does not get around it.
+    The miner keeps --mock as its default because --live spends real money on
+    inference; what it must never do is run mock on mainnet.
+    """
+    import bittensor as bt
+
+    from fugal_subnet.fingerprint import (
+        assert_consensus_overrides_allowed,
+        assert_mock_allowed,
+        chain_genesis_hash,
+    )
+
+    subtensor = bt.Subtensor(network=network)
+    try:
+        genesis = chain_genesis_hash(subtensor)
+        assert_mock_allowed(genesis, mock)
+        assert_consensus_overrides_allowed(genesis)
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+    finally:
+        try:
+            subtensor.close()
+        except Exception:  # noqa: BLE001 - closing a check connection is best effort
+            pass
+
+
+def _my_uid(metagraph, hotkey_ss58: str, netuid: int) -> int:
+    """This miner's UID, or a startup error. Not registered used to log and
+    return, so the process exited 0 and a supervisor saw a clean stop."""
+    if hotkey_ss58 not in metagraph.hotkeys:
+        raise click.ClickException(
+            f"hotkey {hotkey_ss58} is not registered on netuid {netuid}; register it "
+            "(scripts/provision_subnet.py --miners ...) before starting the miner"
+        )
+    return metagraph.hotkeys.index(hotkey_ss58)
 
 
 def _wait_for_block(subtensor, block: int, purpose: str, poll_s: float = 30.0) -> None:

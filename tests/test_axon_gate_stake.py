@@ -57,3 +57,12 @@ def test_validator_startup_notice_names_the_floor_and_the_permit_trap():
     msg = axon_gate_notice(0.0, False, 50.0)
     assert msg and "No valid proofs received" in msg
     assert "permit does not substitute" not in msg
+
+
+def test_a_request_with_no_caller_hotkey_is_refused():
+    """The gate's first rule: no hotkey, no head, in live and mock alike.
+    (Planting `return True` there survived every test.)"""
+    for caller in ("", None):
+        for live in (True, False):
+            ok, reason = caller_allowed(MG(), caller, live=live, min_stake=50)
+            assert not ok and reason == "no caller hotkey"

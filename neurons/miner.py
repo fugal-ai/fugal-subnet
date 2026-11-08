@@ -886,13 +886,17 @@ def _embedding_cache_path(pool) -> str:
     """
     import platform
 
-    from fugal_subnet.benchmarks.loader import pool_hash
     from fugal_subnet.config import BACKBONE_BATCH_SIZE, BACKBONE_MODEL
+    from fugal_subnet.vendor import success_contract as contract
 
+    # The embedded TEXT, by the contract's own cache_key (the same key load_cache
+    # checks), not pool_hash: pool_hash covers question ids only, so a pool fix
+    # that changed a prompt under the same id kept the path and every miner's
+    # cache then failed load_cache's check.
     key = hashlib.sha256("|".join([
-        pool_hash(pool),
+        contract.cache_key([q["prompt"] for q in pool]),
         BACKBONE_MODEL,
-        __import__("fugal_subnet.vendor.success_contract", fromlist=["PROFILE_ID"]).PROFILE_ID,
+        contract.PROFILE_ID,
         str(BACKBONE_BATCH_SIZE),
         platform.machine(),
     ]).encode("utf-8")).hexdigest()[:32]
@@ -909,14 +913,17 @@ def _compute_hidden_states(pool):
     21K-question pool for an identical result.
 
     They do not change between *restarts* either, which is why the result is
-    cached to disk. Measured on the real 21,717-question pool: 2h28m on an
-    x86_64 laptop and 7h20m on a 4-core aarch64 VM. Paying that on every
-    restart is not a startup cost, it is an availability failure — the miner is
-    unreachable for hours and earns nothing, and any crash-loop is permanent.
+    cached to disk. Measured on mainnet TDs: 3 h 20 min for the v1 pool on a
+    c3-standard-8 (docs/MAINNET_LAUNCH.md, "Miner startup cost"; the v2 pool is
+    ~35% larger). Paying that on every restart is not a startup cost, it is an
+    availability failure — the miner is unreachable for hours and earns nothing.
 
-    The cache is keyed by pool_hash so a pool change invalidates it, and it is
-    loaded with allow_pickle=False so a hostile file cannot execute anything.
-    A corrupt or unreadable file is recomputed.
+    The cache is keyed by the embedded text (see _embedding_cache_path) and
+    loaded with allow_pickle=False, so a hostile file cannot execute anything.
+    A cache that cannot be read, or that was built for other text, is set aside
+    and recomputed. It used to raise, and in a dstack TD that is a crash loop
+    the operator cannot clear: the file survives every restart and there is no
+    shell to delete it.
 
     WHAT IT DOES NOT DEFEND AGAINST, stated plainly. These embeddings are
     computed here and passed into run_benchmark, which means they are an input
@@ -942,9 +949,18 @@ def _compute_hidden_states(pool):
     questions = [q["prompt"] for q in pool]
     cache_path = _embedding_cache_path(pool)
     if os.path.exists(cache_path):
-        hidden = contract.load_cache(cache_path, questions)
-        logger.info("Embeddings loaded from cache: %s", cache_path)
-        return hidden
+        try:
+            hidden = contract.load_cache(cache_path, questions)
+        except Exception as e:  # noqa: BLE001 - any unreadable cache is recomputed, never fatal
+            logger.warning("Embedding cache %s is unusable (%s); setting it aside and "
+                           "recomputing", cache_path, e)
+            try:
+                os.replace(cache_path, cache_path + ".bad")
+            except OSError:
+                pass
+        else:
+            logger.info("Embeddings loaded from cache: %s", cache_path)
+            return hidden
 
     # Use the configured memory bound for the 2048-token CPU profile. The shared
     # implementation excludes padding from pooling and has batch/single checks.
@@ -970,18 +986,10 @@ def _compute_hidden_states(pool):
 
 
 def _get_source_hash():
-    """Hash the actual source file contents for measurement verification."""
-    import fugal_subnet
-    src_dir = os.path.dirname(os.path.abspath(fugal_subnet.__file__))
-    h = hashlib.sha256()
-    for root, _dirs, files in sorted(os.walk(src_dir)):
-        for fname in sorted(files):
-            if not fname.endswith(".py"):
-                continue
-            fpath = os.path.join(root, fname)
-            h.update(fpath[len(src_dir):].encode())
-            h.update(open(fpath, "rb").read())
-    return h.hexdigest()
+    """The proof's source_hash: fugal_subnet.fingerprint.source_sha256, the one
+    implementation (this used to be a second copy, kept equal only by a test)."""
+    from fugal_subnet.fingerprint import source_sha256
+    return source_sha256()
 
 
 def _is_unroutable(ip: str) -> bool:

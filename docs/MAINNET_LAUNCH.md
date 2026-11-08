@@ -427,6 +427,12 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   `test_rehearsal_frontier_measured`, `test_seniority`, the dedup cases of
   `test_finding5`): v2 still computes the frame and dedup as diagnostics, so
   keep whatever guards those, and delete the rest with the code
+- split the two neuron `main()` functions (`neurons/validator.py`, ~1,240
+  lines with the whole epoch loop; `neurons/miner.py`, ~400) into one
+  function per phase, each unit-tested. Rules inside them can only be tested
+  structurally or end to end today (the 2026-11-08 coverage map: both mains
+  at ~0% unit coverage). Do it with the v1 removal, behind the determinism
+  baseline and the rehearsals, not before the flip
 - group `tests/` into folders by theme (v2 protocol, TEE, pool and data,
   neurons, tooling) once the v1-only tests are gone; ~60 test files find the
   repo by folder depth, so it is one sweep, done once

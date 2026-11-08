@@ -421,6 +421,12 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   (checks, rehearsal, build, ops, miner) in the same PR: CI, the systemd
   watch unit, the guides and CLAUDE.md name the flat paths, so they move once,
   after the flip, not during it
+- the tests that exist for v1 payout (`test_frontier`, `test_evidence`'s
+  composite, `test_frame_rebuild`, `test_degenerate_constant_policy`,
+  `test_finding2`–`4`, `test_finding6`'s v1 sampler case,
+  `test_rehearsal_frontier_measured`, `test_seniority`, the dedup cases of
+  `test_finding5`): v2 still computes the frame and dedup as diagnostics, so
+  keep whatever guards those, and delete the rest with the code
 - group `tests/` into folders by theme (v2 protocol, TEE, pool and data,
   neurons, tooling) once the v1-only tests are gone; ~60 test files find the
   repo by folder depth, so it is one sweep, done once

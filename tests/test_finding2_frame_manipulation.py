@@ -134,3 +134,15 @@ def test_a_proof_that_fails_exploration_but_not_scoring_is_rejected(monkeypatch)
     result = suite._verify(proof, expected_exploration=explore, gold_answers=gold)
     assert not result.valid, "every exploration call failed and the proof still verified"
     assert "explor" in result.reason.lower()
+
+
+def test_the_anomaly_detectors_flagged_coldkeys_get_no_vote_in_the_frame():
+    """aggregate_observations drops the coldkeys the detector flagged before the
+    median: here ck1's vote is what makes the cell 1.0. (Planting a no-op for
+    the exclusion survived every test.)"""
+    from fugal_subnet.reference_frame import Observation, aggregate_observations
+
+    obs = [Observation("q", "m", c, 10, 20, coldkey=ck)
+           for ck, c in (("ck1", True), ("ck2", True), ("ck3", False))]
+    assert aggregate_observations(obs) == [("m", 1.0, 10.0, 20.0)]
+    assert aggregate_observations(obs, exclude_coldkeys={"ck1"}) == [("m", 0.5, 10.0, 20.0)]

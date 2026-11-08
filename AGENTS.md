@@ -41,7 +41,7 @@ These are non-negotiable. Violating any of them breaks the subnet:
 3. **Every Axon-attached Synapse `deserialize()` MUST return `self`, not a dict.**
    Bittensor's `dendrite.call()` calls `synapse.deserialize()`. If it returns a
    dict, the validator receives dicts instead of Synapse objects and attribute
-   access breaks silently. The mock in `tests/bt_mock.py` mirrors this contract.
+   access breaks silently. `scripts/check_safety_invariants.py` checks it.
 
 4. **NO API credit spend without explicit user approval.**
    Any code path that calls OpenRouter costs real money. Tag costs in comments

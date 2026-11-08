@@ -17,10 +17,8 @@ import tempfile
 
 import numpy as np
 
-# Patch bittensor before any fugal imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import tests.bt_mock  # noqa: E402, F401
-from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
+from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice  # noqa: E402
 from fugal_subnet.config import HEAD_HIDDEN_DIM, SLICE_SIZE
 from fugal_subnet.consensus import ValidatorReport, check_self_consistency, compute_consensus
 from fugal_subnet.epoch_logger import (

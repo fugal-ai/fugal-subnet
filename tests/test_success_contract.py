@@ -96,12 +96,8 @@ def test_old_reference_frame_and_reveals_are_rejected(tmp_path):
 
 
 def test_incompatible_validator_state_never_silently_resumes(tmp_path):
-    import sys
-
-    from tests import bt_mock
-    with mock.patch.dict(sys.modules, {"bittensor": bt_mock}):
-        from neurons import validator
     from fugal_subnet.rewards import MinerRecord
+    from neurons import validator
     path = tmp_path / "state.json"
     path.write_text('{"records": {}}')
     with mock.patch.object(validator, "STATE_PATH", str(path)), pytest.raises(ValueError, match="namespace"):

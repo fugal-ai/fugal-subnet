@@ -421,6 +421,9 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   (checks, rehearsal, build, ops, miner) in the same PR: CI, the systemd
   watch unit, the guides and CLAUDE.md name the flat paths, so they move once,
   after the flip, not during it
+- group `tests/` into folders by theme (v2 protocol, TEE, pool and data,
+  neurons, tooling) once the v1-only tests are gone; ~60 test files find the
+  repo by folder depth, so it is one sweep, done once
 - `scripts/build_frame_from_calls.py` and `scripts/build_bootstrap_frame.py`:
   the reference frame is v1-only (v2 scores on shared grades, never a frame)
 - the `--protocol 1` defaults of `scripts/export_pool.py`,

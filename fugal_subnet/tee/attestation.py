@@ -289,7 +289,8 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
 
     Every event's digest is checked against its own (name, payload) in both
     dstack encodings, so a field read from the returned map is the one that
-    was actually extended, and the first event of each name is the one kept.
+    was actually extended. A name may not contain ':' and may appear only
+    once, so each digest has exactly one reading and each name one value.
     """
     reg = b"\x00" * _RTMR_DIGEST_BYTES
     seen: dict[str, bytes] = {}
@@ -316,6 +317,12 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
         payload = ev.get("event_payload", b"")
         payload = bytes.fromhex(payload) if isinstance(payload, str) else bytes(payload)
 
+        # ONE READING PER DIGEST. The first encoding joins the type, name and
+        # payload with ':', so a name holding ':' lets one digest be read as
+        # a different (name, payload) split. dstack's names never contain it.
+        if ":" in name:
+            raise ValueError(f"event {i} name {name!r} contains ':'")
+
         # THE DIGEST MUST BIND THE NAME AND PAYLOAD IT TRAVELS WITH. The
         # replay above proves only that this SEQUENCE OF DIGESTS reproduces
         # the register; the (name, payload) pairs beside them are what the
@@ -335,11 +342,12 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
                 f"event {i} ({name or '?'}) digest does not bind its name and "
                 "payload: the log claims an extend it cannot have made"
             )
-        # FIRST occurrence wins. The initrd extends `compose-hash` once, before
-        # any container runs; anything extended later under the same name is
-        # the application's doing (the guest agent's EmitEvent on newer
-        # bases), so a last-wins read would hand the claim to the miner.
-        seen.setdefault(name, payload)
+        # ONE VALUE PER NAME. The initrd extends each event once, before any
+        # container runs; a second event under the same name can only be
+        # the application's, so neither copy is believed.
+        if name in seen:
+            raise ValueError(f"event {i} repeats the name {name!r}")
+        seen[name] = payload
         if upto is not None and name == upto:
             break
     return reg.hex(), seen

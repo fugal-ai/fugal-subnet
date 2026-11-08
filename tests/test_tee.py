@@ -933,18 +933,63 @@ def test_replay_rejects_a_relabelled_payload():
     assert replay_event_log(mixed)[1]["compose-hash"].hex() == "abcd"
 
 
-def test_replay_keeps_the_first_event_of_a_name():
+def test_replay_refuses_a_repeated_name():
     """The initrd extends compose-hash once, before any container runs. A
-    later event under the same name is the application's, so the claim a
-    verifier reads must be the first one, never the last."""
+    second event under the same name is the application's, so a log that
+    carries two is refused rather than read either way, in both encodings."""
     from fugal_subnet.tee.attestation import replay_event_log
 
-    log = [_ev("compose-hash", "abcd"), _ev("instance-id", "beef"),
-           _ev("compose-hash", "dead")]
-    rtmr3, seen = replay_event_log(log)
-    assert seen["compose-hash"].hex() == "abcd"
-    # Both events are still in the chain: the register reflects the second.
-    assert rtmr3 == replay_event_log(log)[0] != replay_event_log(log[:2])[0]
+    for version in (1, 2):
+        log = [_ev("compose-hash", "abcd", version=version),
+               _ev("instance-id", "beef", version=version),
+               _ev("compose-hash", "dead", version=version)]
+        with pytest.raises(ValueError, match="repeats the name 'compose-hash'"):
+            replay_event_log(log)
+        assert replay_event_log(log[:2])[1]["compose-hash"].hex() == "abcd"
+    # Every name, not only compose-hash.
+    with pytest.raises(ValueError, match="repeats the name 'instance-id'"):
+        replay_event_log([_ev("instance-id", "beef"), _ev("instance-id", "beef")])
+
+
+def _colon_compose_hash():
+    """A sha256 compose hash whose first byte is ':', found by varying the
+    compose, as a miner can for its own compose (about 1 try in 256)."""
+    i = 0
+    while True:
+        h = hashlib.sha256(b'{"compose": %d}' % i).digest()
+        if h[0] == ord(":"):
+            return h
+        i += 1
+
+
+def test_replay_refuses_a_name_that_resplits_a_digest():
+    """The v1 encoding joins type, name and payload with ':', so a compose
+    hash that starts with ':' lets the genuine compose-hash digest be read as
+    the name 'compose-hash:' over the rest. The real event then no longer
+    carries its name, and a later extend under 'compose-hash' would be the
+    only one. A name may not contain ':', so every digest has one reading."""
+    from fugal_subnet.tee.attestation import replay_event_log, replay_rtmr
+
+    mine = _colon_compose_hash()
+    genuine = [_ev("compose-hash", mine.hex(), version=1),
+               _ev("instance-id", "beef", version=1),
+               _ev("compose-hash", "ab" * 32, version=1)]
+    resplit = [dict(genuine[0], event="compose-hash:", event_payload=mine[1:].hex()),
+               genuine[1], genuine[2]]
+    # Same digests, so the same register: only the name rule tells them apart.
+    rtmr3 = replay_rtmr([e["digest"] for e in genuine])
+    assert replay_rtmr([e["digest"] for e in resplit]) == rtmr3
+    with pytest.raises(ValueError, match="contains ':'"):
+        replay_event_log(resplit)
+    # Anywhere in the name, in either encoding: a ':' inside the payload
+    # moves the split point just as well as one at its start.
+    for version in (1, 2):
+        with pytest.raises(ValueError, match="contains ':'"):
+            replay_event_log([_ev("compose-hash:x", "beef", version=version)])
+    # The v2 (JSON) encoding has no such split: the digest itself refuses it.
+    v2 = _ev("compose-hash", mine.hex(), version=2)
+    with pytest.raises(ValueError, match="does not bind"):
+        replay_event_log([dict(v2, event="compose-hash;", event_payload=mine[1:].hex())])
 
 
 def test_event_log_must_reproduce_the_quote_before_it_is_read():

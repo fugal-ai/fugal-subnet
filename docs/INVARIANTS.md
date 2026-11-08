@@ -893,12 +893,18 @@ approved value, and the log still replays to the register the CPU signed —
 verified on the real fixtures, where the forged log passed `verify_proof`.
 dstack computes each digest from the event's type, name and payload (two
 encodings; the GCP fixtures use the first), so the replay now recomputes it
-and refuses an event whose digest binds neither. It also keeps the FIRST event
-of each name: the initrd extends `compose-hash` once before any container
-runs, and anything extended later under that name is the application's
-(the guest agent's `EmitEvent` on newer bases), which closes the last-wins
-item from OPEN_WORK. `tests/test_tee.py`, `tests/test_dstack_blob.py` (on
-the real logs) and three `run_tee_attacks` cases hold it.
+and refuses an event whose digest binds neither.
+
+**Each digest has one reading, and each name one value.** The first encoding
+joins type, name and payload with `:`, so a name that holds `:` can absorb
+payload bytes: a miner varies its own compose until the hash starts with
+`:`, presents the genuine `compose-hash` digest as the name `compose-hash:`,
+and a later extend under `compose-hash` becomes the only one, over the same
+register. So a name containing `:` is refused (dstack's names never contain
+one; checked on both real logs), and so is a name that appears twice: the
+initrd extends each event once before any container runs, and a second one
+can only be the application's. `tests/test_tee.py`, `tests/test_dstack_blob.py`
+(on the real logs) and four `run_tee_attacks` cases hold it.
 
 **Do not re-serialise.** Fields are in insertion order, not sorted. dstack's
 bytes happen to equal `json.dumps(obj, indent=2)` exactly, and that is asserted

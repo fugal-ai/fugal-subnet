@@ -279,6 +279,7 @@ def a_duplicate_results():
 from fugal_subnet.tee.attestation import (  # noqa: E402
     dstack_event_digest,
     replay_event_log,
+    replay_rtmr,
 )
 
 _HONEST_LOG = [
@@ -339,7 +340,7 @@ def a_second_compose_hash_event():
     """Extend a second `compose-hash` event, with the approved value, AFTER the
     initrd's genuine one (the guest agent's EmitEvent on a newer base). Every
     digest is genuine and the log replays; a last-wins read would believe the
-    application's own claim. The first event of a name is the one that counts."""
+    application's own claim. A name that appears twice is refused."""
     log = [
         {"imr": 3, "event": "compose-hash", "event_payload": "dead",
          "digest": dstack_event_digest("compose-hash", bytes.fromhex("dead"))},
@@ -347,8 +348,31 @@ def a_second_compose_hash_event():
         {"imr": 3, "event": "compose-hash", "event_payload": "abcd",
          "digest": dstack_event_digest("compose-hash", bytes.fromhex("abcd"))},
     ]
-    rtmr3 = bytes.fromhex(replay_event_log(log)[0])
+    rtmr3 = bytes.fromhex(replay_rtmr([e["digest"] for e in log]))
     return _verify_log(log, rtmr3=rtmr3)
+
+
+def a_resplit_compose_hash_name():
+    """The v1 encoding joins type, name and payload with ':'. A miner varies its
+    own compose until the hash starts with ':', then presents the genuine
+    compose-hash digest as the name 'compose-hash:' over the remaining bytes,
+    so the approved value it extended later is the only 'compose-hash'. Same
+    digests, same register; only the name rule refuses it."""
+    i = 0
+    while (mine := hashlib.sha256(b'{"compose": %d}' % i).digest())[0] != ord(":"):
+        i += 1
+    approved = "ab" * 32
+
+    def v1(name, payload):
+        return {"imr": 3, "event": name, "event_payload": payload.hex(),
+                "digest": dstack_event_digest(name, payload, 1)}
+
+    genuine = [v1("compose-hash", mine), v1("instance-id", bytes.fromhex("beef")),
+               v1("compose-hash", bytes.fromhex(approved))]
+    rtmr3 = bytes.fromhex(replay_rtmr([e["digest"] for e in genuine]))
+    forged = [dict(genuine[0], event="compose-hash:", event_payload=mine[1:].hex()),
+              genuine[1], genuine[2]]
+    return _verify_log(forged, rtmr3=rtmr3, approved={f"{BASE}:{approved}"})
 
 
 def a_reordered_event_log():
@@ -520,6 +544,7 @@ ATTACKS = [
     ("relabel the compose-hash payload, keep the digests", "I8", a_relabelled_compose_payload),
     ("relabel the payload in the v1 event encoding", "I8", a_relabelled_compose_payload_v1_encoding),
     ("extend a second compose-hash event after boot", "I8", a_second_compose_hash_event),
+    ("re-split the compose-hash digest into another name", "I8", a_resplit_compose_hash_name),
     ("reorder the event log to hit a target", "I8", a_reordered_event_log),
     ("truncate the event log", "I8", a_truncated_event_log),
     ("v2 preimage that lies about its digest", "I8", a_lying_preimage),

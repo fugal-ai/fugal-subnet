@@ -669,8 +669,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
 
+    epoch_failed = False
     while True:
         try:
+            epoch_failed = False
             current_block = subtensor.get_current_block()
             epoch_index = _epoch_to_run(current_block, blocks_per_epoch, last_epoch_index, once)
             if epoch_index is None:
@@ -1066,44 +1068,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             }
             epoch_weight_map = dict(zip(uids, weights))
 
-            # Observation matrix for the reveal, in the SAME global model index
-            # space dedup uses, so a column means the same model in every
-            # artifact. -1 means "no miner routed this question to this model",
-            # which is distinct from 0 ("routed, and got it wrong") — as a plain
-            # zero matrix the two were indistinguishable and any consumer would
-            # read unexplored cells as failures.
-            q_idx_map = {q["question_id"]: i for i, q in enumerate(questions)}
-            matrix = np.full(
-                (len(questions), max(len(pool_models), 1)), -1, dtype=np.int32,
-            )
-            model_spend: dict[str, float] = {}
-            for proof in verified_proofs.values():
-                for r in proof.results:
-                    m_idx = model_index.get(r.routed_model)
-                    q_idx = q_idx_map.get(r.question_id)
-                    if m_idx is not None and q_idx is not None:
-                        matrix[q_idx, m_idx] = int(r.correct)
-                    model_spend[r.routed_model] = (
-                        model_spend.get(r.routed_model, 0.0) + r.cost_usd
-                    )
+            matrix, model_spend = _reveal_matrix(questions, pool_models, model_index,
+                                                 verified_proofs)
 
-            # Exploration observations for the reveal. Sorted deterministically
-            # in reveal_epoch so every validator publishes the identical list.
-            exploration_for_reveal = [
-                {
-                    "question_id": o.question_id,
-                    "model": o.model,
-                    "correct": o.correct,
-                    "prompt_tokens": o.prompt_tokens,
-                    "completion_tokens": o.completion_tokens,
-                    # The voter and the failure flag, so rebuild_from_reveals
-                    # aggregates exactly as this epoch did. Coldkeys are public
-                    # on chain; publishing them here reveals nothing new.
-                    "coldkey": o.coldkey,
-                    "failed": o.failed,
-                }
-                for o in observations
-            ]
+            exploration_for_reveal = _exploration_for_reveal(observations)
 
             routing_for_reveal = {
                 uid: decisions.tolist()
@@ -1130,7 +1098,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             logger.info("Setting weights for %d UIDs", len(uids))
             success, msg = set_weights_with_retry(
                 subtensor, wallet, netuid, my_uid, uids, weights,
-                deadline_block=(epoch_index + 1) * blocks_per_epoch - 5,
+                deadline_block=_weights_deadline(epoch_index, blocks_per_epoch),
             )
             weights_confirmed = False
             confirm_detail = "not attempted"
@@ -1173,21 +1141,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 epoch_score_dicts, epoch_weight_map,
                 n_neurons, len(verified_proofs),
             )
-            if not reveal_ok:
-                anomalies.append("commit_reveal_failed")
-            if not metagraph_pinned:
-                # Attributable after the fact, not only on the console: two
-                # validators that queried different axon sets this epoch have
-                # a named cause in the published log (F-070).
-                anomalies.append(
-                    f"metagraph_unpinned: the read at block {collect_block} failed and the "
-                    "current metagraph was used"
-                )
-            for uid, why in suspicious.items():
-                # In the published epoch log so it is attributable after the
-                # fact by anyone, not just whoever was reading the validator's
-                # console at the time.
-                anomalies.append(f"exploration_excluded_from_frame: uid {uid}: {why}")
+            anomalies += _epoch_anomalies(reveal_ok, metagraph_pinned, collect_block,
+                                          suspicious, n_unverifiable)
 
             # Surfaced as an anomaly, not just a number, because this is the
             # signal that the field looks bad for reasons that are ours rather
@@ -1202,11 +1157,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     "set (I6) — but on a smaller verified set than the field. "
                     "Look at the PCCS before raising FUGAL_COLLATERAL_EPOCH_BUDGET.",
                     TEE_COLLATERAL_EPOCH_BUDGET,
-                )
-
-            if n_unverifiable:
-                anomalies.append(
-                    f"collateral_unavailable: {n_unverifiable} proof(s) unchecked"
                 )
 
             epoch_log = EpochLog(
@@ -1230,13 +1180,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
             write_epoch_log(epoch_log)
 
-            next_v2 = (
-                (v2_result.window, v2_result.decision.state, v2_result.copy_state,
-                 v2_window_degraded
-                 and len(v2_result.window.slices) < CHAMPION_WINDOW_EPOCHS)
-                if v2_result is not None
-                else (v2_window, v2_seat, v2_copy, v2_window_degraded)
-            )
+            next_v2 = _next_v2_state(v2_result, v2_window, v2_seat, v2_copy,
+                                     v2_window_degraded, CHAMPION_WINDOW_EPOCHS)
 
             # COMMIT. The epoch is complete; only now does it become the state
             # the next epoch (or a retry of this one) starts from.
@@ -1254,6 +1199,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             logger.info("Validator stopped by user")
             break
         except Exception:
+            epoch_failed = True
             logger.exception("Error in epoch")
 
         if once:
@@ -1284,10 +1230,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         # file was written through os.replace, the epoch log was appended and
         # closed, and the weights extrinsic was confirmed on chain above. The
         # only thing skipped is teardown of connections the OS reclaims anyway.
+        #
+        # A failed epoch exits 1, so a oneshot or a cron job sees the failure
+        # instead of a success with an error in the log.
         logging.shutdown()
         sys.stdout.flush()
         sys.stderr.flush()
-        os._exit(0)
+        os._exit(1 if epoch_failed else 0)
 
 
 class _FrameInput(NamedTuple):
@@ -1928,6 +1877,89 @@ def count_failed_scored(proof) -> int:
     "answers were wrong". Exploration is excluded, as it is from the score.
     """
     return sum(1 for r in proof.scored_results if r.failed)
+
+
+def _reveal_matrix(questions: list, pool_models: list, model_index: dict, verified_proofs: dict):
+    """(matrix, model_spend) for the reveal.
+
+    The matrix is in the SAME global model index space dedup uses, so a column
+    means the same model in every artifact. -1 means "no miner routed this
+    question to this model", which is distinct from 0 ("routed, and got it
+    wrong"): as a plain zero matrix the two were indistinguishable and any
+    consumer would read unexplored cells as failures.
+    """
+    q_idx_map = {q["question_id"]: i for i, q in enumerate(questions)}
+    matrix = np.full((len(questions), max(len(pool_models), 1)), -1, dtype=np.int32)
+    model_spend: dict[str, float] = {}
+    for proof in verified_proofs.values():
+        for r in proof.results:
+            m_idx = model_index.get(r.routed_model)
+            q_idx = q_idx_map.get(r.question_id)
+            if m_idx is not None and q_idx is not None:
+                matrix[q_idx, m_idx] = int(r.correct)
+            model_spend[r.routed_model] = model_spend.get(r.routed_model, 0.0) + r.cost_usd
+    return matrix, model_spend
+
+
+def _exploration_for_reveal(observations: list) -> list[dict]:
+    """Exploration observations for the reveal, with the voter and the failure
+    flag, so rebuild_from_reveals aggregates exactly as this epoch did.
+    Coldkeys are public on chain; publishing them reveals nothing new. Sorted
+    deterministically in reveal_epoch, so every validator publishes the
+    identical list."""
+    return [
+        {
+            "question_id": o.question_id,
+            "model": o.model,
+            "correct": o.correct,
+            "prompt_tokens": o.prompt_tokens,
+            "completion_tokens": o.completion_tokens,
+            "coldkey": o.coldkey,
+            "failed": o.failed,
+        }
+        for o in observations
+    ]
+
+
+def _weights_deadline(epoch_index: int, blocks_per_epoch: int) -> int:
+    """The last block this epoch's weights may be retried at: five blocks
+    before the next epoch's boundary, so a retry never lands in the next
+    epoch and is never confused with that epoch's weights."""
+    return (epoch_index + 1) * blocks_per_epoch - 5
+
+
+def _epoch_anomalies(reveal_ok: bool, metagraph_pinned: bool, collect_block: int,
+                     suspicious: dict, n_unverifiable: int) -> list[str]:
+    """The validator's own anomalies for the epoch log, so each is attributable
+    after the fact by anyone, not only by whoever was reading the console."""
+    out = []
+    if not reveal_ok:
+        out.append("commit_reveal_failed")
+    if not metagraph_pinned:
+        # Two validators that queried different axon sets this epoch have a
+        # named cause in the published log (F-070).
+        out.append(f"metagraph_unpinned: the read at block {collect_block} failed and the "
+                   "current metagraph was used")
+    for uid, why in suspicious.items():
+        out.append(f"exploration_excluded_from_frame: uid {uid}: {why}")
+    if n_unverifiable:
+        # A signal that the field looks bad for reasons that are ours rather
+        # than the miners'. Correlated across validators when the endpoint is
+        # at fault, which is exactly what makes it diagnosable (I7).
+        out.append(f"collateral_unavailable: {n_unverifiable} proof(s) unchecked")
+    return out
+
+
+def _next_v2_state(v2_result, window, seat, copy_state, degraded: bool, window_epochs: int):
+    """(window, seat, copy state, degraded) carried into the next epoch.
+
+    A v1 epoch carries the v2 state unchanged. A v2 epoch takes its result; a
+    degraded window stays degraded until it has refilled to `window_epochs`.
+    """
+    if v2_result is None:
+        return window, seat, copy_state, degraded
+    return (v2_result.window, v2_result.decision.state, v2_result.copy_state,
+            degraded and len(v2_result.window.slices) < window_epochs)
 
 
 def _score_proof(proof, slice_gold: dict, prices: dict, epoch_frame, ref_model: str):

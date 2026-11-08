@@ -41,7 +41,9 @@ that drifts from the lockfile hides exactly the failures CI exists to find.
   this document cannot fall behind CI again the way it just did.
 
 `scripts/gate.sh test|tee|quality|success` runs one job if you are iterating.
-Exit status is 0 only if every step of every selected job passed.
+Exit status is 0 only if every step of every selected job passed. For a faster
+inner loop, `uv run pytest -q -m "not slow"` skips the few statistical tests
+that take most of the suite's time; the gate and CI always run them.
 
 It does not run the backbone-download half of CI's `success-contract` job or
 the `docker build`. A change to the backbone path, the vendored contract or the

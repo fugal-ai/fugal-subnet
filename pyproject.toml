@@ -98,6 +98,9 @@ include = ["fugal_subnet*", "neurons*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# CI and scripts/gate.sh run everything. `-m "not slow"` skips the few
+# statistical tests that dominate the runtime, for a quick local loop only.
+markers = ["slow: statistical property tests over hundreds of epochs (minutes)"]
 
 [tool.ruff]
 # Immutable test-only core projection, checked against Git objects in CI.

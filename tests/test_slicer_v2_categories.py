@@ -79,6 +79,7 @@ def test_exploration_tie_rotates_with_the_nonce():
     assert 0.4 < winners["knowledge"] / 400 < 0.6
 
 
+@pytest.mark.slow
 def test_expected_exploration_share_equals_expected_scored_share_per_benchmark():
     """The property v1 breaks: over many epochs each benchmark's share of exploration
     matches its share of the scored slice, including the 30-question ones."""
@@ -98,6 +99,7 @@ def test_expected_exploration_share_equals_expected_scored_share_per_benchmark()
         assert abs(ps - pe) < max(0.012, 0.3 * ps), (b, ps, pe)
 
 
+@pytest.mark.slow
 def test_v1_sampler_over_samples_small_benchmarks_and_v2_does_not():
     """Pin the finding itself: v1 at 15 slots gives a 30-question benchmark a full slot
     (6.7%); v2 gives it about its scored share (well under 1%)."""
@@ -164,6 +166,7 @@ def test_a_weighted_category_follows_its_weights_not_pool_size():
     assert hard["aime25"] + hard["aime26"] == 18
 
 
+@pytest.mark.slow
 def test_weighted_exploration_still_matches_the_weighted_scored_share():
     scored, explored = Counter(), Counter()
     for i in range(300):

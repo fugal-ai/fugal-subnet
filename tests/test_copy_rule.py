@@ -707,3 +707,17 @@ def test_senior_bars_use_the_same_pre_flip_key():
     senior = min([a, b], key=lambda h: cr.v2_seniority(st, h, floor_block=act, salt="0xfeed"))
     junior = b if senior == a else a
     assert bars[junior] == (senior,) and bars[senior] == ()
+
+
+def test_a_commit_at_the_activation_block_ties_with_earlier_pre_flip_commits():
+    """'At or before the activation block' ties there (INVARIANTS, v2 seniority).
+    A head committed in the activation block itself is pre-flip: same tier as
+    one committed days earlier, ordered by the salted tie-break, and senior to
+    a commit one block later. (A planted `<` for `<=` survived every test.)"""
+    act = 3000
+    early, at, after = _hh("early"), _hh("at-flip"), _hh("after-flip")
+    st = _state_with({early: 10, at: act, after: act + 1})
+    key = lambda h: cr.v2_seniority(st, h, floor_block=act, salt="0xabc")   # noqa: E731
+    assert key(at)[0] == key(early)[0] == act
+    assert key(at) == cr.v2_seniority(_state_with({at: 20}), at, floor_block=act, salt="0xabc")
+    assert key(at) < key(after) and key(early) < key(after)

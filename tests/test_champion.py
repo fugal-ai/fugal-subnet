@@ -625,3 +625,16 @@ def test_the_shipped_anchor_is_fable_priced_from_pinned_files():
     assert seat_params_from_config().anchor_spend == spend
     with pytest.raises(KeyError):
         anchor_spend_per_question("no/such-model")
+
+
+def test_a_lower_bound_exactly_at_the_margin_does_not_take_the_seat():
+    """'Exceed the margin' is strict. Nine questions at the margin and one far
+    above it: the mean clears the margin, but at 90% the lower bound is a
+    resample without the outlier, exactly the margin. (A planted `>=` for `>`
+    survived every test.)"""
+    m = round(0.2 * NV_UNITS_PER_POINT)
+    r = paired_test({"math": [m] * 9 + [11 * m]}, margin_points=0.2, confidence=0.9,
+                    resamples=2000, seed=1)
+    assert r.mean_units > m                 # the point estimate is not what stops it
+    assert r.lcb_units == m                 # the bound sits exactly on the margin
+    assert not r.takes_seat

@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Verify and bundle an offline success head. Publication and winner selection are manual."""
+"""Verify and bundle an offline success head. Publication and winner selection are manual.
+
+A bundle is the hand-off format of the shared success contract: the head with
+the exact token manifest, prices and evaluation report it was judged on, and
+the hashes that bind them, for fugal-core and for the conformance fixture CI
+reads (tests/fixtures/success_bundle). It is NOT a mining step: a miner pushes
+its head.npz straight to its TD with scripts/provision_td.py.
+
+    python scripts/export_success_head.py --head head.npz --manifest tokens.json \\
+        --prices prices.json --report head.report.json --output bundle/ [--deployable]
+    python scripts/export_success_head.py --verify bundle/
+
+--deployable additionally requires a reviewed token manifest and a head whose
+provenance is not synthetic.
+"""
 from __future__ import annotations
 
 import argparse

@@ -109,3 +109,13 @@ def test_miner_statistics_must_match_manifest_even_with_correct_identity():
     z["mean_in_tokens"][0] += 1
     with pytest.raises(ValueError, match="disagree"):
         c.check_manifest(z, fixtures.manifest(["a"]))
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_a_legacy_head_is_refused_by_name_under_both_protocols(version):
+    """Both protocols refuse a pre-success-contract head with the same named
+    reason, so an operator reads the cause, not a TypeError from deeper in."""
+    buf = io.BytesIO()
+    np.savez(buf, W=np.zeros((1, 1024)), b=np.zeros(1), models=np.array(["a"]))
+    with pytest.raises(ValueError, match="legacy"):
+        routing_protocol.benchmark_costs_for(load_head_from_npz(buf.getvalue()), version)

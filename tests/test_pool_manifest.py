@@ -13,6 +13,9 @@ FUGAL_BENCHMARK_POOL override.
 import json
 import pathlib
 
+import pytest
+
+from fugal_subnet.benchmarks import loader
 from scripts.build_pool_manifest import content_hash
 
 
@@ -262,3 +265,31 @@ def test_the_builder_reads_export_pool_output(tmp_path):
     with gzip.open(tmp_path / "pool.json.gz", "wt", encoding="utf-8") as f:
         json.dump(pool, f)
     assert bpm.read_pool(str(tmp_path / "pool.json")) == bpm.read_pool(str(tmp_path / "pool.json.gz")) == pool
+
+
+# --- The content half of the identity is checked, not only the ids ----------
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_a_pool_with_the_pinned_ids_but_a_changed_answer_is_refused(tmp_path, monkeypatch, version):
+    """The manifest pins pool_hash (ids: the slice) AND content_hash (what is
+    asked and what counts as right). A pool whose ids match but one gold answer
+    differs selects the same slice and grades differently: refused in strict.
+    (Planting an ids-only comparison in the v1 verifier survived everything.)"""
+    import scripts.build_pool_manifest as bpm
+    from tests.test_pool_override_verified import _tiny_pool
+
+    pool = _tiny_pool()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(bpm.build(pool, [])), encoding="utf-8")
+    tampered = [dict(q) for q in pool]
+    tampered[7]["gold"] = "999999"
+    assert loader.pool_hash(tampered) == loader.pool_hash(pool)     # same slice ids
+    if version == 1:
+        monkeypatch.setattr(loader, "_manifest_path", lambda: str(manifest))
+        verify = lambda p: loader._verify_against_manifest(p, set(), strict=True)   # noqa: E731
+    else:
+        monkeypatch.setattr(loader, "manifest_path_v2", lambda: str(manifest))
+        verify = lambda p: loader._verify_against_manifest_v2(p, strict=True)        # noqa: E731
+    verify(pool)
+    with pytest.raises(RuntimeError):
+        verify(tampered)

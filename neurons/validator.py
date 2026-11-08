@@ -86,12 +86,14 @@ def load_state(records_cls, path: str | None = None) -> dict:
     small divergence, and deleting the file was the only recovery before,
     which is a large one (I1).
 
-    A MISSING file with a `.bak` beside it is the same case: save_state moves
-    the current file to `.bak` and then renames the new one in, so a crash
-    between the two leaves only the `.bak`. Starting fresh there would be the
-    large divergence (empty evidence, bootstrap frame), so it resumes from the
-    `.bak` too. A deliberate fresh start moves both files aside. Only no file
-    and no `.bak` is a first start.
+    A MISSING file means a save was interrupted: save_state writes and fsyncs
+    `<path>.tmp`, moves the current file to `.bak`, then renames `.tmp` in.
+    Between the two renames `.tmp` already holds the epoch just applied (its
+    weights submitted, its v2 window written), so it resumes from `.tmp`: the
+    newest complete state, not one epoch behind. Only if `.tmp` cannot be
+    loaded does it fall back to `.bak`. Starting fresh there would be the large
+    divergence (empty evidence, bootstrap frame). A deliberate fresh start
+    moves all three files aside; only none of them is a first start.
     """
     path = path or STATE_PATH
     bak = path + ".bak"
@@ -100,6 +102,21 @@ def load_state(records_cls, path: str | None = None) -> dict:
             raw = json.load(f)
         return _parse_state(raw, records_cls)
     except FileNotFoundError:
+        tmp = path + ".tmp"
+        if os.path.exists(tmp):
+            try:
+                with open(tmp) as f:
+                    state = _parse_state(json.load(f), records_cls)
+            except Exception as e:  # noqa: BLE001 - fall back to the previous copy below
+                logger.error("Validator state %s is missing and the interrupted save %s "
+                             "cannot be loaded (%s)", path, tmp, e)
+            else:
+                logger.warning(
+                    "Validator state %s is missing: a save was interrupted between its two "
+                    "renames. Resuming from the completed save %s (the latest epoch).",
+                    path, tmp,
+                )
+                return state
         if not os.path.exists(bak):
             return _empty_state()
         problem = "missing (a save was interrupted between its two renames)"
@@ -111,7 +128,7 @@ def load_state(records_cls, path: str | None = None) -> dict:
     logger.error(
         "Validator state %s is %s; resuming from the previous epoch's copy %s. This "
         "validator is one epoch behind its peers until it catches up. To start fresh "
-        "on purpose, move both files aside.", path, problem, bak,
+        "on purpose, move it, its .bak and its .tmp aside.", path, problem, bak,
     )
     try:
         with open(bak) as f:
@@ -120,7 +137,7 @@ def load_state(records_cls, path: str | None = None) -> dict:
         raise ValueError(
             f"Cannot resume validator state: {path} is {problem} and its previous copy "
             f"{bak} cannot be loaded either ({e}). To start fresh on purpose, move "
-            "both files aside."
+            "it, its .bak and its .tmp aside."
         ) from (cause or e)
 
 

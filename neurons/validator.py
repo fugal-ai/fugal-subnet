@@ -400,7 +400,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         TEE_COLLATERAL_EPOCH_BUDGET,
         V2_BURN_IN_QUESTIONS,
     )
-    from fugal_subnet.dedup import epsilon_disqualified, find_duplicates
+    from fugal_subnet.dedup import find_duplicates
     from fugal_subnet.epoch_logger import (
         EpochLog,
         EpochTimer,
@@ -409,7 +409,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet.frontier import build_frontier
     from fugal_subnet.head_eval import HeadScore, load_head_from_npz
-    from fugal_subnet.pricing import policy_cost_total, question_input_tokens
+    from fugal_subnet.pricing import question_input_tokens
     from fugal_subnet.protocol import FugalProofSynapse
     from fugal_subnet.reference_frame import (
         ReferenceFrame,
@@ -417,9 +417,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         best_model,
         load_bootstrap,
         rebuild_from_reveals,
-        reference_cost,
     )
-    from fugal_subnet.rewards import cap_weight_change, compute_weights
     from fugal_subnet.scoring import MinerRecord, ScoringState, update_scores
     from fugal_subnet.tee.attestation import CollateralBudget, verification_order
     from fugal_subnet.tee.proof import BenchmarkProof
@@ -928,32 +926,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # Diagnostics only (epoch log + the line below): feeds no score.
             epoch_n_failed: dict[int, int] = {}
             for uid, proof in verified_proofs.items():
-                scored = proof.scored_results
-                # Both sides of thrift from shared data, not from the miner.
-                #
-                # The denominator was already built this way — pinned rates plus
-                # the frame's measured verbosity — while the numerator was the
-                # miner's own account of what it spent, and even the
-                # denominator's prompt tokens came from the miner's report. One
-                # half unfakeable, the other a self-report, and a miner could
-                # lower its cost by shrinking numbers rather than by routing
-                # better. Prompt tokens now come from the POOL, and the miner's
-                # cost is computed from which models it chose.
-                pool_prompt_tokens = sum(
-                    question_input_tokens(slice_gold[r.question_id]["prompt"])
-                    for r in scored if r.question_id in slice_gold
-                )
-                ref_cost = reference_cost(
-                    epoch_frame, prices, ref_model,
-                    prompt_tokens=pool_prompt_tokens,
-                    n_questions=len(scored),
-                    default_completion_tokens=FRAME_DEFAULT_COMPLETION_TOKENS,
-                )
-                head_cost = policy_cost_total(
-                    [(r.question_id, r.routed_model) for r in scored],
-                    slice_gold, prices, epoch_frame, FRAME_DEFAULT_COMPLETION_TOKENS,
-                )
-                score = _proof_to_head_score(proof, ref_cost, head_cost)
+                score = _score_proof(proof, slice_gold, prices, epoch_frame, ref_model)
                 epoch_scores[uid] = score
                 epoch_n_failed[uid] = count_failed_scored(proof)
                 cpq = score.total_head_cost / max(1, score.n_scored)
@@ -961,7 +934,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     "  UID %d: acc=%.3f cost=$%.4f ($%.6f/q, frontier %.3f there) "
                     "ref=$%.4f (%d/%d correct, %d failed)",
                     uid, score.accuracy, score.total_head_cost, cpq,
-                    frontier.accuracy_at(cpq), ref_cost,
+                    frontier.accuracy_at(cpq), score.total_oracle_cost,
                     score.n_correct, score.n_scored, epoch_n_failed[uid],
                 )
 
@@ -1022,15 +995,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # published as a diagnostic; it decides nothing.
                 # The boundary snapshot for the copy rule: every committed
                 # hotkey with its owning coldkey, read pinned at the boundary.
-                ck_of_hotkey = {
-                    metagraph.hotkeys[u]: (str(coldkeys[u]) if u < len(coldkeys) else "")
-                    for u in range(len(metagraph.hotkeys))
-                }
-                snapshot = [
-                    copy_rule.Commitment(hk, ck_of_hotkey[hk], c[0], int(c[1]))
-                    for hk, c in sorted(chain_commitments.items())
-                    if ck_of_hotkey.get(hk)
-                ]
+                snapshot = _copy_rule_snapshot(metagraph.hotkeys, coldkeys, chain_commitments)
                 v2_result = run_v2_epoch(
                     epoch_index=epoch_index, epoch_id=epoch_id,
                     boundary_block=boundary_block, blocks_per_epoch=blocks_per_epoch,
@@ -1075,34 +1040,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 for h, why in d.detail:
                     logger.info("  v2 %s: %s", (h or "-")[:16], why)
             else:
-                near_copies = epsilon_disqualified(
-                    routing_decisions, commit_blocks,
-                    {uid: epoch_state.records[uid].composite_score
-                     for uid in routing_decisions if uid in epoch_state.records},
+                uids, weights, dupes = _v1_weights(
+                    epoch_state.records, routing_decisions, commit_blocks, dupes,
+                    frontier.confidence, burn_uid,
                 )
-                if near_copies:
-                    logger.info("Epsilon rule disqualified: %s", sorted(near_copies))
-                    dupes = set(dupes) | near_copies
-                # The frontier's confidence is paid out and the rest burns. It
-                # is a factor common to every miner, so it has to be applied
-                # AFTER the scores are normalised — inside composite() it
-                # cancels.
-                uids, weights = compute_weights(
-                    epoch_state.records, dedup_disqualified=dupes,
-                    paid_fraction=frontier.confidence, burn_uid=burn_uid,
-                )
-                if frontier.confidence < 1.0:
-                    logger.info(
-                        "Frontier confidence %.2f: %.0f%% of emission burns to UID %d this epoch",
-                        frontier.confidence, 100.0 * (1.0 - frontier.confidence), burn_uid,
-                    )
 
-            weight_capped = False
-            if prev_uids:
-                uids, weights = cap_weight_change(
-                    uids, weights, prev_uids, prev_weights,
-                )
-                weight_capped = True
+            uids, weights, weight_capped = _capped(uids, weights, prev_uids, prev_weights)
+            if weight_capped:
                 logger.info("Weights capped vs previous epoch")
 
             # --- REVEAL ---
@@ -1984,6 +1928,101 @@ def count_failed_scored(proof) -> int:
     "answers were wrong". Exploration is excluded, as it is from the score.
     """
     return sum(1 for r in proof.scored_results if r.failed)
+
+
+def _score_proof(proof, slice_gold: dict, prices: dict, epoch_frame, ref_model: str):
+    """A verified proof's HeadScore, both sides of thrift from shared data.
+
+    The denominator was already built this way — pinned rates plus the frame's
+    measured verbosity — while the numerator was the miner's own account of
+    what it spent, and even the denominator's prompt tokens came from the
+    miner's report. One half unfakeable, the other a self-report, and a miner
+    could lower its cost by shrinking numbers rather than by routing better.
+    Prompt tokens come from the POOL, and the miner's cost is computed from
+    which models it chose. Only scored questions count (_proof_to_head_score).
+    """
+    from fugal_subnet.config import FRAME_DEFAULT_COMPLETION_TOKENS
+    from fugal_subnet.pricing import policy_cost_total, question_input_tokens
+    from fugal_subnet.reference_frame import reference_cost
+
+    scored = proof.scored_results
+    pool_prompt_tokens = sum(
+        question_input_tokens(slice_gold[r.question_id]["prompt"])
+        for r in scored if r.question_id in slice_gold
+    )
+    ref_cost = reference_cost(
+        epoch_frame, prices, ref_model,
+        prompt_tokens=pool_prompt_tokens,
+        n_questions=len(scored),
+        default_completion_tokens=FRAME_DEFAULT_COMPLETION_TOKENS,
+    )
+    head_cost = policy_cost_total(
+        [(r.question_id, r.routed_model) for r in scored],
+        slice_gold, prices, epoch_frame, FRAME_DEFAULT_COMPLETION_TOKENS,
+    )
+    return _proof_to_head_score(proof, ref_cost, head_cost)
+
+
+def _copy_rule_snapshot(hotkeys, coldkeys, chain_commitments: dict) -> list:
+    """The boundary snapshot for the v2 copy rule: every committed hotkey with
+    its owning coldkey and its commitment block, read pinned at the boundary.
+
+    A hotkey with no coldkey in the metagraph has no owner to attribute a head
+    to, so it is left out rather than given an empty one.
+    """
+    from fugal_subnet import copy_rule
+
+    ck_of_hotkey = {
+        hk: (str(coldkeys[u]) if u < len(coldkeys) else "")
+        for u, hk in enumerate(hotkeys)
+    }
+    return [
+        copy_rule.Commitment(hk, ck_of_hotkey[hk], c[0], int(c[1]))
+        for hk, c in sorted(chain_commitments.items())
+        if ck_of_hotkey.get(hk)
+    ]
+
+
+def _v1_weights(records: dict, routing_decisions: dict, commit_blocks: dict, dupes,
+                confidence: float, burn_uid: int):
+    """Protocol v1 weights: (uids, weights, every disqualified uid).
+
+    The epsilon rule runs now that this epoch's composite scores exist: a head
+    that routes like a senior one must beat it or it is a copy. The frontier's
+    confidence is paid out and the rest burns. It is a factor common to every
+    miner, so it is applied AFTER the scores are normalised; inside
+    composite() it would cancel.
+    """
+    from fugal_subnet.dedup import epsilon_disqualified
+    from fugal_subnet.rewards import compute_weights
+
+    near_copies = epsilon_disqualified(
+        routing_decisions, commit_blocks,
+        {uid: records[uid].composite_score for uid in routing_decisions if uid in records},
+    )
+    if near_copies:
+        logger.info("Epsilon rule disqualified: %s", sorted(near_copies))
+        dupes = set(dupes) | near_copies
+    uids, weights = compute_weights(
+        records, dedup_disqualified=dupes, paid_fraction=confidence, burn_uid=burn_uid,
+    )
+    if confidence < 1.0:
+        logger.info(
+            "Frontier confidence %.2f: %.0f%% of emission burns to UID %d this epoch",
+            confidence, 100.0 * (1.0 - confidence), burn_uid,
+        )
+    return uids, weights, dupes
+
+
+def _capped(uids, weights, prev_uids, prev_weights):
+    """(uids, weights, capped): the change from last epoch's weights bounded,
+    when there were any (rewards.cap_weight_change)."""
+    from fugal_subnet.rewards import cap_weight_change
+
+    if not prev_uids:
+        return uids, weights, False
+    uids, weights = cap_weight_change(uids, weights, prev_uids, prev_weights)
+    return uids, weights, True
 
 
 def _proof_to_head_score(proof, ref_cost, head_cost):

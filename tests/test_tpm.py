@@ -496,3 +496,12 @@ def test_the_base_measurement_ignores_instance_shape_and_application():
             bytes.fromhex(MRTD_2026_11_03 + quote.rtmr1 + quote.rtmr2)
         ).hexdigest()
         assert rebased == BASE_2026_11_03
+
+
+def test_the_committed_attestation_fixtures_are_present():
+    """About seventeen TPM and dstack tests read these files and skip when one
+    is missing, so deleting a fixture would turn them into skips and leave CI
+    green. They are committed; their absence is a failure, here, by name."""
+    missing = [n for n in ("attestation_A.bin", "attestation_B.bin", "app-compose_A.json")
+               if not (FIXTURES / n).is_file()]
+    assert not missing, f"tests/fixtures is missing {missing}: the tests that read them would skip"

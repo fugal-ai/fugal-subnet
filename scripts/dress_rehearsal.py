@@ -55,9 +55,43 @@ RESULTS = os.path.join(os.path.dirname(__file__), "..", "results", "rehearsal")
 # structurally unable to keep up: it completed e00000042 while the validator
 # was already asking about e00000045.
 EPOCH_INTERVAL_S = "3600"
-TARGET_EPOCH_SECONDS = 90
-# Scenario v2_flip runs longer epochs: the v2 miner's late-start guard (see main).
+# The miner checks for a new epoch every MINER_POLL_SECONDS (neurons/miner.py)
+# and refuses to start one with fewer than LATE_START_MARGIN_BLOCKS to its
+# collection block (EPOCH_COLLECT_FRACTION of the way in). So an epoch must
+# leave, after a whole poll of lag, at least that margin:
+#     collect_s - poll_s >= margin_blocks x seconds_per_block
+# At 90 s (collection 45 s in) a fast CI devnet left 50-52 blocks, and since the
+# 30 s poll divides 90 s the miner landed at the same phase every epoch and
+# skipped all of them (nightly 42428107377, scenario a). At 150 s, 45 s remain
+# after the lag: >= 60 blocks for any block time up to 0.75 s.
+# check_late_start_headroom() refuses a run that cannot fit, before it starts.
+MINER_POLL_SECONDS = 30
+TARGET_EPOCH_SECONDS = 150
+# Scenario v2_flip runs longer epochs still: its handover needs two miners per
+# hotkey to fit inside one epoch.
 V2_FLIP_EPOCH_SECONDS = 180
+
+
+def check_late_start_headroom(epoch_interval_s: str, target_seconds: float) -> int:
+    """Blocks a miner still has to its collection block after a full poll of lag.
+
+    Raises when that is below the miner's late-start margin: the miner would
+    skip epochs by design and the scenario would time out with nothing to say.
+    """
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch
+    from fugal_subnet.config import EPOCH_COLLECT_FRACTION, LATE_START_MARGIN_BLOCKS
+
+    bpe = blocks_per_epoch(int(epoch_interval_s))
+    seconds_per_block = target_seconds / max(1, bpe)
+    headroom = int(bpe * EPOCH_COLLECT_FRACTION - MINER_POLL_SECONDS / seconds_per_block)
+    if headroom < LATE_START_MARGIN_BLOCKS:
+        raise RuntimeError(
+            f"{target_seconds:.0f}s epochs of {bpe} blocks leave {headroom} blocks to the "
+            f"collection point after a {MINER_POLL_SECONDS}s poll, under the miner's "
+            f"{LATE_START_MARGIN_BLOCKS}-block late-start margin: it would skip every epoch. "
+            "Raise TARGET_EPOCH_SECONDS."
+        )
+    return headroom
 
 
 # ── assertions ────────────────────────────────────────────────────────────────
@@ -1529,16 +1563,18 @@ def main() -> int:
         subtensor0 = wait_for_chain()
         from scripts.setup_local_testnet import calibrate_epoch_interval
         global EPOCH_INTERVAL_S
-        # The v2 image's miner polls about every 30 s and refuses to start an
-        # epoch with fewer than LATE_START_MARGIN_BLOCKS (60) to its collection
-        # block. On this devnet 30 s is ~100 blocks, so at 90 s epochs (a
-        # ~150-block collection offset) a miner whose poll lands at an unlucky
-        # phase skips EVERY epoch and the scenario stalls. 180 s epochs keep
-        # the poll lag well inside the margin, as mainnet's 12 s blocks do.
+        # Epoch length against the miner's late-start guard: see
+        # TARGET_EPOCH_SECONDS. Every scenario needs the headroom, not only
+        # v2_flip (scenario a stalled at 90 s on a fast devnet).
         target = V2_FLIP_EPOCH_SECONDS if args.scenario == "v2_flip" else TARGET_EPOCH_SECONDS
         EPOCH_INTERVAL_S = calibrate_epoch_interval(
             subtensor0, target, EPOCH_INTERVAL_S,
         )
+        headroom = check_late_start_headroom(EPOCH_INTERVAL_S, target)
+        from fugal_subnet.config import LATE_START_MARGIN_BLOCKS
+        print(f"  {target}s epochs leave {headroom} blocks to collection after a "
+              f"{MINER_POLL_SECONDS}s poll (miner needs >= {LATE_START_MARGIN_BLOCKS})",
+              flush=True)
         print("\nScenario harness ready.\n", flush=True)
         rc = run_scenarios(args, report)
     finally:

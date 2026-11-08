@@ -239,3 +239,18 @@ def test_rehearsal_v2_router_head_splits_a_collinear_pool(tmp_path):
     # Without the mean it is the old constant router.
     counts, _ = split(dr.write_head_v2(str(tmp_path / "constant.npz"), seed=24))
     assert counts.max() == 200, counts.tolist()
+
+
+def test_rehearsal_epochs_leave_the_miner_its_late_start_margin():
+    """Nightly 42428107377: at 90 s a fast devnet gave 292-block epochs, so a
+    miner 30 s late had 49 blocks to collection, under its 60-block margin, and
+    skipped every epoch of scenario a. The check refuses that geometry up
+    front; the shipped target clears it at that block rate."""
+    import pytest
+
+    dr = _load("dress_rehearsal")
+    with pytest.raises(RuntimeError, match="skip every epoch"):
+        dr.check_late_start_headroom(str(292 * 12), 90)
+    blocks_150 = int(150 / (90 / 292))                    # same chain speed, 150 s
+    assert dr.check_late_start_headroom(str(blocks_150 * 12), dr.TARGET_EPOCH_SECONDS) >= 60
+    assert dr.TARGET_EPOCH_SECONDS >= 150

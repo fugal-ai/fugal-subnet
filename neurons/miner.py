@@ -262,7 +262,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # land being worthless because no validator can query it. Reachability
     # first; the commitment is made after the axon is serving and retried each
     # epoch until it sticks.
-    committed = False
 
     tee_runtime = TEERuntime(mock=mock)
 
@@ -388,11 +387,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         # The chain rejects loopback and unspecified addresses for serve_axon
         # at pool validation (Custom error 11), before the extrinsic executes.
         # bt.Axon.serve() swallows that, so the only symptom is an axon that
-        # stays at 0.0.0.0 and a miner that silently earns nothing.
-        logger.error(
-            "FUGAL_AXON_IP=%s is not routable. The chain will reject serve_axon "
-            "and no validator will ever reach this miner. Set it to an address "
-            "validators can actually connect to.", external_ip,
+        # stays at 0.0.0.0 and a miner that silently earns nothing. A setting
+        # that guarantees that is a startup error, not a log line.
+        raise click.ClickException(
+            f"FUGAL_AXON_IP={external_ip} is not routable: the chain rejects "
+            "serve_axon for it and no validator could ever reach this miner. Set "
+            "it to an address validators can connect to."
         )
     # Fail before serving if something else already holds the port. bt.Axon
     # runs its server in a thread and a bind failure there does not surface:
@@ -406,14 +406,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     axon.attach(forward_fn=forward, blacklist_fn=blacklist)
 
     for attempt in range(5):
-        try:
-            axon.serve(netuid=netuid, subtensor=subtensor)
-        except Exception as e:
-            logger.warning("axon.serve() attempt %d failed: %s", attempt + 1, e)
-        metagraph = subtensor.metagraph(netuid)
-        registered_ip = metagraph.axons[my_uid].ip
-        if registered_ip not in ("0.0.0.0", ""):
-            logger.info("Axon registered on chain: %s:%d", registered_ip, port)
+        metagraph = _serve_axon_once(axon, subtensor, netuid)
+        if _axon_registered(metagraph, my_uid):
+            logger.info("Axon registered on chain: %s:%d", metagraph.axons[my_uid].ip, port)
             break
         if attempt < 4:
             logger.warning("Axon IP not registered yet, retrying in 15s...")
@@ -422,11 +417,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
             logger.error(
                 "axon.serve() failed after 5 attempts — the axon is still "
                 "unregistered (0.0.0.0), so no validator can query this miner "
-                "and it will earn nothing. Common causes: the external IP is "
-                "loopback or otherwise unroutable (currently %s), the port is "
-                "unreachable from outside, or the chain is rate limiting this "
-                "hotkey's transactions.",
-                external_ip or "auto-detected",
+                "and it earns nothing until it is. It is retried every %ds from "
+                "here on. Common causes: the port is unreachable from outside, "
+                "or the chain is rate limiting this hotkey's transactions.",
+                METAGRAPH_REFRESH_S,
             )
 
     axon.start()
@@ -453,6 +447,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
             if time.time() - last_refresh >= METAGRAPH_REFRESH_S:
                 try:
                     fresh = subtensor.metagraph(netuid)
+                    if not _axon_registered(fresh, my_uid):
+                        # Startup gave up after five tries, or the chain lost
+                        # the address. Without this the miner ran at 0.0.0.0
+                        # for good, alive and earning nothing.
+                        logger.warning("Axon not registered on chain (0.0.0.0); serving it again")
+                        fresh = _serve_axon_once(axon, subtensor, netuid)
+                        if _axon_registered(fresh, my_uid):
+                            logger.info("Axon registered on chain: %s:%d",
+                                        fresh.axons[my_uid].ip, port)
                     with mg_lock:
                         mg_state["metagraph"] = fresh
                 except Exception as e:
@@ -552,6 +555,25 @@ def _assert_chain_allows(network: str, mock: bool) -> None:
             subtensor.close()
         except Exception:  # noqa: BLE001 - closing a check connection is best effort
             pass
+
+
+def _axon_registered(metagraph, uid: int) -> bool:
+    """Does the chain hold a routable address for this UID's axon?"""
+    try:
+        ip = metagraph.axons[uid].ip
+    except (AttributeError, IndexError):
+        return False
+    return ip not in ("0.0.0.0", "", None)
+
+
+def _serve_axon_once(axon, subtensor, netuid: int):
+    """One serve_axon attempt; returns the metagraph read after it. A failed
+    attempt is logged, never raised: the caller decides whether to retry."""
+    try:
+        axon.serve(netuid=netuid, subtensor=subtensor)
+    except Exception as e:  # noqa: BLE001 - reported; the registered address is the verdict
+        logger.warning("axon.serve() failed: %s", e)
+    return subtensor.metagraph(netuid)
 
 
 def _my_uid(metagraph, hotkey_ss58: str, netuid: int) -> int:

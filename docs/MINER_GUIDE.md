@@ -86,7 +86,7 @@ block.
 ```bash
 uv run python scripts/train_head.py \
   --synthetic --n-questions 300 \
-  --prices data/models_v2.json --manifest data/benchmark_tokens_protocol_v2.json \
+  --prices data/models_v2.json \
   --models anthropic/claude-haiku-5.5 deepseek/deepseek-v4.1-flash openai/gpt-6.1-terra \
   --output data/synthetic_head_test.npz
 ```

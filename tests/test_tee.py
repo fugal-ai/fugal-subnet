@@ -878,3 +878,27 @@ def test_a_fresh_td_starts_from_zero():
     from fugal_subnet.tee.attestation import replay_rtmr
 
     assert replay_rtmr([]) == "00" * 48
+
+
+@pytest.mark.parametrize("override, reason", [
+    ({"total_cost_usd": 0.5}, "per-question sum"),
+    ({"per_model_costs": {"model-a": 0.004, "model-b": 0.5}}, "per-model sum"),
+])
+def test_attested_costs_must_reconcile(override, reason):
+    """Under real attestation the proxy produces every cost figure, so figures
+    that disagree mean the proof is not what it claims. Built and attested
+    with the inconsistency, so report_data binding passes and only the cost
+    check can refuse it. (Planting a no-op for the per-model check survived the
+    whole suite and every attack suite; the per-question one only the TEE
+    attack suite caught.)"""
+    proof = _make_proof(**override)
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce=proof.nonce,
+        gold_answers={f"q{i}": {"question_id": f"q{i}"} for i in range(5)},
+        mock=True,
+    )
+    assert not result.valid
+    assert "Cost inconsistency" in result.reason and reason in result.reason

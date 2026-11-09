@@ -143,9 +143,13 @@ def test_the_hard_flag_is_the_hard_category():
 def test_hard_questions_get_the_hard_weight():
     from fugal_subnet.champion import pair_units
 
-    win = run(0, {5: oracle, 6: always("m/strong")}).window
+    # Two heads that disagree on the hard questions: against always("m/strong")
+    # the oracle grades identically everywhere, every unit was 0, and 2 * 0 == 0
+    # held whatever the hard weight was (found by a planted bug, 2026-11-08).
+    win = run(0, {5: oracle, 6: always("m/cheap")}).window
     on = pair_units(win, H(5), H(6), accuracy_value=1e300, hard_weight=2.0)
     off = pair_units(win, H(5), H(6), accuracy_value=1e300, hard_weight=1.0)
+    assert np.any(off.by_category["hard"] != 0), "the heads must differ on hard questions"
     assert np.array_equal(on.by_category["hard"], 2 * off.by_category["hard"])
     assert np.array_equal(on.by_category["math"], off.by_category["math"])
 

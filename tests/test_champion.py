@@ -638,3 +638,96 @@ def test_a_lower_bound_exactly_at_the_margin_does_not_take_the_seat():
     assert r.mean_units > m                 # the point estimate is not what stops it
     assert r.lcb_units == m                 # the bound sits exactly on the margin
     assert not r.takes_seat
+
+
+# --- rule gaps a planted-bug review found (each test fails if its rule breaks) ---
+
+
+def test_a_mean_exactly_at_the_margin_never_takes_whatever_the_bound_says():
+    """The point estimate is a necessary condition: a mean exactly AT the
+    margin does not take the seat and pays no bootstrap, even where the bound
+    alone would clear the margin (a low confidence puts the 'lower' bound at
+    the 90th percentile of the resamples)."""
+    m = round(0.2 * NV_UNITS_PER_POINT)
+    at = [m - 100_000, m + 100_000] * 500                 # mean exactly the margin
+    above = [m - 100_000, m + 100_002] * 500              # mean 1 unit above it
+    for conf in (0.9, 0.1):
+        r = paired_test({"x": at}, margin_points=0.2, confidence=conf, resamples=200, seed=3)
+        assert r.mean_units == m and not r.takes_seat
+        assert r.lcb_units == r.mean_units                # no bootstrap ran
+    # Control: one unit above the margin, the same low-confidence bound takes.
+    r = paired_test({"x": above}, margin_points=0.2, confidence=0.1, resamples=200, seed=3)
+    assert r.takes_seat
+
+
+def test_the_hard_accuracy_gate_blocks_a_take():
+    w = build_window({"champ": noisy(oracle_router, 0.6, 5), "better": oracle_router})
+    acc_h, n_h = window_accuracy(w, "better", hard_only=True)
+    assert n_h >= PARAMS.hard_gate_min_questions and acc_h < 0.99
+    cands = {"champ": cand("champ", 0), "better": cand("better", 1)}
+    # Control: no hard mark, the better head takes.
+    assert seat_step(seated("champ"), 9, "e9", w, cands, params=PARAMS).event == "take"
+    # A hard mark just above its hard accuracy blocks it, though its overall
+    # accuracy clears the (zero) overall mark.
+    st = SeatState(champion="champ", champion_since=0, high_water_hard=acc_h + 0.001)
+    d = seat_step(st, 9, "e9", w, cands, params=PARAMS)
+    assert d.event == "hold" and d.champion == "champ"
+    assert any("hard accuracy" in msg for h, msg in d.detail if h == "better")
+
+
+def test_a_new_champion_never_lowers_the_high_water_mark():
+    """The marks never fall while a champion stands: a challenger that clears
+    the mark but whose Wilson bound is below it leaves the mark where it was."""
+    from fugal_subnet.champion import _wilson_lower
+
+    w = build_window({"champ": noisy(oracle_router, 0.6, 5), "better": oracle_router})
+    acc, n = window_accuracy(w, "better")
+    hw = acc - 0.001
+    assert _wilson_lower(acc, n, PARAMS.wilson_confidence) < hw <= acc
+    d = seat_step(seated("champ", hw=hw), 9, "e9", w,
+                  {"champ": cand("champ", 0), "better": cand("better", 1)}, params=PARAMS)
+    assert d.event == "take" and d.champion == "better"
+    assert d.state.high_water == hw
+
+
+def test_holding_reads_the_whole_window_not_the_current_run():
+    """The champion's side is every window epoch it was scored in. A champion
+    that missed epoch 8 and failed every call in epoch 9 has a current run of
+    one epoch at 0% accuracy, but its window accuracy is far above the floor:
+    it holds. (A challenger's TAKE gates read only its run.)"""
+    w = Window.empty(48)
+    for e in range(10):
+        sl, diff = make_slice(e)
+        ans = {}
+        if e != 8:
+            ans["champ"] = HeadEpoch(np.asarray(oracle_router(diff), dtype=np.int64),
+                                     np.full(Q, e == 9))
+        w = w.add_epoch(sl, ans)
+    run_acc, run_n = window_accuracy(w, "champ", run_only=True)
+    acc, n = window_accuracy(w, "champ")
+    assert run_n == Q and run_acc == 0.0 < PARAMS.min_accuracy <= acc and n == 9 * Q
+    d = seat_step(seated("champ"), 9, "e9", w, {"champ": cand("champ", 0)}, params=PARAMS)
+    assert d.event == "hold" and d.champion == "champ"
+    # Control: failing every call in every epoch is below the floor and loses it.
+    lost = failing_window({"champ": oracle_router}, failing={"champ"})
+    assert seat_step(seated("champ"), 9, "e9", lost, {"champ": cand("champ", 0)},
+                     params=PARAMS).event == "ghost"
+
+
+def test_pair_units_weights_hard_questions_by_the_hard_weight():
+    """Through the production path (pair_units -> _units), not the scalar
+    question_nv_units: on a hard question a grade difference counts
+    hard_weight times what it counts elsewhere."""
+    w = build_window({"strong": constant(2), "weak": constant(0)})
+    # A huge V drops the cost term to well under one unit.
+    pu = pair_units(w, "strong", "weak", accuracy_value=1e300, hard_weight=2.0)
+    epochs = w.epochs_of("strong")
+    diff = np.concatenate([w.head_vectors("strong", e)[0] - w.head_vectors("weak", e)[0]
+                           for e in epochs])
+    cats = np.concatenate([np.asarray(w.slices[e].categories) for e in epochs])
+    for c, got in pu.by_category.items():
+        weight = 2.0 if c == "hard" else 1.0
+        expect = np.rint(weight * 100.0 * NV_UNITS_PER_POINT * diff[cats == c]).astype(np.int64)
+        assert np.array_equal(got, expect), c
+    assert pu.by_category["hard"].max() == 200 * NV_UNITS_PER_POINT
+    assert pu.by_category["math"].max() == 100 * NV_UNITS_PER_POINT

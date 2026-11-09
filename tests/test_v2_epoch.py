@@ -80,11 +80,13 @@ def C(uid, head, block, coldkey=None):
 
 
 def run(epoch, policies, *, window=None, seat=None, copy=None, commits=None, burn_in=0,
-        blocks=None, records=None, heads=None, coldkeys=None):
+        blocks=None, records=None, heads=None, coldkeys=None, failed=None):
     """One v2 epoch. Epoch e is chain epoch e + 1, so every head's first-commit
     epoch (>= 1) is at or before it. By default UID u serves head H(u) from
-    hotkey hk{u} under coldkey ck{u}, committed at block `blocks[u]` (= u)."""
+    hotkey hk{u} under coldkey ck{u}, committed at block `blocks[u]` (= u).
+    `failed[u]` lists the question indices whose calls UID u failed."""
     uids = sorted(policies)
+    failed = failed or {}
     heads = heads or {u: H(u) for u in uids}
     blocks = blocks or {u: u for u in uids}
     coldkeys = coldkeys or {u: f"ck{u}" for u in uids}
@@ -94,7 +96,7 @@ def run(epoch, policies, *, window=None, seat=None, copy=None, commits=None, bur
     return run_v2_epoch(
         epoch_index=e, epoch_id=f"e{e:08d}", boundary_block=e * BPE, blocks_per_epoch=BPE,
         questions=questions(epoch), pool_models=MODELS, prices=PRICES,
-        verified_proofs={u: proof(epoch, policies[u]) for u in uids},
+        verified_proofs={u: proof(epoch, policies[u], tuple(failed.get(u, ()))) for u in uids},
         head_hashes=heads, coldkey_of=coldkeys, hotkey_of={u: f"hk{u}" for u in uids},
         records=records if records is not None else {u: burned(heads[u]) for u in uids},
         commitments=commits, window=window or Window.empty(48), seat=seat or SeatState(),
@@ -415,3 +417,43 @@ def test_the_first_seat_among_pre_flip_commits_goes_by_the_salted_tie_break():
         assert r.reveal["v2_seniority"] == {"floor_block": BPE, "salt": salt}
         winners.add(r.decision.champion)
     assert winners == {H(5), H(6)}      # the earlier commit does not always win
+
+
+# --- rule gaps a planted-bug review found (each test fails if its rule breaks) ---
+
+
+def test_a_former_champion_below_the_floor_is_not_paid():
+    """Payout eligibility is the hold rule, accuracy floor included: a live
+    seat-2 head whose window accuracy is under CHAMPION_MIN_ACCURACY is an
+    unpaid seat, and its share goes to the champion."""
+    seat = SeatState(champion=H(6), champion_since=1, history=(H(5),))
+    ok = run(0, {5: oracle, 6: oracle}, seat=seat)
+    assert ok.decision.event == "hold"
+    assert w(ok) == pytest.approx({6: 0.90, 5: 0.10})          # control: seat 2 paid
+    broken = run(0, {5: oracle, 6: oracle}, seat=seat, failed={5: range(Q)})
+    assert broken.decision.event == "hold" and broken.decision.champion == H(6)
+    assert w(broken) == pytest.approx({6: 1.0})
+
+
+def test_a_junior_must_also_beat_a_senior_seat_two_holder():
+    """The copy rule through the wiring: the seat holders a junior must beat
+    are the epoch's PAID SEATS (seat_holders), not only the champion. J (H9) is
+    a router identical to the former champion H5 (seat 2, live, senior) and
+    beats the constant champion H7 by far. With H5 in the seats J cannot take;
+    without it (the control) J takes."""
+    from fugal_subnet.evidence import Evidence
+
+    pols = {5: oracle, 7: always("m/cheap"), 9: oracle}
+    blocks = {5: 1, 7: 3, 9: 9}
+    # H5 is not burned in, so it does not challenge for the seat itself.
+    records = {5: SimpleNamespace(evidence=Evidence(weights_hash=H(5), n_total=10_000.0,
+                                                    n_correct=8000.0, burn_in_n=0.0)),
+               7: burned(H(7)), 9: burned(H(9))}
+    kw = dict(blocks=blocks, records=records, burn_in=1500)
+    control = chain(range(30), pols, seat=SeatState(champion=H(7), champion_since=1), **kw)
+    assert control.decision.state.champion == H(9)
+    barred = chain(range(30), pols,
+                   seat=SeatState(champion=H(7), champion_since=1, history=(H(5),)), **kw)
+    assert barred.decision.event == "hold" and barred.decision.state.champion == H(7)
+    assert any(msg.startswith(f"does not beat senior {H(5)[:16]}")
+               for h, msg in barred.decision.detail if h == H(9))

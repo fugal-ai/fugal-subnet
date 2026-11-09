@@ -721,3 +721,63 @@ def test_a_commit_at_the_activation_block_ties_with_earlier_pre_flip_commits():
     assert key(at)[0] == key(early)[0] == act
     assert key(at) == cr.v2_seniority(_state_with({at: 20}), at, floor_block=act, salt="0xabc")
     assert key(at) < key(after) and key(early) < key(after)
+
+
+# --- rule gaps a planted-bug review found (each test fails if its rule breaks) ---
+
+
+def test_a_coldkey_swap_keeps_the_head_when_the_new_digest_sorts_above_the_old():
+    """Ownership follows the first committer's hotkey across a coldkey swap.
+    The existing swap test passes even without that rule, because there the
+    new coldkey's owner digest happens to sort BELOW the old one, so the
+    'earlier claim' path re-owns the head by accident. Here it sorts above."""
+    old, new = "ck-old", "ck-after"
+    assert cr._claim(100, H("x"), new) > cr._claim(100, H("x"), old)   # the precondition
+    s = obs(cr.CopyState(), 1, C("hk-author", old, "x", 100))
+    s = obs(s, 2, C("hk-author", new, "x", 100))
+    r = s.get(H("x"))
+    assert r.owner == new and r.active and r.retired_at is None and r.first_block == 100
+    assert H("x") not in cr.retired_hashes(s)
+    assert cr.owner(s, H("x")) == (new, "hk-author")
+    # Control: a different hotkey under the new coldkey is still a copy.
+    s2 = obs(obs(cr.CopyState(), 1, C("hk-author", old, "x", 100)), 2,
+             C("hk-author", old, "x", 100), C("hk-other", new, "x", 100))
+    assert s2.get(H("x")).owner == old
+    assert cr.classify(s2, {4: C("hk-other", new, "x", 100)}) == {4: "copy"}
+
+
+def test_an_earlier_claim_by_the_same_owner_keeps_its_first_retirement():
+    """retired_at is the epoch the head FIRST stopped being active. An earlier
+    claim on record for the same coldkey (chain state the record never saw)
+    re-dates the first commit but must not reset the retirement, or an owner
+    could restart its retire window by re-claiming from another hotkey."""
+    s = obs(cr.CopyState(), 1, C("hk-b", "ck", "x", 100), ghost_retire=3)
+    s = obs(s, 2, C("hk-b", "ck", "y", 200), ghost_retire=3)             # retired at 2
+    s = obs(s, 3, C("hk-a", "ck", "x", 90), ghost_retire=3)              # earlier claim
+    r = s.get(H("x"))
+    assert r.first_block == 90 and r.first_hotkey == "hk-a" and r.active
+    assert r.retired_at == 2
+    s = obs(s, 4, C("hk-a", "ck", "y", 400), ghost_retire=3)             # retired again
+    assert s.get(H("x")).retired_at == 2
+    s = obs(s, 5, C("hk-a", "ck", "y", 400), ghost_retire=3)
+    assert H("x") not in s                     # the window ran from epoch 2: 2, 3, 4
+    # Control: an earlier claim by ANOTHER coldkey is a different owner's
+    # record, which starts with no retirement.
+    t = obs(cr.CopyState(), 1, C("hk-b", "ck", "x", 100), ghost_retire=3)
+    t = obs(t, 2, C("hk-b", "ck", "y", 200), ghost_retire=3)
+    t = obs(t, 3, C("hk-c", "ck-c", "x", 90), ghost_retire=3)
+    assert t.get(H("x")).owner == "ck-c" and t.get(H("x")).retired_at is None
+
+
+def test_a_retired_head_kept_by_a_copier_stops_barring_on_the_last_retire_epoch():
+    """A ghost bars until retired_at + ghost_retire - 1 (CopyState.to_reveal).
+    While a copier still commits the hash its record is kept past that, so
+    the comparison set itself must drop it at the boundary."""
+    w = build_window({H("S"): oracle_router})
+    s = obs(cr.CopyState(), 9, C("hk1", "ck1", "S", 100), ghost_retire=3)
+    status = {}
+    for e in range(10, 15):
+        s = obs(s, e, C("hk1", "ck1", "S2", 3000), C("hk-c", "ck-c", "S", 3500), ghost_retire=3)
+        assert H("S") in s and s.get(H("S")).retired_at == 10      # kept by the copier
+        status[e] = cr.comparison_set(s, e, w, ghost_off=OFF, ghost_retire=3).get(H("S"))
+    assert status == {10: "retired", 11: "retired", 12: "retired", 13: None, 14: None}

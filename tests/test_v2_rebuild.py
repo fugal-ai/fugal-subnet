@@ -192,3 +192,27 @@ def test_a_malformed_reveal_is_refused_by_name_not_crashed_on(tmp_path):
         with pytest.raises(ValueError, match="reveal e0000000|epoch_id") as e:
             rebuild_v2_from_reveals(d, window_size=48, prices=PRICES, bench_category=CATEGORY)
         assert "e00000002" in str(e.value) or "exx" in str(e.value), (name, str(e.value))
+
+
+def test_the_rebuild_carries_failed_calls(tmp_path):
+    """Every other test's heads answer every call, so a rebuild that dropped
+    the reveal's `failed` lists would pass them. Here UID 6 fails a third of
+    its calls in odd epochs: a failed call grades 0 and costs 0 in the window,
+    so the rebuilt window must mark exactly the same calls failed."""
+    from tests.test_v2_epoch import H, Q
+
+    pols = {5: always("m/strong"), 6: oracle, 7: always("m/cheap")}
+    window = seat = copy = None
+    reveals = []
+    for e in range(6):
+        failed = {6: range(0, Q, 3)} if e % 2 else {}
+        r = run(e, pols, window=window, seat=seat, copy=copy, failed=failed)
+        window, seat, copy = r.window, r.decision.state, r.copy_state
+        reveals.append(json.loads(json.dumps(reveal_of(e, r, pols))))
+    assert len(r.reveal["failed"]["6"]) == Q // 3                    # epoch 5 is odd
+    assert sum(int(he.failed.sum()) for he in window.heads[H(6)].values()) == 3 * (Q // 3)
+    write(tmp_path, reveals)
+    rb = rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES, bench_category=CATEGORY)
+    same_window(rb.window, window)
+    from fugal_subnet.champion import window_accuracy
+    assert window_accuracy(rb.window, H(6)) == window_accuracy(window, H(6))

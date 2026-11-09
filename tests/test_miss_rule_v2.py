@@ -138,3 +138,21 @@ def test_update_scores_uses_the_v2_burn_in_in_v2_epochs():
     after = update_scores(s, {}, {}, frontier=frontier, n_questions=300,
                           protocol_version=2).records[1].evidence
     assert after.n_total > 0 and after.burn_in_n == 0.0
+
+
+def test_a_miss_at_exactly_the_burn_in_count_decays_and_does_not_reset():
+    """Burn-in is complete AT the count (burn_in_complete is >=), so the miss
+    rule's 'before burn-in' must be strictly below it. Five epochs of 300 is
+    exactly v2's 1,500: the normal state of a head five epochs in."""
+    from fugal_subnet.config import V2_BURN_IN_QUESTIONS as V2
+
+    exact = grow(V2 // 300)
+    assert exact.burn_in_n == V2 and burn_in_complete(exact, V2)
+    after = apply_miss_v2(exact, HL, V2)
+    a = decay_factor(HL)
+    assert after.n_total == exact.n_total * a and after.n_correct == exact.n_correct * a
+    assert after.epochs_accumulated == exact.epochs_accumulated
+    assert after.burn_in_n == 0.0
+    # Control: one epoch short is before burn-in, and resets.
+    short = apply_miss_v2(grow(V2 // 300 - 1), HL, V2)
+    assert short.n_total == short.n_correct == 0.0 and short.epochs_accumulated == 0

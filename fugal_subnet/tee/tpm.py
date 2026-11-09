@@ -91,7 +91,15 @@ def parse_attest(message: bytes) -> dict:
 
 
 def _signature_rs(signature: bytes) -> tuple[int, int]:
-    """Pull (r, s) out of a TPMT_SIGNATURE, refusing anything but ECDSA/SHA256."""
+    """Pull (r, s) out of a TPMT_SIGNATURE, refusing anything but ECDSA/SHA256.
+
+    The bytes come from a miner, so every malformation is a TpmError (a
+    rejection). A truncated signature used to escape as struct.error, past
+    unwrap_attestation's TpmError handler and out of verify_proof, which is
+    contracted not to raise on miner input (found by planted bugs and
+    fuzzing, 2026-11-08). The validator contained it to one miner; direct
+    callers (provision.push, the scripts) crashed.
+    """
     if len(signature) < 8:
         raise TpmError("signature is too short to be a TPMT_SIGNATURE")
     sig_alg, hash_alg = struct.unpack_from(">HH", signature, 0)
@@ -100,10 +108,13 @@ def _signature_rs(signature: bytes) -> tuple[int, int]:
     if hash_alg != TPM_ALG_SHA256:
         raise TpmError(f"hash algorithm {hash_alg:#x} is not SHA256")
     pos = 4
-    (rn,) = struct.unpack_from(">H", signature, pos); pos += 2
-    r = int.from_bytes(signature[pos:pos + rn], "big"); pos += rn
-    (sn,) = struct.unpack_from(">H", signature, pos); pos += 2
-    s = int.from_bytes(signature[pos:pos + sn], "big"); pos += sn
+    try:
+        (rn,) = struct.unpack_from(">H", signature, pos); pos += 2
+        r = int.from_bytes(signature[pos:pos + rn], "big"); pos += rn
+        (sn,) = struct.unpack_from(">H", signature, pos); pos += 2
+        s = int.from_bytes(signature[pos:pos + sn], "big"); pos += sn
+    except struct.error as e:
+        raise TpmError(f"signature is truncated inside r or s: {e}") from e
     if pos > len(signature):
         raise TpmError("signature is truncated inside r or s")
     # Real dstack blobs carry five trailing bytes after the TPMT_SIGNATURE

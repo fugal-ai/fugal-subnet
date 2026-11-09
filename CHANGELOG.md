@@ -4,6 +4,18 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — a truncated TPM signature is a rejection, not a crash
+
+A TPMT_SIGNATURE cut inside r or s raised `struct.error`, which escaped
+`unwrap_attestation` and `verify_proof` (contracted not to raise on miner
+input). The validator contained it to that one miner; `provision.push` and
+the scripts crashed. It is now a `TpmError`. Found by planted bugs and by
+fuzzing the real attestation blobs (3,000 mutations; no other escape).
+Also: tests for each certificate-chain rule against a throwaway CA (an
+issuer must be a CA, a missing basicConstraints, the depth bound, the root
+pin, an RSA attestation key, a certificate naming the root but signed by
+another key), and for each TPM and SCALE format rule at its own layer.
+
 ### Changed — DCAP collateral is fetched once per platform per epoch; stale collateral is an outage
 
 `verify_dcap` fetched collateral for every proof. The epoch's

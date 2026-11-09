@@ -83,3 +83,38 @@ def test_offsets_are_reported_so_a_caller_can_walk_a_struct():
     raw, used = decode_bytes(blob, 0)
     assert raw == b"abc"
     assert decode_u32(blob, used) == (7, 4)
+
+
+# --- The dstack envelope's own format checks ---------------------------------
+#
+# scale.py and tpm.py each check the TCG magic, so removing either alone passed
+# every test (planted bugs, 2026-11-08). Each is pinned here at its own layer.
+
+def _tpm_quote(message=b"\xffTCG" + b"\x00" * 8, ak_cert=b"\x30\x00"):
+    from fugal_subnet.scale import encode_compact
+    vec = lambda b: encode_compact(len(b)) + b          # noqa: E731
+    return vec(message) + vec(b"sig") + encode_compact(0) + vec(ak_cert)
+
+
+def test_the_tpm_quote_is_refused_without_the_tcg_magic():
+    from fugal_subnet.scale import decode_tpm_quote
+    assert decode_tpm_quote(_tpm_quote())["ak_cert"] == b"\x30\x00"
+    with pytest.raises(ScaleError, match="TPMS_ATTEST magic"):
+        decode_tpm_quote(_tpm_quote(message=b"\x00TCG" + b"\x00" * 8))
+
+
+def test_the_ak_certificate_must_start_as_der():
+    from fugal_subnet.scale import decode_tpm_quote
+    with pytest.raises(ScaleError, match="DER SEQUENCE"):
+        decode_tpm_quote(_tpm_quote(ak_cert=b"\x31\x00"))
+
+
+def test_an_envelope_whose_layout_moved_is_refused_where_it_moved():
+    """The peek names the point the layout broke, instead of plausible garbage
+    from the TPM decoder further on."""
+    from fugal_subnet.scale import decode_dstack_attestation
+    header_quote_events = b"\x02\x00" + encode_compact(4) + b"QUOT" + encode_compact(0)
+    ok = decode_dstack_attestation(header_quote_events + _tpm_quote())
+    assert ok["quote"] == b"QUOT" and ok["events"] == []
+    with pytest.raises(ScaleError, match="the layout has moved"):
+        decode_dstack_attestation(header_quote_events + _tpm_quote(message=b"\x00" * 12))

@@ -56,3 +56,35 @@ def test_an_unknown_version_is_refused():
         epoch_plan.scored_slice(3, _n(0), V2_POOL, 300)
     with pytest.raises(ValueError):
         epoch_plan.exploration_plan(3, _n(0), V2_POOL, set(), MODELS, 15)
+
+
+def test_v2_hard_category_follows_its_benchmark_weights_not_pool_size():
+    """Within `hard`, BENCHMARK_WEIGHT_V2 sets the mix (supergpqa_hard 50%).
+    Dropping the weights falls back to pool size (supergpqa_hard ~78% here),
+    a different consensus question mix that no other test noticed (planted
+    bug, 2026-11-08)."""
+    from fugal_subnet.config import BENCHMARK_WEIGHT_V2
+
+    hard = Counter()
+    for i in range(20):
+        hard.update(q["benchmark"] for q in epoch_plan.scored_slice(2, _n(100 + i), V2_POOL, 300)
+                    if BENCHMARK_CATEGORY_V2[q["benchmark"]] == "hard")
+    total = sum(hard.values())
+    for bench, w in BENCHMARK_WEIGHT_V2.items():
+        assert abs(hard[bench] / total - w) < 0.02, (bench, hard[bench] / total, w)
+
+
+# Pinned outputs for one nonce. Both neurons must select exactly these; any
+# change to selection, apportionment, the exploration nonce or model
+# assignment is a consensus change and must update these on purpose.
+GOLDEN_V2_SLICE_SHA256 = "4fc11fbddbcb506abff9395018f18bb72d9de4886961a76814c1496f80a02632"
+GOLDEN_V2_PLAN_SHA256 = "c6cdaf83463d6ed770818e75aef80a0fa68da42b536b95fa4082c47cc0ea2720"
+
+
+def test_v2_selection_is_pinned():
+    import json
+
+    ids = [q["question_id"] for q in epoch_plan.scored_slice(2, _n(7), V2_POOL, 300)]
+    plan = epoch_plan.exploration_plan(2, _n(7), V2_POOL, set(ids), MODELS, 15)
+    assert hashlib.sha256(json.dumps(ids).encode()).hexdigest() == GOLDEN_V2_SLICE_SHA256
+    assert hashlib.sha256(json.dumps(sorted(plan.items())).encode()).hexdigest() == GOLDEN_V2_PLAN_SHA256

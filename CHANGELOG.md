@@ -267,8 +267,9 @@ with every genuine digest and a rewritten payload replayed to the signed
 register, so `verify_proof` approved an application nobody had approved.
 Verified on the real fixtures. The replay now recomputes each event's digest
 from its name and payload (both dstack encodings) and refuses a mismatch, and
-refuses an event name that contains `:` (which let one digest be read as a
-different name) or appears twice. Regression tests on synthetic and real
+refuses an event name outside `[A-Za-z0-9._-]{1,64}` (a `:` let one digest
+be read as a different name) or one that appears twice. The unused `preimage`
+check (the wire format carries none) and the `upto` parameter are removed. Regression tests on synthetic and real
 logs; four new `run_tee_attacks` cases.
 
 ### Fixed — epoch artifacts are written atomically; the publisher refuses a partial reveal

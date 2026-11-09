@@ -880,26 +880,6 @@ def test_replay_filters_to_the_register_and_keeps_order():
     assert replay_event_log(reordered, imr=3)[0] != rtmr3
 
 
-def test_replay_stops_at_upto():
-    from fugal_subnet.tee.attestation import replay_event_log
-
-    log = [_ev("compose-hash", "abcd"), _ev("instance-id", "beef")]
-    partial, seen = replay_event_log(log, upto="compose-hash")
-    assert set(seen) == {"compose-hash"}
-    assert partial != replay_event_log(log)[0]
-
-
-def test_replay_rejects_a_lying_preimage():
-    """A v2 event carrying a preimage that does not hash to its digest is a log
-    claiming to have extended something it did not."""
-    from fugal_subnet.tee.attestation import replay_event_log
-
-    ev = _ev("compose-hash", "abcd")
-    ev["preimage"] = "00" * 16          # hashes to something else entirely
-    with pytest.raises(ValueError, match="preimage"):
-        replay_event_log([ev])
-
-
 def test_changing_the_compose_hash_changes_the_register():
     """The property the whole scheme rests on: different app, different RTMR3."""
     from fugal_subnet.tee.attestation import replay_event_log
@@ -979,17 +959,25 @@ def test_replay_refuses_a_name_that_resplits_a_digest():
     # Same digests, so the same register: only the name rule tells them apart.
     rtmr3 = replay_rtmr([e["digest"] for e in genuine])
     assert replay_rtmr([e["digest"] for e in resplit]) == rtmr3
-    with pytest.raises(ValueError, match="contains ':'"):
+    with pytest.raises(ValueError, match="is not an event name"):
         replay_event_log(resplit)
     # Anywhere in the name, in either encoding: a ':' inside the payload
     # moves the split point just as well as one at its start.
     for version in (1, 2):
-        with pytest.raises(ValueError, match="contains ':'"):
+        with pytest.raises(ValueError, match="is not an event name"):
             replay_event_log([_ev("compose-hash:x", "beef", version=version)])
+    # Names are an allow-list: empty, non-ASCII, whitespace and other
+    # separators are refused in both encodings, before the digest is checked.
+    for bad in ("", "compose hash", "compose-hash\u00e9", "compose/hash", "x" * 65):
+        for version in (1, 2):
+            with pytest.raises(ValueError, match="is not an event name"):
+                replay_event_log([_ev(bad, "beef", version=version)])
+    for good in ("compose-hash", "boot-mr-done", "os_image.hash2", "x" * 64):
+        replay_event_log([_ev(good, "beef")])
     # The v2 (JSON) encoding has no such split: the digest itself refuses it.
     v2 = _ev("compose-hash", mine.hex(), version=2)
     with pytest.raises(ValueError, match="does not bind"):
-        replay_event_log([dict(v2, event="compose-hash;", event_payload=mine[1:].hex())])
+        replay_event_log([dict(v2, event="compose-hash2", event_payload=mine[1:].hex())])
 
 
 def test_event_log_must_reproduce_the_quote_before_it_is_read():

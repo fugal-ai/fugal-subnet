@@ -900,8 +900,10 @@ joins type, name and payload with `:`, so a name that holds `:` can absorb
 payload bytes: a miner varies its own compose until the hash starts with
 `:`, presents the genuine `compose-hash` digest as the name `compose-hash:`,
 and a later extend under `compose-hash` becomes the only one, over the same
-register. So a name containing `:` is refused (dstack's names never contain
-one; checked on both real logs), and so is a name that appears twice: the
+register. So event names are an allow-list, `[A-Za-z0-9._-]{1,64}` (every
+name dstack extends fits; checked on both real logs): no `:`, nothing empty,
+nothing non-ASCII, where `json.dumps` and the canonical JSON of the second
+encoding would part ways. A name that appears twice is refused too: the
 initrd extends each event once before any container runs, and a second one
 can only be the application's. `tests/test_tee.py`, `tests/test_dstack_blob.py`
 (on the real logs) and four `run_tee_attacks` cases hold it, and

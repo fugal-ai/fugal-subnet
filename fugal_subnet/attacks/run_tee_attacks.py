@@ -359,12 +359,6 @@ def a_truncated_event_log():
     return _verify_log(_HONEST_LOG[:1])
 
 
-def a_lying_preimage():
-    """A v2 preimage that does not hash to the digest it accompanies."""
-    log = [dict(_HONEST_LOG[0], preimage="00" * 16), dict(_HONEST_LOG[1])]
-    return _verify_log(log)
-
-
 def a_wrong_width_digest():
     """A SHA256 digest where the register needs SHA384."""
     log = [dict(_HONEST_LOG[0], digest="ab" * 32), dict(_HONEST_LOG[1])]
@@ -527,7 +521,6 @@ ATTACKS = [
     ("re-split the compose-hash digest into another name", "I8", a_resplit_compose_hash_name),
     ("reorder the event log to hit a target", "I8", a_reordered_event_log),
     ("truncate the event log", "I8", a_truncated_event_log),
-    ("v2 preimage that lies about its digest", "I8", a_lying_preimage),
     ("SHA256 digest where SHA384 is required", "I8", a_wrong_width_digest),
     ("valid log, unapproved application", "I8", a_unapproved_app_in_a_valid_log),
     ("smuggle a colon to drop the app requirement", "I8",

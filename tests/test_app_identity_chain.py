@@ -189,7 +189,7 @@ def test_a_resplit_compose_hash_name_is_refused():
     forged = [dict(genuine[0], event="compose-hash:", event_payload=mine[1:].hex()),
               genuine[1], genuine[2]]
     r = _log_verify(forged, rtmr3=bytes.fromhex(replay_rtmr([e["digest"] for e in genuine])))
-    assert not r.valid and "contains ':'" in r.reason
+    assert not r.valid and "is not an event name" in r.reason
 
 
 def test_events_for_other_registers_are_not_replayed_into_rtmr3():

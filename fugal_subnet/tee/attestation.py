@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import struct
 import time
 from dataclasses import dataclass
@@ -236,6 +237,13 @@ def expected_rtmr3(runtime_identity_hex: str) -> str:
 # dstack tags every runtime event it extends with this type.
 _DSTACK_EVENT_TYPE = 0x08000001
 
+# What an event name may be: every name dstack extends (system-preparing,
+# app-id, compose-hash, gpu-policy-hash, instance-id, boot-mr-done,
+# key-provider, storage-fs, system-ready) and nothing else. No ':' (the first
+# encoding's separator), nothing empty, nothing non-ASCII (where json.dumps
+# and the canonical JSON of the second encoding part ways).
+_EVENT_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
 
 def dstack_event_digest(name: str, payload: bytes, version: int = 2) -> str:
     """The 48-byte value dstack extends for one runtime event.
@@ -271,7 +279,7 @@ def dstack_event_digest(name: str, payload: bytes, version: int = 2) -> str:
     return hashlib.sha384(canonical.encode("utf-8")).hexdigest()
 
 
-def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str, dict]:
+def replay_event_log(events, imr: int = 3) -> tuple[str, dict]:
     """Replay one measurement register from an event log; return (rtmr, events).
 
     THE LOG IS UNTRUSTED. It reaches a validator from the miner, and the only
@@ -284,12 +292,9 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
     verifier that sorted or de-duplicated the log would let a miner rearrange it
     to reach a chosen value.
 
-    `upto` stops after the named event, which is how a verifier can bind only as
-    far as `compose-hash` and ignore per-instance events that follow it.
-
     Every event's digest is checked against its own (name, payload) in both
     dstack encodings, so a field read from the returned map is the one that
-    was actually extended. A name may not contain ':' and may appear only
+    was actually extended. A name must match `_EVENT_NAME` and may appear only
     once, so each digest has exactly one reading and each name one value.
     """
     reg = b"\x00" * _RTMR_DIGEST_BYTES
@@ -301,17 +306,6 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
         digest = bytes.fromhex(digest_hex) if isinstance(digest_hex, str) else bytes(digest_hex)
         if len(digest) != _RTMR_DIGEST_BYTES:
             raise ValueError(f"event {i} digest is {len(digest)} bytes, need 48")
-
-        # v2 events may carry the preimage. When present it must hash to the
-        # digest, or the log is lying about what it extended.
-        preimage = ev.get("preimage")
-        if preimage:
-            raw = bytes.fromhex(preimage) if isinstance(preimage, str) else bytes(preimage)
-            if hashlib.sha384(raw).hexdigest() != digest.hex():
-                raise ValueError(
-                    f"event {i} ({ev.get('event','?')}) preimage does not hash to "
-                    "its digest"
-                )
         reg = hashlib.sha384(reg + digest).digest()
         name = str(ev.get("event", ""))
         payload = ev.get("event_payload", b"")
@@ -319,9 +313,10 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
 
         # ONE READING PER DIGEST. The first encoding joins the type, name and
         # payload with ':', so a name holding ':' lets one digest be read as
-        # a different (name, payload) split. dstack's names never contain it.
-        if ":" in name:
-            raise ValueError(f"event {i} name {name!r} contains ':'")
+        # a different (name, payload) split. Names are held to what dstack
+        # extends (an allow-list, not a refusal of the one known separator).
+        if not _EVENT_NAME.fullmatch(name):
+            raise ValueError(f"event {i} name {name!r} is not an event name")
 
         # THE DIGEST MUST BIND THE NAME AND PAYLOAD IT TRAVELS WITH. The
         # replay above proves only that this SEQUENCE OF DIGESTS reproduces
@@ -348,8 +343,6 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
         if name in seen:
             raise ValueError(f"event {i} repeats the name {name!r}")
         seen[name] = payload
-        if upto is not None and name == upto:
-            break
     return reg.hex(), seen
 
 

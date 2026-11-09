@@ -41,7 +41,14 @@ _DIM = HEAD_HIDDEN_DIM
 
 
 def _npz_bytes(W, b, models, models_dtype="U100") -> bytes:
-    """Serialize exactly as scripts/train_head.py:save_head does.
+    """Serialize the three-array (W, b, models) layout that
+    head_eval.load_head_from_npz validates on its non-contract path.
+
+    Heads are saved today by scripts/train_head.py's main(), as
+    `np.savez(path, **success_contract.make_head(...))`
+    (fugal_subnet/vendor/success_contract.py), which adds the contract
+    arrays and loads through validate_head instead. These payloads omit
+    `contract` deliberately, to reach the W/b/models bounds checks.
 
     The dtype matters: an object-dtype models array is rejected outright by
     allow_pickle=False, which would block every payload here for a reason that

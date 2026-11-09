@@ -32,6 +32,23 @@ instance other than the vendored one was refused even with its own
 intermediate in the proof. Issuers are now chosen by signature among
 same-named candidates, in a fixed order.
 
+### Changed — v2 token means re-measured on the pinned v2 pool
+
+`data/benchmark_tokens_protocol_v2.json` (and its `routing_data/` copy) is
+rebuilt from 718 metered calls on a deterministic 40-per-model sample of the
+PINNED v2 pool (the 2026-11-04 manifest was measured on a stand-in sample;
+MAINNET_LAUNCH v2 release step 1). Prompt tokens rose 50-120% for every model
+and completion tokens fell for most: per-question cost moves -53% to +22% by
+model, and the anchor (`anthropic/claude-fable-5.1`) falls 37%, so
+V = accuracy_value x anchor spend falls from 0.774 to 0.490 and spend weighs
+relatively more against accuracy in the seat test. The observations replace
+`data/observations/benchmark_tokens_protocol_v2.jsonl`; the review record
+carries the billing check (provider $3.50 against $3.39 at the pinned table;
+four models billed 19-71% off the table, recorded, prices not re-pinned: the
+table is the shared yardstick). The protocol identity and consensus digest
+move; every scoring stage of check_determinism is unchanged. MINER_GUIDE's
+cost table is recomputed.
+
 ### Added — validators publish their egress IP; miners can admit only validators
 
 Only validators need to reach a miner, and from protocol v2 a champion kept

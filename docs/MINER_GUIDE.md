@@ -898,21 +898,22 @@ tokens, reasoning included) a cheap reasoning model can cost more per question
 than a dearer terse one.
 
 **Epoch cost computed from the pinned v2 prices and the reviewed token
-manifest** (mean tokens per question from 40 metered calls per model), for a
-300-question slice, 20 epochs a day on mainnet:
+manifest** (mean tokens per question from 40 metered calls per model on the
+pinned v2 pool, re-measured 2026-11-09), for a 300-question slice, 20 epochs a
+day on mainnet:
 
 | If your head routed everything to | $/question | $/epoch | $/day |
 |---|---|---|---|
-| `openai/gpt-6-luna` (cheapest per question) | 0.0004 | 0.13 | 2.62 |
-| `anthropic/claude-haiku-5.5` | 0.0006 | 0.18 | 3.57 |
-| `deepseek/deepseek-v4.1-flash` | 0.0018 | 0.55 | 10.93 |
-| `anthropic/claude-sonnet-5.5` | 0.0057 | 1.72 | 34.41 |
-| an even mix of all 18 | 0.0060 | 1.81 | 36.12 |
-| `anthropic/claude-opus-5.5` | 0.0106 | 3.18 | 63.61 |
-| `anthropic/claude-fable-5.1` (the anchor, dearest) | 0.0258 | 7.74 | 154.85 |
+| `openai/gpt-6-luna` (cheapest per question) | 0.0004 | 0.11 | 2.20 |
+| `anthropic/claude-haiku-5.5` | 0.0005 | 0.14 | 2.83 |
+| `deepseek/deepseek-v4.1-flash` | 0.0012 | 0.37 | 7.36 |
+| `anthropic/claude-sonnet-5.5` | 0.0043 | 1.29 | 25.82 |
+| an even mix of all 18 | 0.0047 | 1.42 | 28.30 |
+| `anthropic/claude-opus-5.5` | 0.0116 | 3.49 | 69.83 |
+| `anthropic/claude-fable-5.1` (the anchor, dearest) | 0.0163 | 4.90 | 98.06 |
 
 A real head lands somewhere inside that range. Add the exploration quota (15
-questions at the nonce's choice of model, about $0.09 at the even mix) and your
+questions at the nonce's choice of model, about $0.07 at the even mix) and your
 confidential VM (about $150/month for a GCP `c3-standard-4`). These are
 computed, not measured on a live key: the manifest's means for long-reasoning
 models on the hardest sets are an extrapolation (its review record says so),

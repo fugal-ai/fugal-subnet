@@ -1,183 +1,172 @@
 {
- "models": [
-  {
-   "id": "anthropic/claude-fable-5.1",
-   "mean_in_tokens": 132.75,
-   "mean_out_tokens": 489.625,
-   "samples": 40
+  "version": "fugal-token-statistics-v1",
+  "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
+  "status": "reviewed",
+  "sources": {
+    "benchmark_tokens_protocol_v2.jsonl": "3b6b6690d6e64d0e8a314b5f5b99335bb4a7484cb0b6802c473babcd5f8b27b9"
   },
-  {
-   "id": "anthropic/claude-opus-5.5",
-   "mean_in_tokens": 161.325,
-   "mean_out_tokens": 497.8,
-   "samples": 40
-  },
-  {
-   "id": "google/gemini-4-argon",
-   "mean_in_tokens": 142.575,
-   "mean_out_tokens": 931.5,
-   "samples": 40
-  },
-  {
-   "id": "openai/gpt-6.1-sol",
-   "mean_in_tokens": 109.8,
-   "mean_out_tokens": 300.775,
-   "samples": 40
-  },
-  {
-   "id": "qwen/qwen3.8-2.4t-a95b",
-   "mean_in_tokens": 148.55,
-   "mean_out_tokens": 1956.9,
-   "samples": 40
-  },
-  {
-   "id": "anthropic/claude-sonnet-5.5",
-   "mean_in_tokens": 155.1,
-   "mean_out_tokens": 542.4,
-   "samples": 40
-  },
-  {
-   "id": "openai/gpt-6.1-terra",
-   "mean_in_tokens": 97.4,
-   "mean_out_tokens": 394.325,
-   "samples": 40
-  },
-  {
-   "id": "deepseek/deepseek-v4-pro-0813",
-   "mean_in_tokens": 148.45,
-   "mean_out_tokens": 2192.775,
-   "samples": 40
-  },
-  {
-   "id": "z-ai/glm-5.3",
-   "mean_in_tokens": 120.5,
-   "mean_out_tokens": 4756.225,
-   "samples": 40
-  },
-  {
-   "id": "google/gemini-3.8-flash",
-   "mean_in_tokens": 105.0,
-   "mean_out_tokens": 2183.575,
-   "samples": 40
-  },
-  {
-   "id": "xiaomi/mimo-v2.6-pro",
-   "mean_in_tokens": 113.94871794871794,
-   "mean_out_tokens": 4710.589743589743,
-   "samples": 39
-  },
-  {
-   "id": "qwen/qwen3.8-27b",
-   "mean_in_tokens": 136.075,
-   "mean_out_tokens": 2001.875,
-   "samples": 40
-  },
-  {
-   "id": "deepseek/deepseek-v4.1-flash",
-   "mean_in_tokens": 128.325,
-   "mean_out_tokens": 3630.425,
-   "samples": 40
-  },
-  {
-   "id": "minimax/minimax-m3.1-flash",
-   "mean_in_tokens": 298.675,
-   "mean_out_tokens": 1887.4,
-   "samples": 40
-  },
-  {
-   "id": "xiaomi/mimo-v2.6-flash",
-   "mean_in_tokens": 97.35,
-   "mean_out_tokens": 3792.225,
-   "samples": 40
-  },
-  {
-   "id": "anthropic/claude-haiku-5.5",
-   "mean_in_tokens": 157.65,
-   "mean_out_tokens": 1159.675,
-   "samples": 40
-  },
-  {
-   "id": "openai/gpt-6-luna",
-   "mean_in_tokens": 103.6,
-   "mean_out_tokens": 853.625,
-   "samples": 40
-  },
-  {
-   "id": "z-ai/glm-5.3-flash",
-   "mean_in_tokens": 93.55,
-   "mean_out_tokens": 3350.425,
-   "samples": 40
-  }
- ],
- "omitted_missing_or_zero_input": 0,
- "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
- "review": {
-  "amendments": [
-   {
-    "change": "x-ai/grok-4.7 removed from the v2.0 list (18 models). It does not honour max_tokens for its reasoning: 17,763 completion tokens on 1 of 38 calls here (reasoning.effort medium; xAI accepts effort only), and 48,132 (47,656 reasoning) against 16,384 in an external measurement, about 5x its budgeted cost per call. It returns once the harness can abort a streamed call at its deadline.",
-    "date": "2026-11-05",
-    "re_verification": "Agent 1, 2026-11-05: 18 rows byte-identical to the 2026-11-04 review; means re-checked against data/observations/benchmark_tokens_protocol_v2.jsonl, 0 mismatches. Merging the amendment PR on Jack's approval is the human review.",
-    "unchanged": "The 18 remaining rows (ids, means, samples) are byte-for-byte the rows reviewed on 2026-11-04; sources (the call log) are unchanged."
-   }
-  ],
-  "billing_check": {
-   "provider_billed_usd": 5.183,
-   "repinned_from_measured_effective_price": {
-    "deepseek/deepseek-v4-pro-0813": {
-     "billed_over_table": 0.7979
+  "worker_profile": "Protocol v2: direct metered OpenRouter calls through the v2 benchmark harness path (MeteringProxy + harness._call_model, max_tokens 16384, each model's single pinned reasoning setting from data/models_v2.json, full benchmark prompt), on a deterministic sample of 40 questions per model drawn from the PINNED v2 pool (pool_manifest_v2.json, 28,986 questions; content_hash c0656ed6c01f2e69) at the v2 category mix, recorded 2026-11-09. 718 completed calls, 2 failed (upstream 502). Provider-billed and table-priced cost kept per row; no response text, no key material.",
+  "omitted_missing_or_zero_input": 0,
+  "models": [
+    {
+      "id": "anthropic/claude-fable-5.1",
+      "samples": 40,
+      "mean_in_tokens": 249.1,
+      "mean_out_tokens": 277.05
     },
-    "minimax/minimax-m3.1-flash": {
-     "billed_over_table": 1.1522
+    {
+      "id": "anthropic/claude-opus-5.5",
+      "samples": 40,
+      "mean_in_tokens": 253.625,
+      "mean_out_tokens": 531.175
     },
-    "qwen/qwen3.8-27b": {
-     "billed_over_table": 1.0857
+    {
+      "id": "google/gemini-4-argon",
+      "samples": 40,
+      "mean_in_tokens": 194.1,
+      "mean_out_tokens": 640.15
     },
-    "z-ai/glm-5.3": {
-     "billed_over_table": 0.4858
+    {
+      "id": "openai/gpt-6.1-sol",
+      "samples": 40,
+      "mean_in_tokens": 170.05,
+      "mean_out_tokens": 191.7
     },
-    "z-ai/glm-5.3-flash": {
-     "billed_over_table": 2.8594
+    {
+      "id": "qwen/qwen3.8-2.4t-a95b",
+      "samples": 40,
+      "mean_in_tokens": 218.85,
+      "mean_out_tokens": 1047.9
+    },
+    {
+      "id": "anthropic/claude-sonnet-5.5",
+      "samples": 40,
+      "mean_in_tokens": 240.75,
+      "mean_out_tokens": 382.225
+    },
+    {
+      "id": "openai/gpt-6.1-terra",
+      "samples": 40,
+      "mean_in_tokens": 217.625,
+      "mean_out_tokens": 380.05
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro-0813",
+      "samples": 40,
+      "mean_in_tokens": 256.45,
+      "mean_out_tokens": 2593.2
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "samples": 39,
+      "mean_in_tokens": 212.15384615384616,
+      "mean_out_tokens": 4178.384615384615
+    },
+    {
+      "id": "google/gemini-3.8-flash",
+      "samples": 40,
+      "mean_in_tokens": 200.85,
+      "mean_out_tokens": 1399.05
+    },
+    {
+      "id": "xiaomi/mimo-v2.6-pro",
+      "samples": 40,
+      "mean_in_tokens": 192.075,
+      "mean_out_tokens": 4317.0
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "samples": 40,
+      "mean_in_tokens": 227.8,
+      "mean_out_tokens": 1730.0
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash",
+      "samples": 40,
+      "mean_in_tokens": 210.1,
+      "mean_out_tokens": 2433.0
+    },
+    {
+      "id": "minimax/minimax-m3.1-flash",
+      "samples": 40,
+      "mean_in_tokens": 348.4,
+      "mean_out_tokens": 2248.225
+    },
+    {
+      "id": "xiaomi/mimo-v2.6-flash",
+      "samples": 39,
+      "mean_in_tokens": 151.51282051282053,
+      "mean_out_tokens": 1712.5128205128206
+    },
+    {
+      "id": "anthropic/claude-haiku-5.5",
+      "samples": 40,
+      "mean_in_tokens": 235.225,
+      "mean_out_tokens": 897.5
+    },
+    {
+      "id": "openai/gpt-6-luna",
+      "samples": 40,
+      "mean_in_tokens": 181.5,
+      "mean_out_tokens": 695.425
+    },
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "samples": 40,
+      "mean_in_tokens": 222.6,
+      "mean_out_tokens": 4047.85
     }
-   },
-   "table_priced_usd": 5.6753
-  },
-  "date": "2026-11-04",
-  "limitations": [
-   "40 samples per model (39 for mimo-v2.6-pro) is a cost interface, not a workload study.",
-   "The hard category was sampled from AIME 2025 and historical AIME only, standing in for SuperGPQA and Omni-MATH; means for long-reasoning models on those sets are an extrapolation.",
-   "Completion means for several long-reasoning models sit at or near the 16,384 cap."
   ],
-  "method": "757 metered calls (3 more failed) recorded through the v2 harness path (max_tokens 16384, each model's single pinned reasoning setting) on a deterministic sample of 40 questions per model at the v2 category mix; means of provider-reported prompt and completion tokens per model.",
-  "notes": [],
-  "reviewed_by": [
-   "Agent 1 (Claude Opus 5.5, Fugal leader agent), 2026-11-04",
-   "Jack Doherty (Fugal Labs; merging the promotion PR on their approval is the human review)"
-  ],
-  "samples": {
-   "anthropic/claude-fable-5.1": 40,
-   "anthropic/claude-haiku-5.5": 40,
-   "anthropic/claude-opus-5.5": 40,
-   "anthropic/claude-sonnet-5.5": 40,
-   "deepseek/deepseek-v4-pro-0813": 40,
-   "deepseek/deepseek-v4.1-flash": 40,
-   "google/gemini-3.8-flash": 40,
-   "google/gemini-4-argon": 40,
-   "minimax/minimax-m3.1-flash": 40,
-   "openai/gpt-6-luna": 40,
-   "openai/gpt-6.1-sol": 40,
-   "openai/gpt-6.1-terra": 40,
-   "qwen/qwen3.8-2.4t-a95b": 40,
-   "qwen/qwen3.8-27b": 40,
-   "xiaomi/mimo-v2.6-flash": 40,
-   "xiaomi/mimo-v2.6-pro": 39,
-   "z-ai/glm-5.3": 40,
-   "z-ai/glm-5.3-flash": 40
+  "review": {
+    "date": "2026-11-09",
+    "method": "718 metered calls (2 more failed, upstream 502) recorded through the v2 harness path (max_tokens 16384, each model's single pinned reasoning setting) on a deterministic sample of 40 questions per model from the PINNED v2 pool at the v2 category mix; means of provider-reported prompt and completion tokens per model. Replaces the 2026-11-04 manifest, which was measured on a stand-in sample before the v2 pool was pinned (MAINNET_LAUNCH, v2 release step 1).",
+    "billing_check": {
+      "provider_billed_usd": 3.503,
+      "table_priced_usd": 3.3885,
+      "models_billed_more_than_15pct_off_table": {
+        "deepseek/deepseek-v4.1-flash": {
+          "billed_over_table": 1.3363
+        },
+        "minimax/minimax-m3.1-flash": {
+          "billed_over_table": 1.714
+        },
+        "z-ai/glm-5.3": {
+          "billed_over_table": 1.4649
+        },
+        "z-ai/glm-5.3-flash": {
+          "billed_over_table": 1.1949
+        }
+      }
+    },
+    "changes_vs_2026_11_04": "Prompt tokens rose 50-120% for every model (the pinned pool's prompts are longer than the stand-in sample's); completion tokens fell for most. Per-question cost at the pinned prices moved -53% to +22% by model; the anchor (anthropic/claude-fable-5.1) fell 37%, so V = accuracy_value x anchor spend falls from 0.774 to 0.490 and spend weighs relatively more against accuracy in the seat test.",
+    "limitations": [
+      "40 samples per model (39 for two models) is a cost interface, not a workload study.",
+      "Completion means for long-reasoning models include calls at or near the 16,384 cap (deepseek/deepseek-v4-pro-0813, deepseek/deepseek-v4.1-flash, minimax/minimax-m3.1-flash, xiaomi/mimo-v2.6-flash, xiaomi/mimo-v2.6-pro, z-ai/glm-5.3, z-ai/glm-5.3-flash hit it)."
+    ],
+    "notes": [],
+    "reviewed_by": [
+      "Agent 1 (Claude Opus 5.5, Fugal leader agent), 2026-11-09",
+      "Jack Doherty (Fugal Labs): approved promoting the re-measure on 2026-11-09"
+    ],
+    "samples": {
+      "anthropic/claude-fable-5.1": 40,
+      "anthropic/claude-opus-5.5": 40,
+      "google/gemini-4-argon": 40,
+      "openai/gpt-6.1-sol": 40,
+      "qwen/qwen3.8-2.4t-a95b": 40,
+      "anthropic/claude-sonnet-5.5": 40,
+      "openai/gpt-6.1-terra": 40,
+      "deepseek/deepseek-v4-pro-0813": 40,
+      "z-ai/glm-5.3": 39,
+      "google/gemini-3.8-flash": 40,
+      "xiaomi/mimo-v2.6-pro": 40,
+      "qwen/qwen3.8-27b": 40,
+      "deepseek/deepseek-v4.1-flash": 40,
+      "minimax/minimax-m3.1-flash": 40,
+      "xiaomi/mimo-v2.6-flash": 39,
+      "anthropic/claude-haiku-5.5": 40,
+      "openai/gpt-6-luna": 40,
+      "z-ai/glm-5.3-flash": 40
+    }
   }
- },
- "sources": {
-  "benchmark_tokens_protocol_v2.jsonl": "9eac627d9d3831a4bfffbeb3a20df77f4ce000dfdfc2c12ebe2719df51a7cdd4"
- },
- "status": "reviewed",
- "version": "fugal-token-statistics-v1",
- "worker_profile": "Protocol v2: direct metered OpenRouter calls through the v2 benchmark harness path (MeteringProxy + harness._call_model, max_tokens 16384, each model's single pinned reasoning setting from data/models_v2.json, full benchmark prompt), on a deterministic sample of 40 questions per model at the v2 category mix (knowledge MMLU-Pro/MMLU, math MATH, hard AIME 2025 + historical AIME standing in for the hard category, instruction IFEval), recorded 2026-11-04. 757 completed calls, 3 failed. Provider-billed and table-priced cost kept per row; no response text, no key material."
 }

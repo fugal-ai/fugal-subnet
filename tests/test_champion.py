@@ -621,7 +621,9 @@ def test_the_shipped_anchor_is_fable_priced_from_pinned_files():
 
     assert CHAMPION_ANCHOR_MODEL == "anthropic/claude-fable-5.1"
     spend = anchor_spend_per_question(CHAMPION_ANCHOR_MODEL)
-    assert 0.02 < spend < 0.03
+    # Re-measured on the pinned v2 pool 2026-11-09: $0.0163 per question
+    # (was $0.0258 on the stand-in sample), so V = 30 x spend = 0.490.
+    assert spend == pytest.approx(0.0163435, rel=1e-4)
     assert seat_params_from_config().anchor_spend == spend
     with pytest.raises(KeyError):
         anchor_spend_per_question("no/such-model")

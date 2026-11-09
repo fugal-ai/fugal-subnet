@@ -1318,7 +1318,7 @@ def _frame_input(frame, verified_proofs: dict, coldkeys, protocol_version: int, 
     suspicious = implausible_exploration(frame, {
         uid: [(r.routed_model, r.correct) for r in proof.exploration_results]
         for uid, proof in verified_proofs.items()
-    })
+    }, protocol_version=protocol_version)
     suspicious.update(disagreeing_exploration({
         uid: [(r.question_id, r.routed_model, r.correct)
               for r in proof.exploration_results if not r.failed]

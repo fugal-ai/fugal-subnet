@@ -116,7 +116,7 @@ class ReferenceFrame:
         if nw > 1e-9:
             return weighted.get(model, 0.0) / nw
         n = self.trials.get(model, 0.0)
-        if n > 1e-9:
+        if n >= 1e-9:                         # main's boundary (`n < 1e-9` is unmeasured)
             return raw.get(model, 0.0) / n
         return None
 
@@ -173,8 +173,15 @@ class ReferenceFrame:
         # The prior's weight is against the RAW count of what was measured;
         # the success rate it is mixed with is the weighted one in v2.
         n = self.trials.get(model, 0.0)
-        mean = self._mean(model, self.successes, self.successes_w)
-        s = 0.0 if mean is None else mean * n
+        if self.trials_w.get(model, 0.0) > 1e-9:
+            mean = self._mean(model, self.successes, self.successes_w)
+            s = 0.0 if mean is None else mean * n
+        else:
+            # No weighted evidence (every v1 epoch): the raw count itself, as
+            # main computes it. (s / n) * n is not s in floating point, and a
+            # last-digit difference is a disagreement with main during the
+            # upgrade window (differential fuzz, 2026-11-08).
+            s = self.successes.get(model, 0.0)
         k = float(FRAME_PRIOR_STRENGTH)
         return s + k * FRAME_PRIOR_ACCURACY, n + k
 
@@ -362,6 +369,7 @@ def implausible_exploration(
     min_samples: int = 8,
     margin: float = 0.35,
     min_trials: float = 8.0,
+    protocol_version: int = 2,
 ) -> dict[int, str]:
     """Miners whose exploration accuracy is implausible for the models they used,
     in EITHER direction.
@@ -401,9 +409,20 @@ def implausible_exploration(
     was flagged on 2 of the first 120 epochs, each such epoch's samples were
     dropped, and a false `exploration_excluded_from_frame` went into the
     public log (review 2026-11-05, F-061).
+
+    PROTOCOL v1 EPOCHS KEEP THE v1 RULE (one trial, the posterior), exactly as
+    `main` computes it. Every epoch before the activation block is v1, and
+    during the upgrade window validators run a mix of main and this release:
+    F-061 applied to v1 epochs made them exclude different miners from the
+    frame, build different frames and set different v1 weights (a
+    differential fuzz of main against this release, 2026-11-08: 160 of 300
+    random cases). The frame pays nothing in v2, so F-061 changes only v2's
+    log; v1 keeps agreeing with main until it is removed.
     """
     if frame is None:
         return {}
+    v1 = int(protocol_version) < 2
+    floor = 1.0 if v1 else min_trials
     flagged: dict[int, str] = {}
     for uid, results in sorted(per_miner.items()):
         by_model: dict[str, list[bool]] = {}
@@ -418,12 +437,13 @@ def implausible_exploration(
         observed = 0.0
         measured = 0
         for model, outcomes in by_model.items():
-            if frame.trials.get(model, 0.0) < min_trials:
+            if frame.trials.get(model, 0.0) < floor:
                 continue                      # not measured enough to judge against
-            # The RAW mean, not the posterior: the prior (20 pseudo-samples at
-            # 0.5) still pulls a 90% model to 0.69 at 20 trials, which is the
+            # v2: the RAW mean, not the posterior: the prior (20 pseudo-samples
+            # at 0.5) still pulls a 90% model to 0.69 at 20 trials, which is the
             # false "above" on every honest miner that F-061 measured.
-            expected += frame.frontier_accuracy(model) * len(outcomes)
+            # v1: main's rule, unchanged (see the docstring).
+            expected += (frame.accuracy(model) if v1 else frame.frontier_accuracy(model)) * len(outcomes)
             observed += sum(outcomes)
             measured += len(outcomes)
         if measured < min_samples:

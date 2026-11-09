@@ -39,8 +39,9 @@ def quiet_detectors(monkeypatch):
     """Both detectors silent, recording what they were shown."""
     seen = {}
 
-    def implausible(frame, per_miner):
+    def implausible(frame, per_miner, **kw):
         seen["implausible"] = per_miner
+        seen["implausible_kw"] = kw
         return {}
 
     def disagreeing(per_miner, coldkey_of):
@@ -101,7 +102,7 @@ def test_a_flagged_operator_is_kept_out_of_the_frame(quiet_detectors, monkeypatc
 
 
 def test_flags_from_both_detectors_are_combined(quiet_detectors, monkeypatch):
-    monkeypatch.setattr(reference_frame, "implausible_exploration", lambda *a: {1: "too good"})
+    monkeypatch.setattr(reference_frame, "implausible_exploration", lambda *a, **k: {1: "too good"})
     monkeypatch.setattr(reference_frame, "disagreeing_exploration", lambda *a: {2: "disagrees"})
     proofs = _proofs({1: [_r()], 2: [_r()], 3: [_r(correct=False)]})
     out = _run(proofs, ["x", "A", "B", "C"])

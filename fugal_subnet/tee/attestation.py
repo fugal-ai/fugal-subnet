@@ -393,7 +393,8 @@ class CollateralBudget:
     """
 
     __slots__ = (
-        "_max_timeouts", "_proofs_left", "_remaining", "_timeouts", "_total",
+        "_collateral", "_max_timeouts", "_proofs_left", "_remaining", "_timeouts",
+        "_total",
     )
 
     def __init__(
@@ -414,6 +415,28 @@ class CollateralBudget:
         self._proofs_left = (
             None if expected_proofs is None else max(1, int(expected_proofs))
         )
+        # This epoch's collateral, by platform. See `collateral_for`.
+        self._collateral: dict = {}
+
+    def collateral_for(self, key):
+        """Collateral already fetched this epoch for this platform, or None.
+
+        Collateral depends only on the platform (FMSPC), the PCK issuing CA and
+        the quote type -- not on the quote -- and every miner on one cloud
+        instance family shares a platform (both real deploys: FMSPC
+        00806F050000). Fetching it once per epoch instead of once per proof
+        turns ~256 round trips into about one, which removes most of the time,
+        the network-luck divergence between validators, and the per-proof
+        dependency on the PCCS. It adds no trust: the collateral is
+        Intel-signed and checked on every use. It carries no PCK chain
+        (`_without_pck_chain`), so each quote is judged by its own. Only
+        successes are kept, so a failed fetch is retried for the next proof
+        under the usual bounds.
+        """
+        return self._collateral.get(key)
+
+    def remember_collateral(self, key, collateral) -> None:
+        self._collateral[key] = collateral
 
     @property
     def remaining(self) -> float:
@@ -498,6 +521,37 @@ class CollateralBudget:
             self._proofs_left = max(1, self._proofs_left - 1)
 
 
+def collateral_window(collateral) -> tuple[int, int]:
+    """[start, end) in unix seconds during which this collateral can verify.
+
+    Start is the latest issue date of the TCB info and QE identity; end is the
+    earliest next-update of those two and of both CRLs (measured on real
+    collateral: the PCK CRL expires minutes BEFORE the TCB info, so the TCB
+    date alone is not the window). Used only to explain a failed
+    verification, never to refuse one the library accepted.
+    """
+    import datetime
+    import json
+
+    from cryptography import x509
+
+    def ts(s: str) -> int:
+        return int(datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")
+                   .replace(tzinfo=datetime.timezone.utc).timestamp())
+
+    starts, ends = [], []
+    for doc in (collateral.tcb_info, collateral.qe_identity):
+        d = json.loads(doc)
+        starts.append(ts(d["issueDate"]))
+        ends.append(ts(d["nextUpdate"]))
+    for der in (collateral.root_ca_crl, collateral.pck_crl):
+        crl = x509.load_der_x509_crl(bytes(der))
+        if crl.next_update_utc is None:
+            raise ValueError("a CRL with no next update")
+        ends.append(int(crl.next_update_utc.timestamp()))
+    return max(starts), min(ends)
+
+
 class CollateralUnavailable(Exception):
     """DCAP collateral could not be fetched, so the quote was never judged.
 
@@ -516,6 +570,7 @@ def verify_dcap(
     quote_bytes: bytes,
     pccs_url: str | None = None,
     budget: "CollateralBudget | None" = None,
+    now: int | None = None,
 ) -> bool:
     """Verify TDX quote via Intel DCAP collateral.
 
@@ -556,7 +611,19 @@ def verify_dcap(
     verify loop is serial, so 256 individually-bounded fetches still overrun the
     epoch. Once it is spent this returns unavailable without touching the
     network. Omitting it leaves only the per-call bound, which is correct for a
-    one-off caller and NOT sufficient inside the epoch loop.
+    one-off caller and NOT sufficient inside the epoch loop. The budget also
+    holds the epoch's collateral per platform, so a field on one platform costs
+    one fetch (`CollateralBudget.collateral_for`).
+
+    A verification that fails while the collateral is outside its validity
+    window (`collateral_window`: a PCCS serving stale collateral, or this
+    validator's clock) is the operator's, and raises CollateralUnavailable
+    rather than returning False. Measured: expired collateral fails every
+    genuine quote with "TCBInfo expired", which used to read as every miner's
+    proof being bad at once.
+
+    `now` (unix seconds) defaults to the clock; tests pin it so recorded
+    collateral keeps verifying.
 
     Raises:
         ImportError: If dcap_qvl is not installed (configuration error).
@@ -574,11 +641,7 @@ def verify_dcap(
             "Install with: pip install dcap-qvl"
         )
 
-    from fugal_subnet.config import (
-        TEE_COLLATERAL_MAX_TIMEOUTS,
-        TEE_COLLATERAL_TIMEOUT,
-        TEE_PCCS_URL,
-    )
+    from fugal_subnet.config import TEE_PCCS_URL
 
     url = (pccs_url or TEE_PCCS_URL or "").strip()
     if not url:
@@ -592,18 +655,60 @@ def verify_dcap(
         )
     _log_pccs_endpoint(url)
 
+    now_s = int(time.time()) if now is None else int(now)
+
     # 1. Parse before fetching. Miner-controlled bytes, judged locally, with no
     #    network involved -- so a malformed quote can never be misreported as
-    #    an infrastructure failure, and never costs a round trip either.
+    #    an infrastructure failure, and never costs a round trip either. The
+    #    platform it names is the collateral cache key.
     try:
-        _parse(quote_bytes)
+        parsed = _parse(quote_bytes)
+        platform = (parsed.fmspc(), parsed.ca(), parsed.quote_type())
     except Exception as e:  # noqa: BLE001 - miner-controlled bytes
         logger.warning("DCAP: quote does not parse (%s: %s)", type(e).__name__, e)
         return False
 
-    # 2. Fetch collateral. Everything here is the operator's infrastructure,
-    #    so a failure raises rather than condemning the miner.
-    # 1b. Refuse before dialling if the epoch's collateral budget is gone.
+    # 2. Collateral: this epoch's for the platform, else one bounded fetch.
+    collateral = budget.collateral_for(platform) if budget is not None else None
+    if collateral is None:
+        collateral = _fetch_collateral(get_collateral, url, quote_bytes, budget)
+        if budget is not None:
+            budget.remember_collateral(platform, collateral)
+
+    # 3. Judge the quote against the collateral. Local and deterministic given
+    #    both inputs, so a failure here is the miner's -- unless the collateral
+    #    itself was not valid at this moment, which is the operator's.
+    try:
+        result = _verify(quote_bytes, collateral, now_s)
+    except Exception as e:  # noqa: BLE001 - the library raises ValueError for all of it
+        try:
+            start, end = collateral_window(collateral)
+        except Exception as w:  # noqa: BLE001 - collateral from the PCCS, not the miner
+            raise CollateralUnavailable(
+                f"DCAP collateral from {url} is unreadable ({w}); the proof was "
+                "never judged -- this is an outage, not a bad proof."
+            ) from e
+        if not start <= now_s < end:
+            raise CollateralUnavailable(
+                f"DCAP collateral from {url} is valid for [{start}, {end}) but "
+                f"this validator's time is {now_s}: the PCCS served stale "
+                "collateral or this clock is wrong. The proof was never judged "
+                "-- this is an outage, not a bad proof."
+            ) from e
+        logger.warning("DCAP verification failed: %s: %s", type(e).__name__, e)
+        return False
+    return _report_status(result)
+
+
+def _fetch_collateral(get_collateral, url: str, quote_bytes: bytes, budget):
+    """One bounded fetch. Everything here is the operator's infrastructure, so
+    every failure raises CollateralUnavailable rather than condemning a miner."""
+    from fugal_subnet.config import (
+        TEE_COLLATERAL_MAX_TIMEOUTS,
+        TEE_COLLATERAL_TIMEOUT,
+    )
+
+    # Refuse before dialling if the epoch's collateral budget is gone.
     #     Checked BEFORE the fetch, not after: the point is to stop spending
     #     time, and a call that is going to be abandoned anyway should never
     #     leave the process. This is what gives the phase a hard ceiling.
@@ -670,15 +775,33 @@ def verify_dcap(
         # the upstream is at its worst -- which is the case it exists for.
         if budget is not None:
             budget.spend(time.monotonic() - started)
+    return _without_pck_chain(collateral)
 
-    # 3. Judge the quote against the collateral. Local and deterministic given
-    #    both inputs, so a failure here is the miner's again.
-    try:
-        result = _verify(quote_bytes, collateral, int(time.time()))
-    except Exception:
-        logger.exception("DCAP verification failed")
-        return False
 
+def _without_pck_chain(collateral):
+    """The collateral with no PCK certificate chain attached.
+
+    `get_collateral` copies the QUOTE's PCK chain into the collateral, and
+    `verify` then checks the quote against the collateral's chain instead of
+    the quote's own (measured: a garbage chain in the collateral fails a
+    genuine quote; no chain falls back to the quote's and passes). Shared
+    across proofs, that would check every miner against the first miner's
+    PCK certificate: honest miners on other machines fail, and one miner
+    chooses the chain everyone else is judged by. Without it, each quote is
+    checked against the chain it carries, which every dstack quote does.
+    Rebuilt from the PCCS's own response, never from miner JSON.
+    """
+    import json
+
+    from dcap_qvl import QuoteCollateralV3
+
+    fields = json.loads(collateral.to_json())
+    fields["pck_certificate_chain"] = None
+    return QuoteCollateralV3.from_json(json.dumps(fields))
+
+
+def _report_status(result) -> bool:
+    """Record the verdict rather than only the fact one was reached."""
     # Record the verdict rather than only the fact one was reached.
     #
     # `verify` returns a report, and `report.status` is the TCB state of the

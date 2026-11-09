@@ -28,6 +28,13 @@ its entries in `MAINNET_LAUNCH.md`, protocol v2 in `INVARIANTS.md` and
 
 This is the real fix. **Two viable routes**, and they are not equivalent.
 
+*Update 2026-11-08:* a third, smaller step is done: the validator keeps one
+collateral per platform per epoch (`CollateralBudget.collateral_for`;
+INVARIANTS "one collateral fetch per platform per epoch"). It gives most of
+Route A's benefit with no daemon. Unchanged: the crafted-FMSPC path (an
+unknown platform is still a fetch, bounded by the fair share), and Route B
+remains the end state that removes the fetch entirely.
+
 ### Route A — local caching PCCS (operations, no consensus change)
 
 Point `FUGAL_PCCS_URL` at a PCCS running alongside each validator. It re-serves

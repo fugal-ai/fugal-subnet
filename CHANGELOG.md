@@ -4,6 +4,19 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — DCAP collateral is fetched once per platform per epoch; stale collateral is an outage
+
+`verify_dcap` fetched collateral for every proof. The epoch's
+`CollateralBudget` now keeps it per platform (FMSPC, CA, quote type), so a
+field on one platform costs one fetch instead of about 256. The certificate
+chain `get_collateral` copies from the asking quote is dropped first, so each
+quote is judged by its own chain and not by the first miner's. A refusal
+while the collateral is outside its validity window (a stale PCCS or a wrong
+clock) now raises `CollateralUnavailable` (unverifiable) instead of marking
+the proof invalid. `verify_dcap` takes an optional `now`. New
+`tests/test_dcap_verdict.py` runs the real library against collateral
+recorded from the configured PCCS, with no network.
+
 ### Removed — the miner no longer extends RTMR3
 
 The miner's startup extend of a "runtime identity" into RTMR3 was advisory and

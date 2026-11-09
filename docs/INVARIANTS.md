@@ -1826,6 +1826,54 @@ source of delay is not a liveness invariant.** Whatever fix lands here should
 widen I6 to "no external party" and give the fetch a bound that holds on both
 code paths.
 
+### I1/I6 — one collateral fetch per platform per epoch (2026-11-08)
+
+`verify_dcap` fetched collateral once per PROOF. Collateral depends only on
+the platform (FMSPC), the PCK issuing CA and the quote type, and both real
+deploys share one platform (FMSPC `00806F050000`), so the epoch's
+`CollateralBudget` now keeps what it fetched per platform and every later
+quote on that platform verifies with no network call. About 256 round trips
+become about one: most of the verify time, most of the network-luck
+divergence between validators (the verdict on a cached platform no longer
+depends on each proof's own fetch), and the per-proof PCCS dependency go
+with them. No trust is added: the collateral is Intel-signed and checked on
+every use; only successful fetches are kept.
+
+**The trap, found by running it.** `get_collateral` copies the asking
+quote's PCK certificate chain into the collateral, and `verify` judges a quote
+by the collateral's chain when one is present (a garbage chain fails a
+genuine quote; no chain falls back to the quote's own and passes). Shared as
+fetched, every miner would be judged by the FIRST miner's PCK certificate:
+honest miners on other machines refused, and one miner choosing the chain
+the rest are judged by (I4). The chain is dropped before the collateral is
+used or kept (`_without_pck_chain`), so each quote is judged by the chain it
+carries, which every dstack quote does.
+
+**Stale collateral is an outage, not an accusation.** Measured on recorded
+collateral: past its window, `verify` fails every genuine quote ("TCBInfo
+expired", "CrlExpired"), and before its issue date too. Those failures read
+as every miner's proof being bad at once. When `verify` refuses a quote and
+the collateral is outside `collateral_window` (latest issue date of TCB info
+and QE identity; earliest next update of those and both CRLs; the PCK CRL
+expires first, by minutes), `verify_dcap` raises `CollateralUnavailable`
+instead of returning False. The window only ever explains a refusal; it never
+refuses what the library accepted.
+
+**Residual, accepted.** An abandoned fetch keeps its thread and socket until
+the connection dies. The breaker bounds abandonment per epoch; across epochs
+nothing does, so a PCCS that accepts connections and never answers leaks a
+few descriptors per epoch. A process-wide cap was built and dropped: once the
+PCCS recovered, connections that never close would keep it engaged and the
+validator would stop dialling for good, a silent stop, whereas descriptor
+exhaustion ends in a crash that the service manager restarts.
+
+`tests/test_dcap_verdict.py` (real library, real fixtures, collateral
+recorded from the configured PCCS on 2026-11-09, pinned time, no network):
+genuine quotes pass, one changed byte is refused, a signature failure is a
+refusal (until then no test saw `verify_dcap` say no: every attack case stubs
+it), stale and unreadable collateral are outages, one fetch serves a
+platform, and each quote is judged by its own chain.
+
 ### I8 — what "attested" actually means
 
 DCAP verification proves a quote is genuine and Intel-signed. It proves the

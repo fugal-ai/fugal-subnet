@@ -96,10 +96,20 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
 
         W = npz["W"].astype(np.float32)
         b = npz["b"].astype(np.float32)
-        models = [str(m) for m in npz["models"]]
+        if W.ndim != 2:
+            raise ValueError(f"Head W must be 2-D, got shape {W.shape}")
+        if W.shape[0] > HEAD_MAX_MODELS:
+            raise ValueError(f"Head has {W.shape[0]} model rows (max {HEAD_MAX_MODELS})")
+        # The names array's SHAPE is checked before a single name is built. A
+        # zero-width string dtype holds any number of elements in no bytes, so
+        # its decompressed size says nothing about how long building the list
+        # takes; the count must be bounded first.
+        names = npz["models"]
+        if names.shape != (W.shape[0],):
+            raise ValueError(
+                f"Head has {W.shape[0]} rows but its model names have shape {names.shape}")
+        models = [str(m) for m in names]
 
-    if W.ndim != 2:
-        raise ValueError(f"Head W must be 2-D, got shape {W.shape}")
     L, d = W.shape
     if L == 0:
         # A head declaring no models routes nothing. It survives every other

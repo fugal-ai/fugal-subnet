@@ -125,16 +125,3 @@ def attest(report_data: bytes, path: str = "") -> bytes:
     logger.info("dstack attestation obtained (%d bytes)", len(blob))
     return blob
 
-
-def info(path: str = "") -> dict:
-    """Guest self-description: app_id, compose_hash, instance_id, app_compose...
-
-    `app_compose` is the exact bytes the guest hashed, which is the only
-    trustworthy source for a compose hash — a locally written file is only the
-    same thing if nothing re-serialised it on the way in.
-
-    Unlike `attest`, this call's verb has not been confirmed against a live
-    agent by this code. A wrong verb surfaces as an HTTP status from `_call`,
-    which is a loud failure and not a silent wrong answer.
-    """
-    return _call("Info", {}, path)

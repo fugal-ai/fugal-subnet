@@ -108,9 +108,9 @@ def detect_anomalies(
         # than no warning, because it teaches an operator to skip the line.
         accs = [s.get("accuracy", s.get("acc", 0)) for s in scores.values()]
         if all(a > 0.95 for a in accs) and len(accs) > 1:
-            anomalies.append("suspiciously_high_accuracy: all miners >95%% accuracy")
+            anomalies.append("suspiciously_high_accuracy: all miners >95% accuracy")
         if all(a < 0.1 for a in accs) and len(accs) > 0:
-            anomalies.append("universally_low_accuracy: all miners <10%% — possible bad benchmark slice")
+            anomalies.append("universally_low_accuracy: all miners <10% — possible bad benchmark slice")
 
     weight_vals = [w for w in weights.values() if w > 0]
     if len(weight_vals) > 1:

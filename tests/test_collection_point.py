@@ -178,3 +178,17 @@ def test_the_wait_does_not_sleep_through_a_fast_chains_epoch(monkeypatch):
 
 def test_the_wait_still_lands_on_a_nominal_chain(monkeypatch):
     assert _overshoot(monkeypatch, s_per_block=12.0, remaining=150) <= 1
+
+
+def test_anomaly_text_reads_as_written():
+    """Two of these strings are not %-formatted, so a doubled %% was printed
+    as-is ("all miners >95%% accuracy") in every epoch log."""
+    from fugal_subnet.epoch_logger import detect_anomalies
+
+    weights = {2: 0.45, 3: 0.55}
+    high = detect_anomalies({2: {"accuracy": 0.99}, 3: {"accuracy": 0.98}}, weights, 3, 3)
+    low = detect_anomalies({2: {"accuracy": 0.02}, 3: {"accuracy": 0.05}}, weights, 3, 3)
+    assert "suspiciously_high_accuracy: all miners >95% accuracy" in high
+    assert "universally_low_accuracy: all miners <10% — possible bad benchmark slice" in low
+    concentrated = detect_anomalies({}, {2: 0.9, 3: 0.1}, 3, 3)
+    assert "weight_concentration: single miner has 90.0% of weight" in concentrated

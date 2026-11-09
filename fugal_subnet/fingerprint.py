@@ -281,8 +281,9 @@ def consensus_digest(fingerprint: dict | None = None) -> str:
         "epoch": fp["epoch"],
         "scoring": fp.get("scoring", {}),
         # The contract, profile, lambda, token manifest and price table in one
-        # id; a validator pointed at a different price file via
-        # FUGAL_MODEL_PRICES diverges here.
+        # id. It hashes the SHIPPED tables (routing_data/), so FUGAL_MODEL_PRICES
+        # (a consensus override, refused on finney) does NOT move it:
+        # tests/test_infra_rules_gaps.py holds that as a strict xfail.
         "routing_protocol": fp.get("routing_protocol", ""),
         "packages": fp["packages"],
         "numpy_blas": fp["numpy_blas"],

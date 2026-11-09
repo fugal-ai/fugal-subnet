@@ -2179,8 +2179,11 @@ never left it. `fugal_subnet/reveal_publisher.py` uploads each epoch's
 validator is past the weight commit-reveal window (the hold is read from the
 subnet's hyperparameters, so a reveal never leaks weights the chain is still
 hiding), and commits `reveal:<epoch_id>:<sha256>` on chain with the validator
-hotkey. Anyone can fetch the file and check it against the chain; two
-validators' commitments for the same epoch should carry the same hash (I1).
+hotkey. Anyone can fetch the file and check it against the chain. Two
+validators' reveals for the same epoch agree on everything except
+`environment` (each records its own Python, platform and packages), so their
+file hashes differ; `scripts/watch_subnet.py` compares them with `environment`
+removed (I1).
 A `.published` marker is written only after the upload, so failures are
 retried and nothing is marked that was not sent. Operational, not consensus:
 an unset bucket skips with a warning. `tests/test_reveal_publisher.py`.

@@ -992,7 +992,10 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
     fp = fingerprint.environment_fingerprint()
     covered = set(fp["scoring"]) | {
         "SLICE_SIZE", "SLICE_SHARE_FACTOR", "EPOCH_INTERVAL", "EXPLORE_FRACTION",
-        "EPOCH_COLLECT_FRACTION", "TEE_MODEL_PRICES_PATH",  # via routing_protocol
+        "EPOCH_COLLECT_FRACTION",
+        # Not in the digest (routing_protocol hashes the shipped tables), but a
+        # set FUGAL_MODEL_PRICES is a consensus override: refused on finney.
+        "TEE_MODEL_PRICES_PATH",
     }
     for key in ("skip_benchmarks", "pool_unpinned", "pool_manifest_v1", "pool_manifest_v2",
                 "openrouter_base"):

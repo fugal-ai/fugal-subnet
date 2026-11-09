@@ -172,7 +172,7 @@ HEAD_MAX_BYTES = int(os.getenv("FUGAL_HEAD_MAX_BYTES", str(1 * 1024 * 1024)))  #
 HEAD_MAX_DECOMPRESSED_BYTES = int(os.getenv("FUGAL_HEAD_MAX_DECOMPRESSED", str(8 * 1024 * 1024)))
 HEAD_HIDDEN_DIM = int(os.getenv("FUGAL_HEAD_HIDDEN_DIM", "1024"))  # Qwen3-0.6B
 HEAD_MAX_MODELS = int(os.getenv("FUGAL_HEAD_MAX_MODELS", "64"))
-# Real OpenRouter IDs are well under 100 chars and save_head writes U100.
+# Real OpenRouter IDs are well under 100 chars.
 # Without a cap a miner can pad IDs to megabytes: the array still fits the
 # decompressed budget, and the strings land verbatim in the published
 # reveal artifact. Amplification, not RCE, but free to close.

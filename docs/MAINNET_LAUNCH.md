@@ -394,7 +394,8 @@ The release:
 12. Every miner: re-provision on the v2 image before the block (the v2 miner
     holds its head until the last v1 boundary, then commits it).
 13. After the block: `scripts/watch_subnet.py` for a few epochs; two
-    validators' reveals must agree byte for byte and carry `protocol_version: 2`.
+    validators' reveals must agree byte for byte apart from `environment` (what
+    `watch_subnet.py` checks) and carry `protocol_version: 2`.
 
 ---
 

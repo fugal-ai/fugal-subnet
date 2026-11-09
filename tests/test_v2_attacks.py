@@ -406,30 +406,88 @@ def test_a3_a_reserialised_copy_is_not_paid_does_not_take_and_cannot_retire_the_
     assert _w(r) == pytest.approx({5: 1.0}) and r.owners[H("orig")] == "hk5"
 
 
-@pytest.mark.parametrize("outage", [1, 2, 3, 4, 6, 12, 20])
-def test_a3_a_copy_does_not_take_the_seat_while_the_champion_is_out(outage):
-    """ATTACK: the copier knocks the champion offline (its axon is public), so
-    its re-zipped copy, burned in beside it, can take the emptied seat.
+@pytest.mark.parametrize("outage", [1, 2, 3])
+def test_a3_inside_its_ghost_the_champion_cannot_lose_the_seat_to_a_copy(outage):
+    """ATTACK: the copier knocks the champion offline so that its re-zipped
+    copy, burned in beside it, takes the emptied seat.
     DEFENCE: a champion that missed leaves a ghost bar for CHAMPION_GHOST_OFF
-    (3) epochs, and as a SEAT HOLDER it stays in the copy rule's comparison set
-    for CHAMPION_GHOST_RETIRE (24) epochs, so after its ghost lapses the copy
-    must still beat it by the margin (NV 0) to take the empty seat. Until
-    2026-11-09 a seat holder left the comparison set with its 3-epoch ghost: a
-    4-epoch outage seated the copy for good (v2 attack review). When the
-    champion is back it re-earns burn-in and takes the empty seat; the copy is
-    never seated and never paid (INVARIANTS I3, "Ghost"; the copy rule, "The
-    comparison set"). Residual: an outage longer than the retire window."""
+    (3) epochs; the copy must beat the ghost by the margin (NV 0: never), and
+    the champion resumes when it is back (INVARIANTS I3, "Ghost")."""
     last = 29
     r = None
     for e in range(last + outage + 8):
+        out = last < e <= last + outage
+        servers, commits = _copy_world(e, orig_serves=not out)
+        r = _epoch(e, 60, servers, prev=r, commits=commits, burn_in=1500)
+        assert r.decision.champion != H("rezip")
+        assert 9 not in r.uids
+    assert r.decision.champion == H("orig")
+
+
+@pytest.mark.parametrize("outage", [4, 12])
+def test_a3_past_its_ghost_the_copy_keeps_the_seat_the_documented_residual(outage):
+    """Accepted residual (INVARIANTS I3, "Accepted residual: a champion kept
+    offline"): a champion kept offline for longer than its ghost loses the
+    seat to the best other head, and a re-serialised copy that ties it keeps
+    it, because the original can never beat a tie by the margin. The original
+    is paid seat 2. The defence is operational: a miner's axon accepts only
+    validator IPs (scripts/axon_firewall.py, MINER_GUIDE). Pinned so that a
+    change to it is deliberate."""
+    last = 29
+    r = None
+    for e in range(last + outage + 12):
         out = last < e <= last + outage
         back = last + outage < e <= last + outage + 5     # E'' restarted its burn-in
         servers, commits = _copy_world(e, orig_serves=not out,
                                        orig_record=_unburned(H("orig")) if back else None)
         r = _epoch(e, 60, servers, prev=r, commits=commits, burn_in=1500)
-        assert r.decision.champion != H("rezip")
-        assert 9 not in r.uids
-    assert r.decision.champion == H("orig")
+    assert r.decision.champion == H("rezip")
+    assert r.decision.state.history[:1] == (H("orig"),)
+    assert _w(r) == pytest.approx({5: 0.1, 9: 0.9})
+
+
+def test_a3_a_former_champion_serving_rarely_does_not_entrench_the_seat():
+    """REGRESSION (review of the first A3 fix, 2026-11-09): extending the
+    comparison set to every former seat holder let a seat-2 holder that serves
+    one epoch in twenty bar every junior head for good. A clearly better junior
+    Y must take the seat from champion A once it is burned in."""
+    q, a_pol, b_pol = 300, _noisy_oracle(0.25), _noisy_oracle(0.30)
+    y_block = 2 * BPE + 5
+    r, took = None, None
+    for e in range(40):
+        d = _difficulty(e, q)
+        commits = [Commitment("hkA", "ckA", H("A"), 3), Commitment("hkB", "ckB", H("B"), 1)]
+        servers = [Srv(1, H("A"), "ckA", 3, a_pol(d), hotkey="hkA")]
+        if e % 20 == 0:
+            servers.append(Srv(2, H("B"), "ckB", 1, b_pol(d), hotkey="hkB"))
+        if e >= 2:
+            commits.append(Commitment("hkY", "ckY", H("Y"), y_block))
+            servers.append(Srv(3, H("Y"), "ckY", y_block, oracle(d), hotkey="hkY"))
+        r = _epoch(e, q, servers, prev=r, commits=commits,
+                   seat=SeatState(champion=H("A"), champion_since=0, history=(H("B"),)))
+        if took is None and r.decision.champion == H("Y"):
+            took = e
+    assert took is not None and took <= 2 + 5 + 1        # burn-in, then the take
+
+
+def test_a3_an_honest_outage_burns_only_the_ghost():
+    """REGRESSION (same review): an honest champion that goes offline for good
+    leaves a 3-epoch ghost; then the best junior refills the seat. The first A3
+    fix made it 24 epochs of burn."""
+    q, x_pol, off = 300, _noisy_oracle(0.10), 10
+    commits = [Commitment("hk5", "ckC", H("C"), 1), Commitment("hk6", "ckX", H("X"), 2)]
+    r, burned_epochs = None, 0
+    for e in range(off + 30):
+        d = _difficulty(e, q)
+        servers = [Srv(6, H("X"), "ckX", 2, x_pol(d))]
+        if e < off:
+            servers.insert(0, Srv(5, H("C"), "ckC", 1, oracle(d)))
+        r = _epoch(e, q, servers, prev=r, commits=commits,
+                   seat=SeatState(champion=H("C"), champion_since=0))
+        if e >= off and _w(r).get(0, 0.0) > 0.5:
+            burned_epochs += 1
+    assert r.decision.champion == H("X")
+    assert burned_epochs == PARAMS.ghost_off
 
 
 # --- 4. strategic withholding ---------------------------------------------------------

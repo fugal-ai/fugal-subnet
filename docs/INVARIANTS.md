@@ -2414,6 +2414,32 @@ paired questions, hard weight 2).
   retire window, counted from when it first stood, and no longer resumes.
   The windows are as short as the copy rule allows, because an empty seat
   burns.
+  **Accepted residual: a champion kept offline.** Absent beyond its ghost,
+  a champion loses the seat to the best other head, and a re-serialised copy
+  of it (new hash, same routing: its routing is published every epoch, so a
+  behavioural copy needs no access to its bytes) that ties it keeps the seat,
+  because the original can never beat a tie by the margin; the original is
+  paid seat 2. An attacker therefore needs a copy AND to keep the champion's
+  axon offline for more than `CHAMPION_GHOST_OFF` epochs (about 3.6 h)
+  without a break. The defence is operational, not a seat rule: only
+  validators need to reach a miner, each validator records its egress IP on
+  chain at startup (`FUGAL_VALIDATOR_IP`, `axon_allowlist.publish_validator_ip`:
+  a serve_axon with nothing listening; a validator needs no inbound traffic),
+  and `scripts/axon_firewall.py` keeps a GCP firewall rule that admits only
+  the active validators' IPs (permit, stake at or above
+  `MIN_VALIDATOR_STAKE`, weights in the last three epochs: stake alone is not
+  a validator, under dTAO an earning miner holds stake too) (MINER_GUIDE,
+  "Protect your axon"). It refuses to apply while any
+  active validator has not published one: a miner that one validator cannot
+  reach looks offline to that validator alone, and validators would disagree. Why not a seat rule: unlike subnets
+  whose validators evaluate a stored model, a Fugal head runs inside the
+  miner's TD and is scored only while it serves, so "offline because
+  knocked" and "offline by choice" look the same. Every rule that kept an
+  absent champion's claim (four designs, eight independent review rounds,
+  2026-11-09) either let a rarely-present champion block better heads, let
+  copies game the claim, or split validators; a claim limited to heads that
+  route like the absent champion is the candidate for a later release.
+  `tests/test_v2_attacks.py` (A3).
 
 **What I3 no longer guarantees, stated plainly.** v1's frontier made every
 constant policy score zero. v2 has no constant-policy reference: a head that
@@ -2730,11 +2756,7 @@ protocol v2
 - **The comparison set** (from which the seat holders are taken) is every
   head with answers in the champion
   window that is live this epoch; or that its owner still commits and that
-  was scored within `CHAMPION_GHOST_OFF` epochs (`CHAMPION_GHOST_RETIRE` for
-  a seat holder: a seat holder kept offline past its 3-epoch ghost used to
-  leave the set, so a re-serialised copy that served beside it took the
-  empty seat and the original could never take it back; v2 attack review,
-  2026-11-09); or that is **retired** (its
+  was scored within `CHAMPION_GHOST_OFF` epochs; or that is **retired** (its
   owner no longer commits it: it committed a different head, or its hotkey
   left the subnet) within `CHAMPION_GHOST_RETIRE` epochs of its FIRST
   retirement. These ghost incumbents are unpaid. They exist so that perturbed

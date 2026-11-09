@@ -389,10 +389,16 @@ The release:
     GCP changed firmware); publish the two entries with
     `scripts/publish_approved_entry.py` in a signed release.
 11. Every validator: place the v2 pool file (`export_pool.py --protocol 2`,
-    §3), upgrade to the release, set `FUGAL_V2_ACTIVATION_BLOCK` and add the
-    v2 entry beside the current one, restart, before the block.
+    §3), upgrade to the release, set `FUGAL_V2_ACTIVATION_BLOCK`,
+    `FUGAL_VALIDATOR_IP` (its egress IP, recorded on chain at startup) and add
+    the v2 entry beside the current one, restart, before the block.
 12. Every miner: re-provision on the v2 image before the block (the v2 miner
-    holds its head until the last v1 boundary, then commits it).
+    holds its head until the last v1 boundary, then commits it). Once every
+    active validator's IP is on chain, turn on the axon allowlist
+    (`scripts/axon_firewall.py --apply --every 600`, MINER_GUIDE "Protect your
+    axon"); the script refuses while any validator is missing, so validators
+    go first. Check from step 11's logs that every validator shows
+    `validator IP ... on chain`.
 13. After the block: `scripts/watch_subnet.py` for a few epochs; two
     validators' reveals must agree byte for byte apart from `environment` (what
     `watch_subnet.py` checks) and carry `protocol_version: 2`.

@@ -511,6 +511,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             (logger.warning if live else logger.info)(notice)
     except (AttributeError, IndexError, TypeError, ValueError):
         pass
+    # Publish this host's egress IP so miners can admit only validators at
+    # their firewall (fugal_subnet/axon_allowlist.py). Never stops startup.
+    from fugal_subnet.axon_allowlist import publish_validator_ip
+    from fugal_subnet.config import VALIDATOR_IP
+    ip_ok, ip_note = publish_validator_ip(subtensor, wallet, netuid, metagraph, my_uid,
+                                          VALIDATOR_IP)
+    (logger.info if ip_ok or not live else logger.warning)(ip_note)
 
     logger.info("Loading benchmark pool...")
     benchmark_pool = load_all()

@@ -424,7 +424,6 @@ def classify(state: CopyState, served: Mapping[int, Commitment]) -> dict[int, st
 
 def comparison_set(
     state: CopyState, epoch: int, window, *, ghost_off: int, ghost_retire: int,
-    holders: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """The heads that bar their juniors at `epoch`: {head_hash: status}.
 
@@ -435,13 +434,7 @@ def comparison_set(
 
     - "live":    scored this epoch;
     - "missed":  its owner still commits it, last scored within `ghost_off`
-                 epochs, or within `ghost_retire` epochs for a seat holder
-                 (`holders`): a seat holder kept offline past its 3-epoch
-                 ghost used to stop barring its copies, so a re-serialised
-                 copy took the empty seat and the original could never take
-                 it back (v2 attack review, 2026-11-09). It now bars as long
-                 as a retired one does; the seat itself still empties after
-                 `ghost_off`, as before.
+                 epochs;
     - "retired": its owner no longer commits it, within `ghost_retire` epochs
                  of its first retirement.
     """
@@ -453,8 +446,7 @@ def comparison_set(
         if epochs[-1] == epoch:
             out[r.head_hash] = "live"
         elif r.active:
-            off = int(ghost_retire) if r.head_hash in holders else int(ghost_off)
-            if epoch <= epochs[-1] + off:
+            if epoch <= epochs[-1] + int(ghost_off):
                 out[r.head_hash] = "missed"
         elif r.retired_at is not None and epoch <= r.retired_at + int(ghost_retire) - 1:
             out[r.head_hash] = "retired"
@@ -492,9 +484,8 @@ def senior_bars(
     retired keeps barring through its retire window (rule 1c), so copies of a
     retired seat holder cannot become incumbents.
     """
-    protected = frozenset(holders)
-    cs = comparison_set(state, epoch, window, ghost_off=ghost_off, ghost_retire=ghost_retire,
-                        holders=protected)
+    cs = comparison_set(state, epoch, window, ghost_off=ghost_off, ghost_retire=ghost_retire)
+    protected = set(holders)
     def key(h):
         return seniority(state, h, floor_block=floor_block, salt=salt)
 

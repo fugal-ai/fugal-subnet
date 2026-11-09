@@ -88,7 +88,10 @@ def _row(idx, *, event=None, champion=None, weights, control=True, m2_missed=Fal
     if v2:
         served = [u for u in H if not (m2_missed and u == M2)]
         reveal.update(protocol_version=2, shared_grades=[{"question_id": "q", "grade": 1.0}],
-                      champion={"event": event, "champion": champion},
+                      champion={"event": event, "champion": champion,
+                                "detail": [[champion, "took the empty seat (best of 3 "
+                                                      "eligible by measured value)"]]
+                                if event == "first" else []},
                       copy_verdicts={str(u): "owner" for u in served},
                       v2_state={"copy_rule": _copy_state(idx)})
     entry = {"epoch_id": f"e{idx:08d}", "scores": {"2": 0.1},
@@ -157,14 +160,20 @@ def test_chain_checks_catch_a_v1_epoch_that_changed():
     assert any(n.startswith("v1 epochs are unchanged") for n in names)
 
 
+FIRST_SEAT = "the first seat goes to an eligible owner, chosen by measured value"
+
+
 def test_chain_checks_catch_a_wrong_first_champion_and_split():
     rows, miss = _good_run()
-    rows[101]["reveals"][0]["champion"]["champion"] = H[M3]
-    rows[101]["reveals"][1]["champion"]["champion"] = H[M3]
+    stray = "d" * 64                        # a head no owner served this epoch
+    for r in rows[101]["reveals"][:2]:
+        r["champion"]["champion"] = stray
+        r["champion"]["detail"] = [[stray, "took the empty seat (best of 3 eligible "
+                                           "by measured value)"]]
     rows[102]["entries"][0]["weights"] = rows[102]["entries"][1]["weights"] = {
         str(M2): 0.85, str(M1): 0.10, "0": 0.05}
     names = {r[1] for r in _run_checks(rows, miss).failed}
-    assert "the first seat goes to the most senior eligible head (by first commit)" in names
+    assert FIRST_SEAT in names
     assert "payout: weights sum to 1; two champions split 90/10" in names
 
 
@@ -184,12 +193,12 @@ def test_chain_checks_skip_what_the_branch_lacks():
     assert report.summary() == 1  # a skip is not a pass
 
 
-def test_chain_checks_fail_clearly_without_the_copy_rule_state():
+def test_chain_checks_fail_clearly_without_the_published_reason():
     rows, miss = _good_run()
     for r in rows[101]["reveals"]:
-        r.pop("v2_state", None)
+        r["champion"]["detail"] = []
     failed = {r[1]: r for r in _run_checks(rows, miss).failed}
-    assert "the first seat goes to the most senior eligible head (by first commit)" in failed
+    assert FIRST_SEAT in failed and "no reason published" in failed[FIRST_SEAT][3]
 
 
 def test_chain_checks_catch_a_lost_v1_epoch():

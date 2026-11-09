@@ -822,7 +822,7 @@ def _check_v1_pipeline(report, S, act):
 def _check_seat(report, S, val1, f):
     why = missing(f, "champion", "payout")
     names = ("the seat is empty and the share burns until a head completes burn-in",
-             "the first seat goes to the most senior eligible head after burn-in",
+             "the first seat goes to the eligible head after burn-in (m1: the only one)",
              "a head below the accuracy floor and an exact copy are never seated or paid",
              "a challenger takes the seat only after its own burn-in, by the margin")
     if why:

@@ -677,6 +677,11 @@ REQUIRE_COMMITMENT = os.getenv("FUGAL_REQUIRE_COMMITMENT", "1") not in ("0", "fa
 # hotkey, for local testnets and the dress rehearsal; a live miner refuses to
 # start with it at 0 (neurons/miner.py, caller_allowed).
 MIN_VALIDATOR_STAKE = float(os.getenv("FUGAL_MIN_VALIDATOR_STAKE", "50"))
+# This validator's public egress IP, recorded on chain at startup so miners can
+# admit only validators at their cloud firewall (fugal_subnet/axon_allowlist.py,
+# scripts/axon_firewall.py). Operational: it decides who can reach a miner, not
+# any score.
+VALIDATOR_IP = os.getenv("FUGAL_VALIDATOR_IP", "").strip()
 
 # Grader execution limits live in graders.py itself (EXEC_TIMEOUT_SECS and the
 # output cap): that file is hash-pinned consensus code and cannot read an
@@ -822,6 +827,7 @@ CONSENSUS_ENV_INPUTS = (
     "FUGAL_V2_ACTIVATION_BLOCK",
 )
 OPERATIONAL_ENV_VARS = (
+    "FUGAL_VALIDATOR_IP",
     "FUGAL_HARNESS_CONCURRENCY",
     "FUGAL_TAU",
     "FUGAL_LAMBDA",

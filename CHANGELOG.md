@@ -32,10 +32,25 @@ instance other than the vendored one was refused even with its own
 intermediate in the proof. Issuers are now chosen by signature among
 same-named candidates, in a fixed order.
 
-### Changed — the v2 empty seat goes to the best measured head; a missing seat holder keeps barring its copies
+### Added — validators publish their egress IP; miners can admit only validators
 
-Two attacks on the v2 seat rules, found by a new adversarial test suite
-(`tests/test_v2_attacks.py`) and fixed before the flip:
+Only validators need to reach a miner, and from protocol v2 a champion kept
+offline past its 3-epoch ghost loses the seat (INVARIANTS I3, "Accepted
+residual: a champion kept offline"). Validators now record their egress IP on
+chain at startup (`FUGAL_VALIDATOR_IP`; a serve_axon with nothing listening,
+only when the IP changed; never stops startup), and
+`scripts/axon_firewall.py` keeps a miner's GCP firewall rule admitting exactly
+the active validators' IPs (permit, stake, weights in the last three epochs)
+to the axon. It dry-runs by default, never writes an
+empty allowlist, refuses while any active validator has not published an IP
+(that validator would see the miner as offline while its peers did not), and
+reports any other rule still open to the world. Operational: no score or
+weight depends on it.
+
+### Changed — the v2 empty seat goes to the best measured head
+
+Found by a new adversarial test suite (`tests/test_v2_attacks.py`) and fixed
+before the flip:
 
 - The empty seat went to the most senior eligible head, and every pre-flip
   commit ties at the seniority floor, so the first seat was a salted draw:
@@ -43,13 +58,14 @@ Two attacks on the v2 seat rules, found by a new adversarial test suite
   could win it. It now goes to the eligible head with the highest measured
   net value over its current run (`champion.solo_value`, exact integer
   units); an exact tie (in practice a copy) goes to the earlier real commit.
-- A champion kept offline past its 3-epoch ghost left the copy rule's
-  comparison set, so a re-serialised copy that had served beside it took the
-  empty seat and held it for good (the original, tied at NV 0, could never
-  win it back). A seat holder now stays in the comparison set for the
-  24-epoch retire window, so the copy must beat it by the margin; the
-  original takes the seat back when it returns. The seat itself still
-  empties after the 3-epoch ghost, as before.
+- Not changed, documented (INVARIANTS I3, "Accepted residual: a champion
+  kept offline"): a champion kept offline past its 3-epoch ghost loses the
+  seat, and a copy that ties it keeps it. The defence is operational:
+  `scripts/axon_firewall.py` admits only validator IPs to a miner's axon.
+  (A first fix kept a missing seat holder in the comparison set for 24
+  epochs; it let a former champion that served rarely bar every junior and
+  stretched an honest outage's burn from 3 epochs to 24, so it was removed
+  before release.)
 
 ### Changed — the v2 seat test runs at 99% confidence (was 90%)
 

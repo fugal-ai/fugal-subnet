@@ -526,6 +526,47 @@ copy its values: it sets `public_logs`, `public_sysinfo`, `public_tcbinfo` and
 `gateway_enabled` to `true` — those are dstack's defaults, which is fine for a
 box holding no secrets and wrong for yours.
 
+### Protect your axon
+
+From protocol v2 a champion is scored only while its axon answers, and a
+champion kept offline for more than its 3-epoch ghost (about 3.6 h) loses the
+seat. Anyone who can flood your axon off the network can try exactly that,
+with a copy of your head's routing ready to take the seat (INVARIANTS I3,
+"Accepted residual: a champion kept offline").
+
+Only validators ever need to reach your miner, and every validator records its
+egress IP on chain (`FUGAL_VALIDATOR_IP`). Admit only the ACTIVE validators
+(a validator permit, stake at or above `MIN_VALIDATOR_STAKE`, weights set in
+the last three epochs) at the **cloud** firewall, where dropped packets never
+reach the box:
+
+```bash
+# Dry run: what it would admit, and any rule still open to the world
+python scripts/axon_firewall.py --network finney --netuid 70 --project <gcp-project> \
+    --instance <vm> --zone <zone>
+# Apply, then keep it current as validators come and go
+python scripts/axon_firewall.py --network finney --netuid 70 --project <gcp-project> \
+    --instance <vm> --zone <zone> --apply --every 600
+```
+
+- It manages one rule (`fugal-axon-validators`, tcp:8091, tag `fugal-miner`,
+  on the VM's VPC) and only REPORTS other rules that still open 8091 broadly
+  (`0.0.0.0/0`, split halves, `::/0`) to any tag the VM carries (`--instance`
+  reads them). GCP allow rules add up, so delete the world-open one yourself
+  once the allowlist is in place (`gcloud compute firewall-rules delete
+  fugal-axon`). A rule aimed at service accounts is listed for a manual check.
+- It refuses to apply while any active validator has not published an IP:
+  that validator would see your miner as offline while the others did not.
+  `--allow-partial` overrides it; prefer asking the validator to set
+  `FUGAL_VALIDATOR_IP`.
+- It never writes an empty allowlist, and leaves the rule as it is when it
+  cannot read the chain or the GCP firewall; with `--every` a failed run is
+  retried at the next one (run it as a systemd service or in a tmux pane), so
+  a new validator, or one whose IP changed, is admitted within minutes.
+- With the allowlist on, the miner's own startup reachability check (it
+  connects to its published address) fails and warns: it is not a validator.
+  Check from a validator, or temporarily `--extra-cidr` your own IP.
+
 ## Updating Your Head
 
 Retrain on newer data, then re-provision: `dstack-cloud stop` and `start`

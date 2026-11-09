@@ -1439,7 +1439,7 @@ def _v2_flip_checks(report, S, f, rows, act_idx, uid, killed_at, miss, comparabl
 
     why = missing(f, "wiring")
     names = ("the seat burns until a head completes burn-in",
-             "the first seat goes to the most senior eligible head (by first commit)",
+             "the first seat goes to an eligible owner, chosen by measured value",
              "a challenger takes the seat by the margin",
              "payout: weights sum to 1; two champions split 90/10",
              "a champion that misses leaves a ghost and its share burns",
@@ -1486,28 +1486,21 @@ def _v2_flip_seat_checks(report, S, rows, v2e, uid, miss, names, close):
                  f"first seat in e{first:08d}" if first else "no head was ever seated")
     if first is None:
         return
-    # Seniority is the head's first commit (copy rule). m1 and m3 commit in the
-    # same hold window, so which of them is senior is decided by the chain; the
-    # expectation is read from the copy-rule state the reveal publishes, among
-    # the heads served by their owners that epoch.
-    from fugal_subnet import copy_rule
+    # The empty seat goes to the eligible head with the best measured net value
+    # (champion.solo_value); seniority only breaks exact ties. Which of the
+    # served heads measures best is a function of the window, which this check
+    # does not recompute (tests/test_v2_epoch and scripts/rehearsal_v2.py pin
+    # the ranking; val1 == val2 above pins agreement). Here: the seat went to a
+    # head its OWNER served that epoch, for the stated reason.
     r_first = rows[first]["reveals"][0]
-    block = (r_first.get("v2_state") or {}).get(copy_rule.REVEAL_KEY)
-    if block is None:
-        report.check(S, names[1], False,
-                     f"e{first:08d}'s reveal carries no v2_state['{copy_rule.REVEAL_KEY}']: "
-                     "cannot tell which head is senior by first commit")
-        return
-    state = copy_rule.CopyState.from_reveal(block)
-    owners_now = [heads[first].get(u) for u, v in (r_first.get("copy_verdicts") or {}).items()
-                  if v == "owner" and heads[first].get(u)]
-    sen = r_first.get("v2_seniority") or {}
-    expected = min(owners_now, key=lambda h: (copy_rule.v2_seniority(
-        state, h, floor_block=sen.get("floor_block"), salt=sen.get("salt") or ""), h),
-                   default=None)
-    report.check(S, names[1], expected is not None and seats[first].get("champion") == expected,
-                 f"seated {str(seats[first].get('champion'))[:12]}, most senior owner "
-                 f"{str(expected)[:12]}")
+    owners_now = {heads[first].get(u) for u, v in (r_first.get("copy_verdicts") or {}).items()
+                  if v == "owner" and heads[first].get(u)}
+    seated = seats[first].get("champion")
+    why = [w for h, w in (seats[first].get("detail") or []) if h == seated]
+    report.check(S, names[1], seated in owners_now
+                 and any("took the empty seat" in w and "measured value" in w for w in why),
+                 f"seated {str(seated)[:12]} ({'; '.join(why) or 'no reason published'}); "
+                 f"owners served: {sorted(str(h)[:12] for h in owners_now)}")
     first_uid = next((int(u) for u, h in heads[first].items()
                       if h == seats[first].get("champion")), None)
     take = next((i for i in v2e if i > first and seats[i].get("event") == "take"), None)

@@ -163,7 +163,9 @@ point, not a floor.
   the wallet directory. A separate admin user holds the SSH key and `sudo`.
   The hotkey is regenerated on the host, as the service user, by the person
   who holds the words; it is never copied over the network.
-- **Inbound.** The validator serves no axon, so the host accepts **SSH only**:
+- **Inbound.** The validator listens on nothing but SSH, so the host accepts
+  **SSH only** (it records its egress IP on chain, `FUGAL_VALIDATOR_IP`, for
+  miners' firewalls; nothing listens behind that record):
   provider firewall and host firewall (`ufw`) both deny everything else, root
   login and password authentication are off in `sshd`, `fail2ban` guards the
   SSH jail, and unattended security upgrades are on.
@@ -242,6 +244,7 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_COLLATERAL_TIMEOUT` | `10` | Seconds one collateral fetch may take before the proof is recorded `unverifiable` |
 | `FUGAL_COLLATERAL_EPOCH_BUDGET` | `600` | Seconds the whole verification phase may spend fetching collateral (I6) |
 | `FUGAL_BENCHMARK_POOL` | — | Leave unset. A materialised pool file is accepted only if it matches the pinned manifest and the size floor; a non-pinned pool must declare `FUGAL_POOL_UNPINNED=1` and is for local rehearsals only |
+| `FUGAL_VALIDATOR_IP` | — | This host's public egress IPv4: the address miners SEE your queries come from (`curl -s https://ifconfig.me` from this host; behind NAT, the NAT's address, and it must be a single stable one). Recorded on chain at startup (only when it changed) so miners can admit validators, and only validators, at their firewall (`scripts/axon_firewall.py`). Nothing listens on it. Unset: miners that firewall their axon cannot be reached by this validator |
 | `FUGAL_REVEAL_BUCKET` | — | Public-read GCS bucket each epoch's `reveal.json` is published to, after the weight commit-reveal window, with its sha256 committed on chain by this hotkey (`reveal:<epoch_id>:<sha256>`). Unset: reveals stay on local disk |
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
 | `FUGAL_FRAME_BOOTSTRAP` | — | Directory of published reveals to rebuild the reference frame from when there is no local state; otherwise the shipped `data/reference_frame.json` is required in `--live` |
@@ -448,7 +451,13 @@ Do not fill them in from anywhere else.
    any miner moves. Before the flip a v2 miner holds its axon, so no v2 proof
    arrives early. Carrying the entry early costs nothing, and carrying it late
    scores every v2 miner absent at the flip.
-4. **Do not set any other v2 constant.** The `FUGAL_CHAMPION_*`,
+4. **Set `FUGAL_VALIDATOR_IP`** to this host's public egress IPv4, and
+   restart. The startup log says `validator IP <ip> published on chain` (or
+   `already on chain`). Miners admit only published validator IPs at their
+   firewall, so a validator without one cannot reach them; and the miners'
+   script will not switch the allowlist on while any active validator is
+   missing, so one missing validator leaves every miner exposed.
+5. **Do not set any other v2 constant.** The `FUGAL_CHAMPION_*`,
    `FUGAL_PAYOUT_SEAT_SHARES` and `FUGAL_BURN_IN_QUESTIONS` values are
    consensus constants. `--live` refuses to start on finney with any of them
    set.

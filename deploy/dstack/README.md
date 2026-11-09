@@ -90,7 +90,8 @@ before you hash anything:
 ```bash
 dstack-cloud deploy            # c3-standard-4 is enough; the machine shape is not in the measurement
 dstack-cloud status            # public IP
-gcloud compute instances add-tags <vm> --tags fugal-miner   # firewall: 8091 world, 8092 operator-only
+gcloud compute instances add-tags <vm> --tags fugal-miner   # firewall: 8091 validators only, 8092 operator-only
+python scripts/axon_firewall.py --network finney --netuid 70 --project <gcp-project>   # dry run, then --apply --every 600
 
 python scripts/provision_td.py --inspect --address http://<ip>:8092      # read instance-id, compose hash
 python scripts/provision_td.py --address http://<ip>:8092 \

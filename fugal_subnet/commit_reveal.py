@@ -50,11 +50,19 @@ def write_json_atomic(path: str, obj: object) -> None:
     is atomic and the bytes are on disk before it.
     """
     tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # Neither a half-written temp file nor the final path is left behind.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def commit_epoch(epoch_id: str, questions: list[dict], block_hash: str) -> EpochCommitment:
@@ -69,10 +77,18 @@ def commit_epoch(epoch_id: str, questions: list[dict], block_hash: str) -> Epoch
         block_hash=block_hash,
     )
 
+    # The commitment is computed in memory; the file is what reveal_epoch
+    # checks against later. A failed write (full disk, permissions) must not
+    # take the epoch with it: weights are still set (I6), and the reveal then
+    # finds no commitment, returns False and is logged as commit_reveal_failed.
     epoch_dir = os.path.join(EPOCH_DIR, epoch_id)
-    os.makedirs(epoch_dir, exist_ok=True)
-    commit_path = os.path.join(epoch_dir, "commit.json")
-    write_json_atomic(commit_path, asdict(commitment))
+    try:
+        os.makedirs(epoch_dir, exist_ok=True)
+        write_json_atomic(os.path.join(epoch_dir, "commit.json"), asdict(commitment))
+    except OSError as e:
+        logger.error("Epoch %s commitment %s could not be written (%s); this epoch's "
+                     "reveal will fail, its weights will not", epoch_id, commit_hash, e)
+        return commitment
 
     logger.info("Epoch %s committed: %s", epoch_id, commit_hash)
     return commitment
@@ -109,11 +125,14 @@ def reveal_epoch(
         logger.error("No commitment found for epoch %s", epoch_id)
         return False
 
-    with open(commit_path) as f:
-        commitment = json.load(f)
-
-    committed_grader_hash = commitment["grader_hash"]
-    expected = commitment["commit_hash"]
+    try:
+        with open(commit_path) as f:
+            commitment = json.load(f)
+        committed_grader_hash = commitment["grader_hash"]
+        expected = commitment["commit_hash"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        logger.error("Commitment for epoch %s is unreadable (%s); not revealing", epoch_id, e)
+        return False
     actual = compute_commit_hash(questions, committed_grader_hash)
 
     if actual != expected:
@@ -186,8 +205,16 @@ def reveal_epoch(
         for key in sorted(fields):
             reveal[key] = fields[key]
 
+    # Called BEFORE set_weights, so a reveal that cannot be written (full
+    # disk, a value JSON cannot encode) is a failed reveal, never an exception
+    # that ends the epoch with no weights set (I6). Nothing partial is left.
     reveal_path = os.path.join(epoch_dir, "reveal.json")
-    write_json_atomic(reveal_path, reveal)
+    try:
+        write_json_atomic(reveal_path, reveal)
+    except (OSError, TypeError, ValueError) as e:
+        logger.error("Epoch %s reveal could not be written (%s); weights are still set",
+                     epoch_id, e)
+        return False
 
     logger.info("Epoch %s revealed and verified: %s", epoch_id, expected)
     return True

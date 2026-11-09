@@ -49,6 +49,16 @@ def _integer_gold(raw) -> str:
     return str(int(found[0]))
 
 
+# graders.integer_exact compares through float(), which is exact only up to
+# 2**53: a larger gold can never be matched, by any reply.
+_GRADEABLE_INTEGER = 2 ** 53
+
+
+def _gradeable_integer(gold) -> bool:
+    """A gold integer_exact can match: one plain integer within float range."""
+    return bool(re.fullmatch(r"-?\d+", str(gold))) and abs(int(gold)) <= _GRADEABLE_INTEGER
+
+
 def _by_hash(items: list[dict], key: str, n: int) -> list[dict]:
     """The first n items in sha256 order of `key`: a stable subset independent of load order."""
     return sorted(items, key=lambda it: hashlib.sha256(str(it[key]).encode("utf-8")).hexdigest())[:n]
@@ -91,6 +101,8 @@ def _omni_integer() -> list[dict]:
         ans = str(row["answer"]).strip().strip("$").strip()
         if not re.fullmatch(r"-?\d+", ans):
             continue
+        if abs(int(ans)) > _GRADEABLE_INTEGER:
+            continue                          # integer_exact compares through float: never gradeable
         try:
             diff = float(row["difficulty"])
         except (TypeError, ValueError):
@@ -124,8 +136,11 @@ def load_supergpqa_hard() -> list[dict]:
 
 
 def load_aime_hist() -> list[dict]:
+    """v1's AIME loader, keeping only golds the integer grader can match: one
+    item's gold is "080 or 081 (both were accepted)", which no reply can
+    equal. The v1 pool keeps it (it is pinned and must not change)."""
     from fugal_subnet.benchmarks import aime
-    return aime.load()
+    return [q for q in aime.load() if _gradeable_integer(q["gold"])]
 
 
 def load_aime25() -> list[dict]:
@@ -146,9 +161,25 @@ def load_beyondaime() -> list[dict]:
              "metadata": {}} for i, row in enumerate(ds)]
 
 
+# IFEval constraints the immutable grader cannot judge the way IFEval means
+# them (2026-11-08, measured on the real items): `bullet_lines` accepts only
+# "- " bullets, but IFEval's number_bullet_lists prompts ask for markdown "* "
+# bullets, which grade 0; `json_object` with an empty `required` passes only
+# the literal "{}", so a real JSON answer grades 0. Items carrying either are
+# questions every honest miner fails, so the v2 pool leaves them out; v1's pool
+# is pinned and keeps them.
+UNGRADEABLE_IFEVAL_KINDS = frozenset({"bullet_lines", "json_object"})
+
+
+def _ifeval_gradeable(q: dict) -> bool:
+    checker = (q.get("metadata") or {}).get("checker") or {}
+    kinds = {c.get("kind") for c in (checker.get("params") or {}).get("constraints", [])}
+    return not (kinds & UNGRADEABLE_IFEVAL_KINDS)
+
+
 def load_ifeval() -> list[dict]:
     from fugal_subnet.benchmarks import ifeval
-    return ifeval.load()
+    return [q for q in ifeval.load() if _ifeval_gradeable(q)]
 
 
 LOADERS_V2 = {

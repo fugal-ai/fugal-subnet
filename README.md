@@ -147,7 +147,7 @@ the attested provisioning channel; see the [Miner Guide](docs/MINER_GUIDE.md).
 ## Benchmarks
 
 The pinned v2 pool (`fugal_subnet/benchmarks/pool_manifest_v2.json`) is
-**29,036 questions** in four categories:
+**28,986 questions** in four categories:
 
 | Category | Target | Benchmark | Questions | Grader |
 |----------|-------:|-----------|----------:|--------|
@@ -156,11 +156,16 @@ The pinned v2 pool (`fugal_subnet/benchmarks/pool_manifest_v2.json`) is
 | math | 25% | MATH (levels 3–5) | 3,669 | boxed_math |
 | | | Omni-MATH (mid) | 1,117 | boxed_math |
 | hard | 30% | SuperGPQA (hard) | 7,050 | letter_mcq |
-| | | AIME 1983–2024 | 933 | integer_exact |
+| | | AIME 1983–2024 | 932 | integer_exact |
 | | | AIME 2025 | 30 | integer_exact |
 | | | BeyondAIME | 100 | integer_exact |
-| | | Omni-MATH (hard) | 846 | boxed_math |
-| instruction | 5% | IFEval | 259 | constraint_set |
+| | | Omni-MATH (hard) | 845 | boxed_math |
+| instruction | 5% | IFEval | 211 | constraint_set |
+
+Fifty source items are left out because the pinned grader cannot judge them as
+intended: 48 IFEval items whose bullet-list or JSON checks fail compliant
+answers, one AIME item whose gold is "080 or 081", and one Omni-MATH item
+whose gold is beyond 2^53. The v1 pool is unchanged.
 
 Hugging Face dataset revisions are pinned for reproducibility, and the pool's
 content hash is checked at startup. **Do not set `FUGAL_SKIP_BENCHMARKS` on

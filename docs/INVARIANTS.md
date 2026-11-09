@@ -2884,7 +2884,7 @@ silently alter the question pool.
 ## Known gaps
 
 **Pool memorization (open, bounded 2026-10-14).** The question pool is public
-and finite (21,553 questions in v1; 29,036 in v2, where the slice fills
+and finite (21,553 questions in v1; 28,986 in v2, where the slice fills
 category quotas first and the same share cap applies within a category). A miner willing to pay once to evaluate every model on
 every question could publish a head that encodes the resulting lookup rather
 than a routing policy. It would score well here and generalize to nothing.

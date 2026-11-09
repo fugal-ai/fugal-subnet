@@ -5,7 +5,7 @@
   "knowledge": 0.4,
   "math": 0.25
  },
- "content_hash": "fc383e3b87020ab6b25331640767b17bfa49346f2a2f8ecb1e39c0c172983278",
+ "content_hash": "c0656ed6c01f2e6941deee160322b9c9f32a709adeb7c5fc682989dda8bfbabc",
  "dataset_revisions": {
   "ByteDance-Seed/BeyondAIME": "c705198ae1043810b1e1693bd879250b51a7a523",
   "EleutherAI/hendrycks_math": "21a5633873b6a120296cce3e2df9d5550074f4a3",
@@ -18,12 +18,12 @@
   "qq8933/AIME_1983_2024": "3e2cc86390666c5c756622afc0eeb9e6194496bc"
  },
  "gated_datasets": [],
- "n_questions": 29036,
+ "n_questions": 28986,
  "per_benchmark": {
   "aime": {
    "category": "hard",
    "licence": "MIT (qq8933/AIME_1983_2024)",
-   "n": 933,
+   "n": 932,
    "weight": 0.244369
   },
   "aime25": {
@@ -41,7 +41,7 @@
   "ifeval": {
    "category": "instruction",
    "licence": "Apache-2.0 (google/IFEval)",
-   "n": 259,
+   "n": 211,
    "weight": null
   },
   "math_l35": {
@@ -65,7 +65,7 @@
   "omnimath_hard": {
    "category": "hard",
    "licence": "Apache-2.0 (KbsdJames/Omni-MATH)",
-   "n": 846,
+   "n": 845,
    "weight": 0.221582
   },
   "omnimath_mid": {
@@ -81,6 +81,6 @@
    "weight": 0.5
   }
  },
- "pool_hash": "db183a6b09778953d921ae25f997535539a7982fce46e74ecbb5629ce3626939",
+ "pool_hash": "7a7255197e1c0c7a24d8fcd8e57ec059618858612bd59111e0c5ed93e184375a",
  "protocol": 2
 }

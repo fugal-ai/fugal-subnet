@@ -695,7 +695,7 @@ deadline. A v1 head names v1 models, so **every head must be retrained** for v2.
 is no published label set to retrain from: you label your own data.
 
 **Open benchmarks, by category.** The v2 pool is
-`fugal_subnet/benchmarks/pool_manifest_v2.json`: 29,036 questions from
+`fugal_subnet/benchmarks/pool_manifest_v2.json`: 28,986 questions from
 openly licensed sets, none gated, each with its licence in the manifest. The
 pool is split into four categories by `BENCHMARK_CATEGORY_V2`:
 

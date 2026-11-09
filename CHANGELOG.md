@@ -4,6 +4,19 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — the v2 pool leaves out 50 items the pinned grader cannot judge
+
+Measured on the real items: IFEval's `number_bullet_lists` prompts ask for
+markdown `* ` bullets, but the pinned `bullet_lines` check accepts only `- `,
+so compliant answers graded 0 (31 items); `json_object` with an empty
+`required` passed only the literal `{}`, so a real JSON answer graded 0 (17
+items). One AIME gold is "080 or 081 (both were accepted)" and one Omni-MATH
+gold exceeds 2^53, where `integer_exact`'s float comparison cannot match. Every
+honest miner failed all 50, about 2.8 of each slice's 15 instruction questions.
+`graders.py` is immutable, so the v2 loaders leave them out: the v2 pool is
+28,986 questions (was 29,036), with a new `pool_manifest_v2.json`. The v1 pool
+and its manifest are unchanged.
+
 ### Added — v2 proofs carry and bind their TPM intermediates; issuers are chosen by signature
 
 Launch step 2. The miner builds its attestation key's intermediate chain once

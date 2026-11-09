@@ -132,7 +132,7 @@ startup and refuses to start in `--live` if it cannot (`neurons/validator.py`).
 So export it too (`python scripts/export_pool.py --protocol 2`) and place
 `data/benchmarks/pool_v2.json.gz` (or point `FUGAL_POOL_FILE_V2` at it) on
 every validator **before** the restart that sets the block. Without it, every
-validator rebuilds 29,036 questions from Hugging Face on that restart, and an
+validator rebuilds 28,986 questions from Hugging Face on that restart, and an
 upstream outage then is a validator that does not start.
 
 The pool is consensus state: the slice is drawn from it, so a validator and a
@@ -151,7 +151,7 @@ Two things make the default loader non-reproducible:
 Both are now closed by the pinned manifest (`fugal_subnet/benchmarks/
 pool_manifest.json`): `load_all()` skips the gated and unpinned benchmarks by
 name and refuses to start unless the pool it built matches the manifest's
-content hash. The v2 pool (`pool_manifest_v2.json`, 29,036 questions from
+content hash. The v2 pool (`pool_manifest_v2.json`, 28,986 questions from
 open sets only, none gated) is loaded by `load_pool(2)` the same way; a dstack
 miner caches it on its encrypted volume after the first verified load
 (`FUGAL_POOL_CACHE_V2`) and re-verifies it on every read. Leave `FUGAL_BENCHMARK_POOL` unset on every neuron; a pool file is
@@ -237,7 +237,7 @@ proofs and is for local rehearsals. See [TDX_VALIDATION.md](TDX_VALIDATION.md).
 Backbone embeddings for the v1 pool (21,553 questions) under the current
 2048-token profile took **3 h 20 min on a `c3-standard-8`** and about 5 to 6
 hours on a `c3-standard-4` (measured on mainnet TDs, 2026-11; MINER_GUIDE,
-"How to move"). The v2 pool is 29,036 questions, about 35% more. Under the
+"How to move"). The v2 pool is 28,986 questions, about 35% more. Under the
 legacy profile the same pool took 13.2 hours on an x86_64 laptop and 36 hours
 on a 4-core aarch64 VM, measured on real pool prompts averaging 330
 characters. This is startup cost before the miner answers its first query.
@@ -488,6 +488,6 @@ Honest list, as of 2026-11-06:
 | Real OpenRouter billing vs the pinned price table | **measured once**, account-level: within ~5% over four miner-epochs; completions averaged 534 tokens against the 256 assumed, and exploration was ~60% of a cheap head's epoch cost |
 | A real trained head outscoring a random one | **measured** offline (`docs/decisions/HEAD_EFFICACY.md`) and on mainnet since 2026-11-04 (144 UIDs with non-zero incentive at block 9449357) |
 | Behaviour under adversarial miners over weeks | **never executed** |
-| Miner startup cost on a TD | **measured** on the current profile: 3 h 20 min (`c3-standard-8`) to 5–6 h (`c3-standard-4`) for the v1 pool; re-paid on every image rotation because the tool recreates the data disk; **unmeasured** for the v2 pool (29,036 questions) |
+| Miner startup cost on a TD | **measured** on the current profile: 3 h 20 min (`c3-standard-8`) to 5–6 h (`c3-standard-4`) for the v1 pool; re-paid on every image rotation because the tool recreates the data disk; **unmeasured** for the v2 pool (28,986 questions) |
 | An end-to-end epoch under the success-contract runtime | **running on mainnet** since 2026-11-04 (protocol v1) |
 | A protocol v2 epoch on a public chain | **never executed**: rehearsed only on the local chain (`dress_rehearsal.py --scenario v2_flip`, 16/16 on 2026-11-05) |

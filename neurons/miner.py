@@ -270,6 +270,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # epoch until it sticks.
 
     tee_runtime = TEERuntime(mock=mock)
+    # Google's intermediates for this TD's attestation key, carried in every
+    # v2 proof so a region (or a rotated intermediate) that validators have
+    # not vendored still chains to the pinned root (launch step 2).
+    tpm_intermediates = [] if mock else _tpm_intermediates_at_startup(tee_runtime)
 
     # The miner never writes RTMR3. dstack's initrd extends it during boot and
     # the validator replays that log; an extend from here would be missing
@@ -467,6 +471,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     # default even when FUGAL_MODEL_PRICES (testnet only) had
                     # changed the list main() uses.
                     prices=prices,
+                    tpm_intermediates=tpm_intermediates,
                     block_now=subtensor.get_current_block,
                 )
                 consecutive_failures = 0
@@ -690,6 +695,35 @@ def _commit_before_deadline(subtensor, wallet, netuid, weights_hash, deadline: i
             time.sleep(poll_s)
 
 
+def _tpm_intermediates_at_startup(tee_runtime) -> list:
+    """The intermediates this TD's AK needs, from one startup attestation.
+
+    Never stops the miner: a TD with no TPM half (a bare quote), no AIA, or a
+    failed fetch logs why and returns [], and its proofs then verify only where
+    a validator's vendored intermediates cover them, as before.
+    """
+    from fugal_subnet.scale import ScaleError, decode_dstack_attestation
+    from fugal_subnet.tee.tpm import intermediates_for
+
+    why = ("proofs will verify only where validators have vendored this TD's "
+           "intermediate (us-central1 today)")
+    try:
+        blob = tee_runtime.generate_attestation(b"\x00" * 32)
+        if int.from_bytes(blob[:2], "little") in (4, 5):
+            logger.info("Bare TDX quote (no TPM half): no TPM intermediates to carry")
+            return []
+        ak_cert = decode_dstack_attestation(blob)["tpm"]["ak_cert"]
+        chain = intermediates_for(ak_cert)
+    except (ScaleError, ValueError, OSError, RuntimeError) as e:
+        logger.warning("Could not build the TPM intermediates (%s); %s", e, why)
+        return []
+    if chain:
+        logger.info("Carrying %d TPM intermediate certificate(s) in each v2 proof", len(chain))
+    else:
+        logger.warning("No TPM intermediate chain could be built for this TD's key; %s", why)
+    return chain
+
+
 def _run_epoch(
     blocks_per_epoch,
     head_data,
@@ -708,6 +742,7 @@ def _run_epoch(
     protocol_version=1,
     prices=None,
     block_now=None,
+    tpm_intermediates=(),
 ):
     """Run a single benchmark epoch; `block_now` (the chain's current block)
     lets it report whether the proof was ready by the collection block."""
@@ -754,6 +789,10 @@ def _run_epoch(
             protocol_version=protocol_version,
         )
 
+        # Before the content hash, which binds them (v2 proofs only: a v1
+        # proof stays byte-identical for a validator not yet upgraded).
+        if protocol_version >= 2 and tpm_intermediates:
+            proof.tpm_intermediates = list(tpm_intermediates)
         content_hash_bytes = bytes.fromhex(proof.content_hash())
         proof.attestation_quote = tee_runtime.generate_attestation(content_hash_bytes)
 

@@ -346,7 +346,11 @@ Before the image (each changes what the image measures or carries):
    re-check every doc that quotes the v2 numbers.
 2. **Embed Google's TPM intermediate certificates in the v2 miner image.**
    Without them a Google certificate rotation, or a region other than
-   us-central1, fails every proof.
+   us-central1, fails every proof. *Code done 2026-11-08:* the miner builds its
+   AK's chain at startup (`tpm.intermediates_for`: vendored, else AIA) and
+   carries it, bound into `content_hash`, in every v2 proof; validators choose
+   same-named issuers by signature. On the testnet rehearsal, check the miner
+   log says "Carrying N TPM intermediate certificate(s)".
 3. **Add a second release signing key** on a separate device, and a
    key-rotation paragraph in `deploy/keys/README.md`. One key on one machine
    is one lost laptop from no signed release.

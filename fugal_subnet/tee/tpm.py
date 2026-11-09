@@ -221,7 +221,6 @@ def verify_ak_chain(ak_cert_der: bytes, extra_certs: "list[bytes] | None" = None
     the parameter exists rather than a hidden call to the clock.
     """
     from cryptography import x509
-    from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 
     if at is None:
         at = datetime.datetime.now(datetime.timezone.utc)
@@ -247,13 +246,42 @@ def verify_ak_chain(ak_cert_der: bytes, extra_certs: "list[bytes] | None" = None
                            cert.subject.rfc4514_string(), at)
             return False
 
-        issuer = root if cert.issuer == root.subject else next(
-            (c for c in pool if c.subject == cert.issuer), None)
+        issuer = _issuer_of(cert, root, pool)
         if issuer is None:
-            logger.warning("no issuer for %s (issuer %s) among pinned certificates",
-                           cert.subject.rfc4514_string(), cert.issuer.rfc4514_string())
             return False
+        if issuer is root:
+            return True
+        cert = issuer
 
+    logger.warning("certificate chain deeper than 8; refusing")
+    return False
+
+
+def _issuer_of(cert, root, pool):
+    """The certificate that issued `cert`: the root, or one in `pool`, or None.
+
+    Chosen by SIGNATURE, not by name. Google gives every EK/AK intermediate the
+    same subject ("CN=EK/AK CA Intermediate, OU=Google Cloud, ..."), one per CA
+    instance, so a name lookup that takes the first match picks the vendored
+    us-central1 intermediate for a leaf issued by any other instance, fails the
+    signature and refuses the proof: a miner in another region, or any miner
+    after a rotation, was refused even when its proof carried the right
+    intermediate (found 2026-11-08 building the miner half). Each same-named
+    candidate is tried in a fixed order (the root, the vendored files sorted by
+    name, then the proof's own in proof order), so the verdict is deterministic
+    (I1) and the first that may issue and whose signature verifies is taken.
+    """
+    from cryptography import x509
+    from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+
+    candidates = ([root] if cert.issuer == root.subject else []) + [
+        c for c in pool if c.subject == cert.issuer]
+    if not candidates:
+        logger.warning("no issuer for %s (issuer %s) among pinned certificates",
+                       cert.subject.rfc4514_string(), cert.issuer.rfc4514_string())
+        return None
+
+    for issuer in candidates:
         # An issuer must actually be allowed to issue. Without this a leaf
         # certificate could be used to sign another certificate, and any miner
         # holding a genuine AK could mint attestation keys for machines they do
@@ -263,10 +291,10 @@ def verify_ak_chain(ak_cert_der: bytes, extra_certs: "list[bytes] | None" = None
         except x509.ExtensionNotFound:
             logger.warning("issuer %s has no basicConstraints",
                            issuer.subject.rfc4514_string())
-            return False
+            continue
         if not bc.ca:
             logger.warning("issuer %s is not a CA", issuer.subject.rfc4514_string())
-            return False
+            continue
 
         try:
             issuer.public_key().verify(
@@ -274,9 +302,9 @@ def verify_ak_chain(ak_cert_der: bytes, extra_certs: "list[bytes] | None" = None
                 *_verifier_args(cert, issuer),
             )
         except InvalidSignature:
-            logger.warning("signature on %s does not verify under %s",
-                           cert.subject.rfc4514_string(), issuer.subject.rfc4514_string())
-            return False
+            logger.debug("signature on %s does not verify under one candidate %s",
+                         cert.subject.rfc4514_string(), issuer.subject.rfc4514_string())
+            continue
         except (TypeError, ValueError, UnsupportedAlgorithm, TpmError) as e:
             # A leaf whose issuer NAME is the pinned root but whose signature
             # algorithm the issuer's key cannot verify (Ed25519 under an EC
@@ -287,14 +315,88 @@ def verify_ak_chain(ak_cert_der: bytes, extra_certs: "list[bytes] | None" = None
             # crashed (security read 2026-11-02, finding 6). It is a rejection.
             logger.warning("cannot verify signature on %s under %s: %s",
                            cert.subject.rfc4514_string(), issuer.subject.rfc4514_string(), e)
-            return False
+            continue
+        return issuer
 
+    logger.warning("signature on %s does not verify under any of %d certificate(s) named %s",
+                   cert.subject.rfc4514_string(), len(candidates), cert.issuer.rfc4514_string())
+    return None
+
+
+def intermediates_for(ak_cert_der: bytes, fetch=None, at=None) -> list[bytes]:
+    """The intermediates (DER) a proof must carry for its AK to chain to the root.
+
+    Run by the miner, inside its TD, once at startup. Each issuer is taken
+    from the vendored intermediates when one signed the certificate, and
+    otherwise fetched from the certificate's AIA caIssuers URL (plain HTTP on
+    Google's CA bucket: safe, because nothing fetched is believed unless it
+    chains to the pinned root by signature, which is checked before returning).
+    The vendored one is carried too, so a proof does not depend on which
+    intermediates a validator happens to have vendored.
+
+    Returns [] when no chain can be built (no AIA, the fetch failed, or what it
+    returned does not chain): a proof then verifies only if a validator's
+    vendored set covers it, exactly as before. Never raises on the network.
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    from fugal_subnet.tee.proof import TPM_INTERMEDIATES_MAX
+
+    fetch = fetch or _fetch_ca_issuer
+    leaf = x509.load_der_x509_certificate(ak_cert_der)
+    root, vendored = _load_pinned()
+    chain: list = []
+    cert = leaf
+    for _ in range(TPM_INTERMEDIATES_MAX):
+        issuer = _issuer_of(cert, root, vendored + chain)
+        if issuer is None:
+            fetched = _aia_certificate(cert, fetch)
+            issuer = _issuer_of(cert, root, [fetched]) if fetched is not None else None
+            if issuer is None:
+                return []
         if issuer is root:
-            return True
+            break
+        if issuer not in chain:
+            chain.append(issuer)
         cert = issuer
+    ders = [c.public_bytes(serialization.Encoding.DER) for c in chain]
+    return ders if verify_ak_chain(ak_cert_der, extra_certs=ders, at=at) else []
 
-    logger.warning("certificate chain deeper than 8; refusing")
-    return False
+
+def _aia_certificate(cert, fetch):
+    """The caIssuers certificate named in `cert`'s AIA extension, or None."""
+    from cryptography import x509
+    from cryptography.x509.oid import AuthorityInformationAccessOID
+
+    try:
+        aia = cert.extensions.get_extension_for_class(x509.AuthorityInformationAccess).value
+    except x509.ExtensionNotFound:
+        return None
+    for desc in aia:
+        if desc.access_method != AuthorityInformationAccessOID.CA_ISSUERS:
+            continue
+        url = desc.access_location.value
+        try:
+            raw = fetch(url)
+            return (x509.load_pem_x509_certificate(raw) if raw.lstrip().startswith(b"-----")
+                    else x509.load_der_x509_certificate(raw))
+        except Exception as e:  # noqa: BLE001 - network or a bad body: no chain, not a crash
+            logger.warning("could not fetch the issuing certificate from %s: %s", url, e)
+    return None
+
+
+def _fetch_ca_issuer(url: str) -> bytes:
+    """GET an AIA caIssuers URL, bounded in time and size."""
+    from urllib.request import urlopen
+
+    from fugal_subnet.tee.proof import TPM_INTERMEDIATE_MAX_BYTES
+
+    with urlopen(url, timeout=15) as resp:  # noqa: S310 - Google's CA bucket, checked by signature
+        body = resp.read(TPM_INTERMEDIATE_MAX_BYTES + 1)
+    if len(body) > TPM_INTERMEDIATE_MAX_BYTES:
+        raise TpmError(f"issuing certificate at {url} is over {TPM_INTERMEDIATE_MAX_BYTES} bytes")
+    return body
 
 
 def _verifier_args(cert, issuer):

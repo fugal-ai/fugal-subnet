@@ -407,10 +407,14 @@ in it. If your project name is something you would rather not publish, rename it
 or use a dedicated project before you register. Said here rather than left for
 you to discover.
 
-If you run in a region whose Google intermediate CA is not yet vendored in
-`fugal_subnet/tee/roots/`, your proof can still verify — the intermediate
-travels with the proof and is checked against the pinned root — but open an
-issue so it can be added, because it is one fewer moving part.
+Your proof carries the Google intermediate certificate(s) for your TD's
+attestation key, so it verifies in any region and across a Google rotation:
+the miner builds the chain once at startup (from the vendored intermediates,
+or from the certificate's own AIA address) and checks it against the pinned
+Google root before using it. Look for "Carrying N TPM intermediate
+certificate(s) in each v2 proof" in your log. A warning there instead means
+your proofs verify only where validators have vendored your intermediate
+(us-central1 today): open an issue with the log line.
 
 ### The `app-compose.json` fields that will hurt you
 

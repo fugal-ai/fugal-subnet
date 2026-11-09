@@ -608,30 +608,34 @@ when it asked. The field is **outside** `content_hash`: it is untrusted input
 checked against the anchor, so forging with it is impossible, and keeping it
 out changed no `report_data`, no `proof_hash` and no existing proof.
 
-**Known gap (I1), accepted for now.** Being outside `content_hash`, the
-intermediates are not bound to `proof_hash` or `report_data`. A miner can send
-a valid chain to one validator and junk (or nothing) to another under the same
-`proof_hash`, and the two validators then disagree about that miner's proof.
-This splits validators only on the miner's own proof and only against its own
-interest, which a miner can already do by answering some validators and not
-others; it cannot make any other miner's proof fail or pass. It is still a
-departure from "every validator sees the same input", so it is recorded here.
-**Fix, with the harness half (next image):** add `tpm_intermediates` to
-`content_hash`, included only when non-empty so proofs without it keep their
-hash, which binds it through `report_data`. It is omitted from `to_dict` when empty and
-bounded in `from_dict` (at most 4 certificates of 8 KB; I2). One intermediate
-(us-central1) is vendored so the common case needs nothing extra.
+**The gap that was here is closed for v2 proofs (2026-11-08).** Outside
+`content_hash`, the intermediates were not bound to `proof_hash` or
+`report_data`, so a miner could send a valid chain to one validator and junk to
+another under one `proof_hash` (I1). Now `content_hash` includes
+`tpm_intermediates` **only when non-empty**, so a proof without them keeps its
+hash byte for byte (`tests/test_tpm_proof_intermediates.py` pins one), and a
+proof with them binds them through `report_data`. The miner half is built:
+`tpm.intermediates_for` runs once at startup inside the TD, takes each issuer
+from the vendored intermediates when one signed the AK and otherwise fetches it
+from the certificate's AIA caIssuers URL, re-verifies the whole chain
+(signatures and validity) against the pinned root, and returns `[]` rather than
+carry anything that does not chain. The miner attaches the list to **v2 proofs
+only**, so a v1 proof from the v2 image is byte-identical for a validator that
+has not upgraded yet. Bounded in `from_dict` (at most 4 certificates of 8 KB;
+I2); the fetch is bounded to the same 8 KB.
 
-*Correction (2026-11-04):* until this change the paragraph above described a
-capability the code did not have. `verify_ak_chain` accepted `extra_certs`, but
-`unwrap_attestation` never passed any, so only the vendored us-central1
-intermediate could chain, and a Google rotation would have failed every proof.
-The validator half is now wired (`tests/test_tpm_proof_intermediates.py`
-simulates the rotation on a real attestation). **The miner half is not yet:**
-the harness must embed the intermediate(s) for its AK certificate, which is an
-image change, and the same change should bind them into `content_hash` (gap
-above). Until a miner image does, proofs carry none and the vendored
-us-central1 intermediate remains the only one that chains.
+**Issuers are chosen by signature, not by name (2026-11-08).** Google gives
+every EK/AK intermediate the same subject (`CN=EK/AK CA Intermediate, OU=Google
+Cloud, ...`), one per CA instance. `verify_ak_chain` used to take the first
+certificate whose subject matched the leaf's issuer, which is the vendored
+us-central1 intermediate, so a leaf from any other CA instance failed its
+signature check and was refused **even when its proof carried the right
+intermediate**: the proof-carried path could never have worked outside
+us-central1. The old rotation test removed the vendored file, which hid it.
+`tpm._issuer_of` now tries every same-named candidate in a fixed order (the
+root, the vendored files sorted by name, then the proof's own in proof order)
+and takes the first that may issue and whose signature verifies, so the
+verdict is deterministic (I1) and order-independent in outcome.
 
 **Signature and chain are one check, not two.** Either alone proves nothing: a
 signature without a chain accepts a quote the miner signed with their own key

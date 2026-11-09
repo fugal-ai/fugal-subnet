@@ -4,6 +4,21 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — v2 proofs carry and bind their TPM intermediates; issuers are chosen by signature
+
+Launch step 2. The miner builds its attestation key's intermediate chain once
+at startup (`tpm.intermediates_for`: the vendored intermediate when it signed
+the key, else the certificate's AIA caIssuers URL; the whole chain is
+re-verified against the pinned root, and nothing that does not chain is
+carried) and attaches it to every **v2** proof. `content_hash` includes
+`tpm_intermediates` only when non-empty, so proofs without them keep their
+hash and v1 proofs from the v2 image are unchanged for validators not yet
+upgraded. Fixed while building it: Google names every EK/AK intermediate the
+same, and `verify_ak_chain` took the first name match, so a key from any CA
+instance other than the vendored one was refused even with its own
+intermediate in the proof. Issuers are now chosen by signature among
+same-named candidates, in a fixed order.
+
 ### Fixed — a truncated TPM signature is a rejection, not a crash
 
 A TPMT_SIGNATURE cut inside r or s raised `struct.error`, which escaped

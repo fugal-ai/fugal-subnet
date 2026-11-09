@@ -52,10 +52,11 @@ def make_synthetic_head(models: list[str], hidden_dim: int = HEAD_HIDDEN_DIM,
     n_models = len(models)
     W = rng.randn(n_models, hidden_dim).astype(np.float32) * 0.01
     b = np.zeros(n_models, dtype=np.float32)
-    models_arr = np.array(models, dtype="U100")
+    from fugal_subnet import success_test_fixtures as fx
 
+    # A success-contract head: validators refuse any other (no cost profile).
     with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
-        np.savez(f, W=W, b=b, models=models_arr)
+        np.savez(f, **fx.arrays(W, b, models))
         path = f.name
 
     with open(path, "rb") as f:
@@ -362,25 +363,40 @@ def test_head_security():
         assert "decompresses" in str(e), f"unexpected rejection reason: {e}"
     print("  Zip bomb rejected")
 
-    # Too many model rows
-    buf = io.BytesIO()
-    np.savez(buf, W=np.zeros((65, 1024), dtype=np.float32),
-             b=np.zeros(65, dtype=np.float32),
-             models=np.array([f"m{i}" for i in range(65)], dtype="U10"))
-    try:
-        load_head_from_npz(buf.getvalue())
-        raise AssertionError("oversized model pool not rejected")
-    except ValueError as e:
-        assert "model rows" in str(e)
-    print("  65-model head rejected")
+    from fugal_subnet import success_test_fixtures as fx
 
-    # Non-2D W
+    def contract_head(n, **override):
+        """A success-contract head of n rows with one member replaced."""
+        z = fx.arrays(np.zeros((n, 1024), np.float32), np.zeros(n, np.float32),
+                      [f"vendor/m{i}" for i in range(n)])
+        z.update(override)
+        out = io.BytesIO()
+        np.savez(out, **z)
+        return out.getvalue()
+
+    # A head without the success contract: no cost profile, so it can never
+    # be scored, and it is refused before anything in it is read.
     buf = io.BytesIO()
-    np.savez(buf, W=np.zeros((2, 3, 4), dtype=np.float32),
-             b=np.zeros(2, dtype=np.float32),
+    np.savez(buf, W=np.zeros((2, 1024), np.float32), b=np.zeros(2, np.float32),
              models=np.array(["a", "b"], dtype="U10"))
     try:
         load_head_from_npz(buf.getvalue())
+        raise AssertionError("non-contract head not rejected")
+    except ValueError as e:
+        assert "success-contract" in str(e)
+    print("  Non-contract head rejected")
+
+    # Too many model rows
+    try:
+        load_head_from_npz(contract_head(65))
+        raise AssertionError("oversized model pool not rejected")
+    except ValueError as e:
+        assert "invalid models" in str(e)
+    print("  65-model head rejected")
+
+    # Non-2D W
+    try:
+        load_head_from_npz(contract_head(2, W=np.zeros((2, 3, 4), np.float32)))
         raise AssertionError("3-D W not rejected")
     except ValueError:
         pass
@@ -397,11 +413,8 @@ def test_head_security():
     # NaN weights
     W = np.zeros((2, 1024), dtype=np.float32)
     W[0, 0] = np.nan
-    buf = io.BytesIO()
-    np.savez(buf, W=W, b=np.zeros(2, dtype=np.float32),
-             models=np.array(["a", "b"], dtype="U10"))
     try:
-        load_head_from_npz(buf.getvalue())
+        load_head_from_npz(contract_head(2, W=W))
         raise AssertionError("NaN weights not rejected")
     except ValueError:
         pass

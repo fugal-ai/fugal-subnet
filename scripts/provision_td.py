@@ -91,7 +91,10 @@ def head_protocols(head_bytes: bytes) -> list[int]:
     from fugal_subnet.head_eval import load_head_from_npz
     from fugal_subnet.routing_protocol import benchmark_costs_for
 
-    head = load_head_from_npz(head_bytes)
+    try:
+        head = load_head_from_npz(head_bytes)
+    except ValueError:
+        return []          # not a head any validator loads (e.g. no success contract)
     ok = []
     for version in (1, 2):
         try:

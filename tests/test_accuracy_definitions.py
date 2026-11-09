@@ -34,15 +34,8 @@ produces.
 import numpy as np
 
 from fugal_subnet.config import HEAD_HIDDEN_DIM
-from fugal_subnet.head_eval import evaluate_head, load_head_from_npz
+from fugal_subnet.head_eval import HeadArtifact, evaluate_head
 from fugal_subnet.soft_targets import compute_soft_targets
-
-
-def _npz(W, b, models):
-    import io
-    buf = io.BytesIO()
-    np.savez(buf, W=W, b=b, models=np.array(models))
-    return buf.getvalue()
 
 
 def _setup(n_unanswerable, seed=0, n_q=40, n_models=5):
@@ -51,7 +44,10 @@ def _setup(n_unanswerable, seed=0, n_q=40, n_models=5):
     models = [f"vendor/m{i}" for i in range(n_models)]
     W = (rng.randn(n_models, HEAD_HIDDEN_DIM) * 0.05).astype(np.float32)
     b = (rng.randn(n_models) * 0.05).astype(np.float32)
-    head = load_head_from_npz(_npz(W, b, models))
+    # evaluate_head's preference-head path, built directly: the loader accepts
+    # only success-contract heads now, which evaluate_head handles differently.
+    head = HeadArtifact(W=W.astype(np.float32), b=b.astype(np.float32),
+                        models=list(models), commit_hash="")
     hidden = rng.randn(n_q, HEAD_HIDDEN_DIM).astype(np.float32)
     hidden /= np.linalg.norm(hidden, axis=1, keepdims=True)
     matrix = (rng.rand(n_q, n_models) > 0.4).astype(np.int8)

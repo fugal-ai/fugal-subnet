@@ -28,14 +28,16 @@ from fugal_subnet.head_eval import load_head_from_npz
 
 
 def _head(models):
+    """A success-contract head naming `models` (duplicates allowed, to test
+    the refusal): built for distinct placeholder names, then renamed."""
+    from fugal_subnet import success_test_fixtures as fx
+
     n = len(models)
+    z = fx.arrays(np.zeros((n, HEAD_HIDDEN_DIM), dtype=np.float32),
+                  np.zeros(n, dtype=np.float32), [f"placeholder/m{i}" for i in range(n)])
+    z["models"] = np.array(models)
     buf = io.BytesIO()
-    np.savez(
-        buf,
-        W=np.zeros((n, HEAD_HIDDEN_DIM), dtype=np.float32),
-        b=np.zeros(n, dtype=np.float32),
-        models=np.array(models),
-    )
+    np.savez(buf, **z)
     return buf.getvalue()
 
 
@@ -55,7 +57,7 @@ def test_rows_must_name_distinct_models():
     The check stands on the naming gap alone: HEAD_MAX_MODELS bounds head
     capacity, and duplicate names spend that capacity without declaring it.
     """
-    with pytest.raises(ValueError, match="distinct"):
+    with pytest.raises(ValueError, match="unique"):
         load_head_from_npz(_head(["openai/gpt-4o-mini"] * HEAD_MAX_MODELS))
 
 
@@ -63,7 +65,7 @@ def test_even_one_duplicated_pair_is_rejected():
     """No threshold. Two rows naming one model are two ways to say one route —
     a reparameterisation with no routing content — so nothing honest produces
     it and there is no size at which it becomes legitimate."""
-    with pytest.raises(ValueError, match="distinct"):
+    with pytest.raises(ValueError, match="unique"):
         load_head_from_npz(_head(["v/a", "v/b", "v/a"]))
 
 

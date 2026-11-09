@@ -49,8 +49,13 @@ SLOW = settings(
 
 
 def _npz(W, b, models, models_dtype="U100") -> bytes:
+    """A success-contract head (validators refuse any other)."""
+    from fugal_subnet import success_test_fixtures as fx
+
+    z = fx.arrays(W, b, list(models))
+    z["models"] = np.array(models, dtype=models_dtype)
     buf = io.BytesIO()
-    np.savez_compressed(buf, W=W, b=b, models=np.array(models, dtype=models_dtype))
+    np.savez_compressed(buf, **z)
     return buf.getvalue()
 
 

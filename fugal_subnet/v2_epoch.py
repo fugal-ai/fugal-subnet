@@ -440,6 +440,11 @@ def run_v2_epoch(
     history = tuple(decision.state.history)
     if seat_one is None and history and history[0] in ghost_hashes:
         seat_one, history = history[0], history[1:]
+        # The ghost holds the seat; it is not paid for it, even when its head
+        # is live again (a retired champion that recommitted its old hash
+        # serves as its own ghost and was paid seat 1 every epoch it served;
+        # v2 attack review, 2026-11-09).
+        payable = payable - {seat_one}
     uids, weights = seat_weights(
         seat_one, history, serving, payable,
         shares=shares, paid_fraction=1.0, burn_uid=burn_uid,

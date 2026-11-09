@@ -163,6 +163,25 @@ def test_first_epoch_seats_the_most_senior_head_by_first_commit():
     assert w(r) == {6: 1.0}     # unfilled seats pay the champion
 
 
+def test_a_ghosts_seat_one_share_burns_even_when_its_head_serves():
+    """INVARIANTS "A ghost keeps seat 1 ... its share burns". A champion that
+    retires its head (commits another) and then recommits the old hash serves
+    as its own retired ghost: live and above the floor, so seat_weights paid
+    it seat 1 every epoch it served, while the ghost barred challengers for
+    the whole retire window (v2 attack review, 2026-11-09)."""
+    from fugal_subnet.champion import Ghost
+
+    ghost_seat = SeatState(champion=None, history=(H(1),),
+                           ghosts=(Ghost(H(1), last_epoch=30, reason="retired"),))
+    r = run(5, {1: oracle, 2: always("m/mid")}, seat=ghost_seat)
+    assert r.decision.champion is None
+    assert any(g.head_hash == H(1) for g in r.decision.state.ghosts)
+    assert w(r).get(1, 0.0) == 0.0                 # the ghost's head is not paid seat 1
+    # Seat 1 burns, and with no champion before it seats 2 and 3 are unfilled
+    # and fall to seat 1: everything burns until the bar lifts.
+    assert w(r) == {0: 1.0}
+
+
 def test_nothing_burns_for_frame_confidence_in_v2():
     r = run(0, {5: oracle})
     assert 0 not in r.uids and sum(r.weights) == pytest.approx(1.0)

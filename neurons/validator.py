@@ -598,6 +598,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     v2_window_degraded = bool(v2_raw.get("window_degraded")) or bool(
         (v2_seat.champion is not None or v2_seat.ghosts) and not v2_window.slices
     )
+    # The newest v2 epoch this validator did not observe and has not yet
+    # re-anchored past (fugal_subnet/v2_sync.py); None when in step.
+    v2_gap_until = v2_raw.get("gap_until")
+    v2_gap_until = int(v2_gap_until) if v2_gap_until is not None else None
+    # The epoch this validator last re-anchored at; only a reference epoch at
+    # or after it can verify the re-anchor.
+    v2_anchor_at = v2_raw.get("anchor_at")
+    v2_anchor_at = int(v2_anchor_at) if v2_anchor_at is not None else None
     if v2_window_degraded:
         logger.error(
             "v2 seat state present but its comparison window is missing: no first or "
@@ -648,9 +656,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # Exact only if the reveals reach the epoch just before the one this
     # validator resumes at. Published reveals lag by the commit-reveal hold,
     # so a rebuild from a peer's may be a few epochs behind: then the window
-    # lacks those epochs and the seat is as of the newest reveal, and the
-    # validator stays DEGRADED (no first or take decision) until its window
-    # has refilled. Start a rebuilding validator after the hold has passed.
+    # lacks those epochs and the seat is as of the newest reveal. That opens a
+    # sync gap (below: `behind`), and verify-and-resync re-anchors on the
+    # reference once it has published past it (fugal_subnet/v2_sync.py).
     if ((not v2_raw or v2_window_degraded) and not v2_window.slices
             and os.getenv("FUGAL_FRAME_BOOTSTRAP")):
         from fugal_subnet.evidence import Evidence
@@ -679,13 +687,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 subtensor.get_current_block(), blocks_per_epoch_fn(EPOCH_INTERVAL),
             )
             behind = resume_epoch - 1 - int(rebuilt.newest_epoch_id.lstrip("e"))
-            v2_window_degraded = behind > 0
-            if v2_window_degraded:
-                logger.error(
+            v2_window_degraded = False
+            if behind > 0:
+                # The reveals lag by the hold: the epochs since are a gap the
+                # verify-and-resync step closes once the reference passes them.
+                v2_gap_until = resume_epoch - 1
+                logger.warning(
                     "v2 state rebuilt from reveals that end %d epoch(s) before this "
-                    "validator resumes: no first or take decisions until the window has "
-                    "refilled. Restart after the commit-reveal hold to rebuild exactly.",
-                    behind,
+                    "validator resumes: unverified until the reference passes e%08d "
+                    "(verify-and-resync).", behind, v2_gap_until,
                 )
             else:
                 logger.info("v2 state rebuilt exactly from reveals up to %s",
@@ -716,6 +726,33 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             metagraph = subtensor.metagraph(netuid)
             logger.info("=== Epoch %s (boundary block %d, hash %s, protocol v%d) ===",
                         epoch_id, boundary_block, block_hash[:16], protocol_version)
+
+            # --- v2: VERIFY AND RESYNC against a reference validator ---
+            # A missed v2 epoch makes this validator's seat state differ from
+            # its peers'; once a reference validator's reveal is published,
+            # compare and, if they differ, re-anchor on it (v2_sync). Durable
+            # at once: a re-anchor is a state correction, not an epoch, and a
+            # retry recomputes the same one.
+            if protocol_version >= 2:
+                synced = _v2_sync_step(
+                    epoch_index=epoch_index, last_epoch_index=last_epoch_index,
+                    first_v2_epoch=V2_ACTIVATION_BLOCK // blocks_per_epoch,
+                    reference_dir=os.getenv("FUGAL_FRAME_BOOTSTRAP") or None,
+                    scoring_state=scoring_state, window=v2_window, seat=v2_seat,
+                    copy_state=v2_copy, window_degraded=v2_window_degraded,
+                    gap_until=v2_gap_until, anchor_at=v2_anchor_at, prices=epoch_inputs[2][2],
+                    bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+                )
+                if synced.changed:
+                    (scoring_state, v2_window, v2_seat, v2_copy, v2_window_degraded,
+                     v2_gap_until, v2_anchor_at) = synced.state
+                    save_state(scoring_state.records, prev_uids, prev_weights,
+                               last_epoch_index, frame,
+                               v2={"seat": seat_to_dict(v2_seat),
+                                   copy_rule.REVEAL_KEY: v2_copy.to_reveal(),
+                                   "window_degraded": v2_window_degraded,
+                                   "gap_until": v2_gap_until, "anchor_at": v2_anchor_at},
+                               v2_window=v2_window)
 
             # --- COMMITMENTS, pinned to the boundary block ---
             # Read NOW, while the boundary block is seconds old, not after the
@@ -883,6 +920,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     duration_s=timer.total_s,
                 )
                 write_epoch_log(epoch_log)
+                # A v2 epoch this validator scored nothing in (a local
+                # collateral outage, or miners it could not reach) may be one
+                # its peers scored: a gap until it is verified again.
+                if protocol_version >= 2:
+                    v2_gap_until = epoch_index
                 last_epoch_index = epoch_index
                 # The v2 seat is not advanced on an epoch with no proofs at
                 # all: there is nothing to compare, and the champion's ghost
@@ -890,7 +932,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 save_state(scoring_state.records, prev_uids, prev_weights,
                            last_epoch_index, frame,
                            v2={"seat": seat_to_dict(v2_seat), copy_rule.REVEAL_KEY: v2_copy.to_reveal(),
-                               "window_degraded": v2_window_degraded},
+                               "window_degraded": v2_window_degraded,
+                           "gap_until": v2_gap_until, "anchor_at": v2_anchor_at},
                            v2_window=v2_window)
                 if once:
                     break
@@ -1112,7 +1155,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 v2_fields=(
                     {**v2_result.reveal,
                      "frame_mix_weights": dict(sorted(mix.items())),
-                     "explore_benchmarks": dict(sorted(bench_of.items()))}
+                     "explore_benchmarks": dict(sorted(bench_of.items())),
+                     # Whether this validator's state is unverified since a
+                     # missed epoch: a peer re-anchoring on it skips such an
+                     # epoch (fugal_subnet/v2_sync.check). Not in the
+                     # consensus view.
+                     "v2_sync": {"unverified": v2_gap_until is not None}}
                     if v2_result is not None else None
                 ),
             )
@@ -1216,7 +1264,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             save_state(scoring_state.records, prev_uids, prev_weights,
                        last_epoch_index, frame,
                        v2={"seat": seat_to_dict(v2_seat), copy_rule.REVEAL_KEY: v2_copy.to_reveal(),
-                           "window_degraded": v2_window_degraded},
+                           "window_degraded": v2_window_degraded,
+                           "gap_until": v2_gap_until, "anchor_at": v2_anchor_at},
                        v2_window=v2_window)
 
         except KeyboardInterrupt:
@@ -1992,6 +2041,132 @@ def _epoch_anomalies(reveal_ok: bool, metagraph_pinned: bool, collect_block: int
         # at fault, which is exactly what makes it diagnosable (I7).
         out.append(f"collateral_unavailable: {n_unverifiable} proof(s) unchecked")
     return out
+
+
+class _V2Sync(NamedTuple):
+    changed: bool
+    # (scoring_state, window, seat, copy_state, window_degraded, gap_until, anchor_at)
+    state: tuple
+
+
+def _v2_sync_step(*, epoch_index: int, last_epoch_index: int, first_v2_epoch: int,
+                  reference_dir: str | None, scoring_state, window, seat, copy_state,
+                  window_degraded: bool, gap_until: int | None, anchor_at: int | None,
+                  prices, bench_category=None, epoch_dir: str | None = None,
+                  window_epochs: int | None = None) -> _V2Sync:
+    """Detect missed v2 epochs; while this validator has a gap, verify against
+    the reference and re-anchor on it (fugal_subnet/v2_sync).
+
+    - A v2 epoch this validator did not observe opens a gap (`gap_until`): the
+      validator keeps deciding as usual (blocking its takes would only make it
+      diverge whenever its peers take), and is re-checked against the reference.
+    - Only a validator WITH a gap re-anchors. A healthy validator that
+      disagrees with its reference logs an alarm and keeps its state: the
+      reference may be the one that is wrong, and following it would spread
+      its outage to everyone downstream.
+    - A re-anchor records the epoch it happened at (`anchor_at`); only a
+      reference epoch at or after it can verify it (this validator's earlier
+      reveals predate the fix). The gap closes on a verified match at or after
+      both the gap and the last re-anchor.
+
+    Never raises (I6): any failure keeps the state and the gap.
+    """
+    state = (scoring_state, window, seat, copy_state, window_degraded, gap_until, anchor_at)
+    changed = False
+    if last_epoch_index >= 0 and epoch_index > last_epoch_index + 1 \
+            and epoch_index - 1 >= first_v2_epoch:
+        gap_until = max(-1 if gap_until is None else gap_until, epoch_index - 1)
+        logger.error("v2 epochs %d..%d were not observed by this validator: its state is "
+                     "unverified until it matches the reference again (decisions go on as "
+                     "usual; its reveals are marked v2_sync.unverified)",
+                     max(last_epoch_index + 1, first_v2_epoch), epoch_index - 1)
+        state, changed = state[:5] + (gap_until, anchor_at), True
+    try:
+        return _v2_sync_inner(epoch_index=epoch_index, reference_dir=reference_dir,
+                              state=state, changed=changed, prices=prices,
+                              bench_category=bench_category, epoch_dir=epoch_dir,
+                              window_epochs=window_epochs)
+    except Exception as e:  # noqa: BLE001 - never stops the epoch (I6); state and gap kept
+        logger.error("v2 sync against the reference failed (%s); state and gap kept", e)
+        return _V2Sync(changed, state)
+
+
+def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_category,
+                   epoch_dir, window_epochs) -> _V2Sync:
+    import copy as _copy
+
+    from fugal_subnet import copy_rule
+    from fugal_subnet.commit_reveal import EPOCH_DIR
+    from fugal_subnet.config import CHAMPION_WINDOW_EPOCHS
+    from fugal_subnet.evidence import Evidence
+    from fugal_subnet.scoring import MinerRecord
+    from fugal_subnet.v2_sync import check, load_reveals, resync
+
+    scoring_state, window, seat, copy_state, window_degraded, gap_until, anchor_at = state
+    epoch_dir = epoch_dir or EPOCH_DIR
+    window_epochs = window_epochs or CHAMPION_WINDOW_EPOCHS
+    if gap_until is not None and epoch_index - gap_until > window_epochs:
+        # Bounded: after a full window the gap's epochs are out of the window,
+        # and a reference that never verifies (none set, or incompatible) must
+        # not keep the validator re-anchoring for good.
+        logger.warning("v2 gap (through e%08d) closed after a full window without a verified "
+                       "match: this validator's seat state may still differ from its peers'",
+                       gap_until)
+        return _V2Sync(True, state[:5] + (None, None))
+    if not reference_dir:
+        # No reference: this validator is a ROOT (the others reference it, a
+        # star). It has nothing to verify against, so it never marks itself
+        # unverified, which would only stop its followers from verifying.
+        if gap_until is not None:
+            logger.error("v2 epochs through e%08d were not observed and no reference is set: "
+                         "this validator's state may now differ from its peers'. A root "
+                         "validator recovers by restarting from a rebuild "
+                         "(docs/VALIDATOR_GUIDE.md).", gap_until)
+            return _V2Sync(True, state[:5] + (None, None))
+        return _V2Sync(changed, state)
+    since = epoch_index - window_epochs - 1
+    ref, own = load_reveals(reference_dir, since), load_reveals(epoch_dir, since)
+    chk = check(ref, own, epoch_index)
+    if gap_until is None:
+        if chk.status == "differs":
+            logger.error("ALARM: this validator's v2 state differs from its reference's at "
+                         "e%08d and it has no gap to explain it; NOT re-anchoring (the "
+                         "reference may be the one that is wrong). Compare the two reveals.",
+                         chk.k)
+        return _V2Sync(changed, state)
+    if chk.status == "no_reference":
+        logger.error("v2 gap open (through e%08d) but %s holds no reference reveal before "
+                     "e%08d: is it synced from gs://<reference-bucket>/<netuid>?",
+                     gap_until, reference_dir, epoch_index)
+        return _V2Sync(changed, state)
+    if anchor_at is not None and chk.k < anchor_at:
+        return _V2Sync(changed, state)              # wait for a reference epoch after the fix
+    if chk.k < gap_until:
+        # The reference has not yet published past the gap: a re-anchor now
+        # could not cover the unobserved epochs and would only be repeated.
+        return _V2Sync(changed, state)
+    if chk.status == "in_sync":
+        logger.info("v2 state verified against the reference at e%08d: gap closed", chk.k)
+        return _V2Sync(True, state[:5] + (None, None))
+    rs = resync(ref, own, chk.k, epoch_index, window_size=window_epochs, prices=prices,
+                bench_category=bench_category)
+    new_copy = copy_rule.from_rebuild(rs.rebuilt) or copy_rule.CopyState()
+    scoring = _copy.deepcopy(scoring_state)
+    for uid, (h, c) in (rs.burn_in or {}).items():
+        rec = scoring.records.get(uid)
+        if rec is None:
+            rec = scoring.records[uid] = MinerRecord(uid=uid, hotkey="", current_head_hash=h)
+        if rec.evidence is None or rec.evidence.weights_hash != h:
+            rec.current_head_hash = h
+            rec.evidence = Evidence(weights_hash=h)
+        rec.evidence.burn_in_n = float(c)
+    logger.warning("v2 state %s the reference's at e%08d: re-anchored on it; the gap stays "
+                   "open until a reference epoch from e%08d on verifies it%s",
+                   "differed from" if chk.status == "differs" else "was missing for", chk.k,
+                   epoch_index, "" if rs.complete else
+                   " (an epoch since was not observed: the next check re-anchors again)")
+    return _V2Sync(True, (scoring, rs.rebuilt.window, rs.rebuilt.seat, new_copy, False,
+                          gap_until, epoch_index))
 
 
 def _next_v2_state(v2_result, window, seat, copy_state, degraded: bool, window_epochs: int):

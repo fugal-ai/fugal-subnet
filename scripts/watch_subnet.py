@@ -21,7 +21,7 @@ What it checks, per epoch:
   agreement  every validator's published reveal for the epoch agrees, compared
              through fugal_subnet.consensus, which is the same audit anyone
              outside the subnet can run on the published artifacts, and the
-             reveals are identical apart from `environment` (v2's shared
+             reveals are identical apart from `environment` and `v2_sync` (v2's shared
              grades and seat included)
   protocol   with an activation block (--v2-activation-block, default
              FUGAL_V2_ACTIVATION_BLOCK), each reveal says protocol_version 1
@@ -88,6 +88,7 @@ def check_reveals(report, epoch_id, boundary_block, validator_hotkeys, hk_to_uid
                   reveal_roots, activation_block=None) -> None:
     """Agreement, and the protocol version, from the validators' published reveals."""
     from fugal_subnet.consensus import ValidatorReport, compute_consensus
+    from fugal_subnet.v2_sync import comparable_reveal, nonzero_weights
 
     expected_version = (2 if activation_block is not None and boundary_block >= activation_block
                         else 1)
@@ -127,16 +128,19 @@ def check_reveals(report, epoch_id, boundary_block, validator_hotkeys, hk_to_uid
     report.check(res.is_valid and not res.outlier_validators,
                  "validators agree on scores and weights",
                  "; ".join(res.divergence_flags) or "no divergence")
-    exact = all(r.weights == reports[0].weights for r in reports)
+    # Zero weights never reach the chain, and whether a validator lists them
+    # depends on its own history (fugal_subnet.v2_sync.consensus_view).
+    exact = all(nonzero_weights(r.weights) == nonzero_weights(reports[0].weights)
+                for r in reports)
     report.check(exact, "validator weight vectors are byte-identical",
                  json.dumps(reports[0].weights, sort_keys=True)[:160])
-    # Everything a validator publishes except its own environment must match:
-    # in v2 that is the shared grades and the seat, which scores and weights
-    # alone do not show.
-    comparable = {name: json.dumps({k: v for k, v in rv.items() if k != "environment"},
-                                   sort_keys=True) for name, rv in reveals.items()}
+    # Everything a validator publishes except its own environment and sync
+    # status must match: in v2 that is the shared grades and the seat, which
+    # scores and weights alone do not show.
+    comparable = {name: json.dumps(comparable_reveal(rv), sort_keys=True)
+                  for name, rv in reveals.items()}
     differ = sorted(n for n, c in comparable.items() if c != next(iter(comparable.values())))
-    report.check(not differ, "validator reveals are identical (environment aside)",
+    report.check(not differ, "validator reveals are identical (environment, sync status aside)",
                  f"differ from {next(iter(comparable))}: {', '.join(differ)}" if differ else "")
 
 

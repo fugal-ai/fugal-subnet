@@ -139,10 +139,12 @@ def reveal_v2_keys(reveal: dict) -> list[str]:
 def comparable_reveal(reveal: dict) -> dict:
     """The part of a reveal two agreeing validators must publish identically.
 
-    Drops `environment`, which legitimately differs (platform, thread counts);
-    its score-affecting subset is `consensus_digest`, which is kept.
+    One definition for every check: fugal_subnet.v2_sync.comparable_reveal
+    (drops `environment` and `v2_sync`, and zero weights).
     """
-    return {k: v for k, v in reveal.items() if k != "environment"}
+    from fugal_subnet.v2_sync import comparable_reveal as _comparable
+
+    return _comparable(reveal)
 
 
 def seat_split(weights: dict, seat_uids: list[int | None], burn_uid: int) -> dict:

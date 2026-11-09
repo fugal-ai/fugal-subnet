@@ -247,7 +247,7 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_VALIDATOR_IP` | — | This host's public egress IPv4: the address miners SEE your queries come from (`curl -s https://ifconfig.me` from this host; behind NAT, the NAT's address, and it must be a single stable one). Recorded on chain at startup (only when it changed) so miners can admit validators, and only validators, at their firewall (`scripts/axon_firewall.py`). Nothing listens on it. Unset: miners that firewall their axon cannot be reached by this validator |
 | `FUGAL_REVEAL_BUCKET` | — | Public-read GCS bucket each epoch's `reveal.json` is published to, after the weight commit-reveal window, with its sha256 committed on chain by this hotkey (`reveal:<epoch_id>:<sha256>`). Unset: reveals stay on local disk |
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
-| `FUGAL_FRAME_BOOTSTRAP` | — | Directory of published reveals to rebuild the reference frame from when there is no local state; otherwise the shipped `data/reference_frame.json` is required in `--live` |
+| `FUGAL_FRAME_BOOTSTRAP` | — | Directory of a reference validator's published reveals, kept in sync with its bucket (`gsutil -m rsync -r gs://<reference-bucket>/<netuid> <dir>` every few minutes: reveals are published under the netuid). Rebuilds the reference frame when there is no local state (otherwise the shipped `data/reference_frame.json` is required in `--live`), and from the flip it is the v2 reference: after a missed epoch the validator re-anchors on it automatically (verify-and-resync, INVARIANTS I1). Unset on the ROOT validator only: every other validator sets it |
 | `FUGAL_POOL_FILE` | `data/benchmarks/pool.json.gz` | Where the materialised pool built by `scripts/export_pool.py` is looked for; verified against the manifest on load |
 | `FUGAL_POOL_FILE_V2` | `data/benchmarks/pool_v2.json.gz` | The same for the protocol v2 pool (`scripts/export_pool.py --protocol 2`). Place it before setting `FUGAL_V2_ACTIVATION_BLOCK`: with the block set the validator loads the v2 pool at startup, and in `--live` refuses to start if it cannot |
 | `FUGAL_ARCHIVE_ENDPOINTS` | — | Comma-separated archive-capable subtensor endpoints. **Set it on mainnet**: the validator pins reads to the boundary and collection blocks, and a non-archive node refuses blocks older than ~300 |
@@ -472,6 +472,35 @@ window is missing`. It keeps holding the seat (hold, resume and ghosts go on)
 but makes no `first` or `take` decision until the window is rebuilt from
 published reveals (`FUGAL_FRAME_BOOTSTRAP`) or has refilled for
 `CHAMPION_WINDOW_EPOCHS` (48) epochs.
+
+**A missed epoch heals itself, given a reference.** The validators form a
+star around one ROOT validator (the subnet owner's), whose public reveal bucket
+is announced with the release:
+- **On the root:** leave `FUGAL_FRAME_BOOTSTRAP` unset. It references nobody.
+- **On every other validator:** point `FUGAL_FRAME_BOOTSTRAP` at a directory
+  kept synced from the root's bucket, a systemd timer running `gsutil -m rsync
+  -r gs://<root-bucket>/<netuid> <dir>` every few minutes (reveals are
+  published under the netuid).
+
+After a v2 epoch a follower did not observe (it was down, or it scored
+nothing), it logs `v2 epochs ... were not observed` and keeps working as
+usual; once the root has published past the gap (the commit-reveal hold) it
+logs `re-anchored on it`, and once a later epoch matches, `gap closed`.
+Nothing to do by hand. A follower with no gap never re-anchors: if it
+disagrees with the root it logs `ALARM: ... NOT re-anchoring` and keeps its
+own state.
+
+**Recovering the root.** A root that missed v2 epochs logs `v2 epochs ...
+were not observed`, and its own reveals cannot repair it (they lack those
+epochs). Recover it from a follower that did not miss them:
+1. Stop the root. Move its state files aside: `$FUGAL_STATE_PATH` and every
+   `$FUGAL_STATE_PATH.*` next to it (`.v2window.npz` among them).
+2. Sync that follower's public reveals to a directory, as followers do from
+   the root, and set `FUGAL_FRAME_BOOTSTRAP` to it.
+3. Start the root. It rebuilds from the follower's reveals, re-anchors, and
+   logs `gap closed` after the hold.
+4. Unset `FUGAL_FRAME_BOOTSTRAP` and restart it.
+Followers need nothing: one without a gap never moves.
 
 ### At the flip
 

@@ -54,6 +54,8 @@ class V2Rebuild:
     extra: dict[str, object] = field(default_factory=dict)
     epochs_replayed: int = 0
     newest_epoch_id: str | None = None
+    # The epoch whose v2_state block is the snapshot (the newest unless asked).
+    snapshot_epoch_id: str | None = None
 
 
 def _epoch_index(epoch_id: str) -> int:
@@ -154,12 +156,30 @@ def rebuild_v2_from_reveals(
     window_size: int,
     prices: Mapping[str, tuple[float, float]],
     bench_category: Mapping[str, str] | None = None,
+    snapshot_epoch_id: str | None = None,
 ) -> V2Rebuild:
-    """Rebuild the v2 window and decision state from published v2 reveals."""
+    """Rebuild the v2 window and decision state from published v2 reveals.
+
+    `snapshot_epoch_id` takes the snapshot (seat, owners, serving, burn-in,
+    copy rule) from that epoch's reveal instead of the newest one, while the
+    window still replays every reveal given (fugal_subnet/v2_sync.py re-anchors
+    on a reference validator's state at an epoch, then keeps its own
+    observations of the epochs since). Two reveals for one epoch are refused.
+    """
     reveals = sorted(_load(source), key=lambda r: _epoch_index(r["epoch_id"]))
+    ids = [r["epoch_id"] for r in reveals]
+    if len(set(ids)) != len(ids):
+        raise ValueError("two reveals for one epoch: pass one source per epoch")
     if not reveals:
         return V2Rebuild(Window.empty(window_size), SeatState(), {}, {}, {})
     newest = reveals[-1]
+    if snapshot_epoch_id is not None:
+        found = [r for r in reveals if r["epoch_id"] == snapshot_epoch_id]
+        if not found:
+            raise ValueError(f"no reveal for the snapshot epoch {snapshot_epoch_id}")
+        snapshot = found[0]
+    else:
+        snapshot = newest
     oldest_kept = _epoch_index(newest["epoch_id"]) - int(window_size) + 1
     window = Window.empty(window_size)
     replayed = 0
@@ -174,7 +194,7 @@ def rebuild_v2_from_reveals(
             # window from every peer's (I1), so the operator fixes the file.
             raise ValueError(f"{r.get('_path', r.get('epoch_id'))}: {e}") from None
         replayed += 1
-    state = dict(newest.get("v2_state") or {})
+    state = dict(snapshot.get("v2_state") or {})
     rebuilt = V2Rebuild(
         window=window,
         seat=seat_from_dict(state.get("seat")),
@@ -184,6 +204,7 @@ def rebuild_v2_from_reveals(
         extra={k: v for k, v in state.items() if k not in _SNAPSHOT_KEYS},
         epochs_replayed=replayed,
         newest_epoch_id=str(newest["epoch_id"]),
+        snapshot_epoch_id=str(snapshot["epoch_id"]),
     )
     logger.info(
         "Rebuilt v2 state from %d reveals (window %d epochs, newest %s, champion %s)",

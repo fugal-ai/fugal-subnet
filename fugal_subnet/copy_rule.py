@@ -538,10 +538,14 @@ def from_rebuild(rebuilt) -> CopyState | None:
     if block is None:
         return None
     state = CopyState.from_reveal(block)
-    newest = _epoch_index(getattr(rebuilt, "newest_epoch_id", None) or "")
+    # The snapshot's epoch: the newest reveal's, unless the rebuild took its
+    # snapshot from an earlier one (v2_sync re-anchors at a reference epoch).
+    snap = (getattr(rebuilt, "snapshot_epoch_id", None)
+            or getattr(rebuilt, "newest_epoch_id", None) or "")
+    newest = _epoch_index(snap)
     if newest is not None and state.epoch is not None and state.epoch != newest:
         raise ValueError(
-            f"newest reveal is epoch {newest} but its copy-rule state is for epoch {state.epoch}")
+            f"snapshot reveal is epoch {newest} but its copy-rule state is for epoch {state.epoch}")
     return state
 
 

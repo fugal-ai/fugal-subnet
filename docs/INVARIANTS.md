@@ -2490,7 +2490,9 @@ No junior head's presence moves it (I4).
 **Determinism (I1).** Each NV_i is computed elementwise and quantised to an
 integer number of `NV_UNITS_PER_POINT` units, so every sum is exact on any
 CPU; V is a `math.fsum` mean. The resampling stream is numpy's PCG64 seeded
-from sha256(epoch id, bar, challenger). The lower bound is an order statistic
+from sha256(epoch id, bar, challenger). (`Generator.integers` is stable within
+a numpy version, not across them; numpy's version is in the consensus digest
+every reveal carries, so a validator on another version shows it at once.) The lower bound is an order statistic
 of integer sums (the k-th smallest, k = round((1 − confidence) × resamples),
 0-based: 20 of 2,000 at 99%), and the margin comparison is done in the same
 integer units. Per-question NV is clipped to ±`UNIT_CLIP` before it becomes an
@@ -2891,6 +2893,71 @@ a specific, attributable artifact that cannot be altered after the fact; and
 the window part is not trusted at all, because anyone can re-derive it from
 the cells and routing every reveal carries. Rebuilding from your own reveals
 after a lost disk is self-trust.
+
+**Verify-and-resync: a validator that missed epochs agrees again by itself
+(2026-11-09).** Each epoch's proofs can only be observed live, so a validator
+that missed a v2 epoch (it was down, or it scored nothing) carries a seat
+state that differs from its peers' and, through the seat's history, keeps
+differing: before this, it never agreed again. Its peers' state is published
+in their reveals only after the hold, so some lag is unavoidable.
+`fugal_subnet/v2_sync.py` and `neurons/validator._v2_sync_step`:
+- **Shape: a star.** One ROOT validator (the subnet owner's) sets no
+  reference; every other validator points `FUGAL_FRAME_BOOTSTRAP` at a
+  directory synced from the root's bucket (`<netuid>/` prefix).
+- **Gap.** A v2 epoch a follower did not observe (or scored nothing in), or a
+  startup rebuild that ends before the present, opens a gap (`gap_until`,
+  persisted). A gap changes NOTHING the validator decides: blocking its takes
+  only guaranteed it diverged whenever its peers took (review 2). It marks the
+  validator's reveals `v2_sync.unverified` (outside the compared view) and
+  makes it re-check itself against the reference.
+- **Re-anchor, once.** When the reference's reveals reach an epoch k at or
+  after the gap that the reference had itself verified, and its consensus
+  view (`v2_state`, `weights`) differs from this validator's reveal for k (or
+  there is none), the follower adopts the reference's state at k
+  (`snapshot_epoch_id`), keeps its own window entries after k, carries the
+  burn-in counters over them by the `update_scores` rule, and records the
+  epoch (`anchor_at`). Durable at once; a retry recomputes it.
+- **Verify.** The gap closes on a match at an epoch at or after both the gap
+  and the last re-anchor; a mismatch there re-anchors again. A gap is bounded
+  by one window, after which it closes with a warning.
+- **Only a validator with a gap follows; the root never marks itself
+  unverified.** A follower with no gap that disagrees with its reference logs
+  an alarm and keeps its state (the reference may be the wrong one), and a
+  reveal published while unverified is never used to verify, so two
+  validators with gaps cannot confirm each other's wrong state.
+- **Never stops an epoch (I6).** Any failure (a malformed reference reveal
+  included) keeps the state and the gap.
+- **Zero weights are not compared.** The weight cap keeps, at 0.0, every
+  uid a validator's own previous weights held, so a validator started from a
+  rebuild (no previous weights) lists none of them; the SDK drops zero
+  weights before `set_weights`, so the chain never sees the difference.
+  Comparing them kept a rebuilt validator re-anchoring every few epochs until
+  its gap timed out (final review, finding 1; `v2_sync.consensus_view`).
+  Agreement checks (`scripts/watch_subnet.py`, `rehearsal_v2`) use the same
+  rule via `v2_sync.comparable_reveal`, which also ignores `v2_sync`.
+Measured (`tests/test_v2_sync.py`): without it a validator that missed one
+epoch never agreed again; with it, it agrees exactly again from `hold` epochs
+after the gap after one re-anchor (holds 1-6), including a validator started
+from a rebuild of the root's reveals. Seat or copy-rule events inside the
+re-anchor span are applied late, so **convergence needs a stretch of about
+twice the hold with no seat change**: with a change every 6 epochs and a hold
+of 4 it took 14-34 epochs and 3-7 re-anchors; with a change every 4 epochs
+and a hold of 2-3 it did not converge inside the window (the gap then closes
+with a warning, and the follower alarms). A take needs at least five epochs
+of paired questions, so changes that fast are not expected. A network-wide
+epoch with no proofs changes nobody; a healthy follower whose reference
+missed epochs is never moved. **Accepted residuals:** a root that misses
+epochs diverges from its followers; until it is recovered, a follower that
+later opens a gap of its own re-anchors onto the root's state and joins it
+(a follower that never misses keeps its own state and alarms). The root is
+recovered by hand (VALIDATOR_GUIDE, "Recovering the root"): stop it, move its
+state files aside, and restart it with `FUGAL_FRAME_BOOTSTRAP` pointed at a
+healthy follower's reveals until it logs `gap closed`, then unset it
+(simulated: it agrees again, followers never move). Validators referencing
+each other that miss overlapping epochs wait out the window instead of
+recovering (use a star).
+Nothing here changes a scoring rule: it chooses which state the rules run
+from, so it can be improved without a coordinated upgrade.
 
 Enforced by `tests/test_v2_rebuild.py`: the rebuild equals the live state
 after 30 epochs with intermittent misses, a validator continuing from a

@@ -32,6 +32,25 @@ instance other than the vendored one was refused even with its own
 intermediate in the proof. Issuers are now chosen by signature among
 same-named candidates, in a fixed order.
 
+### Added — a v2 validator that missed epochs agrees with its peers again by itself
+
+A validator that missed a v2 epoch (down, or it scored nothing) carried a
+different seat state from its peers' and, through the seat's history, never
+agreed again. Verify-and-resync (`fugal_subnet/v2_sync.py`,
+`neurons/validator._v2_sync_step`), in a star around one root validator: a
+missed epoch opens a gap on a follower (it decides as usual, and its reveals
+are marked `v2_sync.unverified`); once the root's published reveals pass the
+gap, the follower re-anchors on the root's state there, keeps its own
+observations since, carries burn-in forward, and closes the gap on a verified
+match. Only a validator with a gap follows; one without logs an alarm; the
+root never marks itself unverified. Zero weights are left out of the
+comparison: they never reach the chain, and a validator started from a rebuild
+does not list them. Measured in simulation: exact again `hold` epochs after
+the gap after one re-anchor, including a validator started from a rebuild; it
+needs a stretch of about twice the hold with no seat change to converge.
+`v2_rebuild` can take its snapshot from a chosen epoch. Agreement checks
+(`watch_subnet`, `rehearsal_v2`) share one definition,
+`v2_sync.comparable_reveal`. No scoring rule changes.
 ### Added — anthropic/claude-fable-5.2 on the v2 model list (19 models)
 
 At the public OpenRouter price ($8 / $40 per million tokens), with fable-5.1's

@@ -585,7 +585,7 @@ NV   = 100 x mean_i NV_i                          (percentage points)
 - One extra correct answer is worth 30 questions of the anchor's spend.
   Accuracy decides. Cost decides between heads of near-equal accuracy.
 - You take the seat when the one-sided paired-bootstrap lower bound of NV, at
-  `CHAMPION_CONFIDENCE` = 90% over `CHAMPION_BOOTSTRAP_RESAMPLES` = 2000
+  `CHAMPION_CONFIDENCE` = 99% over `CHAMPION_BOOTSTRAP_RESAMPLES` = 2000
   resamples, is above `CHAMPION_MARGIN` = **0.2 points**. The point estimate
   must clear the margin too. The champion keeps its seat with no margin, so two
   near-equal heads cannot trade it on noise.

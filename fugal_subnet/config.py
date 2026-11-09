@@ -586,8 +586,15 @@ CHAMPION_HARD_WEIGHT = float(os.getenv("FUGAL_CHAMPION_HARD_WEIGHT", "2"))
 # more accurate router pay for its spend at the cheap champion's rate.
 CHAMPION_ANCHOR_MODEL = os.getenv("FUGAL_CHAMPION_ANCHOR_MODEL", "anthropic/claude-fable-5.1")
 CHAMPION_MARGIN = float(os.getenv("FUGAL_CHAMPION_MARGIN", "0.2"))
-# 90% rather than a lower confidence because a slice is 300 questions an epoch.
-CHAMPION_CONFIDENCE = float(os.getenv("FUGAL_CHAMPION_CONFIDENCE", "0.90"))
+# 99%, because the test is re-run every epoch on a growing, then sliding,
+# window: a one-sided test at confidence c lets a head with NO real edge take
+# the seat with probability about 1 - c at EACH epoch, and those chances add
+# up. Simulated with the shipped paired_test and constants (2026-11-08): at
+# 90%, a zero-edge near-copy challenger (20% different routing) took the seat
+# in 22% of 30-epoch runs (an independent router 35%; one of 10 sybil heads
+# 70%); at 99%, 3% (independent 6%; 10 sybils 27%), while a challenger 2
+# points better still took it in every run (1 point better: 63%).
+CHAMPION_CONFIDENCE = float(os.getenv("FUGAL_CHAMPION_CONFIDENCE", "0.99"))
 CHAMPION_BOOTSTRAP_RESAMPLES = int(os.getenv("FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES", "2000"))
 # Quality gates on a challenger, besides the margin: accuracy at or above the
 # high-water mark (overall, and on the hard subset once the comparison holds

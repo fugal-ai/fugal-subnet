@@ -2269,7 +2269,7 @@ The v2 scoring constants (`CHAMPION_*`, `PAYOUT_SEAT_SHARES`) are ordinary
 consensus constants from the start: in `CONSENSUS_ENV_VARS`, in the
 fingerprint's `scoring` block, and refused as live overrides on finney like
 every other. They have no effect before the activation block. The promotion
-margin, `CHAMPION_MARGIN` (0.2 net-value points at 90% paired-bootstrap
+margin, `CHAMPION_MARGIN` (0.2 net-value points at 99% paired-bootstrap
 confidence), is the single margin of v2: it replaces the absolute headroom
 margin (0.004) an earlier draft used, both for a challenger taking the seat
 and for a junior head beating a senior one.
@@ -2347,6 +2347,13 @@ the seat changes hands by a paired test (`fugal_subnet/champion.py`):
   `u_i = CHAMPION_HARD_WEIGHT` on the hard-reasoning category, fixed by the
   benchmark's category and therefore the same for every head and active from
   the first epoch.
+**Why 99% (2026-11-08).** The take test is re-run every epoch, so its false
+positives accumulate: at 90%, a challenger with no real edge took the seat in
+22-35% of simulated 30-epoch runs, and one of ten sybil heads in 70%. At 99%
+those fall to 3-6% and 27%, while a head 2 net-value points better still takes
+the seat in every run (simulation: shipped `paired_test`, window 48, 1,500
+paired questions, hard weight 2).
+
 - **Take.** A challenger takes the seat only if its point estimate AND the
   one-sided paired-bootstrap lower bound (`CHAMPION_CONFIDENCE`,
   `CHAMPION_BOOTSTRAP_RESAMPLES` resamples within category, both heads'
@@ -2448,7 +2455,7 @@ integer number of `NV_UNITS_PER_POINT` units, so every sum is exact on any
 CPU; V is a `math.fsum` mean. The resampling stream is numpy's PCG64 seeded
 from sha256(epoch id, bar, challenger). The lower bound is an order statistic
 of integer sums (the k-th smallest, k = round((1 − confidence) × resamples),
-0-based: 200 of 2,000 at 90%), and the margin comparison is done in the same
+0-based: 20 of 2,000 at 99%), and the margin comparison is done in the same
 integer units. Per-question NV is clipped to ±`UNIT_CLIP` before it becomes an
 integer, so no sum can overflow, and a NaN is refused. Former champions kept
 in the seat state are bounded (`HISTORY_KEEP`). Candidates are visited in

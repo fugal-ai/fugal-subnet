@@ -32,6 +32,16 @@ instance other than the vendored one was refused even with its own
 intermediate in the proof. Issuers are now chosen by signature among
 same-named candidates, in a fixed order.
 
+### Changed — the v2 seat test runs at 99% confidence (was 90%)
+
+The take test is re-run every epoch on a growing, then sliding, window, so a
+challenger with no real edge had about 10% each epoch: in simulation with the
+shipped test and constants it took the seat in 22% (near-copy) to 35%
+(independent router) of 30-epoch runs, and one of ten sybil heads in 70%. At
+99% those are 3%, 6% and 27%, and a challenger 2 net-value points better still
+takes the seat in every run (1 point better: 63% within 30 epochs).
+`CHAMPION_CONFIDENCE` = 0.99; a consensus constant.
+
 ### Fixed — a truncated TPM signature is a rejection, not a crash
 
 A TPMT_SIGNATURE cut inside r or s raised `struct.error`, which escaped

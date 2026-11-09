@@ -122,3 +122,14 @@ def test_verify_proof_passes_the_proofs_intermediates(monkeypatch):
         expected_nonce="n" * 64, gold_answers={}, expected_hotkey="5hot", mock=True,
     )
     assert not r.valid and seen["extra"] == [VENDORED]
+
+
+def test_an_unparseable_intermediate_is_a_rejected_attestation():
+    """A miner sends junk in tpm_intermediates. The TPM check raises (the
+    certificate does not parse), and that must refuse the envelope, never
+    count as a TPM half that verified."""
+    with pytest.raises(ValueError, match="TPM quote rejected"):
+        verify_mod.unwrap_attestation(_blob(), extra_certs=[b"not a certificate"])
+    # The same envelope with nothing extra still verifies (vendored intermediate).
+    quote, _events = verify_mod.unwrap_attestation(_blob())
+    assert quote

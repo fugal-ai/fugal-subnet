@@ -15,18 +15,29 @@ runs *modified* code on real hardware. What separates honest from modified is
 the measurement register the CPU filled in, not a string the workload wrote
 about itself.
 
-The chain that makes a proof trustworthy:
+The chain that makes a proof trustworthy (docs/INVARIANTS.md I8, "what
+attested actually means", is the full statement):
 
+    Google TPM quote, signed by a Google-chained AK, over sha256(tdx_quote)
+      -> the TDX quote came from a Google Confidential VM (unwrap_attestation)
     Intel DCAP signature
       -> quote is genuine, from real TDX hardware
+    TDATTRIBUTES.DEBUG clear
+      -> the host could not read or change the TD
     measurement_id(quote) in approved_measurements
-      -> the image that ran is the published one
+      -> the image that booted is the published one
+    the RTMR3 event log replays to the quote, and names an approved compose hash
+      -> the application that ran is the published one
     report_data == proof.content_hash()
       -> the proof body is exactly what that image produced
+    proof.hotkey == this uid's hotkey, nonce == this epoch's
+      -> the proof is this miner's, for this epoch
     proof.weights_hash == on-chain commitment, == sha256(head bytes)
       -> the head that ran is the head that was committed, before the nonce
-    result question ids == the assigned slice
+    result question ids == the assigned slice, exploration == the nonce's targets
       -> those answers are to the questions we asked
+    per-question costs reconcile with the totals
+      -> the cost figures are internally consistent
 """
 from __future__ import annotations
 
@@ -211,7 +222,6 @@ def unwrap_attestation(blob: bytes, extra_certs: "list[bytes] | None" = None
     # Without this check a genuine Google-signed TPM quote from any Confidential
     # VM could be stapled onto any TDX quote, and the "second trust root" proved
     # only that some GCP vTPM exists somewhere (found 2026-11-02; I8).
-    import hashlib
     try:
         extra = parse_attest(att["tpm"]["message"])["extra_data"]
     except (TpmError, KeyError, ValueError) as e:

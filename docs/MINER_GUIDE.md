@@ -914,13 +914,13 @@ day on mainnet:
 | `anthropic/claude-haiku-5.5` | 0.0005 | 0.14 | 2.83 |
 | `deepseek/deepseek-v4.1-flash` | 0.0012 | 0.37 | 7.36 |
 | `anthropic/claude-sonnet-5.5` | 0.0043 | 1.29 | 25.82 |
-| an even mix of all 18 | 0.0047 | 1.42 | 28.30 |
+| an even mix of all 19 | 0.0055 | 1.65 | 32.98 |
 | `anthropic/claude-opus-5.5` | 0.0116 | 3.49 | 69.83 |
 | `anthropic/claude-fable-5.1` (the anchor) | 0.0163 | 4.90 | 98.06 |
 | `anthropic/claude-fable-5.2` (dearest per question: it writes more) | 0.0195 | 5.86 | 117.17 |
 
 A real head lands somewhere inside that range. Add the exploration quota (15
-questions at the nonce's choice of model, about $0.07 at the even mix) and your
+questions at the nonce's choice of model, about $0.08 at the even mix) and your
 confidential VM (about $150/month for a GCP `c3-standard-4`). These are
 computed, not measured on a live key: the manifest's means for long-reasoning
 models on the hardest sets are an extrapolation (its review record says so),

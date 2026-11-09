@@ -2629,6 +2629,10 @@ of its comparison are its first commit (`v2_seniority`, `first_epoch`), never
 a registration block. A champion is *retired* (24-epoch ghost) only when its
 owner stops committing it (`retired_hashes`), and *missed* (3-epoch ghost)
 otherwise; a standing missed ghost is checked every epoch and upgraded. A
+watched head (the champion or a ghost) with no copy record at all is treated
+as retired: the copy rule drops a record whose first retirement is older than
+the retire window, and reading that as "missed" shortened a retired ghost to
+three epochs (2e66391). A
 head takes a seat only by also beating every senior seat holder in the
 comparison set by the margin (`senior_bars`, holders from `seat_holders`).
 The fold is idempotent across a retried epoch. Payout eligibility is the hold

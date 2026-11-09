@@ -99,8 +99,9 @@ HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "24")))
 # manifest and checked against it (scripts/check_safety_invariants.py).
 # Targets apply to the scored slice and to exploration alike
 # (slicer.select_slice_v2 / select_explore_set_v2).
-# Decided 2026-11-04: instruction is 5% in v2.0 (only 259 IFEval items are checkable
-# by the pinned constraint kinds; at 15 a slice they repeat every ~17 epochs).
+# Decided 2026-11-04: instruction is 5% in v2.0 (only 211 IFEval items are checkable
+# by the pinned constraint kinds and gradeable by the pinned grader, after the 48
+# removed 2026-11-09; at 15 a slice they repeat every ~14 epochs).
 # The generated instruction set that lets it grow again is v2.1.
 CATEGORY_TARGETS_V2 = {"knowledge": 0.40, "math": 0.25, "hard": 0.30, "instruction": 0.05}
 BENCHMARK_CATEGORY_V2 = {
@@ -111,8 +112,10 @@ BENCHMARK_CATEGORY_V2 = {
 }
 # Within-category weights; only the hard category is weighted: 50% the open
 # multiple-choice set, 50% integer olympiad math split by pool size
-# (aime 933, aime25 30, beyondaime 100, omnimath_hard 846 of 1,909). Every
-# other category splits by pool share.
+# (aime 933, aime25 30, beyondaime 100, omnimath_hard 846 of 1,909, counted
+# before the 2026-11-09 ungradeable filter left 932 and 845 of 1,907; the
+# weights are consensus constants and were kept: the difference is under 3e-5).
+# Every other category splits by pool share.
 BENCHMARK_WEIGHT_V2 = {
     "supergpqa_hard": 0.5,
     "aime": 0.244369, "aime25": 0.007858, "beyondaime": 0.026192, "omnimath_hard": 0.221582,

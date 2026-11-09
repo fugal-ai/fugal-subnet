@@ -35,6 +35,13 @@ Route A's benefit with no daemon. Unchanged: the crafted-FMSPC path (an
 unknown platform is still a fetch, bounded by the fair share), and Route B
 remains the end state that removes the fetch entirely.
 
+*Residual noted 2026-11-09 (ledger review):* the per-epoch collateral is not
+re-fetched within the epoch. If its `nextUpdate` passes mid-epoch, this
+validator's later proofs that epoch become unverifiable (an outage, not a
+refusal) while a peer that fetched later could verify them. Low risk: PCCS
+serves refreshed collateral well before `nextUpdate`, and validators fetch at
+about the same time. Route B removes it.
+
 ### Route A — local caching PCCS (operations, no consensus change)
 
 Point `FUGAL_PCCS_URL` at a PCCS running alongside each validator. It re-serves

@@ -17,6 +17,18 @@ honest miner failed all 50, about 2.8 of each slice's 15 instruction questions.
 28,986 questions (was 29,036), with a new `pool_manifest_v2.json`. The v1 pool
 and its manifest are unchanged.
 
+### Fixed — v2 seat: a ghost's seat-1 share burns even when its head serves again; a watched head with no copy record is retired
+A champion that retired its head and re-committed the same hash was paid seat 1
+as its own ghost while the ghost barred challengers; seat 1 taken from a ghost
+is now never paid (c6df719). A champion whose copy-rule record had aged out read
+as merely missed (a 3-epoch ghost) instead of retired (24 epochs); a watched
+head with no copy record is now retired (2e66391). Both consensus.
+
+### Fixed — v1 epochs compute exactly what main computes through the upgrade window
+F-061's exploration rule and a float rewrite of the frame accessors had leaked
+into v1, so release/v2 and main validators disagreed on v1 frames in most
+random cases. Both now apply from v2 only; v1 is main's arithmetic (2c0d36d).
+
 ### Added — v2 proofs carry and bind their TPM intermediates; issuers are chosen by signature
 
 Launch step 2. The miner builds its attestation key's intermediate chain once

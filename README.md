@@ -12,7 +12,7 @@ A **router** reads a question and picks which model should answer it, so the
 user gets the best answer the money can buy. **Miners** train routers and run
 the benchmark themselves inside an Intel TDX confidential VM: the enclave
 loads the miner's router head (a small linear layer on a frozen Qwen3-0.6B
-backbone), routes each question to one of the 18 models in the pinned price
+backbone), routes each question to one of the 19 models in the pinned price
 table, pays for the call, grades the reply with hash-pinned checkers, and
 produces a hardware-attested proof. **Validators** never call a model: they
 verify the proof, compare every head on the same questions, and pay the

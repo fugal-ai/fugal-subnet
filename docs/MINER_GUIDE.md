@@ -15,7 +15,7 @@ share.
 A **router head** — a small linear layer (~14KB to ~130KB `.npz` file, depending
 on model count) on a frozen
 Qwen3-0.6B backbone. Given a question's hidden state, your head picks which of
-the 18 models in the pinned v2 price table (`data/models_v2.json`) should
+the 19 models in the pinned v2 price table (`data/models_v2.json`) should
 answer it. Each epoch, your miner:
 
 1. Derives the epoch nonce from the boundary block's hash (the validator derives the same one)
@@ -729,8 +729,14 @@ to one slow model can still take about 30 minutes. Longer answers cost more. The
 been measured yet. Measure your own first epochs before you budget.
 
 **The model list** (`data/models_v2.json`, hash-pinned). Every model on it has at least three
-OpenRouter endpoints, is text-only, and runs at exactly one reasoning setting.
-The list has 18 models. x-ai/grok-4.7 was on the draft list and was removed
+OpenRouter endpoints, is text-only, and runs at exactly one reasoning setting,
+with one exception below. The list has 19 models. `anthropic/claude-fable-5.2`
+was added 2026-11-09, the day it reached OpenRouter, with **two endpoints, both
+Anthropic** (one at twice the catalogue price): an Anthropic outage fails every
+call routed to it (scored as a wrong answer), and a call OpenRouter sends to
+the dearer endpoint costs you more than the pinned price your score is
+computed at. The scoring yardstick is unaffected either way; weigh it in your
+routing until more providers carry it. x-ai/grok-4.7 was on the draft list and was removed
 before release: its provider does not bound reasoning by `max_tokens`, and one
 measured call billed 48,132 completion tokens against a 16,384 budget. It can
 return in v2.1, once the harness streams calls and can abort one at its
@@ -910,7 +916,8 @@ day on mainnet:
 | `anthropic/claude-sonnet-5.5` | 0.0043 | 1.29 | 25.82 |
 | an even mix of all 18 | 0.0047 | 1.42 | 28.30 |
 | `anthropic/claude-opus-5.5` | 0.0116 | 3.49 | 69.83 |
-| `anthropic/claude-fable-5.1` (the anchor, dearest) | 0.0163 | 4.90 | 98.06 |
+| `anthropic/claude-fable-5.1` (the anchor) | 0.0163 | 4.90 | 98.06 |
+| `anthropic/claude-fable-5.2` (dearest per question: it writes more) | 0.0195 | 5.86 | 117.17 |
 
 A real head lands somewhere inside that range. Add the exploration quota (15
 questions at the nonce's choice of model, about $0.07 at the even mix) and your

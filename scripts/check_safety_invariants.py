@@ -35,8 +35,12 @@ PINNED_PRICE_TABLE_SHA256 = (
 # 2.8594, glm-5.3 0.4858, deepseek-v4-pro-0813 0.7979, minimax-m3.1-flash
 # 1.1522, qwen3.8-27b 1.0857; input and output scaled by that ratio. Consensus
 # from V2_ACTIVATION_BLOCK; a change re-scores every v2 miner.
+# 2026-11-09: anthropic/claude-fable-5.2 added (19 models) at the public
+# OpenRouter catalogue price ($8 / $40 per million tokens), with fable-5.1's
+# reasoning setting; fable-5.1 stays the anchor (CHAMPION_ANCHOR_MODEL). The
+# other 18 rows are unchanged.
 PINNED_PRICE_TABLE_V2_SHA256 = (
-    "24547386e9454e48df9bbb6038badf799af0269bf52eab2c01ea64280f59baef"
+    "9b18e3fbc786c3aea90966b69984717ead66c27f4bf4a98a388a9674f1be2aaa"
 )
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM

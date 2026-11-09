@@ -29,7 +29,15 @@ looked at twice:
   (`data/observations/benchmark_tokens_protocol_v2.jsonl`). Billed $5.18
   against $5.68 table-priced; five models' prices were re-pinned from the
   measured effective price (the `billing_check` record inside
-  `data/benchmark_tokens_protocol_v2.json`).
+  `data/benchmark_tokens_protocol_v2.json`). That run was on a stand-in
+  sample.
+- **Per model, 2026-11-09**, re-measured on the pinned v2 pool (MAINNET_LAUNCH
+  v2 release step 1): 718 metered calls, 18 models x 40 questions (2 failed),
+  billed $3.50 against $3.39 table-priced; four models billed 19-71% off the
+  table, recorded and not re-pinned (the table is the shared yardstick). The
+  same day anthropic/claude-fable-5.2 was added: 40 more calls, billed $0.78 =
+  table. These rows replace the stand-in sample's in
+  `data/observations/benchmark_tokens_protocol_v2.jsonl`.
 
 Mainnet proofs since 2026-11-04 carry `provider_cost_usd` per call, so a
 per-proof comparison is now possible from the validator's own epoch artifacts.

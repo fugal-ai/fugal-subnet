@@ -32,6 +32,16 @@ instance other than the vendored one was refused even with its own
 intermediate in the proof. Issuers are now chosen by signature among
 same-named candidates, in a fixed order.
 
+### Added — anthropic/claude-fable-5.2 on the v2 model list (19 models)
+
+At the public OpenRouter price ($8 / $40 per million tokens), with fable-5.1's
+reasoning setting; 40 metered calls on the pinned v2 pool ($0.78, billed at the
+table price) give 232 prompt and 442 completion tokens on average, $0.0195 per
+question, the dearest per question. Two endpoints, both Anthropic: an accepted
+exception to the three-endpoint rule, documented in MINER_GUIDE. fable-5.1
+stays the anchor (V unchanged). The price table pin and the token manifest move
+(review record amendment); the 18 other rows are unchanged.
+
 ### Changed — v2 token means re-measured on the pinned v2 pool
 
 `data/benchmark_tokens_protocol_v2.json` (and its `routing_data/` copy) is

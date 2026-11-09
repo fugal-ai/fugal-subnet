@@ -3,9 +3,9 @@
   "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
   "status": "reviewed",
   "sources": {
-    "benchmark_tokens_protocol_v2.jsonl": "3b6b6690d6e64d0e8a314b5f5b99335bb4a7484cb0b6802c473babcd5f8b27b9"
+    "benchmark_tokens_protocol_v2.jsonl": "202c894ab61e07b05f96bde68158a1ea20a461c037a02dfa69a93ac6b9593656"
   },
-  "worker_profile": "Protocol v2: direct metered OpenRouter calls through the v2 benchmark harness path (MeteringProxy + harness._call_model, max_tokens 16384, each model's single pinned reasoning setting from data/models_v2.json, full benchmark prompt), on a deterministic sample of 40 questions per model drawn from the PINNED v2 pool (pool_manifest_v2.json, 28,986 questions; content_hash c0656ed6c01f2e69) at the v2 category mix, recorded 2026-11-09. 718 completed calls, 2 failed (upstream 502). Provider-billed and table-priced cost kept per row; no response text, no key material.",
+  "worker_profile": "Protocol v2: direct metered OpenRouter calls through the v2 benchmark harness path (MeteringProxy + harness._call_model, max_tokens 16384, each model's single pinned reasoning setting from data/models_v2.json, full benchmark prompt), on a deterministic sample of 40 questions per model drawn from the PINNED v2 pool (pool_manifest_v2.json, 28,986 questions; content_hash c0656ed6c01f2e69) at the v2 category mix, recorded 2026-11-09 (anthropic/claude-fable-5.2: 40 more calls the same day, added with it). 758 completed calls, 2 failed (upstream 502). Provider-billed and table-priced cost kept per row; no response text, no key material.",
   "omitted_missing_or_zero_input": 0,
   "models": [
     {
@@ -13,6 +13,12 @@
       "samples": 40,
       "mean_in_tokens": 249.1,
       "mean_out_tokens": 277.05
+    },
+    {
+      "id": "anthropic/claude-fable-5.2",
+      "samples": 40,
+      "mean_in_tokens": 232.25,
+      "mean_out_tokens": 441.625
     },
     {
       "id": "anthropic/claude-opus-5.5",
@@ -150,6 +156,7 @@
     ],
     "samples": {
       "anthropic/claude-fable-5.1": 40,
+      "anthropic/claude-fable-5.2": 40,
       "anthropic/claude-opus-5.5": 40,
       "google/gemini-4-argon": 40,
       "openai/gpt-6.1-sol": 40,
@@ -167,6 +174,13 @@
       "anthropic/claude-haiku-5.5": 40,
       "openai/gpt-6-luna": 40,
       "z-ai/glm-5.3-flash": 40
-    }
+    },
+    "amendments": [
+      {
+        "date": "2026-11-09",
+        "change": "anthropic/claude-fable-5.2 added (19 models): 40 metered calls on the same pinned-pool sample design, $0.781 provider-billed = $0.781 at the table price ($8 / $40 per million tokens, the public OpenRouter catalogue). Mean 232 prompt and 442 completion tokens: $0.0195 per question, the dearest model per question (fable-5.1: $0.0163). fable-5.1 stays the anchor.",
+        "unchanged": "The 18 other rows (ids, means, samples) are the rows reviewed earlier the same day; their observations are unchanged."
+      }
+    ]
   }
 }

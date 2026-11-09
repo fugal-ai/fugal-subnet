@@ -128,6 +128,12 @@ the catalogue default the table pins:
 4. Hard-category questions were AIME only, so the means of long-reasoning models on SuperGPQA and
    Omni-MATH are an extrapolation.
 
+**Amendment (2026-11-09): anthropic/claude-fable-5.2 added, 19 models.** At the public
+OpenRouter price ($8 / $40 per million tokens) with fable-5.1's reasoning setting, measured on
+40 calls on the pinned v2 pool (232 prompt and 442 completion tokens on average, $0.0195 per
+question). It has two endpoints, both Anthropic: an accepted exception to the three-endpoint
+rule (MINER_GUIDE). fable-5.1 stays the anchor.
+
 **Amendment (2026-11-05): grok-4.7 removed, 18 models.** Decision 1 is reversed. Beyond the
 17,763 seen here, an external measurement found 48,132 completion tokens (47,656 reasoning)
 against `max_tokens` 16,384, about five times the call's budgeted cost: the provider does not

@@ -1,5 +1,6 @@
 [
   {"id": "anthropic/claude-fable-5.1", "in": 10.0, "out": 50.0, "reasoning": {"max_tokens": 8192}},
+  {"id": "anthropic/claude-fable-5.2", "in": 8.0, "out": 40.0, "reasoning": {"max_tokens": 8192}},
   {"id": "anthropic/claude-opus-5.5", "in": 4.0, "out": 20.0, "reasoning": {"max_tokens": 8192}},
   {"id": "google/gemini-4-argon", "in": 2.0, "out": 10.0, "reasoning": {"max_tokens": 8192}},
   {"id": "openai/gpt-6.1-sol", "in": 2.0, "out": 10.0, "reasoning": {"effort": "medium"}},

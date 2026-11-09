@@ -157,10 +157,31 @@ def test_hard_questions_get_the_hard_weight():
 # --- the seat and the payout ----------------------------------------------------------
 
 
-def test_first_epoch_seats_the_most_senior_head_by_first_commit():
+def test_the_empty_seat_goes_to_the_best_measured_head_not_the_most_senior():
+    """It went to the most senior eligible head, so at the flip (every pre-flip
+    commit ties at the floor) the first seat was a salted draw that extra
+    coldkeys bought tickets in (v2 attack review, 2026-11-09). The oracle is
+    junior here and better: it takes the seat."""
     r = run(0, {5: oracle, 6: always("m/strong")}, blocks={5: 2, 6: 1})
+    assert r.decision.event == "first" and r.decision.champion == H(5)
+    assert w(r) == {5: 1.0}     # unfilled seats pay the champion
+
+
+def test_the_empty_seat_counts_spend_not_only_accuracy():
+    """Two heads right on exactly the same questions, one paying for the
+    strongest model wherever it is right: the cheaper one is worth more and
+    takes the empty seat even though the dearer one is senior."""
+    def dear(d):   # the strongest model that is still right, else the oracle's choice
+        return [next((m for m in reversed(MODELS) if x < ACC[m]), "m/strong") for x in d]
+
+    r = run(0, {5: oracle, 6: dear}, blocks={5: 2, 6: 1})
+    assert r.decision.event == "first" and r.decision.champion == H(5)
+
+
+def test_an_exact_tie_for_the_empty_seat_goes_to_the_senior_head():
+    """A copy measures exactly like its original; seniority breaks the tie."""
+    r = run(0, {5: oracle, 6: oracle}, blocks={5: 2, 6: 1})
     assert r.decision.event == "first" and r.decision.champion == H(6)
-    assert w(r) == {6: 1.0}     # unfilled seats pay the champion
 
 
 def test_a_ghosts_seat_one_share_burns_even_when_its_head_serves():
@@ -195,7 +216,8 @@ def test_no_burned_in_head_means_burn():
 def test_a_better_router_takes_the_seat_and_the_old_champion_keeps_a_seat():
     # A champion that always calls the cheap model, then a router that is far
     # more accurate: the router takes the seat.
-    r = chain(range(30), {5: always("m/cheap"), 6: oracle}, blocks={5: 1, 6: 2})
+    r = chain(range(30), {5: always("m/cheap"), 6: oracle}, blocks={5: 1, 6: 2},
+              seat=SeatState(champion=H(5), champion_since=0))
     assert r.decision.state.champion == H(6) and r.decision.state.history[0] == H(5)
     assert w(r)[6] == pytest.approx(0.90) and w(r)[5] == pytest.approx(0.10)
 
@@ -408,11 +430,17 @@ def test_under_the_pinned_anchor_saving_spend_alone_rarely_takes_the_seat():
     # Accuracy-first: with V = m x the pinned anchor's spend (~$0.77), a router
     # that matches the champion's accuracy and only spends less gains well
     # under the 0.2-point margin, so the champion holds.
-    r = chain(range(30), {5: always("m/strong"), 6: oracle}, blocks={5: 1, 6: 2})
+    r = chain(range(30), {5: always("m/strong"), 6: oracle}, blocks={5: 1, 6: 2},
+              seat=SeatState(champion=H(5), champion_since=0))
     assert r.decision.state.champion == H(5) and r.decision.event == "hold"
 
 
-def test_the_first_seat_among_pre_flip_commits_goes_by_the_salted_tie_break():
+def test_an_exact_tie_among_pre_flip_commits_goes_to_the_earlier_real_commit():
+    """Two pre-flip heads that route identically (an exact value tie, which in
+    practice only a copy produces) used to split the first seat by the salted
+    draw, so N copies of a head were N tickets (v2 attack review, 2026-11-09).
+    The real first-commit block now breaks an exact tie; the salted seniority
+    still orders the copy rule's bars and is still published in the reveal."""
     from fugal_subnet.copy_rule import v2_seniority
 
     def first_with(salt):
@@ -435,11 +463,12 @@ def test_the_first_seat_among_pre_flip_commits_goes_by_the_salted_tie_break():
     for salt in ("0x01", "0x02", "0x03", "0x04", "0x05", "0x06"):
         r = first_with(salt)
         state = r.copy_state
-        expect = min([H(5), H(6)], key=lambda h: v2_seniority(state, h, floor_block=BPE, salt=salt))
-        assert r.decision.event == "first" and r.decision.champion == expect
+        keys = {h: v2_seniority(state, h, floor_block=BPE, salt=salt) for h in (H(5), H(6))}
+        assert keys[H(5)][0] == keys[H(6)][0] == BPE          # both floored: the salt orders them
+        assert r.decision.event == "first" and r.decision.champion == H(5)   # block 1 < 200
         assert r.reveal["v2_seniority"] == {"floor_block": BPE, "salt": salt}
-        winners.add(r.decision.champion)
-    assert winners == {H(5), H(6)}      # the earlier commit does not always win
+        winners.add(min((H(5), H(6)), key=keys.__getitem__))
+    assert winners == {H(5), H(6)}      # the salted seniority itself still varies
 
 
 # --- rule gaps a planted-bug review found (each test fails if its rule breaks) ---

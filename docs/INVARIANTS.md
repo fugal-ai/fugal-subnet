@@ -2384,9 +2384,16 @@ paired questions, hard weight 2).
   near-equal heads cannot trade it on noise. An identical head has NV exactly
   0, so copies of the champion never take the seat, and any number of equal
   juniors earn nothing.
-- **First.** With no champion and no ghost, the most senior eligible head
-  (full burn-in, quality floor, not an exact copy) that passes the high-water
-  gates takes the empty seat; there is nothing to compare it with. Until any
+- **First.** With no champion and no ghost, the empty seat goes to the
+  eligible head (full burn-in, quality floor, not an exact copy) that passes
+  the high-water gates and the copy rule with the highest MEASURED net value
+  over its current run (`champion.solo_value`: the seat test's integer NV
+  units against an empty baseline, compared as an exact fraction, I1). An
+  exact tie, which in practice only a copy produces, goes to the earlier REAL
+  first-commit block, then to seniority. Until 2026-11-09 it went to the most
+  senior such head, and since every pre-flip commit ties at the floor the
+  first seat was a salted draw: N coldkeys bought N tickets and a junk head
+  above the floor could win (v2 attack review). Until any
   head is eligible the champion share burns, as in v1. **Pre-flip commits
   tie.** Every first commit at or before the activation block is ranked at
   the activation block, and the tie is broken by sha256 over the activation
@@ -2423,8 +2430,12 @@ which both heads were scored, and an operator sees its own grades before it
 serves. A champion can therefore withhold an epoch it did badly on, and that
 epoch never enters any challenger's comparison. It is accepted because it is
 bounded and expensive: every withheld epoch empties the seat for that epoch,
-so the champion forgoes its whole seat share, and it pays only while a
-challenger sits within a hair of the margin. Counting a champion's missed
+so the champion forgoes its whole seat share. Measured (v2 attack review,
+2026-11-09; `tests/test_v2_attacks.py`): with a champion that knows each
+epoch's paired NV, withholding out-earned honest play against a challenger
+up to about 2.5x the margin better (0.30 points: 2.3x the earnings, the take
+delayed from epoch 15 to 85; 0.53 points: 1.1x) and gained nothing from about
+0.6 points up. Counting a champion's missed
 epoch as wrong answers in the pairing was considered and rejected: axons are
 public addresses, so knocking the champion offline for one collection would
 then be cheaper than building a better router.
@@ -2564,6 +2575,15 @@ model per epoch:
    grades: failed calls dropped, one vote per coldkey, the median across
    coldkeys, so a coalition below half of a cell's voting coldkeys cannot
    move its spend either. A failed call is graded 0 and costs 0.
+   **Accepted residual: thin cells.** The cells that decide a paired test are
+   the ones where the two heads route differently, and those are thin by
+   construction: often the only other voter is one head. A coalition of as
+   many coldkeys as a cell's honest voters moves it halfway, one more flips
+   it (`tests/test_v2_attacks.py`, A1). The lever is weaker than the test's
+   upper bound: grades and tokens are attested model output a voter can only
+   bias (through provider choice on its own account), not choose. Using a
+   head's own answer when a cell has fewer than K other coldkeys is the
+   candidate fix for a later release.
 
 **What still reads the frame in v2, all informational:** the v1 composite,
 headroom, quality and thrift (computed and published as diagnostics, deciding
@@ -2710,7 +2730,11 @@ protocol v2
 - **The comparison set** (from which the seat holders are taken) is every
   head with answers in the champion
   window that is live this epoch; or that its owner still commits and that
-  was scored within `CHAMPION_GHOST_OFF` epochs; or that is **retired** (its
+  was scored within `CHAMPION_GHOST_OFF` epochs (`CHAMPION_GHOST_RETIRE` for
+  a seat holder: a seat holder kept offline past its 3-epoch ghost used to
+  leave the set, so a re-serialised copy that served beside it took the
+  empty seat and the original could never take it back; v2 attack review,
+  2026-11-09); or that is **retired** (its
   owner no longer commits it: it committed a different head, or its hotkey
   left the subnet) within `CHAMPION_GHOST_RETIRE` epochs of its FIRST
   retirement. These ghost incumbents are unpaid. They exist so that perturbed
@@ -2862,8 +2886,8 @@ then the seat is empty and the miner share burns, for about six hours after
 the flip. v1 epochs keep `BURN_IN_QUESTIONS` (3,000).
 
 The shorter burn-in does not shorten what a seat demands. The first seat goes
-to the most senior eligible head by first commit (the copy rule), not to
-whichever head looks best on its first epochs; and a challenger still needs
+to the best measured eligible head that passes the copy rule (exact ties to
+the earlier real commit); and a challenger still needs
 `CHAMPION_MIN_PAIRED_QUESTIONS` (1,500) paired questions from its unbroken run
 against the champion and every senior seat holder, at the margin, before it
 can take a seat. Holding or resuming a seat needs no burn-in.

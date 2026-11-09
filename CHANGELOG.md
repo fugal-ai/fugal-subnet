@@ -32,6 +32,25 @@ instance other than the vendored one was refused even with its own
 intermediate in the proof. Issuers are now chosen by signature among
 same-named candidates, in a fixed order.
 
+### Changed — the v2 empty seat goes to the best measured head; a missing seat holder keeps barring its copies
+
+Two attacks on the v2 seat rules, found by a new adversarial test suite
+(`tests/test_v2_attacks.py`) and fixed before the flip:
+
+- The empty seat went to the most senior eligible head, and every pre-flip
+  commit ties at the seniority floor, so the first seat was a salted draw:
+  N coldkeys bought N tickets, and a junk head above the accuracy floor
+  could win it. It now goes to the eligible head with the highest measured
+  net value over its current run (`champion.solo_value`, exact integer
+  units); an exact tie (in practice a copy) goes to the earlier real commit.
+- A champion kept offline past its 3-epoch ghost left the copy rule's
+  comparison set, so a re-serialised copy that had served beside it took the
+  empty seat and held it for good (the original, tied at NV 0, could never
+  win it back). A seat holder now stays in the comparison set for the
+  24-epoch retire window, so the copy must beat it by the margin; the
+  original takes the seat back when it returns. The seat itself still
+  empties after the 3-epoch ghost, as before.
+
 ### Changed — the v2 seat test runs at 99% confidence (was 90%)
 
 The take test is re-run every epoch on a growing, then sliding, window, so a

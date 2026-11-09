@@ -573,8 +573,8 @@ V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
 # CHAMPION_ACCURACY_VALUE (m) prices one extra correct answer at m questions'
 # worth of the anchor's spend. At 30, accuracy dominates and cost
 # decides between heads of near-equal accuracy. It is a published policy
-# constant. With no champion there is no comparison: the most senior eligible
-# head takes the empty seat.
+# constant. With no champion there is no comparison: the eligible head with
+# the highest measured net value takes the empty seat (champion.solo_value).
 CHAMPION_ACCURACY_VALUE = float(os.getenv("FUGAL_CHAMPION_ACCURACY_VALUE", "30"))
 CHAMPION_HARD_WEIGHT = float(os.getenv("FUGAL_CHAMPION_HARD_WEIGHT", "2"))
 # The anchor that prices one extra correct answer: V = CHAMPION_ACCURACY_VALUE

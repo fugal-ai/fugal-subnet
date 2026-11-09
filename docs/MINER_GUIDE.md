@@ -613,9 +613,11 @@ the activation boundary's block hash, the head and its owner
 Committing days ahead buys nothing, and the order cannot be known until the
 activation block exists. Commits after the flip keep their real block.
 
-**The first champion.** With nobody seated, the most senior eligible head takes
-the seat: burned in, at or above the accuracy floor, and not an exact copy.
-There is no virtual champion to beat. Until some head is eligible the miner
+**The first champion.** With nobody seated, the best eligible head takes the
+seat: burned in, at or above the accuracy floor, not an exact copy, and the
+highest measured net value (accuracy first, then spend) over its unbroken run.
+An exact tie goes to the head committed first on chain. Registering extra
+copies or cheap heads buys nothing. There is no virtual champion to beat. Until some head is eligible the miner
 share burns. A better head then displaces the first champion by the margin,
 like any other.
 

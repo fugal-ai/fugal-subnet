@@ -731,3 +731,26 @@ def test_pair_units_weights_hard_questions_by_the_hard_weight():
         assert np.array_equal(got, expect), c
     assert pu.by_category["hard"].max() == 200 * NV_UNITS_PER_POINT
     assert pu.by_category["math"].max() == 100 * NV_UNITS_PER_POINT
+
+
+def test_solo_value_reads_only_the_current_run():
+    """The empty seat is chosen on each head's current unbroken run, like the
+    take: a head cannot bank good epochs, sit out, and be judged on them."""
+    from fugal_subnet.champion import solo_value
+    from fugal_subnet.v2_epoch import seat_params_from_config
+    from tests.test_v2_epoch import H, always, chain, oracle
+
+    def pols(e):
+        if e < 5:
+            return {5: oracle, 6: always("m/mid")}
+        if e == 5:
+            return {6: always("m/mid")}                # head 5 misses epoch 5
+        return {5: always("m/cheap"), 6: always("m/mid")}
+
+    params = seat_params_from_config()
+    with_gap = chain(range(10), pols, burn_in=10**9).window
+    only_run = chain(range(6, 10), {5: always("m/cheap"), 6: always("m/mid")},
+                     burn_in=10**9).window
+    assert with_gap.current_run(H(5)) == [7, 8, 9, 10]
+    assert solo_value(with_gap, H(5), params) == solo_value(only_run, H(5), params)
+    assert solo_value(with_gap, H(5), params) < solo_value(with_gap, H(6), params)

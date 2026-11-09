@@ -351,6 +351,32 @@ def pair_units(
     )
 
 
+def solo_value(window: Window, head: str, params: "SeatParams",
+               since_epoch: int | None = None):
+    """A head's measured net value over its current run, as an exact Fraction.
+
+    The seat test's per-question NV units against an empty baseline (no
+    answer, no spend): u * grade - spend / V, in integer units, so the sum is
+    exact on any CPU and the Fraction compares exactly (I1). Used to choose
+    who takes an EMPTY seat; between heads it orders the same way as the
+    paired comparison does, because every head answers the same slice.
+    """
+    from fractions import Fraction
+
+    value = (float(params.accuracy_value) * float(params.anchor_spend)
+             if params.anchor_spend else None)
+    total, n = 0, 0
+    for e in window.current_run(head, since_epoch):
+        sl = window.slices[e]
+        g, s = window.head_vectors(head, e)
+        zero = np.zeros_like(g)
+        units = _units(g, zero, s, zero, np.asarray(sl.hard, dtype=bool), value,
+                       params.hard_weight)
+        total += int(units.sum())
+        n += int(units.size)
+    return Fraction(total, n) if n else Fraction(0)
+
+
 def window_accuracy(
     window: Window, head: str, since_epoch: int | None = None, hard_only: bool = False,
     run_only: bool = False,
@@ -438,6 +464,11 @@ class Candidate:
     # epoch restarts its burn-in but keeps (or resumes) its seat; a head that
     # is not seated must re-earn burn-in before it can take one.
     burned_in: bool = True
+    # The head's real first-commit block on chain, unfloored. Breaks an EXACT
+    # tie for an empty seat before seniority does: every pre-flip commit ties
+    # at the seniority floor, so byte-different copies of a head (which measure
+    # identically) otherwise split the first seat by the salted draw.
+    first_block: int | None = None
 
 
 @dataclass(frozen=True)
@@ -651,14 +682,27 @@ def seat_step(
         return True
 
     if champion is None and not ghosts:
-        # FIRST: an empty seat with nothing barring it goes to the most senior
-        # eligible head that passes the gates (and, under the copy rule, beats
-        # every senior seat holder in the comparison set).
-        for c in challengers:
-            if _passes_gates(state, window, c, params, detail) and beats_seniors(c):
-                new = _seated(state, window, c, epoch, history, params)
-                detail.append((c.head_hash, "took the empty seat"))
-                return SeatDecision(new, c.head_hash, "first", None, tuple(detail))
+        # FIRST: an empty seat with nothing barring it goes to the eligible
+        # head with the highest measured net value (solo_value) among those
+        # that pass the gates and, under the copy rule, beat every senior seat
+        # holder in the comparison set; seniority, then the hash, break exact
+        # ties (the real first-commit block first, so an original beats its
+        # pre-flip copies). It went to the most SENIOR such head, and at the flip every
+        # pre-flip commit ties at the seniority floor, so the first seat was a
+        # salted draw: N coldkeys bought N tickets, a junk head above the
+        # accuracy floor could win it (v2 attack review, 2026-11-09).
+        eligible = [c for c in challengers
+                    if _passes_gates(state, window, c, params, detail) and beats_seniors(c)]
+        if eligible:
+            ranked = sorted(eligible, key=lambda c: (
+                -solo_value(window, c.head_hash, params, c.since_epoch),
+                c.first_block if c.first_block is not None else float("inf"),
+                c.seniority, c.head_hash))
+            c = ranked[0]
+            new = _seated(state, window, c, epoch, history, params)
+            detail.append((c.head_hash, f"took the empty seat (best of {len(eligible)} "
+                                        "eligible by measured value)"))
+            return SeatDecision(new, c.head_hash, "first", None, tuple(detail))
         new = SeatState(None, None, history, (), state.high_water, state.high_water_hard)
         return SeatDecision(new, None, "empty", None, tuple(detail))
 

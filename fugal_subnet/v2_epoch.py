@@ -400,6 +400,7 @@ def run_v2_epoch(
             eligible=True,
             since_epoch=int(since if since is not None else epoch_index),
             burned_in=burn_in_complete(getattr(rec, "evidence", None), burn_in_questions),
+            first_block=(new_copy.get(h).first_block if new_copy.get(h) is not None else None),
         )
 
     # Retired: the champion or a standing ghost whose OWNER no longer commits

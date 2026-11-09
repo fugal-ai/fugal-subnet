@@ -135,6 +135,14 @@ def test_a_head_not_committed_by_the_boundary_is_rejected(verifier, committed):
     assert out.status == "invalid" and out.seniority is None and not verifier.calls
 
 
+@pytest.mark.parametrize("value", ["", "D" * 64, "d" * 63, "d" * 65, "zz" * 32, " " + "d" * 63])
+def test_only_a_head_hash_can_count_as_committed(verifier, value):
+    """An empty or malformed commitment equal to an equally malformed
+    weights_hash binds the proof to no head: refused, never committed."""
+    out = check(_resp(weights_hash=value), committed=(value, BOUNDARY - 10))
+    assert out.status == "invalid"
+
+
 def test_a_commitment_at_the_boundary_block_counts(verifier):
     assert check(_resp(), committed=(WHASH, BOUNDARY)).status == "valid"
 

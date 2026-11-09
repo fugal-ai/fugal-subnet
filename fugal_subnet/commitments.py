@@ -26,6 +26,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def is_head_hash(value) -> bool:
+    """A head commitment is the sha256 of the head's bytes: 64 lowercase hex.
+
+    Only such a value can bind a proof to a head committed before the nonce.
+    An empty or malformed commitment (a None or empty field decodes to "")
+    must never compare equal to a proof's weights_hash and count as committed.
+    """
+    return (isinstance(value, str) and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value))
+
+
 def seniority_key(registration_block: int, commit_block: int) -> int:
     """One integer that orders miners by (registration block, commitment block).
 

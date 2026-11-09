@@ -1454,7 +1454,7 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
     the epoch (I6). The one exception is ImportError, which is this validator's
     own installation and not the miner's doing.
     """
-    from fugal_subnet.commitments import seniority_key
+    from fugal_subnet.commitments import is_head_hash, seniority_key
     from fugal_subnet.tee.verify import verify_proof
 
     if resp is None or not hasattr(resp, "proof_hash") or not resp.proof_hash:
@@ -1466,8 +1466,11 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
         return _Checked("invalid")
     weights_hash = getattr(resp, "weights_hash", "")
 
-    # The on-chain commitment, read at the boundary block.
-    if committed[0] == weights_hash and 0 < committed[1] <= checks.boundary_block:
+    # The on-chain commitment, read at the boundary block. Only a head hash can
+    # be committed: an empty or malformed value would compare equal to an
+    # equally empty weights_hash and bind the proof to no head at all.
+    if (is_head_hash(weights_hash) and committed[0] == weights_hash
+            and 0 < committed[1] <= checks.boundary_block):
         # Seniority from chain state at the boundary: the hotkey's
         # registration block first, its commitment block second. A retrained
         # author keeps rank over whoever copied its previous head, and every

@@ -504,6 +504,16 @@ not. On a live `c3-standard-4` TD (6.17.0-1022-gcp):
   quote** — sysfs value and quote value identical.
 - `measurement_id` is unchanged by the extend, as designed.
 
+**Removed 2026-11-08.** The userspace extend never became evidence: the image
+binding went to the compose hash in dstack's RTMR3 log instead. On the live
+compose the miner container cannot write `/sys` (Docker mounts it read-only),
+so the extend failed and logged a misleading warning at every start; on a
+compose that could write it, the extra extend would be missing from dstack's
+log and every honest proof would stop replaying. `neurons/miner.py` no longer
+extends RTMR3, `extend_rtmr3` is gone, and
+`tests/test_tee.py::test_nothing_writes_rtmr3_from_userspace` keeps any
+shipped code from writing a measurement register.
+
 ### I8 — verified on hardware: the upstream binding, and a fresh TD
 
 The upstream is genuinely bound, measured rather than argued. Two boots of one
@@ -1251,7 +1261,7 @@ event-log replay dstack requires, now confirmed as a property of the hardware
 rather than a dstack convention.
 
 Checks: `tests/test_tee.py::test_runtime_identity_is_register_width_and_deterministic`,
-`::test_extend_rtmr3_reports_failure_rather_than_pretending`.
+`::test_rtmr3_is_replayed_not_compared`.
 
 **Until then `--live` binds less than it appears to**, and no rotation procedure
 changes that: rotating an approved list of measurements that do not cover the

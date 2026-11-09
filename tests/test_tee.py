@@ -690,18 +690,22 @@ def test_runtime_identity_is_register_width_and_deterministic():
     assert runtime_identity(args[0], args[1], "z" * 64) != ident
 
 
-def test_extend_rtmr3_reports_failure_rather_than_pretending():
-    """A miner that cannot extend must still run, because the value is not yet
-    enforced — but it must return False so the caller can say so. A silent
-    success here would be indistinguishable from a binding that never happened,
-    which is the exact shape of the humaneval bug.
-    """
-    from fugal_subnet.tee.attestation import extend_rtmr3
+def test_nothing_writes_rtmr3_from_userspace():
+    """The validator replays dstack's RTMR3 log. An extend from the miner's own
+    code is not in that log, so it would stop every honest proof replaying.
+    Nothing shipped may write a measurement register (the tsm-mr sysfs files,
+    or the configfs RTMR interface)."""
+    import pathlib
 
-    assert extend_rtmr3("not-hex") is False
-    assert extend_rtmr3("ab" * 32) is False          # 32 bytes, wrong width
-    # No /sys/class/misc/tdx_guest on a non-TDX host: must be False, not a raise.
-    assert extend_rtmr3("ab" * 48) is False
+    root = pathlib.Path(__file__).resolve().parent.parent
+    writers = [
+        str(path.relative_to(root))
+        for d in ("fugal_subnet", "neurons", "scripts")
+        for path in (root / d).rglob("*.py")
+        if any(m in path.read_text()
+               for m in ("tdx_guest/measurements", "rtmr3:sha384", "/tsm/rtmr"))
+    ]
+    assert writers == []
 
 
 def test_parse_quote_rejects_non_tdx():

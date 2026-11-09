@@ -271,34 +271,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     tee_runtime = TEERuntime(mock=mock)
 
-    # Bind what this runtime IS into RTMR3, once, before any proof exists.
-    # Advisory today: on an unmeasured filesystem an attacker extends the value
-    # we expect. It is written anyway so that locking the image turns this into
-    # evidence rather than requiring a new mechanism. Says so out loud either
-    # way — a binding nobody can see is worse than none. See INVARIANTS.md I8.
+    # The miner never writes RTMR3. dstack's initrd extends it during boot and
+    # the validator replays that log; an extend from here would be missing
+    # from the log and every honest proof would stop replaying (I8). What
+    # binds this TD's application, upstream included, is the compose hash.
     if not mock:
-        from fugal_subnet.benchmarks.loader import pool_hash as _pool_hash
-        from fugal_subnet.graders import grader_hash
-        from fugal_subnet.tee.attestation import extend_rtmr3, runtime_identity
         from fugal_subnet.tee.runtime import _OPENROUTER_BASE
-        identity = runtime_identity(
-            source_hash=_get_source_hash(),
-            pool_hash=_pool_hash(pool),
-            grader_hash=grader_hash(),
-            upstream=_OPENROUTER_BASE,
-        )
         logger.info("Model upstream: %s", _OPENROUTER_BASE)
-        if extend_rtmr3(identity):
-            logger.info(
-                "Runtime identity %s extended into RTMR3 (ADVISORY: not "
-                "enforced until the image is locked)", identity[:16],
-            )
-        else:
-            logger.warning(
-                "Runtime identity %s could NOT be extended into RTMR3. Nothing "
-                "in this TD's measurement registers binds the code that will "
-                "produce its proofs.", identity[:16],
-            )
     # A live axon serves the full head to whoever may query it, and the
     # default admits only staked validators. Zero would admit any
     # registered hotkey, which is a free download of this router (diligence

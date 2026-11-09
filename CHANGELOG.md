@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Removed — the miner no longer extends RTMR3
+
+The miner's startup extend of a "runtime identity" into RTMR3 was advisory and
+never enforced (the app identity is the compose hash replayed from dstack's
+log). On the live compose it could not write `/sys` and logged a misleading
+warning at every start; on a compose that could, the extend would be missing
+from dstack's log and every honest proof would stop replaying. The extend and
+`attestation.extend_rtmr3` are removed, and a test keeps shipped code from
+writing a measurement register.
+
 ### Changed — a quote from a debug TD is refused
 
 `verify_proof` now refuses a quote whose TDATTRIBUTES DEBUG bit is set (a

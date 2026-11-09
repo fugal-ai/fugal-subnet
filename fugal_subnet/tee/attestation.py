@@ -145,18 +145,6 @@ def measurement_id(quote: TDXQuote) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-# The kernel's unified TSM measurement-register ABI. Writing a register-width
-# digest to this file extends that RTMR. Verified on a live GCP c3 TD running
-# 6.17.0-1022-gcp: the file exists, the write succeeds, and the new value
-# appears in the next Intel-signed quote. Absent on older guest kernels, which
-# is why extend_rtmr3 reports failure rather than assuming success.
-#
-# The register name carries its hash algorithm, and the directory is
-# `measurements`, not `mr`. Both were wrong in the first draft of this file and
-# the only symptom was extend_rtmr3 quietly returning False forever — which is
-# why the path is asserted against hardware and not against documentation.
-_TSM_MR_RTMR3 = "/sys/class/misc/tdx_guest/measurements/rtmr3:sha384"
-
 # RTMRs are SHA384 registers. The value written must be register-width, so the
 # runtime identity is SHA384 and not the SHA256 used everywhere else.
 _RTMR_DIGEST_BYTES = 48
@@ -326,61 +314,6 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
         if upto is not None and name == upto:
             break
     return reg.hex(), seen
-
-
-def extend_rtmr3(identity_hex: str) -> bool:
-    """Extend RTMR3 with the runtime identity. True if the hardware took it.
-
-    ADVISORY UNTIL THE IMAGE IS LOCKED, and the docstring says so because the
-    code cannot. On an unmeasured filesystem an attacker running modified code
-    simply extends the value we expect, so a matching RTMR3 proves nothing on
-    its own. It becomes load-bearing when the extend is performed from a
-    measured initrd inside a dm-verity image, at which point the same value is
-    evidence. Writing it now means that migration completes a design rather
-    than introducing one.
-
-    Never raises: a miner that cannot extend must still run, because the value
-    is not yet enforced. It returns False instead, and callers are expected to
-    say so loudly — a silent failure here would be indistinguishable from a
-    binding that never happened.
-
-    This is an EXTEND, not a set. The hardware computes
-    `RTMR = SHA384(RTMR || input)`, starting from 48 zero bytes at boot, so the
-    register never holds the value written to it. A verifier therefore cannot
-    compare RTMR3 to `runtime_identity()` directly — it must replay the chain
-    of extends from zero and check the result equals the quote's RTMR3. That is
-    the same event-log replay dstack requires, and it is why binding RTMR3 is a
-    verification procedure rather than a term in `measurement_id`.
-
-    Confirmed on live hardware: writing sha384(b"fugal-runtime-test") to a
-    freshly booted TD moved RTMR3 from zeros to
-    f6fdca9f66372d80685dc6be023d9e6ae25a42334f3b59de24c78da941883a64..., which
-    equals sha384(bytes(48) + input) and appeared unchanged in the next quote.
-    """
-    try:
-        digest = bytes.fromhex(identity_hex)
-    except ValueError:
-        logger.error("runtime identity %r is not hex; RTMR3 not extended", identity_hex)
-        return False
-    if len(digest) != _RTMR_DIGEST_BYTES:
-        logger.error(
-            "runtime identity is %d bytes, RTMR3 needs %d (SHA384); not extended",
-            len(digest), _RTMR_DIGEST_BYTES,
-        )
-        return False
-    try:
-        with open(_TSM_MR_RTMR3, "wb") as f:
-            f.write(digest)
-    except OSError as e:
-        logger.warning(
-            "RTMR3 not extended (%s): %s. The runtime identity is NOT bound to "
-            "this TD's measurement registers. This kernel may predate the "
-            "tsm-mr interface, or the process may lack write access.",
-            _TSM_MR_RTMR3, e,
-        )
-        return False
-    logger.info("RTMR3 extended with runtime identity %s", identity_hex[:16])
-    return True
 
 
 _pccs_logged: set[str] = set()

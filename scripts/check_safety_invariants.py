@@ -819,7 +819,10 @@ def check_upstream_is_inside_the_measurement(errors: list[str]) -> None:
                 errors.append(f"{rel}: image referenced by tag, not digest: {stripped} (I8)")
             if stripped.startswith("#"):
                 continue
-            if "FUGAL_OPENROUTER_BASE" in stripped and "=" in stripped:
+            # Both compose forms: a list entry `- FUGAL_OPENROUTER_BASE=...` and a
+            # mapping entry `FUGAL_OPENROUTER_BASE: ...` (only the first was
+            # matched until 2026-11-08).
+            if re.search(r"\bFUGAL_OPENROUTER_BASE\s*[:=]", stripped):
                 errors.append(
                     f"{rel}: compose sets FUGAL_OPENROUTER_BASE -- the upstream is "
                     "fixed by runtime.py's default and must not be overridden (I8)"

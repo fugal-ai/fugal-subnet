@@ -40,8 +40,10 @@ _OPENROUTER_BASE = os.getenv(
 # provider's shared pool and every failure was scored as a wrong answer, which
 # put an otherwise frontier-level head 0.11 below the frontier. A bounded retry
 # with backoff turns most of those into answers. Hard limits keep the whole
-# attempt inside the harness's own 200 s wait: at most PROXY_MAX_ATTEMPTS tries,
-# no new try after PROXY_RETRY_BUDGET_S, each wait capped at PROXY_MAX_WAIT_S.
+# attempt inside PROXY_CALL_DEADLINE_S (wall clock, retries included), which is
+# itself inside the harness's wait (HARNESS_CALL_TIMEOUT_S): at most
+# PROXY_MAX_ATTEMPTS tries, no new try after PROXY_RETRY_BUDGET_S, each wait
+# capped at PROXY_MAX_WAIT_S.
 # 401/402 are never retried: they mean the operator's key or balance, and
 # they are logged as such so a payment problem is never read as model quality.
 PROXY_RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}

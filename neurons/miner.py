@@ -702,7 +702,7 @@ def _tpm_intermediates_at_startup(tee_runtime) -> list:
     failed fetch logs why and returns [], and its proofs then verify only where
     a validator's vendored intermediates cover them, as before.
     """
-    from fugal_subnet.scale import ScaleError, decode_dstack_attestation
+    from fugal_subnet.scale import decode_dstack_attestation
     from fugal_subnet.tee.tpm import intermediates_for
 
     why = ("proofs will verify only where validators have vendored this TD's "
@@ -714,8 +714,8 @@ def _tpm_intermediates_at_startup(tee_runtime) -> list:
             return []
         ak_cert = decode_dstack_attestation(blob)["tpm"]["ak_cert"]
         chain = intermediates_for(ak_cert)
-    except (ScaleError, ValueError, OSError, RuntimeError) as e:
-        logger.warning("Could not build the TPM intermediates (%s); %s", e, why)
+    except Exception as e:  # noqa: BLE001 - never stops the miner, whatever the TD or network returns
+        logger.warning("Could not build the TPM intermediates (%s: %s); %s", type(e).__name__, e, why)
         return []
     if chain:
         logger.info("Carrying %d TPM intermediate certificate(s) in each v2 proof", len(chain))

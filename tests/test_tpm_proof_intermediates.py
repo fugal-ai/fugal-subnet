@@ -375,3 +375,136 @@ def test_a_chain_that_would_not_verify_is_not_carried(monkeypatch):
     monkeypatch.setattr(tpm_mod, "_load_pinned", lambda *a, **k: (root, []))
     monkeypatch.setattr(tpm_mod, "_aia_certificate", lambda cert, fetch: expired)
     assert tpm_mod.intermediates_for(der(leaf)) == []
+
+
+# --- Hostile candidates and slow fetches (independent review, 2026-11-08) ----
+
+def _dup_extension_ca(subject):
+    """A CA certificate named `subject` whose DER carries basicConstraints
+    twice, so reading its extensions raises x509.DuplicateExtension (an
+    Exception, not a ValueError). Builders refuse to make one, so an unknown
+    extension's OID is renamed in the DER."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ObjectIdentifier
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    key = ec.generate_private_key(ec.SECP256R1())
+    bc = x509.BasicConstraints(ca=True, path_length=None)
+    cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+            .public_key(key.public_key()).serial_number(1)
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=30))
+            .add_extension(bc, critical=True)
+            .add_extension(x509.UnrecognizedExtension(ObjectIdentifier("2.5.29.99"), bc.public_bytes()),
+                           critical=False)
+            .sign(key, hashes.SHA256()))
+    der = cert.public_bytes(serialization.Encoding.DER)
+    assert der.count(b"\x06\x03\x55\x1d\x63") == 1
+    return der.replace(b"\x06\x03\x55\x1d\x63", b"\x06\x03\x55\x1d\x13")
+
+
+def _issuer_name():
+    from cryptography import x509
+    return x509.load_der_x509_certificate(_ak()).issuer
+
+
+def test_an_unreadable_candidate_is_passed_over_never_raised(monkeypatch):
+    """Candidates come from miner bytes; a bad one is a non-issuer. It used to
+    raise DuplicateExtension out of verify_proof."""
+    bad = _dup_extension_ca(_issuer_name())
+    _vendored_is(monkeypatch, bad, VENDORED)
+    assert tpm_mod.verify_ak_chain(_ak())                      # skipped, the real one found
+    _vendored_is(monkeypatch, bad)
+    assert tpm_mod.verify_ak_chain(_ak()) is False             # alone: refused, not raised
+    _rotated(monkeypatch)
+    with pytest.raises(ValueError, match="TPM quote"):
+        verify_mod.unwrap_attestation(_blob(), extra_certs=[bad])
+
+
+def test_a_malformed_fetched_certificate_never_stops_the_miner(monkeypatch):
+    from neurons.miner import _tpm_intermediates_at_startup
+
+    bad = _dup_extension_ca(_issuer_name())
+    _rotated(monkeypatch)
+    assert tpm_mod.intermediates_for(_ak(), fetch=lambda url: bad) == []
+    monkeypatch.setattr(tpm_mod, "_fetch_ca_issuer", lambda url: bad)
+
+    class Runtime:
+        def generate_attestation(self, report_data):
+            return _blob()
+
+    assert _tpm_intermediates_at_startup(Runtime()) == []
+
+
+def test_an_expired_copy_of_a_ca_does_not_hide_its_valid_reissue(monkeypatch):
+    """Same name, same key, different validity: the expired copy is passed
+    over wherever it sits in the candidate order."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    day = datetime.timedelta(days=1)
+    name = lambda n: x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, n)])   # noqa: E731
+
+    def issue(subject, key, issuer, issuer_key, ca, before, after, serial):
+        return (x509.CertificateBuilder().subject_name(name(subject)).issuer_name(name(issuer))
+                .public_key(key.public_key()).serial_number(serial)
+                .not_valid_before(before).not_valid_after(after)
+                .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+                .sign(issuer_key, hashes.SHA256()))
+
+    der = lambda c: c.public_bytes(serialization.Encoding.DER)    # noqa: E731
+    rk, ik, lk = (ec.generate_private_key(ec.SECP256R1()) for _ in range(3))
+    root = issue("R", rk, "R", rk, True, now - 9 * day, now + 999 * day, 1)
+    old = issue("I", ik, "R", rk, True, now - 9 * day, now - day, 2)
+    new = issue("I", ik, "R", rk, True, now - day, now + 999 * day, 3)
+    leaf = der(issue("AK", lk, "I", ik, False, now - day, now + 999 * day, 4))
+    monkeypatch.setattr(tpm_mod, "_load_pinned", lambda *a, **k: (root, [old]))
+    assert tpm_mod.verify_ak_chain(leaf, extra_certs=[der(new)])
+    monkeypatch.setattr(tpm_mod, "_load_pinned", lambda *a, **k: (root, []))
+    assert tpm_mod.verify_ak_chain(leaf, extra_certs=[der(old), der(new)])
+    assert tpm_mod.verify_ak_chain(leaf, extra_certs=[der(new), der(old)])
+
+
+def test_the_fetch_has_a_wall_clock_deadline(monkeypatch):
+    """urlopen's timeout bounds each read, not the fetch: a responder that
+    drips one byte at a time must still be cut off."""
+    import socket
+    import threading
+    import time
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    stop = threading.Event()
+
+    def drip():
+        conn, _ = srv.accept()
+        conn.recv(4096)
+        conn.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 8000\r\n\r\n")
+        try:
+            while not stop.is_set():
+                conn.sendall(b"x")
+                time.sleep(0.2)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    threading.Thread(target=drip, daemon=True).start()
+    monkeypatch.setattr(tpm_mod, "_FETCH_DEADLINE_S", 1.0)
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(tpm_mod.TpmError, match="took over"):
+            tpm_mod._fetch_ca_issuer(f"http://127.0.0.1:{srv.getsockname()[1]}/ca.crt")
+    finally:
+        stop.set()
+        srv.close()
+    assert time.monotonic() - t0 < 4.0

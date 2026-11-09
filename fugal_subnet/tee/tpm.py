@@ -246,7 +246,7 @@ def verify_ak_chain(ak_cert_der: bytes, extra_certs: "list[bytes] | None" = None
                            cert.subject.rfc4514_string(), at)
             return False
 
-        issuer = _issuer_of(cert, root, pool)
+        issuer = _issuer_of(cert, root, pool, at)
         if issuer is None:
             return False
         if issuer is root:
@@ -257,7 +257,7 @@ def verify_ak_chain(ak_cert_der: bytes, extra_certs: "list[bytes] | None" = None
     return False
 
 
-def _issuer_of(cert, root, pool):
+def _issuer_of(cert, root, pool, at=None):
     """The certificate that issued `cert`: the root, or one in `pool`, or None.
 
     Chosen by SIGNATURE, not by name. Google gives every EK/AK intermediate the
@@ -270,6 +270,14 @@ def _issuer_of(cert, root, pool):
     candidate is tried in a fixed order (the root, the vendored files sorted by
     name, then the proof's own in proof order), so the verdict is deterministic
     (I1) and the first that may issue and whose signature verifies is taken.
+
+    A candidate outside its validity window at `at` is passed over, so an
+    expired copy of a CA (a re-issue with the same name and key) cannot hide
+    the valid one. A candidate that cannot even be read (a duplicated
+    extension raises x509.DuplicateExtension, not ValueError) is passed over
+    too: candidates come from miner bytes and from a plain-HTTP fetch, and a
+    bad one is a non-issuer, never an exception (independent review,
+    2026-11-08: it escaped verify_proof and stopped a miner's startup).
     """
     from cryptography import x509
     from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
@@ -282,15 +290,23 @@ def _issuer_of(cert, root, pool):
         return None
 
     for issuer in candidates:
-        # An issuer must actually be allowed to issue. Without this a leaf
-        # certificate could be used to sign another certificate, and any miner
-        # holding a genuine AK could mint attestation keys for machines they do
-        # not own.
         try:
+            if at is not None and not (issuer.not_valid_before_utc <= at <= issuer.not_valid_after_utc):
+                logger.debug("candidate issuer %s is outside its validity window",
+                             issuer.subject.rfc4514_string())
+                continue
+            # An issuer must actually be allowed to issue. Without this a leaf
+            # certificate could be used to sign another certificate, and any
+            # miner holding a genuine AK could mint attestation keys for
+            # machines they do not own.
             bc = issuer.extensions.get_extension_for_class(x509.BasicConstraints).value
         except x509.ExtensionNotFound:
             logger.warning("issuer %s has no basicConstraints",
                            issuer.subject.rfc4514_string())
+            continue
+        except Exception as e:  # noqa: BLE001 - an unreadable candidate is not an issuer
+            logger.warning("candidate issuer %s cannot be read: %s",
+                           issuer.subject.rfc4514_string(), type(e).__name__)
             continue
         if not bc.ca:
             logger.warning("issuer %s is not a CA", issuer.subject.rfc4514_string())
@@ -344,24 +360,30 @@ def intermediates_for(ak_cert_der: bytes, fetch=None, at=None) -> list[bytes]:
     from fugal_subnet.tee.proof import TPM_INTERMEDIATES_MAX
 
     fetch = fetch or _fetch_ca_issuer
-    leaf = x509.load_der_x509_certificate(ak_cert_der)
-    root, vendored = _load_pinned()
-    chain: list = []
-    cert = leaf
-    for _ in range(TPM_INTERMEDIATES_MAX):
-        issuer = _issuer_of(cert, root, vendored + chain)
-        if issuer is None:
-            fetched = _aia_certificate(cert, fetch)
-            issuer = _issuer_of(cert, root, [fetched]) if fetched is not None else None
+    if at is None:
+        at = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        leaf = x509.load_der_x509_certificate(ak_cert_der)
+        root, vendored = _load_pinned()
+        chain: list = []
+        cert = leaf
+        for _ in range(TPM_INTERMEDIATES_MAX):
+            issuer = _issuer_of(cert, root, vendored + chain, at)
             if issuer is None:
-                return []
-        if issuer is root:
-            break
-        if issuer not in chain:
-            chain.append(issuer)
-        cert = issuer
-    ders = [c.public_bytes(serialization.Encoding.DER) for c in chain]
-    return ders if verify_ak_chain(ak_cert_der, extra_certs=ders, at=at) else []
+                fetched = _aia_certificate(cert, fetch)
+                issuer = _issuer_of(cert, root, [fetched], at) if fetched is not None else None
+                if issuer is None:
+                    return []
+            if issuer is root:
+                break
+            if issuer not in chain:
+                chain.append(issuer)
+            cert = issuer
+        ders = [c.public_bytes(serialization.Encoding.DER) for c in chain]
+        return ders if verify_ak_chain(ak_cert_der, extra_certs=ders, at=at) else []
+    except Exception as e:  # noqa: BLE001 - "no chain" is the only failure this may have
+        logger.warning("could not build the TPM intermediate chain (%s): %s", type(e).__name__, e)
+        return []
 
 
 def _aia_certificate(cert, fetch):
@@ -386,14 +408,29 @@ def _aia_certificate(cert, fetch):
     return None
 
 
+# Wall-clock bound on one AIA fetch. urlopen's timeout bounds each socket
+# read, not the fetch: a responder dripping a byte every 14 s held the miner's
+# startup for hours (independent review, 2026-11-08).
+_FETCH_DEADLINE_S = 20.0
+
+
 def _fetch_ca_issuer(url: str) -> bytes:
-    """GET an AIA caIssuers URL, bounded in time and size."""
+    """GET an AIA caIssuers URL, bounded in size and in total wall time."""
+    import time
     from urllib.request import urlopen
 
     from fugal_subnet.tee.proof import TPM_INTERMEDIATE_MAX_BYTES
 
-    with urlopen(url, timeout=15) as resp:  # noqa: S310 - Google's CA bucket, checked by signature
-        body = resp.read(TPM_INTERMEDIATE_MAX_BYTES + 1)
+    deadline = time.monotonic() + _FETCH_DEADLINE_S
+    body = b""
+    with urlopen(url, timeout=5) as resp:  # noqa: S310 - Google's CA bucket, checked by signature
+        while len(body) <= TPM_INTERMEDIATE_MAX_BYTES:
+            if time.monotonic() > deadline:
+                raise TpmError(f"issuing certificate at {url} took over {_FETCH_DEADLINE_S:.0f} s")
+            chunk = resp.read1(TPM_INTERMEDIATE_MAX_BYTES + 1 - len(body))
+            if not chunk:
+                break
+            body += chunk
     if len(body) > TPM_INTERMEDIATE_MAX_BYTES:
         raise TpmError(f"issuing certificate at {url} is over {TPM_INTERMEDIATE_MAX_BYTES} bytes")
     return body

@@ -438,6 +438,16 @@ it. Kept here, next to the launch sequence, so it is not forgotten.
   structurally or end to end today (the 2026-11-08 coverage map: both mains
   at ~0% unit coverage). Do it with the v1 removal, behind the determinism
   baseline and the rehearsals, not before the flip
+- group `fugal_subnet/` the same way, in the same PR as the v1 removal: a
+  `fugal_subnet/v2/` package for `champion`, `copy_rule`, `payout`,
+  `shared_grades`, `v2_epoch`, `v2_rebuild`, `epoch_plan` and `evidence`
+  (`tee/`, `benchmarks/`, `attacks/` and `vendor/` already are packages).
+  Not before: every module is part of the measured miner image, so a move
+  changes the image and the imports for no functional gain mid-launch. Drop
+  the dead code found by the 2026-11-08 review with it: `soft_targets.py`,
+  `head_eval.evaluate_head` and its helpers, and `api.py`'s unused
+  `SpendTracker`/`call_model`/`fetch_openrouter_prices` (move what the paid-
+  call safety check still needs into tooling)
 - group `tests/` into folders by theme (v2 protocol, TEE, pool and data,
   neurons, tooling) once the v1-only tests are gone; ~60 test files find the
   repo by folder depth, so it is one sweep, done once

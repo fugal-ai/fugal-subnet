@@ -405,7 +405,14 @@ def run_v2_epoch(
     # Retired: the champion or a standing ghost whose OWNER no longer commits
     # it. A missed ghost that becomes retired is upgraded by seat_step.
     watched = {g.head_hash for g in seat.ghosts} | ({seat.champion} if seat.champion else set())
-    retired = set(copy_rule.retired_hashes(new_copy)) & watched
+    # A watched head with no copy record at all has been retired too: the copy
+    # rule drops a record once its FIRST retirement is older than ghost_retire,
+    # so a champion whose head was retired once, re-committed and then dropped
+    # again has no record the epoch its owner moves on, and was read as merely
+    # missed (a 3-epoch ghost instead of the 24-epoch retired one; theme-2
+    # review, 2026-11-08).
+    retired = (set(copy_rule.retired_hashes(new_copy))
+               | {h for h in watched if h not in new_copy}) & watched
 
     bars = copy_rule.senior_bars(
         new_copy, epoch_index, new_window, candidates,

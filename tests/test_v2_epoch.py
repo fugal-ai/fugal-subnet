@@ -461,3 +461,23 @@ def test_a_junior_must_also_beat_a_senior_seat_two_holder():
     assert barred.decision.event == "hold" and barred.decision.state.champion == H(7)
     assert any(msg.startswith(f"does not beat senior {H(5)[:16]}")
                for h, msg in barred.decision.detail if h == H(9))
+
+
+def test_a_champion_retired_once_before_still_leaves_a_retired_ghost():
+    """Its owner retired the head once (epoch 5), re-committed it, held the
+    seat, and at epoch 41 moves on to another head. The copy rule drops the
+    record that same epoch (its first retirement is long past), and the seat
+    read the champion as merely missed: a 3-epoch ghost, not 24."""
+    from fugal_subnet.copy_rule import CopyState, HeadRecord
+
+    def moved_on(retired_at):
+        st = CopyState(epoch=40, heads=(HeadRecord(H(1), 1, "ck1", True, retired_at, "hk1"),))
+        r0 = run(40, {1: oracle}, copy=st)
+        r1 = run(41, {1: oracle}, heads={1: H("new")}, window=r0.window,
+                 seat=r0.decision.state, copy=r0.copy_state)
+        (ghost,) = r1.decision.state.ghosts
+        return ghost
+
+    control, once_retired = moved_on(None), moved_on(5)
+    assert control.reason == "retired"
+    assert (once_retired.reason, once_retired.last_epoch) == (control.reason, control.last_epoch)

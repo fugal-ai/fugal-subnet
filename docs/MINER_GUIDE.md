@@ -122,7 +122,7 @@ no implicit random fallback. Synthetic training is explicitly test-only.
 Heads require the versioned success contract, not just W/b/models. See
 [the contract and transition guide](SUCCESS_CONTRACT.md) for metadata, archive
 limits, export, and the required fresh evidence namespace. The v2 token manifest
-was reviewed on 2026-11-04 from 757 metered calls at the v2 answer budget (the
+was reviewed on 2026-11-09 from 758 metered calls at the v2 answer budget (the
 record is inside the file); your head's token statistics must match it exactly,
 which `--manifest data/benchmark_tokens_protocol_v2.json` does for you.
 

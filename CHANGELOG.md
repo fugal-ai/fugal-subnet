@@ -54,6 +54,14 @@ with three voters, +0.58 with five; about 0.1 to 0.15 points of net value
 between typical heads, below the 0.2 margin. A mean across coldkeys would
 remove it: a consensus change, to be decided on v2 reveals (v2.1).
 
+### Documented — the accuracy marks are absolute (accepted residual, INVARIANTS)
+The high-water marks are set when a champion is seated and do not follow the
+field down: after a field-wide accuracy drop a better challenger takes the
+seat later (12 of 20 simulated runs after a 3-point drop, 20 of 20 with
+none). A mark measured on the paired questions is a v2.1 consensus change.
+MINER_GUIDE: the token manifest's review date and call count corrected
+(2026-11-09, 758 calls).
+
 ### Documented — the provider is the miner's account's choice; m stays 30
 Measured with a few metered calls (2026-11-09): identical harness requests are
 answered by different providers at different precisions, and OpenRouter

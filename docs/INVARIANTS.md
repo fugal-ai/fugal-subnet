@@ -2394,6 +2394,18 @@ paired questions, hard weight 2).
   share burning and the next eligible head can be first. The point
   estimate is part of the rule, not only a shortcut: no bootstrap runs for a
   mean at or below the margin.
+  **Accepted residual: the marks are absolute.** The seat is accuracy-first:
+  net value decides only among heads at or above the mark, so a head that is
+  cheaper but below it does not take the seat at any price (intended). The
+  mark is fixed when a champion is seated (about 1.6 points under its
+  accuracy for a champion seated on 1,500 questions at 90%) and does not
+  follow the field down. If every head's measured accuracy later falls, as
+  when a provider changes a model, challengers are measured against the old
+  mark: simulated with the shipped `seat_step` and constants, a challenger
+  one point more accurate than the champion took the seat in 20 of 20
+  60-epoch runs with no drop and in 12 of 20 after a 3-point drop for
+  everyone. A mark measured on the paired questions would follow the field;
+  it is a consensus change (v2.1).
 - **Eligibility.** To hold a seat, or resume one inside its ghost window, a
   head must be live, not be an exact copy, and have window accuracy (shared
   grades over the window) at or above `CHAMPION_MIN_ACCURACY` (0.30). That

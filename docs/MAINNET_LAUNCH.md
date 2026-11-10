@@ -428,6 +428,27 @@ point or two of its accuracy are far cheaper, lower m (a consensus constant:
 a coordinated release, re-baseline, docs). Under any m the ideal router (the
 cheapest model that is correct, per question) wins.
 
+## After the flip: a new grader version for letter answers (v2.1)
+
+`letter_mcq` misreads some reply formats (INVARIANTS, I4, "the letter rule
+misreads some reply formats"): right answers lost and some wrong ones
+credited on MMLU, MMLU-Pro and SuperGPQA, about two thirds of each slice.
+Deterministic and the same for every head, so it was not changed before the
+flip; it is a measurement defect, and the first item for v2.1.
+
+1. Collect real replies first: the reporting miner's raw SuperGPQA replies,
+   and our own sample from every model on the v2 list through the pinned
+   harness [PAID, small: approve the amount first]. Measure the loss rate and
+   the false-credit rate per model with the shipped rule.
+2. Write the new rule against those replies (a whole-word capital letter after
+   an explicit answer marker, the last one in the reply, no 40-character
+   window) and measure it on the same set, both directions.
+3. Ship it as a new grader version: `graders.py` is the version (its hash is
+   in every proof and in the consensus digest), so this is a new image, new
+   approved entries, a testnet rehearsal and an activation block with notice,
+   like the v2 flip. Decide then whether the prompt's last line changes with
+   it (the pool hash moves if it does).
+
 ## After the flip: remove protocol v1
 
 Protocol v1 stays in the tree until no v1 epoch can occur, because one binary

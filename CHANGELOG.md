@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Documented — the letter rule misreads some reply formats (accepted residual, INVARIANTS)
+`letter_mcq` grades MMLU, MMLU-Pro and SuperGPQA (about two thirds of a v2
+slice). Run on the shipped code: "the answer is approximately … option C"
+reads A and "the answer is clearly (B)" reads C (the pattern ignores case and
+takes a word's first letter); text after the letter ("**Answer: C** (4.2 J)")
+defeats the 40-character fallback. Reported by a miner for claude-fable-5.2
+on SuperGPQA; the rate is not yet measured by us. Deterministic and the same
+for every head, so no consensus or fairness effect: a measurement defect.
+`graders.py` is unchanged; a new grader version is the first v2.1 item
+(MAINNET_LAUNCH). `tests/test_letter_mcq_residual.py` pins today's readings.
+
 ### Docs — v2 is on main; the v2 embedding pass, measured
 MINER_GUIDE and APPROVED_ENTRY_ROTATION pointed miners at the `release/v2`
 branch, merged and deleted at v0.3.0: they now say `main`. MINER_GUIDE gains

@@ -2364,6 +2364,40 @@ of 60 with three or with five coldkeys. A mean across coldkeys does not
 depend on the number of voters; it is a consensus change, to be decided on
 v2 reveals (v2.1).
 
+**Accepted residual: the letter rule misreads some reply formats.**
+`letter_mcq` (the pinned `graders.py`) grades MMLU, MMLU-Pro and SuperGPQA:
+573 of the 900 questions in the first three v2 slices on testnet 552
+(SuperGPQA 213). It reads the last "answer is X"; with none, the last
+standalone capital A to J in the reply's final 40 characters. Run on the
+shipped code (2026-11-10; `tests/test_letter_mcq_residual.py` pins each case):
+- The "answer is" pattern ignores case and does not require the letter to
+  stand alone. "the answer is approximately 4.2 eV, which is option C" reads
+  A; "The answer is clearly (B)" reads C. A right answer is lost, and a wrong
+  one can be credited.
+- With no "answer is", text after the letter pushes it out of the final 40
+  characters or adds a later capital: "**Answer: C** (4.2 J)" reads J, and
+  "Answer: C" followed by an explanation that names option A reads A.
+- A reply that is the letter alone, or ends with it, is read correctly.
+
+A miner reported it before the flip for `anthropic/claude-fable-5.2` on
+SuperGPQA: 121 of 500 answers the miner judged correct were graded 0. That
+rate is the miner's; we have not measured it, and the token manifest cannot
+show it (completion tokens include reasoning, so a long count does not mean
+a long visible reply).
+
+The rule is deterministic and the same for every head on every validator,
+and a reply is attested model output that a miner cannot shape, so it moves
+no consensus and gives no head an edge over another. What it costs is
+measurement: a model that adds text after its letter is graded below its
+accuracy, routers learn to avoid it on these sets, and the published grades
+understate it. The rule is unchanged since v1 (MMLU-Pro, GPQA). The fix is a
+new grader version: the file's hash is the version, carried in every proof
+and the consensus digest, so it needs a new image, new approved entries and
+an activation block. For v2.1 (MAINNET_LAUNCH, "After the flip: a new grader
+version for letter answers"): a whole-word capital letter after an explicit
+answer marker, the last one in the reply, no 40-character window, tested on
+real replies from all 19 models before it is pinned.
+
 **Determinism.** Every step is order-independent and the published form is
 sorted (`cells_for_reveal`); the `shared_grades` stage of
 `check_determinism.py` feeds proofs in the opposite order to the frame stage.

@@ -4,6 +4,12 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Docs — v2 is on main; the v2 embedding pass, measured
+MINER_GUIDE and APPROVED_ENTRY_ROTATION pointed miners at the `release/v2`
+branch, merged and deleted at v0.3.0: they now say `main`. MINER_GUIDE gains
+the first measurement of the v2 pool's embedding pass (8 h 28 min on a
+`c3-standard-8` in TDX, testnet 552, 2026-11-10); it had only the v1 figure.
+
 ### Fixed — the subnet watcher against a real reveal (tooling; no consensus change)
 Found on the first v2 epoch of the testnet rehearsal (552, e00023374).
 - `scripts/watch_subnet.py` read each uid's score as a bare number; a

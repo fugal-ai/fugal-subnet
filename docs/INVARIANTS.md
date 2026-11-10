@@ -2364,6 +2364,68 @@ of 60 with three or with five coldkeys. A mean across coldkeys does not
 depend on the number of voters; it is a consensus change, to be decided on
 v2 reveals (v2.1).
 
+**The letter rule reads one letter: a marker, then a letter line, then the
+tail (changed 2026-11-10, before the flip; v0.3.1).** `letter_mcq`
+(`graders.py`) grades MMLU, MMLU-Pro and SuperGPQA: 573 of the 900 questions
+in the first three v2 slices on testnet 552. It tries, in order, and takes the
+last match of the first rule that matches:
+1. an explicit marker with the letter a capital standing alone: "answer is
+   X", "Answer: X", "answer is option X", or a heading ending in "answer"
+   with a marked-up letter opening the next line;
+2. a line that is only the letter (heading marks, markdown, brackets);
+3. a marked-up letter opening the reply, with text after it on the line;
+4. the last standalone capital A to J in the final 40 characters.
+
+Until then it was rule 1 without regard to case and without requiring the
+letter to stand alone, then rule 4. "the answer is approximately 4.2 eV …
+option C" read A, "The answer is clearly (B)" read C, and a reply that put
+the letter on its own first line and added working after it was read from
+its last 40 characters only. A miner reported it for
+`anthropic/claude-fable-5.2` on SuperGPQA (121 of 500 correct answers graded
+0). **Measured 2026-11-10** on 1,703 real replies (the 19 v2 models, 50
+SuperGPQA + 30 MMLU-Pro + 10 MMLU questions each, through `MeteringProxy` and
+`harness._call_model` with each model's pinned reasoning setting):
+
+| | graded correct, old rule | new rule |
+|---|---|---|
+| All replies (1,703) | 1,321 | 1,363 |
+| SuperGPQA (944) | 684 | 713 |
+| MMLU-Pro (569) | 476 | 489 |
+| MMLU (190) | 161 | 161 |
+| claude-fable-5.2, SuperGPQA (50) | 29 | 39 (its stated letter equals gold in 39) |
+
+No reply graded correct by the old rule is graded wrong by the new one. Ten
+models gain (fable-5.2 12, mimo-v2.6-flash 7, glm-5.3-flash 6, glm-5.3 5,
+minimax-m3.1-flash 4, opus-5.5 2, qwen3.8-27b 2, mimo-v2.6-pro 2, sonnet-5.5
+1, haiku-5.5 1); every gain was read by hand and is the model's own stated
+letter. The old rule under-measured exactly the models that explain their
+answer, so routers trained on it would have avoided them on a quarter of the
+slice.
+
+**Why before the flip, and why it is confined.** `grade()` is called only in
+the TEE harness, inside the miner image; a validator never grades, it carries
+the grader's hash in its epoch commitment and in the consensus digest. So the
+change is this file, its pin (`check_safety_invariants.py`, `GRADER_SHA256`)
+and a new miner image with new approved entries; no validator scoring code
+changes. Done before v2 activates, it costs one image and one notice instead
+of a second coordinated flip after it, and no v2 head is trained against the
+old readings. v1 epochs are graded by v1 images until the activation block
+and are unaffected; a validator on this release shows the new grader hash in
+its commitment and digest from the moment it upgrades.
+
+**What it still does not read (accepted):** a reply with no text (37 of the
+1,703: reasoning used the whole budget) and "none of the options" grade 0,
+correctly; an answer naming two letters reads at most one; a letter given
+only inside running text more than 40 characters from the end, with no
+marker and no letter line, is not found (none in the sample: the 27 replies
+graded 0 that mention the gold letter were read by hand, and each gives a
+different final answer or two letters); rule 4 still reads the pronoun in "..., I think" as I (the attack
+suite's KNOWN case). Exactly one letter is ever read, so naming several
+cannot score, and a reply is attested model output a miner cannot shape.
+
+Enforced by `tests/test_letter_mcq.py` (shapes from the measured replies),
+the letter cases of `fugal_subnet/attacks/run_attacks.py`, and the grader pin.
+
 **Determinism.** Every step is order-independent and the published form is
 sorted (`cells_for_reveal`); the `shared_grades` stage of
 `check_determinism.py` feeds proofs in the opposite order to the frame stage.

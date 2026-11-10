@@ -4,6 +4,33 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-10
+
+### Changed — the letter rule reads the answer models actually give (consensus: a new grader hash, before the v2 flip)
+`letter_mcq` grades MMLU, MMLU-Pro and SuperGPQA, about two thirds of a v2
+slice. It read "answer is" without regard to case and took a word's first
+letter ("the answer is approximately …" read A; "the answer is clearly (B)"
+read C), and otherwise looked only at the last 40 characters, so a reply that
+gave its letter on the first line and then its working was misread. A miner
+reported it for claude-fable-5.2 on SuperGPQA. Measured on 1,703 real replies
+from the 19 v2 models through the harness: 1,321 graded correct before, 1,363
+now, and none that was graded correct before is graded wrong now;
+claude-fable-5.2 on SuperGPQA 29 to 39 of 50. The rule now reads an explicit
+marker (a capital standing alone), then a line that is only the letter, then
+a marked-up letter opening the reply, then the old fallback (INVARIANTS, I4).
+- `graders.py` changes, so the grader hash changes: `GRADER_SHA256` in
+  `check_safety_invariants.py` (was `IMMUTABLE_V1_GRADER_SHA256`), every
+  validator's epoch commitment and the consensus digest. Grading runs only in
+  the miner image, so no validator scoring code changes.
+- **The image `build-v2026.11.10` is superseded and was never signed.** The
+  v2 image is rebuilt from this release, with new compose hashes and approved
+  entries.
+- Tests: `tests/test_letter_mcq.py` (shapes from the measured replies); seven
+  new letter cases in the grader attack suite.
+- Nightly: the dress rehearsal checks out the ref that triggered it, so a
+  branch can be rehearsed against a real chain before it merges.
+- Version 0.3.1 (0.3.0 was cut on 2026-11-10 and never tagged or activated).
+
 ### Docs — fable-5.2 is no longer single-provider
 MINER_GUIDE and SUCCESS_CONTRACT said `anthropic/claude-fable-5.2` had two
 endpoints, both Anthropic. OpenRouter's public endpoint list on 2026-11-10

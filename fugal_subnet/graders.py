@@ -30,7 +30,7 @@ Checker inventory:
   numeric_final  last number in reply vs gold (float-safe)      gsm8k
   boxed_math     math_verify + brace-aware \\boxed fallback      math
   integer_exact  integer answer match                           aime
-  letter_mcq     'answer is <letter>' extraction, A–J           mmlu, gpqa
+  letter_mcq     one letter A–J: marker, letter line, tail     mmlu, mmlupro, supergpqa, gpqa
   constraint_set mechanical instruction-following constraints   ifeval
   exec_io        run candidate code, parent-verified outputs    humaneval, livecode
   exec_unittest  legacy exit-code contract (forgeable; unused for new epochs)
@@ -184,11 +184,43 @@ def boxed_math(task, reply, _allow=False):
     return int(b is not None and _norm_latex(b) == _norm_latex(task["gold"]))
 
 
+# letter_mcq reads ONE letter from the reply. The rules are tried in order and
+# the LAST match of the first rule that matches is the answer:
+#   1. an explicit marker, the letter a capital standing alone: "answer is X",
+#      "Answer: X", "answer is option X", or a heading ending in "answer" with
+#      a marked-up letter opening the next line ("## Final Answer" / "**B** - ...").
+#   2. a line that is only the letter (heading marks, markdown, brackets).
+#   3. the reply opens with a marked-up letter and goes on ("**E** - of the ...").
+#   4. the last standalone capital A-J in the final 40 characters.
+# Before 2026-11-10 the rule was 1 without regard to case and without requiring
+# the letter to stand alone ("the answer is approximately ..." read A, "the
+# answer is clearly (B)" read C), then 4. Models told "answer with the letter
+# only" often put the letter on its own line and add working after it, which 4
+# cannot see. Measured on 1,703 real replies from the 19 v2 models through the
+# harness (2026-11-10): 1,321 graded correct before, 1,363 now, none that was
+# graded correct before graded wrong now; claude-fable-5.2 on SuperGPQA went
+# from 29 to 39 of 50. Exactly one letter is ever read, so naming several
+# letters cannot score.
+_LETTER_WRAPPED = r"(?:\*{1,2}|_{1,2}|\(|\[)+([A-J])(?:\*{1,2}|_{1,2}|\)|\]|\.)+"
+_LETTER_MARK = re.compile(
+    r"(?i:answer)(?:"
+    r"(?:\s+(?i:is)\s*:?|\s*:)[\s\*_\(\[]*(?:(?i:option|choice)\s+)?[\*_\(\[]*([A-J])(?![A-Za-z0-9])"
+    r"|[\s\*_#]*\n\s*" + _LETTER_WRAPPED + r")")
+_LETTER_LINE = re.compile(r"^[\s#\*_\(\[]*([A-J])[\s\*_\)\]\.:]*$")
+_LETTER_OPEN = re.compile(r"^[\s#]*" + _LETTER_WRAPPED)
+
+
 def letter_mcq(task, reply, _allow=False):
-    m = re.findall(r"answer is\s*:?\s*[\*_\(]*([A-J])[\*_\)\.]*", reply or "", re.IGNORECASE)
+    text = (reply or "").strip()
+    m = [a or b for a, b in _LETTER_MARK.findall(text)]
     if not m:
-        m = re.findall(r"\b([A-J])\b", (reply or "").strip()[-40:])
-    return int(bool(m) and m[-1].upper() == task["gold"])
+        m = [x.group(1) for x in map(_LETTER_LINE.match, text.splitlines()) if x]
+    if not m:
+        o = _LETTER_OPEN.match(text)
+        m = [o.group(1)] if o else []
+    if not m:
+        m = re.findall(r"\b([A-J])\b", text[-40:])
+    return int(bool(m) and m[-1] == task["gold"])
 
 
 def _strip_fence(text):

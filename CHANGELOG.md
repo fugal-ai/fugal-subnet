@@ -4,6 +4,17 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — the v2 composes are frozen (image `build-v2026.11.10`, activation blocks)
+Both live composes name the v2 miner image by digest
+(`ghcr.io/fugal-ai/fugal-miner@sha256:7ba5217d…57ae8e5`, built from main
+`80e5859`) and carry `FUGAL_V2_ACTIVATION_BLOCK`: 9,484,920 on finney (netuid
+70) and 8,414,640 on test (netuid 552, the flip rehearsal). The testnet twin
+no longer sets `FUGAL_EXPLORE_FRACTION`. Frozen as
+`deploy/dstack/app-compose.frozen-2026-11-10-{finney,test}.json` (compose
+hashes `d2575175…b095e5` and `3c31e593…9ea5f8`); the approved entries are
+published with the signed `image-v2026.11.10` release.
+`deploy/env/validator.env.example` sets the finney block.
+
 ## [0.3.0] - 2026-11-10
 
 ### Fixed — pre-launch review (Fable, 2026-11-09): lost proofs, no-proof epochs, the miner's hold, the release flow

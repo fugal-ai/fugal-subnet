@@ -4,6 +4,12 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Docs — v2 is on main; the v2 embedding pass, measured
+MINER_GUIDE and APPROVED_ENTRY_ROTATION pointed miners at the `release/v2`
+branch, merged and deleted at v0.3.0: they now say `main`. MINER_GUIDE gains
+the first measurement of the v2 pool's embedding pass (8 h 28 min on a
+`c3-standard-8` in TDX, testnet 552, 2026-11-10); it had only the v1 figure.
+
 ### Changed — the v2 composes are frozen (image `build-v2026.11.10`, activation blocks)
 Both live composes name the v2 miner image by digest
 (`ghcr.io/fugal-ai/fugal-miner@sha256:7ba5217d…57ae8e5`, built from main

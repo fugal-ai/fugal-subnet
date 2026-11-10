@@ -959,15 +959,18 @@ The v2 image cannot reuse the v1 embedding cache. An image upgrade is
 `dstack-cloud deploy --delete`, which discards the data disk, so the v2
 instance **re-embeds the whole v2 pool** at startup. Measured on the v1 pool:
 3 h 20 min on a `c3-standard-8`, about 5 to 6 hours on a `c3-standard-4`.
-Measure the v2 pool on your own host.
+Measured on the v2 pool (28,986 questions, the 2048-token profile; testnet
+552, 2026-11-10): **8 h 28 min** on a `c3-standard-8` inside TDX with 8
+threads, on each of two instances. A TD started less than about 10 hours
+before the flip misses the first v2 epoch. Measure your own host.
 
 Use a second instance:
 
 1. **Retrain** on the v2 model list (`<V2_MODEL_LIST>`; final, merged as
-   `data/models_v2.json` on `release/v2`, and will be pinned in the signed v2 image), labelling your own
+   `data/models_v2.json` on `main`, and pinned in the signed v2 image), labelling your own
    data. Allow one to two days if you start from no labels. The notice is 24
    hours, so start early: the v2 model list and code are already public
-   on the `release/v2` branch.
+   on `main` (v0.3.0; the `release/v2` branch was merged and deleted).
 2. **Bring up a second TD on the v2 image** (`<V2_IMAGE_DIGEST>`) **with the
    same hotkey**, beside the running v1 TD, and provision it as usual. It
    embeds and then **holds**: no axon and no commitment until the epoch before

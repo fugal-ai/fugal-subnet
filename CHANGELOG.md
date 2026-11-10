@@ -4,6 +4,8 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
 ### Fixed — pre-launch review (Fable, 2026-11-09): lost proofs, no-proof epochs, the miner's hold, the release flow
 - **One lost proof no longer splits a validator for good.** A validator that
   did not receive one miner's proof (the root did) had no gap, so it only
@@ -1557,6 +1559,7 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/fugal-ai/fugal-subnet/releases/tag/v0.1.0

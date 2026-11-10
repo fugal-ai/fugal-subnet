@@ -28,14 +28,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A schedule only fires on the default branch, so the release branch
-        # is checked out explicitly: protocol v2 lives there until the flip,
-        # and the v2_flip scenario (the activation boundary, the first seat, a
-        # take, a ghost, a resume) is the only chain-level exercise of it.
+        # Protocol v2 is on main since v0.3.0 (release/v2 was merged and
+        # deleted; the two jobs that checked it out failed on 2026-11-10).
+        # The v2_flip scenario (the activation boundary, the first seat, a
+        # take, a ghost, a resume) is the only chain-level exercise of v2.
         include:
           - { ref: main, scenario: all }
-          - { ref: release/v2, scenario: all }
-          - { ref: release/v2, scenario: v2_flip }
+          - { ref: main, scenario: v2_flip }
     env:
       PYTHONUTF8: "1"
       FUGAL_SKIP_BENCHMARKS: mmlu,math,gsm8k,humaneval,livecode,gpqa,ifeval,aime

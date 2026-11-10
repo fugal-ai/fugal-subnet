@@ -76,7 +76,13 @@ def compute_consensus(reports: list[ValidatorReport]) -> ConsensusResult:
         if uid_scores:
             result.consensus_scores[uid] = float(np.median(uid_scores))
 
-    for uid in all_uids:
+    # Every uid any validator weighted, scored or not. The burn uid holds
+    # weight and never has a score; taken over scored uids only, the consensus
+    # gave it zero, so an all-burn epoch read as 100% divergence for every
+    # validator although their vectors were identical (testnet 552,
+    # e00023374, 2026-11-10: weights {0: 1.0} on both).
+    weight_uids = sorted(set(all_uids) | {uid for r in reports for uid in r.weights})
+    for uid in weight_uids:
         uid_weights = [r.weights.get(uid, 0.0) for r in reports]
         result.consensus_weights[uid] = float(np.median(uid_weights))
 

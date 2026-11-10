@@ -79,6 +79,20 @@ def load_reveal(root: str, epoch_id: str) -> dict | None:
         return None
 
 
+def reveal_score(value) -> float:
+    """A uid's score as a validator publishes it.
+
+    The validator writes one dict per uid (accuracy, quality, thrift, ...,
+    `score`: neurons/validator.py, the REVEAL step). This read it as a bare
+    number, which no validator has published, and died with a TypeError on the
+    first reveal that scored a miner (testnet 552, e00023374, 2026-11-10: the
+    first v2 epoch). A bare number is still accepted.
+    """
+    if isinstance(value, dict):
+        return float(value.get("score", 0.0))
+    return float(value)
+
+
 def ready_to_judge(block: int, bpe: int, settle_blocks: int) -> bool:
     """True once the current epoch is old enough that its weights are set."""
     return block % bpe >= max(0, min(settle_blocks, bpe - 1))
@@ -113,7 +127,7 @@ def check_reveals(report, epoch_id, boundary_block, validator_hotkeys, hk_to_uid
         reports.append(ValidatorReport(
             validator_uid=hk_to_uid.get(validator_hotkeys.get(name, ""), -1),
             epoch_id=epoch_id,
-            scores={int(k): float(v) for k, v in rv.get("scores", {}).items()},
+            scores={int(k): reveal_score(v) for k, v in rv.get("scores", {}).items()},
             weights={int(k): float(v) for k, v in rv.get("weights", {}).items()},
             commit_hash=rv.get("commit_hash", ""),
         ))

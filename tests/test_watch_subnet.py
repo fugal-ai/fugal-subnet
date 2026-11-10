@@ -74,3 +74,39 @@ def test_a_seat_disagreement_fails_even_when_weights_match(tmp_path):
     report = _run(tmp_path, {"val1": a, "val2": b}, activation=BOUNDARY)
     assert any("reveals are identical" in line for line in _failed(report))
     assert not any("weight vectors" in line for line in _failed(report))
+
+
+def _real_score(score=0.0):
+    """One uid's entry as neurons/validator.py writes it to reveal.json."""
+    return {"accuracy": 0.857, "quality": 0.812, "thrift": 1.95, "headroom": -0.19,
+            "reference_accuracy": 1.0, "cost_per_question": 0.000141, "score": score}
+
+
+def test_a_real_reveal_scores_each_uid_as_a_dict(tmp_path):
+    """The first v2 epoch on testnet 552 (e00023374): two scored miners, an
+    empty seat, all weight on the burn uid. The watcher died on the score
+    dicts, and once past them called two identical validators outliers."""
+    rv = _reveal(protocol_version=2, scores={"5": _real_score(), "6": _real_score()},
+                 weights={"0": 1.0}, shared_grades=[[1, 0]],
+                 champion={"event": "empty", "champion": None})
+    report = _run(tmp_path, {"arm": rv, "val2": dict(rv, environment={"host": "y"})},
+                  activation=BOUNDARY)
+    assert not _failed(report), report.lines
+    assert any("validators agree on scores and weights" in line for line in report.lines)
+
+
+def test_reveal_score_reads_the_dict_and_the_bare_number():
+    assert watch.reveal_score(_real_score(0.25)) == 0.25
+    assert watch.reveal_score(0.5) == 0.5
+    assert watch.reveal_score({"accuracy": 0.9}) == 0.0
+
+
+def test_a_weight_disagreement_on_the_burn_uid_still_fails(tmp_path):
+    """The other direction: weight a validator moved off the burn uid is a
+    real divergence, and the burn uid being unscored must not hide it."""
+    scores = {"5": _real_score(0.4)}
+    a = _reveal(protocol_version=2, scores=scores, weights={"0": 1.0})
+    b = _reveal(protocol_version=2, scores=scores, weights={"0": 0.5, "5": 0.5})
+    report = _run(tmp_path, {"arm": a, "val2": b}, activation=BOUNDARY)
+    assert any("validators agree on scores and weights" in line for line in _failed(report))
+    assert any("weight vectors" in line for line in _failed(report))

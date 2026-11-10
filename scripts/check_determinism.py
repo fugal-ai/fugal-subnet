@@ -44,14 +44,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # guarding code that no longer runs in production.
 STAGES = (
     "slice",
+    "epoch_plan_v2",
     "exploration",
     "synthetic_hidden",
     "routing_decisions",
     "proof",
     "verification",
+    "copy_rule",
+    "shared_grades",
     "frame",
     "scores",
     "weights",
+    "v2_epoch",
 )
 
 
@@ -83,9 +87,12 @@ def run_pipeline(seed: int) -> dict:
     every float and every hash after that point is the real one: the real
     harness routes, the real verifier checks, the real reference frame
     accumulates, the real scorer scores.
-    """
-    import hashlib
 
+    The harness runs in protocol v1 pricing mode here, because v2 pricing
+    needs a head built against the real pinned manifest. scripts/rehearsal_v2.py
+    and tests/ cover that path; the v2 stages below (selection, copy rule,
+    shared grades, the whole v2 epoch) are exercised on these proofs.
+    """
     import numpy as np
 
     from fugal_subnet import success_test_fixtures as success_fixtures
@@ -197,6 +204,15 @@ def run_pipeline(seed: int) -> dict:
         # hashes. Pin it here so the check measures the routing, grading and
         # scoring arithmetic rather than the clock.
         proof.timestamp = 0.0
+        # Per-call latency is wall clock too, and also attested (each result's
+        # latency_ms is in content_hash). The stubbed calls take 0 ms on an
+        # idle host and 1 ms under load, so unpinned it made the two children
+        # disagree on `proof` whenever the machine was busy (reproduced under
+        # CPU load, 2026-11-08). Pinned like the timestamp; it decides nothing
+        # downstream.
+        for r in proof.results:
+            if r.latency_ms is not None:
+                r.latency_ms = 0
         proof.attestation_quote = TEERuntime(mock=True).generate_attestation(
             bytes.fromhex(proof.content_hash())
         )
@@ -217,6 +233,54 @@ def run_pipeline(seed: int) -> dict:
         proofs[uid] = proof.content_hash()
         routing[uid] = [r.routed_model for r in proof.scored_results]
         head_hashes[uid] = proof.weights_hash
+
+    # Protocol v2's copy rule: first-commit seniority and coldkey ownership,
+    # folded over two boundary snapshots. Under --perturb the snapshot is fed
+    # in reverse, so a state that depended on chain-read order would show.
+    # Includes an exact copy under another coldkey, a same-block tie between
+    # two coldkeys, and a retirement.
+    from fugal_subnet import copy_rule
+
+    def _snapshot(epoch_n):
+        out = [
+            copy_rule.Commitment(f"hk{uid}", f"coldkey-{uid % 3}", head_hashes[uid], 100 + uid)
+            for uid in sorted(head_hashes)
+            if not (epoch_n == 2 and uid == 2)
+        ]
+        out.append(copy_rule.Commitment("hk-copy", "coldkey-x", head_hashes[1], 150))
+        out.append(copy_rule.Commitment("hk-tie", "coldkey-y", head_hashes[3], 103))
+        if epoch_n == 2:
+            out.append(copy_rule.Commitment(
+                "hk2", "coldkey-2", hashlib.sha256(b"retrained").hexdigest(), 900))
+        return list(reversed(out)) if os.environ.get("FUGAL_PERTURB") else out
+
+    copy_state = copy_rule.CopyState()
+    for epoch_n in (1, 2):
+        copy_state = copy_rule.observe(copy_state, epoch_n, 1000 * epoch_n,
+                                       _snapshot(epoch_n), ghost_retire=24)
+    copy_out = {
+        "state": copy_state.to_reveal(),
+        "classify": copy_rule.classify(copy_state, {
+            i: c for i, c in enumerate(sorted(_snapshot(2), key=lambda c: c.hotkey))
+        }),
+    }
+
+    # Protocol v2's shared grades: one coldkey-median grade per (question,
+    # model) cell of the scored slice. Fed in REVERSE uid order, the opposite
+    # of the frame below, so a result that depended on proof order would show.
+    from fugal_subnet.shared_grades import (
+        ScoredAnswer,
+        cells_for_reveal,
+        shared_cell_grades,
+    )
+    shared = cells_for_reveal(shared_cell_grades(
+        ScoredAnswer(
+            question_id=r.question_id, model=r.routed_model,
+            coldkey=f"coldkey-{uid % 3}", correct=bool(r.correct), failed=bool(r.failed),
+        )
+        for uid in sorted(proof_objs, reverse=True)
+        for r in proof_objs[uid].scored_results
+    ))
 
     # The frame pools every verified proof's exploration samples, one vote per
     # coldkey and one sample per (question, model), exactly as the validator
@@ -276,16 +340,55 @@ def run_pipeline(seed: int) -> dict:
         for uid, rec in state.records.items()
     }
 
+    # Protocol v2: the whole v2 epoch (shared cells and tokens, the window, the
+    # seat and the 85/10/5 vector) on the same verified proofs, fed in
+    # reverse uid order. Burn-in 0 so the seat is exercised on one epoch.
+    from fugal_subnet.champion import SeatState, Window
+    from fugal_subnet.v2_epoch import run_v2_epoch, seat_params_from_config
+    v2_uids = sorted(proof_objs, reverse=True)
+    from fugal_subnet.copy_rule import Commitment, CopyState
+    v2 = run_v2_epoch(
+        epoch_index=1, epoch_id=epoch_id_for_block(1), boundary_block=300, blocks_per_epoch=300,
+        questions=questions, pool_models=sorted(prices), prices=prices,
+        verified_proofs={u: proof_objs[u] for u in v2_uids},
+        head_hashes={u: head_hashes[u] for u in v2_uids},
+        coldkey_of={u: f"coldkey-{u % 3}" for u in v2_uids},
+        hotkey_of={u: f"hk{u}" for u in v2_uids},
+        records=state.records,
+        commitments=[Commitment(f"hk{u}", f"coldkey-{u % 3}", head_hashes[u], u + 1)
+                     for u in sorted(v2_uids)],
+        window=Window.empty(48), seat=SeatState(), copy_state=CopyState(), burn_uid=0,
+        params=seat_params_from_config(), shares=(0.85, 0.10, 0.05),
+        burn_in_questions=0,
+    )
+    v2_out = {"uids": v2.uids, "weights": v2.weights, "reveal": v2.reveal}
+
+    # Protocol v2 question selection (fugal_subnet/epoch_plan): the scored
+    # slice by category and the exploration plan on a synthetic pool of the v2
+    # benchmarks, so the miner and every validator select the same v2 questions.
+    from fugal_subnet.config import BENCHMARK_CATEGORY_V2
+    from fugal_subnet.epoch_plan import exploration_plan, scored_slice
+    pool_v2 = [{"question_id": f"{b}-{i:04d}", "benchmark": b, "prompt": f"q {b} {i}"}
+               for b in sorted(BENCHMARK_CATEGORY_V2) for i in range(300)]
+    plan_nonce = hashlib.sha256(f"v2-plan-{seed}".encode()).digest()
+    v2_slice = [q["question_id"] for q in scored_slice(2, plan_nonce, pool_v2, 300)]
+    v2_plan = exploration_plan(2, plan_nonce, pool_v2, set(v2_slice),
+                               [f"vendor/model-{i}" for i in range(19)], 15)
+
     return {
         "slice": _digest(question_ids),
+        "epoch_plan_v2": _digest({"slice": v2_slice, "plan": sorted(v2_plan.items())}),
         "exploration": _digest(explore_map),
         "synthetic_hidden": _digest(hidden),
         "routing_decisions": _digest(routing),
         "proof": _digest(proofs),
         "verification": _digest(verdicts),
+        "copy_rule": _digest(copy_out),
+        "shared_grades": _digest(shared),
         "frame": _digest(frame.to_dict()),
         "scores": _digest(scores_out),
         "weights": _digest({"uids": uids, "weights": weight_values}),
+        "v2_epoch": _digest(v2_out),
     }
 
 

@@ -15,3 +15,10 @@ data/benchmarks/
 # Locally trained heads are untracked, so including them would make a local
 # `docker build` produce a different image than CI's build from a clean clone.
 data/*.npz
+# Git-ignored caches a local checkout accumulates. CI builds the approved
+# image from a clean clone, so anything here would make a local build a
+# different image (a different digest, no approved entry).
+data/embeddings/
+data/experiments/
+data/observations/dense_calls_v*.jsonl
+scripts/

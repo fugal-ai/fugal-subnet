@@ -143,3 +143,14 @@ def test_the_socket_path_is_overridable_by_env(monkeypatch):
     finally:
         monkeypatch.delenv("DSTACK_SOCKET")
         importlib.reload(dstack_client)
+
+
+def test_a_reply_over_the_size_cap_is_refused_not_read_whole(agent, monkeypatch):
+    """An unbounded read from a socket is an unbounded read, even a local one.
+    (Module attributes, not imported names: an earlier test reloads the module.)"""
+    monkeypatch.setattr(dstack_client, "_MAX_RESPONSE", 64)
+    _Agent.reply = {"attestation": "ab" * 64}
+    with pytest.raises(dstack_client.DstackError, match="exceeds 64 bytes"):
+        dstack_client.attest(b"\x00" * 32, path=agent)
+    monkeypatch.setattr(dstack_client, "_MAX_RESPONSE", 1 << 20)
+    assert dstack_client.attest(b"\x00" * 32, path=agent) == bytes.fromhex("ab" * 64)

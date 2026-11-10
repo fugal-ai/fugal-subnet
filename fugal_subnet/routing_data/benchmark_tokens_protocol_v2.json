@@ -1,0 +1,186 @@
+{
+  "version": "fugal-token-statistics-v1",
+  "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
+  "status": "reviewed",
+  "sources": {
+    "benchmark_tokens_protocol_v2.jsonl": "202c894ab61e07b05f96bde68158a1ea20a461c037a02dfa69a93ac6b9593656"
+  },
+  "worker_profile": "Protocol v2: direct metered OpenRouter calls through the v2 benchmark harness path (MeteringProxy + harness._call_model, max_tokens 16384, each model's single pinned reasoning setting from data/models_v2.json, full benchmark prompt), on a deterministic sample of 40 questions per model drawn from the PINNED v2 pool (pool_manifest_v2.json, 28,986 questions; content_hash c0656ed6c01f2e69) at the v2 category mix, recorded 2026-11-09 (anthropic/claude-fable-5.2: 40 more calls the same day, added with it). 758 completed calls, 2 failed (upstream 502). Provider-billed and table-priced cost kept per row; no response text, no key material.",
+  "omitted_missing_or_zero_input": 0,
+  "models": [
+    {
+      "id": "anthropic/claude-fable-5.1",
+      "samples": 40,
+      "mean_in_tokens": 249.1,
+      "mean_out_tokens": 277.05
+    },
+    {
+      "id": "anthropic/claude-fable-5.2",
+      "samples": 40,
+      "mean_in_tokens": 232.25,
+      "mean_out_tokens": 441.625
+    },
+    {
+      "id": "anthropic/claude-opus-5.5",
+      "samples": 40,
+      "mean_in_tokens": 253.625,
+      "mean_out_tokens": 531.175
+    },
+    {
+      "id": "google/gemini-4-argon",
+      "samples": 40,
+      "mean_in_tokens": 194.1,
+      "mean_out_tokens": 640.15
+    },
+    {
+      "id": "openai/gpt-6.1-sol",
+      "samples": 40,
+      "mean_in_tokens": 170.05,
+      "mean_out_tokens": 191.7
+    },
+    {
+      "id": "qwen/qwen3.8-2.4t-a95b",
+      "samples": 40,
+      "mean_in_tokens": 218.85,
+      "mean_out_tokens": 1047.9
+    },
+    {
+      "id": "anthropic/claude-sonnet-5.5",
+      "samples": 40,
+      "mean_in_tokens": 240.75,
+      "mean_out_tokens": 382.225
+    },
+    {
+      "id": "openai/gpt-6.1-terra",
+      "samples": 40,
+      "mean_in_tokens": 217.625,
+      "mean_out_tokens": 380.05
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro-0813",
+      "samples": 40,
+      "mean_in_tokens": 256.45,
+      "mean_out_tokens": 2593.2
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "samples": 39,
+      "mean_in_tokens": 212.15384615384616,
+      "mean_out_tokens": 4178.384615384615
+    },
+    {
+      "id": "google/gemini-3.8-flash",
+      "samples": 40,
+      "mean_in_tokens": 200.85,
+      "mean_out_tokens": 1399.05
+    },
+    {
+      "id": "xiaomi/mimo-v2.6-pro",
+      "samples": 40,
+      "mean_in_tokens": 192.075,
+      "mean_out_tokens": 4317.0
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "samples": 40,
+      "mean_in_tokens": 227.8,
+      "mean_out_tokens": 1730.0
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash",
+      "samples": 40,
+      "mean_in_tokens": 210.1,
+      "mean_out_tokens": 2433.0
+    },
+    {
+      "id": "minimax/minimax-m3.1-flash",
+      "samples": 40,
+      "mean_in_tokens": 348.4,
+      "mean_out_tokens": 2248.225
+    },
+    {
+      "id": "xiaomi/mimo-v2.6-flash",
+      "samples": 39,
+      "mean_in_tokens": 151.51282051282053,
+      "mean_out_tokens": 1712.5128205128206
+    },
+    {
+      "id": "anthropic/claude-haiku-5.5",
+      "samples": 40,
+      "mean_in_tokens": 235.225,
+      "mean_out_tokens": 897.5
+    },
+    {
+      "id": "openai/gpt-6-luna",
+      "samples": 40,
+      "mean_in_tokens": 181.5,
+      "mean_out_tokens": 695.425
+    },
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "samples": 40,
+      "mean_in_tokens": 222.6,
+      "mean_out_tokens": 4047.85
+    }
+  ],
+  "review": {
+    "date": "2026-11-09",
+    "method": "718 metered calls (2 more failed, upstream 502) recorded through the v2 harness path (max_tokens 16384, each model's single pinned reasoning setting) on a deterministic sample of 40 questions per model from the PINNED v2 pool at the v2 category mix; means of provider-reported prompt and completion tokens per model. Replaces the 2026-11-04 manifest, which was measured on a stand-in sample before the v2 pool was pinned (MAINNET_LAUNCH, v2 release step 1).",
+    "billing_check": {
+      "provider_billed_usd": 3.503,
+      "table_priced_usd": 3.3885,
+      "models_billed_more_than_15pct_off_table": {
+        "deepseek/deepseek-v4.1-flash": {
+          "billed_over_table": 1.3363
+        },
+        "minimax/minimax-m3.1-flash": {
+          "billed_over_table": 1.714
+        },
+        "z-ai/glm-5.3": {
+          "billed_over_table": 1.4649
+        },
+        "z-ai/glm-5.3-flash": {
+          "billed_over_table": 1.1949
+        }
+      }
+    },
+    "changes_vs_2026_11_04": "Prompt tokens rose 50-120% for every model (the pinned pool's prompts are longer than the stand-in sample's); completion tokens fell for most. Per-question cost at the pinned prices moved -53% to +22% by model; the anchor (anthropic/claude-fable-5.1) fell 37%, so V = accuracy_value x anchor spend falls from 0.774 to 0.490 and spend weighs relatively more against accuracy in the seat test.",
+    "limitations": [
+      "40 samples per model (39 for two models) is a cost interface, not a workload study.",
+      "Completion means for long-reasoning models include calls at or near the 16,384 cap (deepseek/deepseek-v4-pro-0813, deepseek/deepseek-v4.1-flash, minimax/minimax-m3.1-flash, xiaomi/mimo-v2.6-flash, xiaomi/mimo-v2.6-pro, z-ai/glm-5.3, z-ai/glm-5.3-flash hit it)."
+    ],
+    "notes": [],
+    "reviewed_by": [
+      "Agent 1 (Claude Opus 5.5, Fugal leader agent), 2026-11-09",
+      "Jack Doherty (Fugal Labs): approved promoting the re-measure on 2026-11-09"
+    ],
+    "samples": {
+      "anthropic/claude-fable-5.1": 40,
+      "anthropic/claude-fable-5.2": 40,
+      "anthropic/claude-opus-5.5": 40,
+      "google/gemini-4-argon": 40,
+      "openai/gpt-6.1-sol": 40,
+      "qwen/qwen3.8-2.4t-a95b": 40,
+      "anthropic/claude-sonnet-5.5": 40,
+      "openai/gpt-6.1-terra": 40,
+      "deepseek/deepseek-v4-pro-0813": 40,
+      "z-ai/glm-5.3": 39,
+      "google/gemini-3.8-flash": 40,
+      "xiaomi/mimo-v2.6-pro": 40,
+      "qwen/qwen3.8-27b": 40,
+      "deepseek/deepseek-v4.1-flash": 40,
+      "minimax/minimax-m3.1-flash": 40,
+      "xiaomi/mimo-v2.6-flash": 39,
+      "anthropic/claude-haiku-5.5": 40,
+      "openai/gpt-6-luna": 40,
+      "z-ai/glm-5.3-flash": 40
+    },
+    "amendments": [
+      {
+        "date": "2026-11-09",
+        "change": "anthropic/claude-fable-5.2 added (19 models): 40 metered calls on the same pinned-pool sample design, $0.781 provider-billed = $0.781 at the table price ($8 / $40 per million tokens, the public OpenRouter catalogue). Mean 232 prompt and 442 completion tokens: $0.0195 per question, the dearest model per question (fable-5.1: $0.0163). fable-5.1 stays the anchor.",
+        "unchanged": "The 18 other rows (ids, means, samples) are the rows reviewed earlier the same day; their observations are unchanged."
+      }
+    ]
+  }
+}

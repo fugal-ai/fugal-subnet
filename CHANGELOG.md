@@ -4,6 +4,772 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
+### Fixed — pre-launch review (Fable, 2026-11-09): lost proofs, no-proof epochs, the miner's hold, the release flow
+- **One lost proof no longer splits a validator for good.** A validator that
+  did not receive one miner's proof (the root did) had no gap, so it only
+  alarmed, and its state differed for good (28 of 30 simulated cases).
+  A follower that differs from the root on 3 consecutive verified root epochs
+  (`v2_sync.drifted`, `DRIFT_CHECKS`) now re-anchors on it: in a star the
+  root is the arbiter. The root's own outages are then followed by everyone
+  (documented); a root that lost its state rebuilds from a follower.
+- **A v2 epoch with no valid proof burns.** The validator set no weights, so
+  after the flip the chain kept paying the v1 winners until the first v2 proof
+  verified. It now sets the capped all-burn vector (`_burn_epoch_weights`;
+  never raises). v1 epochs unchanged.
+- **The miner's hold for the flip survives a failed chain read** (retried, as
+  the validator's wait does); one dropped connection ended the process.
+- **Release flow:** the image builds from a `build-v<date>` tag and
+  `image-v<date>` is signed once (a moved tag was refused by validators that
+  fetched it early); `fetch_approved_entries.py` takes the remote's tag (the
+  signature is verified after), needs no `gh` (public API fallback), and
+  refuses a tag name that is a refspec; `check_safety_invariants.py
+  --release` now requires each live compose to pin its image by digest and
+  set a valid `FUGAL_V2_ACTIVATION_BLOCK`.
+- Docs: V is $0.49 (anchor $0.0163), confidence 0.99, the flip's burn lasts
+  hours not days, followers set `FUGAL_FRAME_BOOTSTRAP` (launch step 11, env
+  example), the model list is 19 since fable-5.2.
+
+### Changed — v2 question mix: the hard category splits by pool size (consensus)
+`BENCHMARK_WEIGHT_V2` is empty. The hard category was 50% SuperGPQA, 50%
+integer olympiad math, so the olympiad sets and IFEval (2,118 questions,
+memorisable, every cell's grade published) carried 27% of the seat test's
+net value. By pool size: about 19 olympiad slots an epoch instead of 45, the
+set every 99 epochs (longer than the 48-epoch window), 14% of net value. The
+v2 pool manifest records no weights (its pool and content hashes are
+unchanged; its file hash, in the consensus digest, moves). Golden selection
+hashes updated on purpose; the slicer's weighted path keeps its vectors as a
+fixture.
+
+### Documented — best-of-N runs (accepted residual, INVARIANTS)
+An operator can run several TDs on one hotkey and serve the best run. Upper
+bound for a zero-edge challenger (own answers): 2 runs 6%, 5 runs 28%, 10 runs
+50% of 30-epoch runs take the seat; shared cell grades limit it where many
+coldkeys answer the same cell. "One run per epoch" is a v2.1 design.
+
+### Documented — a cell with several voters is graded by majority (accepted residual, INVARIANTS)
+The coldkey median of three or more votes is their majority, so a route
+several coldkeys share is graded slightly above the same route under one.
+Measured on mainnet v1 reveals: +0.39 points per differently-routed question
+with three voters, +0.58 with five; about 0.1 to 0.15 points of net value
+between typical heads, below the 0.2 margin. A mean across coldkeys would
+remove it: a consensus change, to be decided on v2 reveals (v2.1).
+
+### Documented — the accuracy marks are absolute (accepted residual, INVARIANTS)
+The high-water marks are set when a champion is seated and do not follow the
+field down: after a field-wide accuracy drop a better challenger takes the
+seat later (12 of 20 simulated runs after a 3-point drop, 20 of 20 with
+none). A mark measured on the paired questions is a v2.1 consensus change.
+MINER_GUIDE: the token manifest's review date and call count corrected
+(2026-11-09, 758 calls).
+
+### Documented — the provider is the miner's account's choice; m stays 30
+Measured with a few metered calls (2026-11-09): identical harness requests are
+answered by different providers at different precisions, and OpenRouter
+applies the account's provider settings to every request. It moves only that
+operator's vote in a cell; the fix (a pinned provider per model, recorded in
+the proof) is v2.1 (INVARIANTS, accepted residual). `CHAMPION_ACCURACY_VALUE`
+stays 30 at launch (the whole price range is worth about 4 points); revisit
+after the first week with reveal data (MAINNET_LAUNCH).
+
+### Changed — the v2 pool leaves out 50 items the pinned grader cannot judge
+
+Measured on the real items: IFEval's `number_bullet_lists` prompts ask for
+markdown `* ` bullets, but the pinned `bullet_lines` check accepts only `- `,
+so compliant answers graded 0 (31 items); `json_object` with an empty
+`required` passed only the literal `{}`, so a real JSON answer graded 0 (17
+items). One AIME gold is "080 or 081 (both were accepted)" and one Omni-MATH
+gold exceeds 2^53, where `integer_exact`'s float comparison cannot match. Every
+honest miner failed all 50, about 2.8 of each slice's 15 instruction questions.
+`graders.py` is immutable, so the v2 loaders leave them out: the v2 pool is
+28,986 questions (was 29,036), with a new `pool_manifest_v2.json`. The v1 pool
+and its manifest are unchanged.
+
+### Fixed — v2 seat: a ghost's seat-1 share burns even when its head serves again; a watched head with no copy record is retired
+A champion that retired its head and re-committed the same hash was paid seat 1
+as its own ghost while the ghost barred challengers; seat 1 taken from a ghost
+is now never paid (c6df719). A champion whose copy-rule record had aged out read
+as merely missed (a 3-epoch ghost) instead of retired (24 epochs); a watched
+head with no copy record is now retired (2e66391). Both consensus.
+
+### Fixed — v1 epochs compute exactly what main computes through the upgrade window
+F-061's exploration rule and a float rewrite of the frame accessors had leaked
+into v1, so release/v2 and main validators disagreed on v1 frames in most
+random cases. Both now apply from v2 only; v1 is main's arithmetic (2c0d36d).
+
+### Added — v2 proofs carry and bind their TPM intermediates; issuers are chosen by signature
+
+Launch step 2. The miner builds its attestation key's intermediate chain once
+at startup (`tpm.intermediates_for`: the vendored intermediate when it signed
+the key, else the certificate's AIA caIssuers URL; the whole chain is
+re-verified against the pinned root, and nothing that does not chain is
+carried) and attaches it to every **v2** proof. `content_hash` includes
+`tpm_intermediates` only when non-empty, so proofs without them keep their
+hash and v1 proofs from the v2 image are unchanged for validators not yet
+upgraded. Fixed while building it: Google names every EK/AK intermediate the
+same, and `verify_ak_chain` took the first name match, so a key from any CA
+instance other than the vendored one was refused even with its own
+intermediate in the proof. Issuers are now chosen by signature among
+same-named candidates, in a fixed order.
+
+### Added — a v2 validator that missed epochs agrees with its peers again by itself
+
+A validator that missed a v2 epoch (down, or it scored nothing) carried a
+different seat state from its peers' and, through the seat's history, never
+agreed again. Verify-and-resync (`fugal_subnet/v2_sync.py`,
+`neurons/validator._v2_sync_step`), in a star around one root validator: a
+missed epoch opens a gap on a follower (it decides as usual, and its reveals
+are marked `v2_sync.unverified`); once the root's published reveals pass the
+gap, the follower re-anchors on the root's state there, keeps its own
+observations since, carries burn-in forward, and closes the gap on a verified
+match. Only a validator with a gap follows; one without logs an alarm; the
+root never marks itself unverified. Zero weights are left out of the
+comparison: they never reach the chain, and a validator started from a rebuild
+does not list them. Measured in simulation: exact again `hold` epochs after
+the gap after one re-anchor, including a validator started from a rebuild; it
+needs a stretch of about twice the hold with no seat change to converge.
+`v2_rebuild` can take its snapshot from a chosen epoch. Agreement checks
+(`watch_subnet`, `rehearsal_v2`) share one definition,
+`v2_sync.comparable_reveal`. No scoring rule changes.
+### Added — anthropic/claude-fable-5.2 on the v2 model list (19 models)
+
+At the public OpenRouter price ($8 / $40 per million tokens), with fable-5.1's
+reasoning setting; 40 metered calls on the pinned v2 pool ($0.78, billed at the
+table price) give 232 prompt and 442 completion tokens on average, $0.0195 per
+question, the dearest per question. Two endpoints, both Anthropic: an accepted
+exception to the three-endpoint rule, documented in MINER_GUIDE. fable-5.1
+stays the anchor (V unchanged). The price table pin and the token manifest move
+(review record amendment); the 18 other rows are unchanged.
+
+### Changed — v2 token means re-measured on the pinned v2 pool
+
+`data/benchmark_tokens_protocol_v2.json` (and its `routing_data/` copy) is
+rebuilt from 718 metered calls on a deterministic 40-per-model sample of the
+PINNED v2 pool (the 2026-11-04 manifest was measured on a stand-in sample;
+MAINNET_LAUNCH v2 release step 1). Prompt tokens rose 50-120% for every model
+and completion tokens fell for most: per-question cost moves -53% to +22% by
+model, and the anchor (`anthropic/claude-fable-5.1`) falls 37%, so
+V = accuracy_value x anchor spend falls from 0.774 to 0.490 and spend weighs
+relatively more against accuracy in the seat test. The observations replace
+`data/observations/benchmark_tokens_protocol_v2.jsonl`; the review record
+carries the billing check (provider $3.50 against $3.39 at the pinned table;
+four models billed 19-71% off the table, recorded, prices not re-pinned: the
+table is the shared yardstick). The protocol identity and consensus digest
+move; every scoring stage of check_determinism is unchanged. MINER_GUIDE's
+cost table is recomputed.
+
+### Added — validators publish their egress IP; miners can admit only validators
+
+Only validators need to reach a miner, and from protocol v2 a champion kept
+offline past its 3-epoch ghost loses the seat (INVARIANTS I3, "Accepted
+residual: a champion kept offline"). Validators now record their egress IP on
+chain at startup (`FUGAL_VALIDATOR_IP`; a serve_axon with nothing listening,
+only when the IP changed; never stops startup), and
+`scripts/axon_firewall.py` keeps a miner's GCP firewall rule admitting exactly
+the active validators' IPs (permit, stake, weights in the last three epochs)
+to the axon. It dry-runs by default, never writes an
+empty allowlist, refuses while any active validator has not published an IP
+(that validator would see the miner as offline while its peers did not), and
+reports any other rule still open to the world. Operational: no score or
+weight depends on it.
+
+### Changed — the v2 empty seat goes to the best measured head
+
+Found by a new adversarial test suite (`tests/test_v2_attacks.py`) and fixed
+before the flip:
+
+- The empty seat went to the most senior eligible head, and every pre-flip
+  commit ties at the seniority floor, so the first seat was a salted draw:
+  N coldkeys bought N tickets, and a junk head above the accuracy floor
+  could win it. It now goes to the eligible head with the highest measured
+  net value over its current run (`champion.solo_value`, exact integer
+  units); an exact tie (in practice a copy) goes to the earlier real commit.
+- Not changed, documented (INVARIANTS I3, "Accepted residual: a champion
+  kept offline"): a champion kept offline past its 3-epoch ghost loses the
+  seat, and a copy that ties it keeps it. The defence is operational:
+  `scripts/axon_firewall.py` admits only validator IPs to a miner's axon.
+  (A first fix kept a missing seat holder in the comparison set for 24
+  epochs; it let a former champion that served rarely bar every junior and
+  stretched an honest outage's burn from 3 epochs to 24, so it was removed
+  before release.)
+
+### Changed — the v2 seat test runs at 99% confidence (was 90%)
+
+The take test is re-run every epoch on a growing, then sliding, window, so a
+challenger with no real edge had about 10% each epoch: in simulation with the
+shipped test and constants it took the seat in 22% (near-copy) to 35%
+(independent router) of 30-epoch runs, and one of ten sybil heads in 70%. At
+99% those are 3%, 6% and 27%, and a challenger 2 net-value points better still
+takes the seat in every run (1 point better: 63% within 30 epochs).
+`CHAMPION_CONFIDENCE` = 0.99; a consensus constant.
+
+### Fixed — a truncated TPM signature is a rejection, not a crash
+
+A TPMT_SIGNATURE cut inside r or s raised `struct.error`, which escaped
+`unwrap_attestation` and `verify_proof` (contracted not to raise on miner
+input). The validator contained it to that one miner; `provision.push` and
+the scripts crashed. It is now a `TpmError`. Found by planted bugs and by
+fuzzing the real attestation blobs (3,000 mutations; no other escape).
+Also: tests for each certificate-chain rule against a throwaway CA (an
+issuer must be a CA, a missing basicConstraints, the depth bound, the root
+pin, an RSA attestation key, a certificate naming the root but signed by
+another key), and for each TPM and SCALE format rule at its own layer.
+
+### Changed — DCAP collateral is fetched once per platform per epoch; stale collateral is an outage
+
+`verify_dcap` fetched collateral for every proof. The epoch's
+`CollateralBudget` now keeps it per platform (FMSPC, CA, quote type), so a
+field on one platform costs one fetch instead of about 256. The certificate
+chain `get_collateral` copies from the asking quote is dropped first, so each
+quote is judged by its own chain and not by the first miner's. A refusal
+while the collateral is outside its validity window (a stale PCCS or a wrong
+clock) now raises `CollateralUnavailable` (unverifiable) instead of marking
+the proof invalid. `verify_dcap` takes an optional `now`. New
+`tests/test_dcap_verdict.py` runs the real library against collateral
+recorded from the configured PCCS, with no network.
+
+### Removed — the miner no longer extends RTMR3
+
+The miner's startup extend of a "runtime identity" into RTMR3 was advisory and
+never enforced (the app identity is the compose hash replayed from dstack's
+log). On the live compose it could not write `/sys` and logged a misleading
+warning at every start; on a compose that could, the extend would be missing
+from dstack's log and every honest proof would stop replaying. The extend and
+`attestation.extend_rtmr3` are removed, and a test keeps shipped code from
+writing a measurement register.
+
+### Changed — a quote from a debug TD is refused
+
+`verify_proof` now refuses a quote whose TDATTRIBUTES DEBUG bit is set (a
+debug TD's host can read and change its memory), in every mode and before any
+collateral fetch. It previously relied on the cloud offering no debug TDs and
+on the DCAP library. Honest TDs are unaffected (both real GCP quotes checked).
+Also: tests pin the quote version and minimum length checks; an unused
+`TDXQuote.report_data_bytes` property is removed.
+
+### Security — live verification accepts only a compose hash replayed from the log
+
+`parse_approved(require_app=True)` accepted any app half, and `verify_proof`
+checked a non-compose-hash half by comparing RTMR3 with one extend of it, an
+extend the miner's own code can perform. Live entries are now exactly
+`<64-hex base>:<64-hex compose hash>` (case-insensitive), the single-extend
+comparison is gone, and a live proof without an event log is refused. The
+live validator refuses to start with any other entry shape. `run_tee_attacks`
+now runs its control and every case through the live shape (entry + event
+log), with cases for a runtime-identity entry and a proof with no log;
+`tests/test_app_identity_chain.py` holds the chain through `verify_proof`.
+
+### Security — the event-log replay binds each digest to its payload
+
+`attestation.replay_event_log` proved that the chain of digests in a miner's
+TDX event log reproduces RTMR3, then read the `compose-hash` payload beside
+those digests without checking that the digest was computed from it. A log
+with every genuine digest and a rewritten payload replayed to the signed
+register, so `verify_proof` approved an application nobody had approved.
+Verified on the real fixtures. The replay now recomputes each event's digest
+from its name and payload (both dstack encodings) and refuses a mismatch, and
+refuses an event name outside `[A-Za-z0-9._-]{1,64}` (a `:` let one digest
+be read as a different name) or one that appears twice. The unused `preimage`
+check (the wire format carries none) and the `upto` parameter are removed. Regression tests on synthetic and real
+logs; four new `run_tee_attacks` cases.
+
+### Fixed — epoch artifacts are written atomically; the publisher refuses a partial reveal
+
+`commit.json` and `reveal.json` were written in place with `json.dump`, so a
+crash or a full disk mid-write left a truncated file that `publish_due_reveals`
+then uploaded and whose hash it committed on chain, and the `.published`
+marker stopped any later retry from replacing it. Both files now go through
+`write_json_atomic` (temp file, fsync, rename, like the state file), and the
+publisher refuses to upload or commit a reveal that does not parse as a
+complete reveal for its epoch.
+### Fixed — the neurons price v1 proofs from the copy the protocol identity hashes
+
+The validator priced v1 proofs from `data/models.json` while the protocol
+identity it stamps on every reveal hashes `fugal_subnet/routing_data/models.json`;
+the two are byte-identical today but nothing on the v1 path checked it. Both
+neurons now read `routing_protocol.price_table(1)` (the miner keeps the
+`FUGAL_MODEL_PRICES` override, which finney refuses), and
+`scripts/check_safety_invariants.py` requires the two copies to be identical,
+as it already did for the v2 table.
+### Fixed — a pool skip-list mismatch is refused in strict mode
+
+`loader._verify_against_manifest` returned early with a warning when the
+process's `FUGAL_SKIP_BENCHMARKS` differed from the list the manifest was
+built with, so a live neuron on its own skip list scored a pool nobody else
+had and the check that would have said so switched itself off. Strict mode
+(the live neurons) now refuses to start on a mismatch; non-strict keeps the
+warning.
+### Fixed — a frame rebuilt from reveals drops the voters the live epoch excluded
+
+The live validator keeps a flagged operator's exploration samples out of the
+reference frame (the two-sided detector) but published every observation and
+no exclusion list, so `rebuild_from_reveals` re-admitted the flagged voter and
+a validator that rebuilt its frame scored the field against a different
+frontier from its peers (I1). Reveals now carry `frame_excluded_coldkeys`
+and the replay applies it. Reveals from before the field re-admit as before.
+### Fixed — every `FUGAL_` variable the package reads is classified; the pool inputs are digested; the reveal names the code
+
+The classification check scanned `config.py` only, so `FUGAL_SKIP_BENCHMARKS`,
+`FUGAL_POOL_UNPINNED` (benchmarks/loader.py) and `FUGAL_OPENROUTER_BASE`
+(tee/runtime.py) changed which questions a neuron scores, or whether the pool
+is verified at all, without being in the consensus digest or refused on
+finney. The check now scans all of `fugal_subnet/` and `neurons/`; those three
+are consensus variables; the fingerprint's `epoch` block carries the pinned
+pool manifests' hashes, the skip list in effect, the unpinned flag and the
+upstream override; and a new `code` block (`source_sha256`, `git_commit`)
+names the code in every reveal while staying outside the digest.
+**Every validator's consensus digest changes with this release**: upgrade
+together.
+### Changed — a live compose must be a frozen one; the activation block is part of the v2 compose
+
+Both `deploy/dstack/docker-compose*.yaml` were edited after the 2026-11-03c
+freeze (`FUGAL_POOL_CACHE_V2`) and matched none of the eight frozen
+app-compose files, so a miner deploying from the checkout would compute a
+compose hash no approved entry names. `scripts/check_safety_invariants.py`
+now reports a live compose that no frozen file embeds (a warning in CI, a
+failure with `--release`: the launch gate), and
+`scripts/publish_approved_entry.py` refuses to write a note for a frozen file
+that does not match a live compose (`--allow-drift` overrides). The docs and
+`validator.env.example` now say where the activation block lives: in the
+validator's environment AND in the v2 miner compose, so choosing it fixes the
+v2 compose hash and the approved entry.
+### Fixed — operator scripts: protocol-aware verification, a probe that can pass, tempo-derived defaults
+
+`scripts/verify_live_miner.py` selected the slice and exploration with the v1
+functions over the v1 table, so from the activation block it computed a
+different slice from the validator and refused every v2 proof; it now picks
+the epoch's inputs by the boundary-keyed version as the validator does.
+`scripts/tdx_measurement.py --verify` built a proof with no hotkey, which
+`verify_proof` refuses outside mock before the measurement check runs, and
+told the operator to export a bare base that `--live` refuses; both corrected.
+`scripts/provision_subnet.py` and `scripts/watch_subnet.py` defaulted the
+epoch interval to 3600 (mainnet is 4320), reporting an aligned subnet as
+MISALIGNED when the flag was forgotten; they now take `FUGAL_EPOCH_INTERVAL`
+from the environment, else the chain's tempo x 12, and say which.
+### Docs — the v2 numbers and formulas the guides and comments still had wrong
+
+The v2 burn-in is 1500 questions (`V2_BURN_IN_QUESTIONS`), not 3000, in
+MINER_GUIDE, VALIDATOR_GUIDE (new table row), the min-paired-questions comment
+and `evidence.py`; V is 30 x the pinned anchor's expected spend (about $0.77),
+not the champion's own spend, in MINER_GUIDE, `config.py` and `champion.py`
+(whose docstring also said spend came from the frame's verbosity: it is the
+cell's attested completion tokens); the Omni-MATH hard threshold is
+difficulty >= 5 (`v2_sets.OMNI_HARD_DIFFICULTY`), not 7; the current published
+image is `image-v2026.11.03c`, the digest the composes pin.
+### Fixed — v2 rebuild refuses a malformed reveal by name; restored burn-in survives; the metagraph fallback is logged
+
+The startup rebuild from reveals crashed with KeyError/ValueError tracebacks
+on a truncated or malformed peer reveal and silently accepted a string
+`models`; it now validates what it reads and refuses the file by path and
+epoch. Records created to restore a head's E'' burn-in carried the head's
+first committing hotkey, so an owner serving from a newer hotkey lost the
+restored burn-in on its first verified proof; they now carry no hotkey (unknown,
+kept). When the pinned metagraph read at the collection block fails and the
+live one is used, the epoch log now records `metagraph_unpinned`, so a
+divergence that epoch is attributable from the published artifacts.
+### Fixed — the frame's first weighted epoch is continuous; the detector needs a measured model
+
+`accumulate_exploration` started the weighted (v2) sums empty, so the first
+weighted epoch valued every explored model at its single newest sample
+(0.863 -> 0.000 on the shipped frame) until the weighted sums refilled; the
+weighted sums now start from the raw history. `implausible_exploration`
+judged a miner against a model the frame had seen once, i.e. against the
+prior, so on a cold frame every honest miner on a good model was flagged on
+some epochs, its samples dropped and a false `exploration_excluded_from_frame`
+published; a model now counts only after `min_trials` (8) raw trials and
+at its raw mean (the frontier's valuation), not the prior-pulled posterior.
+**Consensus note (v1, live):** the detector decides which samples enter the
+frame, so validators must take this in the same inter-epoch window.
+
+### Fixed — v2 proxy: a reply that closes the connection no longer fails the call
+
+The wall-clock call deadline set a per-read timeout on the connection's socket.
+When an upstream answered with Content-Length and closed the connection (HTTP/1.0,
+or HTTP/1.1 with `Connection: close`), `http.client` marked that socket closed
+while the reply was still being read, and the next `settimeout` raised EBADF:
+every such call failed. The watchdog now shuts the connection down through a
+plain socket on a duplicated descriptor (not `sock.dup()`, which raises on the
+TLS sockets every production call uses), and the per-read timeout tolerates the
+closed socket. HTTP and HTTPS regression tests cover keep-alive, closing and
+dripping replies.
+Found by the v2_flip dress rehearsal; regression tests in tests/test_proxy_deadline.py.
+
+### Changed — v2 model list: x-ai/grok-4.7 removed (18 models)
+
+grok-4.7's provider does not bound reasoning by `max_tokens`: 17,763 completion
+tokens were measured here, and 48,132 (47,656 reasoning) in an external
+measurement, against 16,384. That is about five times the call's budgeted cost.
+Removed from `data/models_v2.json` (and its copy) and from the v2 token manifest,
+whose 18 other rows are unchanged; the call log keeps its rows.
+`PINNED_PRICE_TABLE_V2_SHA256` and `identity_v2()` move. Consensus from
+`V2_ACTIVATION_BLOCK`. grok-4.7 can return in v2.1, once the harness streams
+calls and can abort one at its deadline (which stops billing on providers that
+support it).
+
+### Fixed — the proxy's call deadline is wall-clock
+
+`PROXY_CALL_DEADLINE_S` (420 s) was a per-read socket timeout. OpenRouter keeps
+a non-streamed request alive while the model reasons, so a call could run far
+past it (917 s measured externally), keeping its proxy thread and upstream
+connection open after the harness had given up. The proxy now sets the time
+left as the timeout of every read, with a watchdog that shuts the socket down at
+the deadline. The call ends by 420 s with its connection closed and is
+recorded failed; the harness gets the proxy's 502 before its own 450 s wait. A
+non-streamed reply is still billed in full by the provider. Miner-side only.
+### Changed — protocol v2 seniority: pre-flip commits tie at the activation block
+
+From an outside review: a UID with no v1 role could commit a v2 head days
+before the flip and be the most senior head at it, taking the first seat by
+timing. Every first commit at or before `FUGAL_V2_ACTIVATION_BLOCK` is now
+ranked at the activation block, ties broken by sha256 over the activation
+boundary's block hash, the head and its owner, a salt nobody holds while
+pre-flip commitments are being made, so the order cannot be ground in advance.
+Commits after the flip keep their real block. Validator-only; published in
+the v2 reveal as `v2_seniority`.
+
+### Changed — v2 miner: 24 calls in flight, the in-flight-budget 402 is retried, the pool is cached
+
+- `HARNESS_CONCURRENCY` is 24 (was 8). At the 16,384-token v2 answer budget,
+  reasoning models run long. A latency model calibrated on the v2 token run puts
+  the p95 epoch of a head leaning on cheap reasoners at about 33 minutes with 8
+  in flight, which misses the 36-minute collection block. With 24 it is about 14.
+- An OpenRouter 402 is split by `metadata.reason`. `in_flight_budget_exhausted`
+  (a low-balance or new account's in-flight holds are full) is temporary and is
+  retried like a 429, honouring Retry-After. `weight_exceeds_budget` is an
+  operator error. Any other 402 is the balance, never retried, as before.
+- `FUGAL_POOL_CACHE_V2` (set in the dstack compose to
+  `/app/results/pool_v2.json.gz`): the v2 pool is written to the results volume
+  after its first manifest-verified load, and verified again on every read. A
+  cache that fails is deleted and rebuilt from the pinned revisions. Restarts no
+  longer need Hugging Face.
+
+Miner-side only (an image and compose change; no consensus change).
+
+### Fixed — the v2 miner retries its pre-flip commitment
+
+The v2 image committed its head once, 10 blocks after the last v1 boundary. If
+that one transaction failed, the commit fell back to after the flip, and the
+miner's first v2 epoch(s) were rejected as committed late. It now retries every
+`COMMIT_RETRY_BLOCKS` (2) until `COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS` (20) before
+the activation block. It logs each failure and an ERROR if the deadline passes;
+the post-flip fallback is unchanged. Miner-side only (an image change; no
+consensus change).
+
+### Changed — protocol v2 NV: V is pinned to an anchor, not the champion
+
+`V = CHAMPION_ACCURACY_VALUE x anchor_spend_per_question(CHAMPION_ANCHOR_MODEL)`,
+the anchor (Claude Fable 5.1) priced from the reviewed v2 token manifest and the
+pinned v2 prices (about $0.026 a question, V about $0.77 at m = 30), instead of
+the champion's own mean spend. The exchange rate between accuracy and cost no
+longer depends on who holds the seat; a cheap champion no longer blocks a more
+accurate, pricier router. `CHAMPION_ANCHOR_MODEL` is a consensus constant and
+the derived `CHAMPION_ANCHOR_SPEND_PER_Q` is in the digest. Validator-only.
+
+### Changed — protocol v2 burn-in is 1,500 questions (v2 only)
+
+`V2_BURN_IN_QUESTIONS` (1,500, about five epochs) is the E'' burn-in a head
+needs before it can take a v2 seat; the validator and `update_scores` use it in
+v2 epochs, v1 keeps `BURN_IN_QUESTIONS` (3,000). Every head is new at the flip,
+so the seat is empty, and the miner share burns, for about six hours after it.
+Challengers still need `CHAMPION_MIN_PAIRED_QUESTIONS` (1,500) from an unbroken
+run. Consensus constant, in the digest. Both rehearsals override it alongside
+the v1 one.
+
+### Added — the metering proxy names any reply over the answer budget (protocol v2 image)
+
+Some providers bound reasoning tokens loosely. Measured 2026-11-04: one model returned 17,763
+completion tokens against `max_tokens` 16,384. The proxy now logs the model and the overrun on
+every such call. Nothing is refused: the call happened and is attested and billed either way.
+This logs from every call rather than a one-off startup probe, and spends nothing.
+
+### Changed — protocol v2 image wiring: the miner serves v2 only, holds until the flip, and skips epochs it cannot finish
+
+- The harness takes `protocol_version`:
+  - questions come from `epoch_plan`;
+  - v2 heads are priced with `benchmark_costs_for(head, 2)` (the reviewed v2 token manifest and table);
+  - every v2 call carries the model's pinned `reasoning` setting;
+  - v2 proofs carry `identity_v2()`.
+  v1 behaviour is unchanged.
+- The TEE runtime's metering proxy takes the epoch's price table (`setup(prices=...)`).
+- Miner: with `FUGAL_V2_ACTIVATION_BLOCK` set (the v2 compose), the pool, prices and model space
+  are v2's. After embedding, the miner **holds**: it commits its head in the epoch before the
+  activation block, `COMMIT_AFTER_BOUNDARY_BLOCKS` (10) after the last v1 boundary. Validators read
+  commitments at the boundary block, so the last v1 epoch still sees the old head, and the flip
+  boundary sees the new one. It registers its axon from the activation block. Unset means v1,
+  as before.
+- Miner: an epoch is not started with fewer than `LATE_START_MARGIN_BLOCKS` (60) blocks left
+  before its collection block. Missing the block is a miss either way, and the calls are paid.
+
+### Added — protocol v2 epoch inputs chosen by version in the validator
+
+From `FUGAL_V2_ACTIVATION_BLOCK` the validator selects the scored slice and
+exploration with `epoch_plan.scored_slice` / `exploration_plan`, and scores on
+the v2 pool (`loader.load_pool(2)`), price table and model index space
+(`routing_protocol.price_table(2)` / `models_for_protocol(2)`), all picked per
+epoch by the boundary-keyed version; v1 is byte-identical. v2 inputs load at
+startup when an activation block is set; live refuses to start without them.
+New determinism stage `epoch_plan_v2`. INVARIANTS: "I1 — every epoch input is
+chosen by the boundary-keyed version".
+
+### Changed — protocol v2 wiring uses the copy rule for ownership and seniority
+
+`run_v2_epoch` replaces its interim per-hotkey ownership with the copy rule
+(`copy_rule.py`): it folds the boundary commitment snapshot (`observe`),
+serves each head from its canonical owner UID only (`classify`), takes
+seniority and the comparison's first epoch from the first commit
+(`v2_seniority`, `first_epoch`), retires on the owner's commitment
+(`retired_hashes`), and passes `senior_bars` (seat holders only) to
+`seat_step`. The copy rule's state is persisted, published in the v2 reveal's
+`v2_state` under `copy_rule`, and restored by the rebuild (`from_rebuild`).
+The reveal also carries per-UID `copy_verdicts`.
+
+### Added — protocol v2 model list: a second pinned price table, selected by protocol version (lands with v2)
+
+- `data/models_v2.json` (identical copy in `fugal_subnet/routing_data/`): 19 models, prices
+  from the public OpenRouter catalogue of 2026-11-04, each with at least three endpoints. Each
+  pins exactly one OpenRouter `reasoning` setting: `effort` for OpenAI and xAI, a `max_tokens`
+  budget for Anthropic, Google and Qwen, `enabled` otherwise. The unified parameter accepts
+  `effort` or `max_tokens`, not both. Hash-pinned in `check_safety_invariants.py` like
+  `data/models.json`.
+- `routing_protocol.price_table(version)`, `models_for_protocol(version)` (the global model
+  index space) and `reasoning_for(version, model)` serve the table of the epoch being scored,
+  keyed on `slicer.protocol_version_for_boundary`. A release/v2 validator scores v1 epochs until
+  the activation block, so the v1 table and `routing_protocol.identity()` are unchanged. The
+  v2 table's hash is in the consensus fingerprint's epoch block.
+- The v2 token manifest **candidate** (`data/benchmark_tokens_protocol_v2.json`, mirrored),
+  built from 757 metered calls through the v2 harness. Review findings are in
+  `docs/SUCCESS_CONTRACT.md`. Also: `routing_protocol.manifest_path(version)`,
+  `benchmark_costs_for(head, version)` and `identity_v2()` (a new namespace; v1's
+  `identity()` is unchanged).
+
+### Fixed — protocol v2 payout: a ghost keeps seat 1
+
+During a champion's ghost window the payout seats shifted down a seat (the
+previous champion paid 5% instead of 10%, the third seat nothing), because the
+ghost is the newest entry in the champion history. Seat 1 is now the ghost's:
+its 85% burns and seats 2 and 3 keep paying the previous two champions.
+Found by the v2 flip rehearsal.
+
+### Added — protocol v2 state rebuilt from reveals (snapshot + replay)
+
+`fugal_subnet/v2_rebuild.py`: the seat, owners, serving UIDs, burn-in
+progress and any later v2 fields are read from the newest v2 reveal's
+`v2_state`; the comparison window is replayed from the last
+`CHAMPION_WINDOW_EPOCHS` v2 reveals. The frame rebuild applies the v2 mix
+weights. A validator with no local v2 state and `FUGAL_FRAME_BOOTSTRAP` set
+rebuilds at startup and restores burn-in counters. INVARIANTS: "I1 — v2 state
+is rebuilt from reveals: snapshot + replay", including the trust model.
+
+### Added — protocol v2: exploration weighted by the scored mix in the frame
+
+From the activation block each aggregated exploration observation is
+weighted by `slicer.mix_weights` (its benchmark's scored share over its
+exploration share this epoch). `ReferenceFrame` keeps weighted sums for
+accuracy and verbosity beside the raw ones; the raw trial count, which the
+frontier's confidence reads, is unweighted. v1 frames serialise unchanged.
+`aggregate_observations(..., with_question=True)` carries the question id.
+The weights are in the v2 reveal (`frame_mix_weights`). INVARIANTS: "I9 — v2:
+the frame is estimated on the scored mix".
+
+### Added — `epoch_plan`: the single, versioned question-selection entry point for both neurons
+
+`epoch_plan.scored_slice(version, nonce, pool, size)` and
+`exploration_plan(version, nonce, pool, scored_ids, models, size)`. v1 is byte-identical to
+`select_slice` and `expected_exploration`; v2 uses the category-first slicer with the v2
+targets, map and weights. The exploration model assignment moves to
+`exploration.assign_explore_models`, shared by both versions (v1 output unchanged).
+
+### Added — protocol v2 wired into the validator (from the activation block)
+
+`fugal_subnet/v2_epoch.py`: from `FUGAL_V2_ACTIVATION_BLOCK` the validator
+runs one v2 epoch after verification. It computes shared cells (grades and
+coldkey-median attested completion tokens) and the comparison window, steps
+the seat, and sets the 85/10/5 seat vector with `paid_fraction = 1`. Nothing
+that pays reads the frame: spend comes from cell tokens at pinned prices,
+and the frame-based quality floor and epsilon clause do not run in v2. The
+reveal carries the cells with tokens, per-UID failed questions and the seat
+decision. The seat, owners and window persist (window as an `.npz`) and are
+rebound only at the commit point. A failed call is graded 0 and costs 0 in v2.
+New determinism stage `v2_epoch`. INVARIANTS: "I3/I4 — v2 pays from the paired
+rule alone; the frame is informational".
+
+### Added — protocol v2 model list: a second pinned price table, selected by protocol version (lands with v2)
+
+- `data/models_v2.json` (identical copy in `fugal_subnet/routing_data/`): 19 models, prices
+  from the public OpenRouter catalogue of 2026-11-04, each with at least three endpoints. Each
+  pins exactly one OpenRouter `reasoning` setting: `effort` for OpenAI and xAI, a `max_tokens`
+  budget for Anthropic, Google and Qwen, `enabled` otherwise. The unified parameter accepts
+  `effort` or `max_tokens`, not both. Hash-pinned in `check_safety_invariants.py` like
+  `data/models.json`.
+- `routing_protocol.price_table(version)`, `models_for_protocol(version)` (the global model
+  index space) and `reasoning_for(version, model)` serve the table of the epoch being scored,
+  keyed on `slicer.protocol_version_for_boundary`. A release/v2 validator scores v1 epochs until
+  the activation block, so the v1 table and `routing_protocol.identity()` are unchanged. The
+  v2 table's hash is in the consensus fingerprint's epoch block.
+- The v2 token manifest **candidate** (`data/benchmark_tokens_protocol_v2.json`, mirrored),
+  built from 757 metered calls through the v2 harness. Review findings are in
+  `docs/SUCCESS_CONTRACT.md`. Also: `routing_protocol.manifest_path(version)`,
+  `benchmark_costs_for(head, version)` and `identity_v2()` (a new namespace; v1's
+  `identity()` is unchanged).
+
+### Added — protocol v2 copy rule (module; wiring follows)
+
+`fugal_subnet/copy_rule.py`, from the activation block (v1 keeps
+`commitments.seniority_key` and every `dedup.py` clause unchanged):
+seniority is the block at which a head's exact weights hash was first
+committed by any hotkey (same-block ties by a coldkey digest); a hash belongs
+to the coldkey that first committed it, and the same hash under another
+coldkey is an exact copy (`classify`; wiring names `owner`,
+`first_commit_block`, `is_exact_copy`, `v2_seniority`); a retired head (its owner no longer
+commits it) stays in the comparison set, unpaid, for `CHAMPION_GHOST_RETIRE`
+epochs from its first retirement, and a head that missed for
+`CHAMPION_GHOST_OFF`. `champion.seat_step(senior_bars=...)`: a head takes a
+seat, first or by challenge, only by beating every senior SEAT HOLDER in that
+set (the paid seats 1-3 and the champion's ghosts, `seat_holders`) by
+`CHAMPION_MARGIN` on the same paired test; no second margin, no resemblance
+test. A chain coldkey swap keeps the author's head: ownership follows the
+first committer's hotkey. The state is a fold over boundary commitment snapshots, published as
+plain JSON (`CopyState.to_reveal` / `from_reveal`: `epoch`, `first_commit`,
+`ownership`, `first_hotkey`, `active`, `retired_at`) for the v2 reveal state block, rebuilt
+from the newest reveal or replayed from an archive node (`from_rebuild` reads it from
+`v2_rebuild.rebuild_v2_from_reveals`). New determinism stage
+`copy_rule`. INVARIANTS: "I3/I4 — the v2 copy rule", including the accepted
+front-running residual until commitments are bound to the coldkey.
+
+### Added — protocol v2 benchmark pool: open licences only, category map and weights, its own manifest (lands with v2)
+
+- `fugal_subnet/benchmarks/v2_sets.py`: knowledge = MMLU-Pro + a 3,000-question MMLU subset;
+  math = MATH levels 3–5 + Omni-MATH integer items below difficulty 5; hard = SuperGPQA "hard"
+  (all 7,050) + AIME 1983–2025 + BeyondAIME + Omni-MATH integer items at difficulty ≥ 5;
+  instruction = IFEval (the mapped subset). **No gated datasets:** every miner embeds and every
+  validator rebuilds the pool, and reveals publish its text. Licences per benchmark: MIT,
+  Apache-2.0, ODC-BY, CC0-1.0. Subsets are chosen in sha256 order of a stable id, never load
+  order. Revisions are pinned in `DATASET_REVISIONS`.
+- `BENCHMARK_CATEGORY_V2`, `BENCHMARK_WEIGHT_V2` (hard: 50% the multiple-choice set, 50% integer
+  olympiad math by pool size), `CATEGORY_TARGETS_V2` (40/25/30/5: instruction stays at 5% in v2.0 because only 259 IFEval items are checkable by the pinned constraint kinds, repeating every ~17 epochs at 15 a slice; a generated instruction set is v2.1).
+- `loader.load_all_v2` / `load_pool(protocol_version)`: a separate pool, file
+  (`data/benchmarks/pool_v2.json.gz`, `FUGAL_BENCHMARK_POOL_V2`) and manifest
+  (`pool_manifest_v2.json`, with licences, categories and weights), verified the same way as v1.
+  `scripts/build_pool_manifest.py --protocol 2` and `scripts/export_pool.py --protocol 2`. The v1
+  pool is unchanged.
+- No grader change: the new sets use `letter_mcq` (A–J) and `integer_exact` as pinned.
+
+### Fixed — v2 slicer: unbiased apportionment (systematic sampling of the leftover units)
+
+The v2 allocation gave leftover slots to the largest fractional parts every epoch. When a
+category's or benchmark's fractions don't tie, that's a fixed bias the nonce never rotates. At
+the v2.0 targets (40/25/30/5) the 15 exploration slots always split 6/4/4/1 instead of
+6/3.75/4.5/0.75 on average, under-exploring the hard category by a sixth; inside a weighted
+category a small benchmark could never win its fraction. Leftover units are now assigned by
+systematic sampling over the fractional parts (one nonce-keyed offset), so each key's expected
+quota equals its exact share. Exact rational arithmetic keeps every validator identical.
+Integer allocations (e.g. 300 at 30/25/30/15) are unchanged.
+
+### Added — protocol v2 champion scoring (module; wiring follows)
+
+`fugal_subnet/champion.py`: the paired net-value test (NV quantised to exact
+integers, V = m times the champion's own mean spend on the paired questions,
+paired bootstrap within category, PCG64 seeded per pair and epoch), the
+bounded comparison window (`CHAMPION_WINDOW_EPOCHS`, 48), and the seat state
+machine (the most senior eligible head takes an empty seat, hold at no
+margin, take at `CHAMPION_MARGIN`, high-water accuracy gates from the first
+champion's lower bound, ghost bars, resume inside the ghost window), and an absolute
+accuracy floor `CHAMPION_MIN_ACCURACY` (0.30, unmeasured on v2 benchmarks) for
+taking and holding, which replaces the frame-based quality floor. A
+challenger is measured only on its current unbroken run of served epochs; a
+take needs `CHAMPION_MIN_PAIRED_QUESTIONS` (1,500) paired questions; a missed
+ghost whose owner commits a new head becomes a retire ghost. Not wired
+into the validator yet. INVARIANTS: "I3 — one champion; taking the seat needs
+the margin, holding it needs none".
+
+### Added — protocol v2 payout: 85/10/5 across the last three champions (module)
+
+`fugal_subnet/payout.py`: `seat_weights` splits the miner share across seats
+held by the current and two previous champions (`PAYOUT_SEAT_SHARES`). A seat
+pays only while its head is live and eligible, otherwise to the current
+champion, and burns when there is none; seats are paid to the serving UID, so
+one hotkey keeps the seats it holds and extra registrations buy nothing. Not
+wired into the validator yet. INVARIANTS: "I3 — seats, not shares".
+
+### Added — protocol v2 miss rule E'' (from the activation block)
+
+`Evidence.burn_in_n` counts scored questions since the last reset or miss.
+From `FUGAL_V2_ACTIVATION_BLOCK`, a miss before burn-in resets the evidence
+fully and a miss after it decays the evidence with no phantom zeros and
+restarts burn-in (`apply_miss_v2`, `accumulate_epoch_v2`, `burn_in_complete`).
+Pre-existing records migrate lazily (the counter reads as `n_total`). v1
+epochs are unchanged. INVARIANTS: "I3 — the v2 miss rule (E'')".
+
+### Added — v2 slicer: explicit benchmark weights inside a category
+
+`select_slice_v2` and `select_explore_set_v2` take an optional `bench_weight` map. Within a
+category a benchmark's share is its weight over the category total (default: pool size, as
+before). The approved v2 hard category weights an open multiple-choice set and integer
+olympiad math 50/50, rather than by raw pool size. A category that weights any benchmark must
+weight all of them (a partial map is refused). The share cap and the exploration draw use the
+same weighted shares, so expected exploration share still equals expected scored share.
+
+### Added — protocol v2 slicer: category-first allocation; exploration matches the scored mix (not yet wired; lands with v2)
+
+- `select_slice_v2` allocates the scored slice by category at published targets (largest
+  remainder, no floor; ties keyed on the nonce), then by pool share within each category under
+  the existing share cap (diligence finding 6), applied within the category.
+- `select_explore_set_v2` allocates exploration the same way by category, and draws each slot's
+  benchmark by a nonce-keyed weighted draw on pool share within the category. A benchmark's
+  expected exploration share now equals its expected scored share at any size. Measured on
+  mainnet with the v1 sampler: 15 exploration slots split five benchmarks 1:1:1:5:7, putting a
+  benchmark that is 1.7% of the scored slice at 6.7% of exploration and over-weighting it ~4x
+  in the reference frame.
+- `mix_weights(scored, explored)` returns the per-benchmark correction (scored share ÷
+  exploration share) for an epoch, so the frame can weight what 15 slots observed back to the
+  scored mix.
+- The v1 `select_slice` is unchanged. Dispatch by protocol version, and the benchmark→category
+  map and targets, arrive with the v2 benchmark list.
+
+### Changed — protocol v2 harness: a 16k answer budget, nested call deadlines, 403 as an operator status (image change; lands with v2)
+
+- The harness asks for `max_tokens` = `HARNESS_MAX_TOKENS` (16384; was 2048). Measured on a
+  320-question × 17-model matrix: at 2048 most long-reasoning models' wrong answers were
+  cut-off answers; at 8192, 4.1% of all answers still stopped at the cap, nearly all graded
+  wrong. Exploration (the reference frame's only source in v2) runs on this same harness,
+  so miners and the frame ask for the same answer.
+- Call deadlines nest so each layer reports before the next gives up: one upstream attempt
+  ≤ the proxy's per-call deadline (`PROXY_CALL_DEADLINE_S` 420 s, was 180 s) < the harness's
+  wait (`HARNESS_CALL_TIMEOUT_S` 450 s, was 200 s); no new retry after
+  `PROXY_RETRY_BUDGET_S` (300 s, was 120 s). A 16k answer from a slow model takes ~330 s.
+- Each result carries `latency_ms`: the harness's wall time for the call, retries included,
+  attested and hashed. It's present only when set, so v1 proofs hash unchanged. The v2 time
+  gate needs it.
+- 403 joins 401/402 in `PROXY_OPERATOR_STATUS`: never retried, logged as
+  `OPERATOR ACTION REQUIRED` (a key's total spend limit returns 403 on every call).
+- Not yet in this change: the per-model reasoning setting (`reasoning.effort` or
+  `reasoning.max_tokens`, one per model) and the startup output-length self-test. Both need
+  the v2 model list (`data/models.json` is hash-pinned) and follow in that PR.
+
+### Added — protocol v2 shared grades (from the activation block)
+
+`fugal_subnet/shared_grades.py`: one coldkey-median grade per (question,
+model) cell of the scored slice, with failed calls dropped. A head's own failed
+call stays wrong. From `FUGAL_V2_ACTIVATION_BLOCK` the validator computes the
+cells each epoch and the reveal carries `protocol_version` and
+`shared_grades`; v1 reveals are unchanged. Nothing scores from them yet: the
+paired champion comparison reads them in the next change. New determinism
+stage `shared_grades`. INVARIANTS: "I4 — shared grades: a cell is a vote of
+operators".
+
+### Added — protocol v2 activation block and v2 constants (no behaviour change yet)
+
+`FUGAL_V2_ACTIVATION_BLOCK` names the epoch boundary at which validators switch
+to the v2 rules. The version an epoch is scored under is a function of its
+boundary block (`slicer.protocol_version_for_boundary`), so retries and late
+validators agree; a block that is not an epoch boundary is refused at startup;
+the value is a consensus input in the digest's `epoch` block. Unset means v1
+for every epoch. The v2 champion and payout constants (`CHAMPION_*`,
+`PAYOUT_SEAT_SHARES`) are added as consensus constants. Nothing reads them yet;
+the v2 rules land behind the activation block in later changes. INVARIANTS:
+"I1 — protocol v2 activates at one named boundary".
+
 ### Docs — MINER_GUIDE: where the reveals are published; no GPU needed
 
 The public reveal bucket (`fugal-reveals/70/<epoch_id>/reveal.json`), what a
@@ -793,6 +1559,7 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/fugal-ai/fugal-subnet/releases/tag/v0.1.0

@@ -46,6 +46,12 @@ class QuestionResult:
     # 2). A failed result is always `correct=False` and `verify_proof` holds
     # it to that.
     failed: bool = False
+    # Wall time the harness spent on this call, retries included, in whole
+    # milliseconds (protocol v2). Attested like everything else in the proof,
+    # because the v2 time gate ("per-call time within 2x the anchor's") needs a
+    # number the miner cannot choose. None on v1 proofs, and then absent from
+    # the hashed payload, so a v1 proof hashes exactly as it did before.
+    latency_ms: int | None = None
 
     def hash_payload(self) -> dict:
         """The fields `content_hash` covers for this result.
@@ -69,6 +75,8 @@ class QuestionResult:
         }
         if self.failed:
             payload["failed"] = True
+        if self.latency_ms is not None:
+            payload["latency_ms"] = self.latency_ms
         return payload
 
     def to_dict(self) -> dict:
@@ -96,7 +104,17 @@ class QuestionResult:
             completion_tokens=_json_number(d.get("completion_tokens", 0), "completion_tokens"),
             is_exploration=bool(d.get("is_exploration", False)),
             failed=bool(d.get("failed", False)),
+            latency_ms=_latency_ms(d["latency_ms"]) if "latency_ms" in d else None,
         )
+
+
+def _latency_ms(value):
+    """A latency is a non-negative JSON integer. Kept exactly as carried (the
+    #120 lesson: re-typing a number changes the hash); a bool, float, string
+    or negative value is rejected, never reinterpreted."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"latency_ms must be a non-negative integer, got {value!r}")
+    return value
 
 
 def _json_number(value, name: str):
@@ -161,15 +179,14 @@ class BenchmarkProof:
     routing_protocol: str = field(default_factory=identity)
     # DER intermediates for the TPM attestation key's certificate chain, carried
     # so a miner whose region (or whose rotated intermediate) is not vendored
-    # still verifies. Untrusted and unattested on purpose: a supplied
-    # certificate is worthless unless it chains to the pinned Google root
-    # (tpm.verify_ak_chain), exactly as in TLS. It is NOT in content_hash, which
-    # keeps report_data, proof_hash and every existing proof unchanged; the
-    # cost is that it is unbound, so a miner can serve different intermediates
-    # to different validators under one proof_hash (INVARIANTS, TPM section).
-    # The harness half should add it to content_hash, only when non-empty so
-    # proofs without it keep their hash. Omitted from to_dict when empty so
-    # old proofs serialise byte-identically. Bounded in from_dict (I2).
+    # still verifies. Untrusted on purpose: a supplied certificate is worthless
+    # unless it chains to the pinned Google root (tpm.verify_ak_chain), exactly
+    # as in TLS. In content_hash ONLY WHEN NON-EMPTY (2026-11-08), so it is bound
+    # through report_data (one proof_hash, one set of intermediates for every
+    # validator: I1) while a proof without it keeps its hash. The miner attaches
+    # them to v2 proofs only (tpm.intermediates_for, at startup), so a v1 proof
+    # from the v2 image is byte-identical for a validator not yet upgraded.
+    # Omitted from to_dict when empty. Bounded in from_dict (I2).
     tpm_intermediates: list[bytes] = field(default_factory=list)
 
     @property
@@ -228,6 +245,10 @@ class BenchmarkProof:
             "per_model_costs": self.per_model_costs,
             "timestamp": self.timestamp,
         }
+        if self.tpm_intermediates:
+            # Bound when present (see the field). Absent otherwise, so every
+            # proof without intermediates hashes exactly as before.
+            payload["tpm_intermediates"] = [c.hex() for c in self.tpm_intermediates]
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()
 

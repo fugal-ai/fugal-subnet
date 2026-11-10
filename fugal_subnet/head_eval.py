@@ -14,11 +14,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from fugal_subnet.config import (
-    HEAD_HIDDEN_DIM,
     HEAD_MAX_BYTES,
     HEAD_MAX_DECOMPRESSED_BYTES,
-    HEAD_MAX_MODEL_ID_LEN,
-    HEAD_MAX_MODELS,
     ROUTING_DECISION_QUANTUM,
 )
 from fugal_subnet.routing_protocol import BENCHMARK_LAMBDA
@@ -85,79 +82,18 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
         )
 
     arrays = contract.read_archive(data)
-    if "contract" in arrays:
-        z = contract.validate_head(arrays)
-        return HeadArtifact(z["W"], z["b"], z["models"].tolist(), "", z)
-
-    buf = io.BytesIO(data)
-    with np.load(buf, allow_pickle=False) as npz:
-        if "W" not in npz or "b" not in npz or "models" not in npz:
-            raise ValueError("Head missing required arrays: W, b, models")
-
-        W = npz["W"].astype(np.float32)
-        b = npz["b"].astype(np.float32)
-        models = [str(m) for m in npz["models"]]
-
-    if W.ndim != 2:
-        raise ValueError(f"Head W must be 2-D, got shape {W.shape}")
-    L, d = W.shape
-    if L == 0:
-        # A head declaring no models routes nothing. It survives every other
-        # check (shapes agree, no non-finite values) and scores 0.0, so it is
-        # not a crash — but it still occupies a slot in scoring, dedup, and the
-        # published reveal. Degenerate input dies at the boundary.
-        raise ValueError("Head declares no models")
-    if L > HEAD_MAX_MODELS:
-        raise ValueError(f"Head has {L} model rows (max {HEAD_MAX_MODELS})")
-    if d != HEAD_HIDDEN_DIM:
-        raise ValueError(f"Head hidden dim {d} != expected {HEAD_HIDDEN_DIM}")
-    if b.shape != (L,):
-        raise ValueError(f"Head bias shape {b.shape} != expected ({L},)")
-    if len(models) != L:
-        raise ValueError(f"Head has {L} rows but {len(models)} model names")
-    for name in models:
-        if len(name) > HEAD_MAX_MODEL_ID_LEN:
-            raise ValueError(
-                f"Head model ID is {len(name)} chars (max {HEAD_MAX_MODEL_ID_LEN})"
-            )
-    # Distinct names, because HEAD_MAX_MODELS is a CAPACITY bound and duplicates
-    # spend it on something else. The cap exists to stop a head large enough to
-    # memorise the question pool rather than learn to route; a row is a
-    # parameter vector, and 64 rows all naming one model is 64 rows of capacity
-    # wearing the costume of a one-model head.
-    #
-    # The justification is the NAMING GAP, not a measured exploit, and that
-    # distinction was itself a correction. On synthetic isotropic embeddings,
-    # 32 rows over 8 names lifted random-label fit from 0.269 to 0.441, which
-    # looked like real capacity bought cheaply. Re-measured on actual pool
-    # embeddings it does not reproduce: three of five differences are zero or
-    # negative and the largest gain is +0.036, against the +0.172 the synthetic
-    # case suggested. Clustered real embeddings span fewer effective dimensions
-    # than Gaussian ones, so the synthetic figure was an upper bound behaving
-    # like a finding.
-    #
-    # So this is not closing a demonstrated memorisation route. It is closing
-    # the gap between what HEAD_MAX_MODELS is NAMED and what it bounds, which
-    # stands on its own.
-    #
-    # It is also meaningless on its own terms — two rows naming the same model
-    # are two ways to say the same route, and softmax over them is a
-    # reparameterisation with no routing content. Nothing honest produces it.
-    if len(set(models)) != L:
-        dupes = sorted({m for m in models if models.count(m) > 1})
+    if "contract" not in arrays:
+        # ONLY success-contract heads. A head without the contract carries no
+        # cost profile, so it can never be priced or scored (benchmark_costs
+        # refuses it) under either protocol; parsing one did nothing but give
+        # miner bytes a second, older code path to reach before any hardware
+        # check. Refused here, before anything in it is read.
         raise ValueError(
-            f"Head names {len(set(models))} distinct models across {L} rows — "
-            f"duplicates: {dupes[:3]}. Rows must name distinct models: the row "
-            "cap bounds head capacity, and duplicate names spend that capacity "
-            "without declaring it."
+            "Head is not a success-contract head (no `contract` member): build it with "
+            "scripts/train_head.py; heads without a cost profile cannot be scored"
         )
-
-    if not np.all(np.isfinite(W)):
-        raise ValueError("Head W contains non-finite values")
-    if not np.all(np.isfinite(b)):
-        raise ValueError("Head b contains non-finite values")
-
-    return HeadArtifact(W=W, b=b, models=models, commit_hash="")
+    z = contract.validate_head(arrays)
+    return HeadArtifact(z["W"], z["b"], z["models"].tolist(), "", z)
 
 
 def load_head_from_b64(b64_str: str) -> HeadArtifact:

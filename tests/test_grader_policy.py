@@ -25,8 +25,9 @@ import pathlib
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
-# Checkers that return 0 unless the caller passes allow_exec=True.
-EXECUTION_CHECKERS = {"exec_io", "exec_unittest"}
+# Checkers that return 0 unless the caller passes allow_exec=True: one source,
+# the config the loader filters by, never a copy here.
+from fugal_subnet.config import EXECUTION_CHECKERS  # noqa: E402
 
 
 def harness_allows_execution() -> bool:
@@ -46,36 +47,30 @@ def harness_allows_execution() -> bool:
     return seen[0]
 
 
-def test_the_pool_the_loader_returns_contains_no_unrunnable_checker():
-    """The invariant on the pool the NEURONS actually see.
-
-    Checked through the loader's own filter rather than against a materialised
-    file: the exclusion happens at load time, so a raw pool JSON on disk still
-    contains the code questions and testing it directly would assert the wrong
-    artefact. This is the path load_all() takes.
-    """
-    import json
-    from collections import Counter
-
-    from fugal_subnet.benchmarks.loader import _drop_unscoreable
-
-    pool_file = REPO / "data" / "rehearsal" / "pool_full.json"
-    if not pool_file.exists():          # materialised pool is optional locally
-        import pytest
-        pytest.skip("no materialised pool to check")
-    raw = json.loads(pool_file.read_text(encoding="utf-8"))
-
-    served = _drop_unscoreable(raw)
-    unscoreable = Counter(
-        q["benchmark"] for q in served if q.get("grader_id") in EXECUTION_CHECKERS
-    )
-    assert not unscoreable, (
-        f"the loader served {dict(unscoreable)} — {sum(unscoreable.values())} "
-        "questions whose checkers run candidate code while the harness grades "
-        "with allow_exec=False, so they can never score above zero. The slicer "
-        "equalises benchmarks, so this is a sixth of every graded slice, not a "
-        "rounding error. See docs/CODE_BENCHMARK_PLAN.md."
-    )
+def test_every_checker_that_needs_execution_is_one_the_loader_drops():
+    """The drift that can actually happen: a checker that runs candidate code
+    (it starts `if not allow: return 0`) but is missing from
+    config.EXECUTION_CHECKERS, so the loader keeps its questions and they can
+    never score; or a name in that set that no longer gates on execution, so
+    scoreable questions are dropped. Read from graders.py itself, so it runs in
+    CI with no pool. (It replaces a test that read a local-only pool file and
+    skipped in every CI job.)"""
+    tree = ast.parse((REPO / "fugal_subnet" / "graders.py").read_text(encoding="utf-8"))
+    gated = set()
+    for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)):
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.If) and isinstance(node.test, ast.UnaryOp)
+                    and isinstance(node.test.op, ast.Not)
+                    and getattr(node.test.operand, "id", "") == "allow"):
+                gated.add(fn.name)
+    checkers = next(n.value for n in tree.body if isinstance(n, ast.Assign)
+                    and getattr(n.targets[0], "id", "") == "CHECKERS")
+    needs_exec = {k.value for k, v in zip(checkers.keys, checkers.values) if v.id in gated}
+    assert needs_exec, "no checker gates on allow: the premise of this file is gone"
+    assert needs_exec == set(EXECUTION_CHECKERS), (
+        f"checkers that need execution {sorted(needs_exec)} != config.EXECUTION_CHECKERS "
+        f"{sorted(EXECUTION_CHECKERS)}: the loader would keep unscoreable questions or "
+        "drop scoreable ones")
 
 
 def test_the_exclusion_is_derived_from_the_harness_policy_not_hardcoded():

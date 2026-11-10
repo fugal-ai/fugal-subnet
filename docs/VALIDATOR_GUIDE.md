@@ -1,8 +1,13 @@
 # Fugal Subnet — Validator Guide
 
 Run a validator on the Fugal subnet. Validators verify TEE-attested proofs
-from miners and set on-chain weights. **Validators never call models** —
-miners pay for their own inference inside Intel TDX confidential VMs.
+from miners, compare every head on the same questions, and pay the champion
+seat. **Validators never call models** — miners pay for their own inference
+inside Intel TDX confidential VMs.
+
+This guide describes **protocol v2**. Until the published activation block the
+subnet scores by the v1 rules; the switch is the one procedure every validator
+must perform, in "Protocol v2: flip procedure" below.
 
 ## What Validators Do
 
@@ -11,16 +16,24 @@ every validator processes the same epoch on the same slice. Each epoch, your
 validator:
 
 1. Derives a nonce from the epoch **boundary block's** hash
-2. Selects ~300 questions, stratified across benchmarks
+2. Selects 300 questions by the published category quotas (40% knowledge,
+   30% hard, 25% math, 5% instruction), then by benchmark share within each
 3. Commits the question slice + grader hash (commit-reveal integrity)
 4. Derives the epoch's exploration assignment from the same nonce
-5. Queries all registered miners for TEE-attested benchmark proofs
-6. Verifies each proof against every binding (see "TEE Proof Verification")
-7. Pools the verified exploration samples into the **reference frame**
-8. Scores each miner as accuracy headroom above the constant-policy frontier (what any single model or random mixture buys at the miner's own cost)
-9. Deduplicates copied heads: by routing behavior, by weight distance, and by the epsilon rule (a near-copy must beat the senior head); the senior head, by registration block then commitment block, wins
-10. Computes weights, sets weights on-chain
-11. Publishes the epoch reveal artifact
+5. Reads every head commitment at the boundary block and the epoch's
+   metagraph pinned to it
+6. Queries all registered miners for TEE-attested benchmark proofs
+7. Verifies each proof against every binding (see "TEE Proof Verification")
+8. Builds the **shared grades**: one grade per (question, model) cell, the
+   median across the coldkeys that routed there, so every head that chose the
+   same model gets the same grade
+9. Adds the epoch to the **comparison window** (the last 48 epochs) and runs
+   the **seat decision**: hold, take, first, ghost or resume, by the paired
+   net-value test against the champion (`docs/MINER_GUIDE.md`, "Scoring")
+10. Pays the seat: 85% to the champion, 10% and 5% to the two before it, the
+    rest to the burn UID; sets weights on-chain
+11. Publishes the epoch reveal artifact (shared grades, the seat decision and
+    its detail, every head's routing, the weights)
 
 ## Requirements
 
@@ -95,7 +108,8 @@ validator that scored the whole field zero while looking healthy):
    before Yuma reads them, silently (`docs/MAINNET_LAUNCH.md` §2).
 3. `data/reference_frame.json`, the hash-pinned bootstrap reference frame, is
    present in the checkout (or `FUGAL_FRAME_BOOTSTRAP` names a directory of
-   published reveals to rebuild from).
+   published reveals to rebuild from). Under v2 the frame is published for
+   information only; the check stays until protocol v1 is removed.
 4. The token manifest shipped in the checkout is `reviewed`, not `candidate`
    (`docs/SUCCESS_CONTRACT.md`).
 
@@ -149,7 +163,9 @@ point, not a floor.
   the wallet directory. A separate admin user holds the SSH key and `sudo`.
   The hotkey is regenerated on the host, as the service user, by the person
   who holds the words; it is never copied over the network.
-- **Inbound.** The validator serves no axon, so the host accepts **SSH only**:
+- **Inbound.** The validator listens on nothing but SSH, so the host accepts
+  **SSH only** (it records its egress IP on chain, `FUGAL_VALIDATOR_IP`, for
+  miners' firewalls; nothing listens behind that record):
   provider firewall and host firewall (`ufw`) both deny everything else, root
   login and password authentication are off in `sshd`, `fail2ban` guards the
   SSH jail, and unattended security upgrades are on.
@@ -222,15 +238,18 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_NETWORK` | `test` | Network: `finney`, `test`, `local` |
 | `FUGAL_NETUID` | `1` | Subnet netuid |
 | `FUGAL_EPOCH_INTERVAL` | `3600` | Seconds between epochs. **Mainnet: 4320** (tempo 360 × 12 s); must equal tempo × 12 on every neuron |
+| `FUGAL_V2_ACTIVATION_BLOCK` | unset | The epoch boundary block at which protocol v2 activates. A consensus input: identical on every validator, recorded in the consensus digest; refused at startup if it is not an epoch boundary. Unset means v1 forever. See "Protocol v2: flip procedure" |
 | `FUGAL_TEE_MEASUREMENTS` | — | Comma-separated approved entries, each `<base_measurement>:<compose_hash>`. Required for `--live`, which refuses a bare base: one would accept any application on that image, and the application fixes the model upstream (see `deploy/dstack/README.md`) |
 | `FUGAL_PCCS_URL` | `https://pccs.phala.network` | Where DCAP collateral is fetched. Not a trust root; point at a local caching proxy to remove the third party from the epoch path |
 | `FUGAL_COLLATERAL_TIMEOUT` | `10` | Seconds one collateral fetch may take before the proof is recorded `unverifiable` |
 | `FUGAL_COLLATERAL_EPOCH_BUDGET` | `600` | Seconds the whole verification phase may spend fetching collateral (I6) |
 | `FUGAL_BENCHMARK_POOL` | — | Leave unset. A materialised pool file is accepted only if it matches the pinned manifest and the size floor; a non-pinned pool must declare `FUGAL_POOL_UNPINNED=1` and is for local rehearsals only |
+| `FUGAL_VALIDATOR_IP` | — | This host's public egress IPv4: the address miners SEE your queries come from (`curl -s https://ifconfig.me` from this host; behind NAT, the NAT's address, and it must be a single stable one). Recorded on chain at startup (only when it changed) so miners can admit validators, and only validators, at their firewall (`scripts/axon_firewall.py`). Nothing listens on it. Unset: miners that firewall their axon cannot be reached by this validator |
 | `FUGAL_REVEAL_BUCKET` | — | Public-read GCS bucket each epoch's `reveal.json` is published to, after the weight commit-reveal window, with its sha256 committed on chain by this hotkey (`reveal:<epoch_id>:<sha256>`). Unset: reveals stay on local disk |
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
-| `FUGAL_FRAME_BOOTSTRAP` | — | Directory of published reveals to rebuild the reference frame from when there is no local state; otherwise the shipped `data/reference_frame.json` is required in `--live` |
+| `FUGAL_FRAME_BOOTSTRAP` | — | Directory of a reference validator's published reveals, kept in sync with its bucket (`gsutil -m rsync -r gs://<reference-bucket>/<netuid> <dir>` every few minutes: reveals are published under the netuid). Rebuilds the reference frame when there is no local state (otherwise the shipped `data/reference_frame.json` is required in `--live`), and from the flip it is the v2 reference: after a missed epoch the validator re-anchors on it automatically (verify-and-resync, INVARIANTS I1). Unset on the ROOT validator only: every other validator sets it |
 | `FUGAL_POOL_FILE` | `data/benchmarks/pool.json.gz` | Where the materialised pool built by `scripts/export_pool.py` is looked for; verified against the manifest on load |
+| `FUGAL_POOL_FILE_V2` | `data/benchmarks/pool_v2.json.gz` | The same for the protocol v2 pool (`scripts/export_pool.py --protocol 2`). Place it before setting `FUGAL_V2_ACTIVATION_BLOCK`: with the block set the validator loads the v2 pool at startup, and in `--live` refuses to start if it cannot |
 | `FUGAL_ARCHIVE_ENDPOINTS` | — | Comma-separated archive-capable subtensor endpoints. **Set it on mainnet**: the validator pins reads to the boundary and collection blocks, and a non-archive node refuses blocks older than ~300 |
 | `FUGAL_FALLBACK_ENDPOINTS` | — | Comma-separated endpoints the SDK falls back to when the primary drops |
 | `FUGAL_WEIGHTS_SET_RETRIES` | `3` | In-epoch re-submits of `set_weights` after a failure, while blocks remain and the rate limit allows |
@@ -258,10 +277,24 @@ warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every neuron.
 | `FUGAL_FRAME_HALF_LIFE` | `500` | Reference-frame decay half-life, in epochs |
 | `FUGAL_FRAME_PRIOR_STRENGTH` | `20` | Frame prior strength, in pseudo-observations |
 | `FUGAL_FRONTIER_MIN_TRIALS` | `300` | Distinct exploration observations per hull model before the frontier pays in full |
-| `FUGAL_BURN_IN_QUESTIONS` | `3000` | Scored questions before a fresh head reaches full score |
+| `FUGAL_BURN_IN_QUESTIONS` | `3000` | Scored questions before a fresh head reaches full score (v1) |
+| `FUGAL_V2_BURN_IN_QUESTIONS` | `1500` | Scored questions since the last reset or miss before a head can take a v2 seat (E'') |
 | `FUGAL_WILSON_CONFIDENCE` | `0.95` | Wilson LCB confidence level |
 | `FUGAL_SCORE_QUALITY_FLOOR` | `0.8` | Share of the frontier's best accuracy below which a head scores zero |
 | `FUGAL_MAX_WEIGHT_DELTA` | `0.3` | Max weight change per UID per epoch |
+| `FUGAL_CHAMPION_WINDOW_EPOCHS` | `48` | Epochs in the v2 comparison window |
+| `FUGAL_CHAMPION_ACCURACY_VALUE` | `30` | One extra correct answer is worth this many questions of the anchor's spend (V) |
+| `FUGAL_CHAMPION_ANCHOR_MODEL` | `anthropic/claude-fable-5.1` | The model whose expected spend per question prices V |
+| `FUGAL_CHAMPION_HARD_WEIGHT` | `2` | Weight of a `hard`-category question in the net-value test |
+| `FUGAL_CHAMPION_MARGIN` | `0.2` | NV points a challenger's lower bound must clear to take the seat |
+| `FUGAL_CHAMPION_CONFIDENCE` | `0.99` | One-sided confidence of the paired bootstrap lower bound |
+| `FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES` | `2000` | Resamples in the paired bootstrap |
+| `FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS` | `1500` | Paired questions a take needs |
+| `FUGAL_CHAMPION_MIN_ACCURACY` | `0.30` | Window-accuracy floor to take or hold a seat, or be paid as a former champion |
+| `FUGAL_CHAMPION_HARD_GATE_MIN_QUESTIONS` | `100` | Hard questions in the window before the hard-accuracy gate applies |
+| `FUGAL_CHAMPION_TIME_GATE_FACTOR` | `2` | Per-call time gate (not applied at launch) |
+| `FUGAL_CHAMPION_GHOST_OFF` / `_RETIRE` | `3` / `24` | Epochs a missed / retired champion's ghost bar stands |
+| `FUGAL_PAYOUT_SEAT_SHARES` | `0.85,0.10,0.05` | The miner share across the champion and the two before it |
 | dedup, exploration-integrity and head-bound constants | see `config.py` | `FUGAL_DEDUP_*`, `FUGAL_EXPLORE_*`, `FUGAL_HEAD_*`, `FUGAL_POOL_MIN_SIZE`, `FUGAL_MODEL_PRICES` |
 
 ### CLI options
@@ -335,10 +368,15 @@ When a miner submits a proof, the validator checks:
 
 Structured JSONL logs are written to `results/epoch_logs/`. Each entry includes:
 
-- Epoch ID and block hash
-- Number of miners queried, valid/invalid proofs
-- Per-miner scores (Wilson LCB, cost per question, frontier reference, headroom, composite)
-- Weight assignments
+- Epoch ID, block hash and protocol version
+- Number of miners queried; valid, invalid and `unverifiable` proofs; per-UID
+  failed-call counts
+- The seat event (`first`, `hold`, `take`, `ghost`, `empty`), the champion,
+  the former champions, and the comparison detail per head (which gate
+  failed, or the NV and its lower bound against the champion)
+- Weight assignments (at most three miner UIDs plus the burn UID)
+- Whether the metagraph was read pinned to the boundary block or fell back to
+  the live one (`metagraph_unpinned`)
 - Anomaly flags
 - Phase timing breakdown
 - Commit-reveal verification status
@@ -357,12 +395,166 @@ The validator automatically flags:
 - **Zero validator spend** — validators verify proofs, never call models
 - **TEE attestation** — hardware-attested proofs prevent result fabrication
 - **Measurement pinning** — only approved runtime images are accepted
-- **Evidence accumulation** — scores stabilize over epochs via EWMA decay
-  and Wilson LCB; selective publication (skip bad epochs) is penalized
+- **One seat, no margin to hold it** — a champion keeps the seat unless a
+  challenger is measurably better on the same questions (99% lower bound of
+  net value above the margin, over at least 1,500 paired questions), so the
+  seat cannot change hands on noise
+- **The copy rule** — a head belongs to the coldkey that first committed it;
+  the same bytes under another coldkey are an exact copy and earn nothing; a
+  junior head must also beat every senior seat holder by the margin
+- **The E″ miss rule** — a missed epoch decays a head's evidence and restarts
+  its burn-in; selective publication (skip bad epochs) is penalized
 - **Weight capping** — weights change at most ±0.3 per UID per epoch
 - **Commit-reveal** — questions committed before miner queries
-- **State persistence** — scoring state survives restarts
-- **Dedup seniority** — the earliest-registered hotkey, then the earliest commitment, wins duplicate clusters; read from chain at the epoch boundary
+- **State persistence** — scoring state, the seat and the comparison window
+  survive restarts; a lost window is rebuilt from published reveals
+- **Seniority from chain** — the first commitment block, read at the epoch
+  boundary; commitments at or before the activation block tie and are ordered
+  by a salted hash, so nothing can be gamed by committing early
+
+## Protocol v2: flip procedure
+
+Protocol v2 switches every validator from the v1 rules to the v2 rules at one
+named epoch boundary, the **activation block**. The rules an epoch is scored
+under depend only on that epoch's boundary block
+(`slicer.protocol_version_for_boundary`), never on when a validator happens to
+run it. So a late or retried epoch is scored the same way on every peer.
+What changes for miners is in `docs/MINER_GUIDE.md`, "Moving from v1 to v2".
+
+Values marked `<LIKE_THIS>` are published in the signed v2 release
+(`<V2_RELEASE_NOTE>`) at the announcement, at least 24 hours before the flip.
+Do not fill them in from anywhere else.
+
+### Before the flip
+
+1. **Upgrade the validator to the v2 release** (`<V2_RELEASE_TAG>`) any time
+   in the notice period. Until the activation block it scores exactly as v1
+   does: the same weights, and reveals with no v2 fields. Upgrading early is
+   safe.
+2. **Set `FUGAL_V2_ACTIVATION_BLOCK=<ACTIVATION_BLOCK>`** in the environment
+   file, and restart. Every validator must use the **identical** value.
+   - It is a consensus input like `FUGAL_EPOCH_INTERVAL`. It is written into
+     the consensus digest every reveal carries, so a validator with a
+     different value, or none, shows a different digest from its first epoch,
+     long before the flip.
+   - It must be an epoch boundary (a multiple of the blocks per epoch). The
+     validator refuses to start on a block that is not
+     (`FUGAL_V2_ACTIVATION_BLOCK: ... not an epoch boundary`).
+   - Unset, v2 never activates. That validator keeps v1 rules after the flip
+     and disagrees with every peer that flipped.
+   - The startup log confirms it:
+     `Protocol v2 activation: boundary block <ACTIVATION_BLOCK> (epoch index N); v1 rules before it`.
+3. **Add the v2 approved entry beside the v1 entries** in
+   `FUGAL_TEE_MEASUREMENTS`, from `scripts/fetch_approved_entries.py --tag
+   <V2_IMAGE_TAG> --network finney` (`--network test` on testnet 552), and restart. Follow the transition window in
+   `docs/APPROVED_ENTRY_ROTATION.md`: every validator carries **both** before
+   any miner moves. Before the flip a v2 miner holds its axon, so no v2 proof
+   arrives early. Carrying the entry early costs nothing, and carrying it late
+   scores every v2 miner absent at the flip.
+4. **Set `FUGAL_VALIDATOR_IP`** to this host's public egress IPv4, and
+   restart. The startup log says `validator IP <ip> published on chain` (or
+   `already on chain`). Miners admit only published validator IPs at their
+   firewall, so a validator without one cannot reach them; and the miners'
+   script will not switch the allowlist on while any active validator is
+   missing, so one missing validator leaves every miner exposed.
+5. **Do not set any other v2 constant.** The `FUGAL_CHAMPION_*`,
+   `FUGAL_PAYOUT_SEAT_SHARES` and `FUGAL_BURN_IN_QUESTIONS` values are
+   consensus constants. `--live` refuses to start on finney with any of them
+   set.
+
+A restart at any point is safe. State is written only when an epoch
+completes, so a validator killed mid-epoch resumes from the previous epoch and
+scores the interrupted one again, identically. From the flip, the state also
+holds the champion seat and the comparison window (`<state>.v2window.npz`
+beside the state file). Keep both on durable disk. A validator that has seat
+state but has lost the window logs `v2 seat state present but its comparison
+window is missing`. It keeps holding the seat (hold, resume and ghosts go on)
+but makes no `first` or `take` decision until the window is rebuilt from
+published reveals (`FUGAL_FRAME_BOOTSTRAP`) or has refilled for
+`CHAMPION_WINDOW_EPOCHS` (48) epochs.
+
+**A missed epoch heals itself, given a reference.** The validators form a
+star around one ROOT validator (the subnet owner's), whose public reveal bucket
+is announced with the release:
+- **On the root:** leave `FUGAL_FRAME_BOOTSTRAP` unset. It references nobody.
+- **On every other validator:** point `FUGAL_FRAME_BOOTSTRAP` at a directory
+  kept synced from the root's bucket, a systemd timer running `gsutil -m rsync
+  -r gs://<root-bucket>/<netuid> <dir>` every few minutes (reveals are
+  published under the netuid).
+
+After a v2 epoch a follower did not observe (it was down, or it scored
+nothing), it logs `v2 epochs ... were not observed` and keeps working as
+usual; once the root has published past the gap (the commit-reveal hold) it
+logs `re-anchored on it`, and once a later epoch matches, `gap closed`.
+Nothing to do by hand. A follower that observed every epoch but still
+differs from the root (it did not receive one miner's proof that the root
+did, or the other way round) logs `ALARM: ... differs from its reference's`;
+if that persists for 3 reference epochs it logs `treating it as a gap` and
+re-anchors the same way. The root is the arbiter: every follower converges
+on it.
+
+**The root.** Its outages count for the whole network: an epoch the root
+missed is followed by everyone (a champion that was not seen leaves a ghost
+and resumes when seen; a challenger's burn-in run restarts). Keep it up and
+monitored. A root that lost its state files (a dead disk) rebuilds from a
+follower:
+1. Stop the root. Move its state files aside: `$FUGAL_STATE_PATH` and every
+   `$FUGAL_STATE_PATH.*` next to it (`.v2window.npz` among them).
+2. Sync a follower's public reveals to a directory, as followers do from the
+   root, and set `FUGAL_FRAME_BOOTSTRAP` to it.
+3. Start the root. It rebuilds from the follower's reveals, re-anchors, and
+   logs `gap closed` after the hold.
+4. Unset `FUGAL_FRAME_BOOTSTRAP` and restart it.
+Followers need nothing.
+
+### At the flip
+
+- The first epoch whose boundary block is `<ACTIVATION_BLOCK>` is scored under
+  v2. The epoch header in the log reads `protocol v2`. The previous one reads
+  `protocol v1`.
+- **Retire the v1 entries at the flip.** v1 images are not valid after it, a
+  hard date published in the release. Remove them from
+  `FUGAL_TEE_MEASUREMENTS` and restart, at or after the activation block,
+  never before.
+- **Expect the miner share to burn for the first hours.** Every head is new at
+  the flip, and no head can take the seat until it has scored
+  `V2_BURN_IN_QUESTIONS` (1500, five epochs, about six hours) in an unbroken
+  run. Until then each epoch logs `v2 seat: empty` and the weight goes to the
+  burn UID; an epoch with no valid proof at all burns too (`No valid proofs:
+  the miner share burns`). This is intended, not a fault.
+
+### What to watch
+
+Per epoch, in the log and in `reveal.json`:
+
+| Signal | Healthy | If not |
+|---|---|---|
+| `consensus_digest` | identical to every peer's, before and after the flip | the activation block, a consensus constant or a package differs: compare `environment` in the two reveals |
+| `protocol_version` in the reveal | absent before `<ACTIVATION_BLOCK>`, `2` from it | the block is unset or different on this validator |
+| `v2 seat: <event>` log line, `champion` in the reveal | `empty` until a head is burned in; then `first`, then `hold` / `take` / `ghost` | weights disagree with peers' when the seat does. Find the first epoch where the `champion.detail` lines differ |
+| weights | identical to every peer's. At most three miner UIDs are paid (85/10/5), plus the burn UID | see `docs/INVARIANTS.md`, I1 |
+| `shared_grades` in the reveal | present in every v2 epoch | the v2 wiring is not running: check the release |
+| `unverifiable` / `invalid` counts | v2 miners verify from the flip | the v2 entry is missing (a v2 proof on a validator without it is `invalid`) |
+
+`scripts/watch_subnet.py` compares validators epoch by epoch. Run it across the
+flip and for the first day after. Weights still move by at most
+`FUGAL_MAX_WEIGHT_DELTA` per epoch, so a new champion's weight reaches its seat
+share over a few epochs.
+
+### Rehearse it first
+
+The flip is rehearsed locally with the shipped neurons on a local chain, at no
+cost:
+
+```bash
+python scripts/dress_rehearsal.py --scenario v2_flip   # Docker, ~30-60 min
+python scripts/rehearsal_v2.py                         # in process, seconds
+```
+
+Both check that validators agree across the flip, that v1 epochs are
+unchanged, the seat and the 85/10/5 split, the E″ miss rule, and a restart
+mid-epoch. The chain scenario shortens burn-in and a few other constants so it
+finishes in minutes, and prints the overrides it used.
 
 ## Troubleshooting
 

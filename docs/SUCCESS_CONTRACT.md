@@ -89,11 +89,65 @@ period; the next revision is a flag day run as the runbook below describes.
 that output plus exactly `status` and `review`. A candidate manifest still refuses
 `--live` startup and deployable export (`tests/test_success_contract.py`).
 
+## Protocol v2 token manifest: REVIEWED (2026-11-04)
+
+`data/benchmark_tokens_protocol_v2.json` (mirrored at `fugal_subnet/routing_data/`) is
+`status: reviewed`. The review record travels inside the file as its `review` block. Reviewer:
+Agent 1 (Claude Opus 5.5, Fugal leader agent), 2026-11-04. Merging the promotion PR on Jack's
+approval is the human review, as for v1.
+
+**Source.** `data/observations/benchmark_tokens_protocol_v2.jsonl`: 757 metered calls (3 more
+failed), 2026-11-04, by `scripts/record_token_observations.py --protocol 2` through the v2
+harness path (`max_tokens` 16384, each model's single pinned `reasoning` setting from
+`data/models_v2.json`, the full benchmark prompt). 40 questions per model at the v2 category
+mix: knowledge from MMLU-Pro and MMLU; math from MATH; hard from AIME 2025 and historical AIME,
+standing in for the open hard sets that were not yet loaded; instruction from IFEval. Same
+fields as v1's observations; no response text.
+
+**Billing cross-check.** Table-priced $5.675 against provider-billed $5.183 in total. Five
+models diverge by more than 5%, from OpenRouter routing to endpoints priced differently from
+the catalogue default the table pins:
+
+| model | billed ÷ table |
+|---|---|
+| z-ai/glm-5.3-flash | **2.86** |
+| z-ai/glm-5.3 | **0.49** |
+| deepseek/deepseek-v4-pro-0813 | 0.80 |
+| minimax/minimax-m3.1-flash | 1.15 |
+| qwen/qwen3.8-27b | 1.09 |
+
+**Review decisions (2026-11-04):**
+1. **Cap overrun (kept; the self-test logs overruns):** x-ai/grok-4.7 returned 17,763 completion tokens on 1 of 38 calls, against
+   `max_tokens` 16,384 (`reasoning.effort: medium`; xAI accepts only `effort`). Every other model
+   stayed at or under 16,384, and several hit it exactly (cut off as designed).
+2. **Hidden prompt (kept, stated in the manifest):** grok-4.7's prompt tokens are 1,267–1,575 on every call (others 25–750), so
+   the provider adds ~1.2k tokens per call, and the manifest's mean includes them.
+3. **Pinned rates: re-pinned.** The five diverging models' rates were scaled by their measured
+   billed÷table ratio (input and output together) in `data/models_v2.json`; the hash pin and its
+   comment record why.
+4. Hard-category questions were AIME only, so the means of long-reasoning models on SuperGPQA and
+   Omni-MATH are an extrapolation.
+
+**Amendment (2026-11-09): anthropic/claude-fable-5.2 added, 19 models.** At the public
+OpenRouter price ($8 / $40 per million tokens) with fable-5.1's reasoning setting, measured on
+40 calls on the pinned v2 pool (232 prompt and 442 completion tokens on average, $0.0195 per
+question). It has two endpoints, both Anthropic: an accepted exception to the three-endpoint
+rule (MINER_GUIDE). fable-5.1 stays the anchor.
+
+**Amendment (2026-11-05): grok-4.7 removed, 18 models.** Decision 1 is reversed. Beyond the
+17,763 seen here, an external measurement found 48,132 completion tokens (47,656 reasoning)
+against `max_tokens` 16,384, about five times the call's budgeted cost: the provider does not
+bound reasoning by `max_tokens`. The proxy does not stream, so a deadline cannot stop that
+billing (OpenRouter bills a non-streamed call in full). The model and its manifest row are removed.
+The other 18 rows are unchanged, and the call log keeps grok's 38 rows. grok-4.7 can return
+in v2.1, once the harness streams and aborts a call at its deadline. Re-verification of the 18
+means is recorded in the manifest's `review.amendments`.
+
 ## Offline export
 
 The completed 2048-token SPROUT evaluation and explicitly deferred 512-token
 comparison are recorded in
-[the offline mechanism report](evaluation/success-contract/REPORT.md), with
+[the offline mechanism report](decisions/evaluation/success-contract/REPORT.md), with
 machine-readable results, evaluated snapshots, and a nondeployable 2048-token
 bundle. Its historical model roster differs from the live subnet roster.
 
@@ -141,7 +195,8 @@ PRs. The transition uses one success protocol, not simultaneous policy support.
    and price snapshot. Generate actual TDX/dstack measurements on the target runtime;
    update approved measurements through the existing operator review process.
    Never invent a measurement or reuse approval for a different runtime.
-4. Start with fresh `results/success-v1/validator_state.json` and
+4. Start with fresh `results/success-v1/validator_state.json` (move its `.bak`
+   and any `.tmp` aside too, or the validator resumes from them) and
    `results/success-v1/epochs`, empty validator evidence and reference frame, and
    profile-tagged embedding caches. Update any service-level path overrides too.
    Old state, frame snapshots, reveals and proofs are rejected by protocol identity;

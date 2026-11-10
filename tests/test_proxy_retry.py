@@ -29,12 +29,12 @@ class _Upstream:
             def do_POST(self):
                 n = int(self.headers.get("Content-Length", 0)); self.rfile.read(n)
                 outer.hits += 1
-                status, retry_after = outer.script.pop(0) if outer.script else (200, None)
+                status, retry_after, *err = outer.script.pop(0) if outer.script else (200, None)
                 if status != 200:
                     self.send_response(status)
                     if retry_after is not None:
                         self.send_header("Retry-After", str(retry_after))
-                    self.end_headers(); self.wfile.write(b"{}")
+                    self.end_headers(); self.wfile.write(json.dumps(err[0]).encode() if err else b"{}")
                     return
                 body = json.dumps({"choices": [{"message": {"content": "42"}}],
                                    "usage": {"prompt_tokens": 5, "completion_tokens": 2, "cost": 0.0}}).encode()
@@ -108,6 +108,53 @@ def test_402_is_never_retried_and_names_the_operator(monkeypatch, fast, caplog):
     assert any("OPERATOR ACTION" in r.getMessage() and "402" in r.getMessage() for r in caplog.records)
 
 
+def test_403_is_never_retried_and_names_the_operator(monkeypatch, fast, caplog):
+    """A key with a total spend limit returns 403 on every call once the limit is
+    reached: an operator problem like 402, so never retried and named as one."""
+    import logging
+    with caplog.at_level(logging.ERROR, logger="fugal_subnet.tee.runtime"):
+        status, data, hits, records = _run(monkeypatch, [(403, None)])
+    assert status == 502 and hits == 1 and records == []
+    assert any("OPERATOR ACTION" in r.getMessage() and "403" in r.getMessage() for r in caplog.records)
+
+
+def test_call_deadlines_nest_so_each_layer_reports_before_the_next_gives_up():
+    """One upstream attempt <= the proxy's per-call deadline < the harness's wait,
+    and the retry budget ends inside the deadline. If the harness gave up first,
+    the proxy would write its 502 into a closed socket and the failure would be
+    logged twice as two different errors."""
+    from fugal_subnet.config import HARNESS_CALL_TIMEOUT_S, PROXY_CALL_DEADLINE_S
+    assert rt.PROXY_RETRY_BUDGET_S < PROXY_CALL_DEADLINE_S < HARNESS_CALL_TIMEOUT_S
+    # A 16k answer from a ~50 tok/s model (~330 s) must fit one attempt.
+    assert PROXY_CALL_DEADLINE_S >= 330
+
+
+def test_harness_asks_for_the_v2_answer_budget(monkeypatch):
+    """The harness's request carries HARNESS_MAX_TOKENS (16384): exploration runs on
+    the same harness, so a miner and the reference frame ask for the same answer."""
+    import json as _json
+
+    from fugal_subnet.config import HARNESS_MAX_TOKENS
+    from fugal_subnet.tee import harness as hm
+    seen = {}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return _json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    def fake_urlopen(req, timeout):
+        seen["payload"] = _json.loads(req.data); seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setattr(hm, "urlopen", fake_urlopen)
+    class _P: port = 1
+    assert hm._call_model(_P(), "provider/model", {"prompt": "q"}) == "ok"
+    assert HARNESS_MAX_TOKENS == 16384
+    assert seen["payload"]["max_tokens"] == HARNESS_MAX_TOKENS
+    assert seen["timeout"] == hm.HARNESS_CALL_TIMEOUT_S
+
+
 def test_retry_wait_honours_retry_after_and_the_cap():
     assert 1.0 <= rt._retry_wait(1, None) <= 2.0
     assert rt._retry_wait(1, "7") >= 7.0
@@ -135,3 +182,70 @@ def test_failed_results_carry_canonical_number_types(monkeypatch):
     wire = json.loads(json.dumps(proof.to_dict()))
     from fugal_subnet.tee.proof import BenchmarkProof
     assert BenchmarkProof.from_dict(wire).content_hash() == proof.content_hash()
+
+
+def test_a_reply_over_the_answer_budget_is_named(caplog):
+    """Measured: a provider returned 17,763 completion tokens against max_tokens 16,384. The proxy
+    names the model and the overrun on every such call; within the budget it stays quiet."""
+    import logging
+
+    from fugal_subnet.config import HARNESS_MAX_TOKENS
+    with caplog.at_level(logging.WARNING, logger="fugal_subnet.tee.runtime"):
+        rt._log_cap_overrun("x/model", HARNESS_MAX_TOKENS)
+        assert not caplog.records
+        rt._log_cap_overrun("x/model", 17763)
+    assert any("x/model" in r.getMessage() and "17763" in r.getMessage() for r in caplog.records)
+
+
+def _or402(reason, limit_source):
+    return {"error": {"code": 402, "message": "insufficient budget",
+                      "metadata": {"reason": reason, "limit_source": limit_source}}}
+
+
+IN_FLIGHT = _or402("in_flight_budget_exhausted", "openrouter_in_flight_budget")
+TOO_LARGE = _or402("weight_exceeds_budget", "openrouter_credits")
+
+
+def test_an_in_flight_budget_402_is_retried_like_a_429(monkeypatch, fast, caplog):
+    """OpenRouter refuses a request with 402 when the key's in-flight holds are full, even
+    with a positive balance; the holds release as running calls finish, so it is transient."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="fugal_subnet.tee.runtime"):
+        status, data, hits, records = _run(monkeypatch, [(402, "1", IN_FLIGHT)])
+    assert status == 200 and hits == 2 and len(records) == 1
+    assert any("in-flight budget full" in r.getMessage() for r in caplog.records)
+    assert not any("OPERATOR ACTION" in r.getMessage() for r in caplog.records)
+
+
+def test_a_persistent_in_flight_402_fails_after_the_attempt_cap_and_says_why(monkeypatch, fast, caplog):
+    import logging
+    with caplog.at_level(logging.ERROR, logger="fugal_subnet.tee.runtime"):
+        status, data, hits, records = _run(monkeypatch, [(402, None, IN_FLIGHT)] * 10)
+    assert status == 502 and hits == rt.PROXY_MAX_ATTEMPTS and records == []
+    assert any("in-flight budget stayed full" in r.getMessage() for r in caplog.records)
+
+
+def test_a_request_larger_than_the_whole_budget_is_an_operator_error(monkeypatch, fast, caplog):
+    import logging
+    with caplog.at_level(logging.ERROR, logger="fugal_subnet.tee.runtime"):
+        status, data, hits, records = _run(monkeypatch, [(402, "1", TOO_LARGE)])
+    assert status == 502 and hits == 1 and records == []
+    assert any("OPERATOR ACTION" in r.getMessage() and "weight_exceeds_budget" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.parametrize("body", [{}, {"error": {"code": 402}}, {"error": {"metadata": {"reason": 7}}},
+                                  _or402("insufficient_credits", "openrouter_credits")])
+def test_any_other_402_is_still_the_balance_and_never_retried(monkeypatch, fast, body):
+    status, data, hits, records = _run(monkeypatch, [(402, None, body)])
+    assert status == 502 and hits == 1 and records == []
+
+
+@pytest.mark.parametrize("status", [400, 404, 422])
+def test_an_error_outside_the_retry_list_fails_on_the_first_try(monkeypatch, fast, status):
+    """Only PROXY_RETRYABLE_STATUS is retried. A 400 (bad request) or a 404 (a
+    model OpenRouter no longer serves) will fail again, so retrying it spends
+    up to PROXY_RETRY_BUDGET_S per call and can cost the miner the epoch.
+    (A planted `retryable = True` survived the whole suite.)"""
+    status_out, data, hits, records = _run(monkeypatch, [(status, None)] * 5)
+    assert status_out == 502 and hits == 1 and records == []

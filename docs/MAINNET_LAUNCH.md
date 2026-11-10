@@ -11,14 +11,17 @@ the design.
 
 ## The subnet: finney netuid 70
 
-Registered at block 9364303 (2026-10-26). Read from the chain at block 9422441
-(2026-11-03 02:27 UTC): `start_call` **not yet called**; tempo 360, so every
-neuron runs `FUGAL_EPOCH_INTERVAL=4320`; commit-reveal enabled with a one-epoch
-reveal period; registration open; owner cut 18%; subnet identity unset. Network
-immunity from deregistration ends at block 9796303 (about 2026-12-25); after
-that the chain prunes the non-immune subnet with the lowest *moving* alpha
-price whenever a new subnet registers, and the moving price stays at 0 until
-`start_call`. Every value here moves — re-read it with `--status` before acting.
+Registered at block 9364303 (2026-10-26). **Live under protocol v1.** Read
+from the chain at block 9449357 (2026-11-06 15:13 UTC): `active` True; tempo
+360, so every neuron runs `FUGAL_EPOCH_INTERVAL=4320` (ALIGNED); commit-reveal
+enabled with a one-epoch reveal period; registration open; 256 UIDs, 4
+validators with permits, 194 routable miner axons, 144 UIDs with non-zero
+incentive. The first scored mainnet epochs ran on 2026-11-04 (e00026193 and
+following; `MINER_GUIDE.md`, "A failed model call scores as a wrong answer").
+Network immunity from deregistration ends at block 9796303 (about 2026-12-25);
+after that the chain prunes the non-immune subnet with the lowest *moving*
+alpha price whenever a new subnet registers. Every value here moves — re-read
+it with `--status` before acting.
 The deploy files already name this target: `deploy/dstack/docker-compose.yaml`
 (the testnet twin for rehearsals is `docker-compose.test.yaml`, which also
 sets the warm-up's `FUGAL_EXPLORE_FRACTION=0.5`) and the `validator.env.example`
@@ -35,6 +38,11 @@ and the launch, is a new identity that rejects the frame. The word "testnet"
 in it is a historical name, not a network setting; the network is `--network`
 and `FUGAL_NETWORK`.
 
+Protocol v2 has its own identity, `routing_protocol.identity_v2()`: the label
+`fugal-success-v2` with the v2 token manifest and `data/models_v2.json`. A v2
+reveal or frame cannot be mistaken for a v1 one, and the v1 identity is
+untouched by the flip.
+
 ---
 
 ## Before you spend anything
@@ -49,6 +57,7 @@ will otherwise go looking in the wrong place:
 |---|---|---|
 | The token manifest shipped in the checkout is `reviewed`, not `candidate` | `neurons/validator.py`, `neurons/miner.py` (`--live` only) | **Cleared by #99 (2026-11-02)**: rebuilt from 664 fresh metered calls and promoted; the record is in `SUCCESS_CONTRACT.md`. Any later change to it is a protocol-identity change (image and approved entry rebuilt, evidence reset) |
 | `data/reference_frame.json` exists and matches its pin | `reference_frame.load_bootstrap(require=True)`, `check_safety_invariants.py` | **Shipped and pinned 2026-11-03**, built by `scripts/build_frame_from_calls.py` from 17 × 300 direct, logged, graded calls under the current protocol identity (`data/observations/bootstrap_frame_calls_v1.jsonl`); `scripts/build_bootstrap_frame.py` rebuilds one from published reveals |
+| Both live `deploy/dstack/docker-compose*.yaml` are, byte for byte, the compose a frozen `app-compose*.json` embeds | `scripts/check_safety_invariants.py --release` (plain CI only warns) | Freeze the compose for the released digest (`dstack-cloud prepare`, commit the app-compose.json) and publish its entry; the current composes drifted after the 2026-11-03c freeze (`FUGAL_POOL_CACHE_V2`) |
 | `FUGAL_TEE_MEASUREMENTS` holds at least one `<base>:<compose_hash>` entry | validator startup | A signed `image-v*` release, verified by `scripts/fetch_approved_entries.py` against `deploy/keys/allowed_signers` (first key added 2026-11-03) |
 | No consensus constant is set in the environment on finney | `fingerprint.assert_consensus_overrides_allowed`, by genesis hash, in both neurons | Unset it; only `FUGAL_EPOCH_INTERVAL` and `FUGAL_TEE_MEASUREMENTS` are meant to be set per deployment. On a test or local chain an override starts with a warning, which is how the netuid-552 warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every neuron |
 | `--mock` is not finney | `fingerprint.assert_mock_allowed` | Run `--live` |
@@ -117,6 +126,15 @@ prefers the file, verifies it against the pinned manifest at startup, and
 never touches Hugging Face. Do not publish the file: the datasets carry their
 own licences.
 
+**Protocol v2 has its own pool, and a validator needs it before the flip.**
+With `FUGAL_V2_ACTIVATION_BLOCK` set, the validator loads the v2 pool at
+startup and refuses to start in `--live` if it cannot (`neurons/validator.py`).
+So export it too (`python scripts/export_pool.py --protocol 2`) and place
+`data/benchmarks/pool_v2.json.gz` (or point `FUGAL_POOL_FILE_V2` at it) on
+every validator **before** the restart that sets the block. Without it, every
+validator rebuilds 28,986 questions from Hugging Face on that restart, and an
+upstream outage then is a validator that does not start.
+
 The pool is consensus state: the slice is drawn from it, so a validator and a
 miner with different pools disagree on every question and every proof fails on
 `questions_hash` — an error that names the symptom and never the cause.
@@ -133,7 +151,10 @@ Two things make the default loader non-reproducible:
 Both are now closed by the pinned manifest (`fugal_subnet/benchmarks/
 pool_manifest.json`): `load_all()` skips the gated and unpinned benchmarks by
 name and refuses to start unless the pool it built matches the manifest's
-content hash. Leave `FUGAL_BENCHMARK_POOL` unset on every neuron; a pool file is
+content hash. The v2 pool (`pool_manifest_v2.json`, 28,986 questions from
+open sets only, none gated) is loaded by `load_pool(2)` the same way; a dstack
+miner caches it on its encrypted volume after the first verified load
+(`FUGAL_POOL_CACHE_V2`) and re-verifies it on every read. Leave `FUGAL_BENCHMARK_POOL` unset on every neuron; a pool file is
 accepted only if it verifies against the same manifest, and a deliberately
 different pool must declare `FUGAL_POOL_UNPINNED=1` (local rehearsals only).
 
@@ -200,25 +221,26 @@ cmdline and initrd — so a stock cloud image would need the approved list
 republished on every kernel package update. **A fixed, reproducibly-built guest
 image with a pinned kernel and initrd is still a prerequisite for `--live` on
 mainnet.** dstack now supplies exactly that, and provisioning has been proven
-end to end against a live TD (see [OPEN_WORK.md](OPEN_WORK.md) for what the
+end to end against a live TD (see [REHEARSAL_2026-09-06.md](decisions/REHEARSAL_2026-09-06.md) for what the
 rehearsal did and did not demonstrate). Approved entries are
 `<base>:<compose_hash>` pairs; the procedure for publishing and rotating them
-is [APPROVED_ENTRY_ROTATION.md](APPROVED_ENTRY_ROTATION.md). **No entry exists
-yet for a runtime a current validator would accept**: the four recorded there
-are 2026-09-06/07 testnet images from before the success-contract transition.
-The first `image-v*` release creates the first. With an entry
+is [APPROVED_ENTRY_ROTATION.md](APPROVED_ENTRY_ROTATION.md). The live entries
+are those of the signed `image-v2026.11.03c` release (one per network; the
+frozen app-compose files beside the composes in `deploy/dstack/` are their
+bytes), carried by every mainnet validator since 2026-11-03. The v2 image gets
+its own pair at the flip ("The v2 release, in order", below). With an entry
 published, `--live` is the only honest mode; `--mock` accepts unattested
 proofs and is for local rehearsals. See [TDX_VALIDATION.md](TDX_VALIDATION.md).
 
 ### 6. Miner startup cost
 
-Backbone embeddings for the pool (21,553 questions since the code benchmarks
-were excluded) took **13.2 hours** on an x86_64 laptop and **36 hours** on a
-4-core aarch64 VM **under the legacy embedding profile**; the 2048-token
-profile shipped since 2026-09-21 is heavier per question and has not been
-timed on a TD (MINER_GUIDE, "The first boot embeds the whole pool"). Both measured on real
-pool prompts, which average 330 characters: 0.46 q/s and 0.167 q/s
-respectively. This is startup cost before the miner answers its first query.
+Backbone embeddings for the v1 pool (21,553 questions) under the current
+2048-token profile took **3 h 20 min on a `c3-standard-8`** and about 5 to 6
+hours on a `c3-standard-4` (measured on mainnet TDs, 2026-11; MINER_GUIDE,
+"How to move"). The v2 pool is 28,986 questions, about 35% more. Under the
+legacy profile the same pool took 13.2 hours on an x86_64 laptop and 36 hours
+on a 4-core aarch64 VM, measured on real pool prompts averaging 330
+characters. This is startup cost before the miner answers its first query.
 
 Beware benchmarking this with synthetic prompts. Short ones give 2.5 q/s and
 0.8 q/s — five times too optimistic — because cost scales with sequence length
@@ -268,8 +290,11 @@ tempo-aligned and refuses to register into one that is not, because without
 refused while the neurons log success.
 
 ```bash
-# 1a. Owner half (whoever holds the owner coldkey): identity, start_call,
+# 1a. Owner half (whoever holds the owner coldkey): start_call and
 #     hyperparameters. Idempotent — safe to re-run after any partial failure.
+#     Without --yes it only prints what it would change. Tempo and identity
+#     change only with --set-tempo / --set-identity: never on a live subnet
+#     by accident.
 python scripts/provision_subnet.py --network finney --netuid 70 \
   --owner-wallet <owner> --epoch-interval 4320 --yes
 
@@ -304,6 +329,177 @@ identical weight vectors.
 
 ---
 
+## The v2 release, in order
+
+The protocol v2 flip is three things that must agree: the code on every
+validator, one activation block, and one approved miner image whose compose
+carries that block. In order:
+
+Before the image (each changes what the image measures or carries):
+
+1. **Re-measure the v2 token means on the pinned v2 pool** [PAID ~$5–12, owner
+   approval]. The shipped means were measured on a stand-in sample, not the
+   pinned v2 pool. `scripts/record_token_observations.py --live --protocol 2`,
+   then `scripts/build_token_manifest.py`, reviewed and promoted into both
+   copies (`LIVE_API_VALIDATION.md`). It goes first because the token manifest
+   is hashed into the protocol identity. If a constant or a cost moves,
+   re-check every doc that quotes the v2 numbers.
+2. **Embed Google's TPM intermediate certificates in the v2 miner image.**
+   Without them a Google certificate rotation, or a region other than
+   us-central1, fails every proof. *Code done 2026-11-08:* the miner builds its
+   AK's chain at startup (`tpm.intermediates_for`: vendored, else AIA) and
+   carries it, bound into `content_hash`, in every v2 proof; validators choose
+   same-named issuers by signature. On the testnet rehearsal, check the miner
+   log says "Carrying N TPM intermediate certificate(s)".
+3. **Add a second release signing key** on a separate device, and a
+   key-rotation paragraph in `deploy/keys/README.md`. One key on one machine
+   is one lost laptop from no signed release.
+
+The release:
+
+4. Merge `release/v2` into `main`; cut the CHANGELOG `[Unreleased]` block into
+   `0.3.0` and bump `pyproject.toml`.
+5. Build and sign the v2 image **from `main`**: push a `build-v<date>` tag to
+   build it, then sign `image-v<date>` once on the same commit
+   (APPROVED_ENTRY_ROTATION, steps 1-4; never move a pushed release tag), and
+   pass `scripts/check_safety_invariants.py --release` (live composes frozen,
+   image by digest, `FUGAL_V2_ACTIVATION_BLOCK` set). The draft
+   `image-v2026.11.05b` targets `main` but is tagged on `release/v2`; do not
+   publish it.
+6. **Rehearse the flip on testnet (netuid 552) first** [PAID: GCP TDX VMs].
+   Steps 7–13 with the test compose and a testnet block a few hours out; two
+   or more validators and two or three miners through the flip;
+   `scripts/watch_subnet.py` must show v1 → v2, a first seat, and identical
+   reveals. It is also the first real run of the TD tooling, so run each:
+   `scripts/provision_td.py --inspect` (the base and compose hash the release
+   names) and a push; `scripts/fetch_approved_entries.py --network test`;
+   `scripts/verify_live_miner.py` against a provisioned miner (PASS) and with
+   the old entry and `--expect-reject` (refused); and
+   `scripts/tdx_measurement.py --verify` on a plain TDX VM. v2 has only run on
+   a local chain. Choose the finney block only after this passes.
+   Testnet's validator still carries the September base (`12a1f2f5…`); give it
+   the test entry from the signed v2 release first.
+7. Choose `<ACTIVATION_BLOCK>`: an epoch boundary (a multiple of 360 on
+   finney) at least 24 h ahead of the announcement, so miners can re-provision.
+8. Edit both `deploy/dstack/docker-compose*.yaml`: the v2 image digest (from
+   step 5) and `FUGAL_V2_ACTIVATION_BLOCK=<ACTIVATION_BLOCK>`; drop the
+   testnet twin's `FUGAL_EXPLORE_FRACTION=0.5` (v2 pays nothing from the
+   frame). Uncomment `FUGAL_V2_ACTIVATION_BLOCK` in
+   `deploy/env/validator.env.example` with the real value.
+9. `dstack-cloud prepare` each; commit the two files as
+   `app-compose.frozen-<tag>-{finney,test}.json`;
+   `scripts/check_safety_invariants.py --release` must pass.
+10. Measure the base on a fresh TD booted from the v2 image (it moved once when
+    GCP changed firmware); publish the two entries with
+    `scripts/publish_approved_entry.py` in a signed release.
+11. Every validator: place the v2 pool file (`export_pool.py --protocol 2`,
+    §3), upgrade to the release, set `FUGAL_V2_ACTIVATION_BLOCK`,
+    `FUGAL_VALIDATOR_IP` (its egress IP, recorded on chain at startup) and add
+    the v2 entry beside the current one, restart, before the block. Every
+    validator except the ROOT (the owner's) also sets `FUGAL_FRAME_BOOTSTRAP`
+    to a directory kept synced from the root's reveal bucket
+    (`gsutil -m rsync -r gs://<root-bucket>/<netuid> <dir>` on a timer): that
+    is how it re-syncs after a missed epoch or a lost proof (VALIDATOR_GUIDE,
+    "A missed epoch heals itself"). The root leaves it unset.
+12. Every miner: re-provision on the v2 image before the block (the v2 miner
+    holds its head until the last v1 boundary, then commits it). Once every
+    active validator's IP is on chain, turn on the axon allowlist
+    (`scripts/axon_firewall.py --apply --every 600`, MINER_GUIDE "Protect your
+    axon"); the script refuses while any validator is missing, so validators
+    go first. Check from step 11's logs that every validator shows
+    `validator IP ... on chain`.
+13. After the block: `scripts/watch_subnet.py` for a few epochs; two
+    validators' reveals must agree byte for byte apart from `environment` and
+    `v2_sync` (what `watch_subnet.py` checks) and carry `protocol_version: 2`.
+
+---
+
+## After the first v2 week: revisit m (`CHAMPION_ACCURACY_VALUE`)
+
+Launched at 30 (decided 2026-11-09): one extra correct answer is worth 30
+questions of the anchor's spend, about $0.49, so the whole price range of the
+v2 list is worth about 4 points of accuracy. Correct first, then cheapest:
+a router that keeps the champion's accuracy and cuts its cost wins clearly;
+one that gives up more than ~4 points to save money loses to "always the top
+model". It stays 30 because no v2 accuracy data existed at launch. After a
+week, read the reveals: each head's accuracy and spend per question. If the
+champion is a constant policy (one model, no routing) while routers within a
+point or two of its accuracy are far cheaper, lower m (a consensus constant:
+a coordinated release, re-baseline, docs). Under any m the ideal router (the
+cheapest model that is correct, per question) wins.
+
+## After the flip: remove protocol v1
+
+Protocol v1 stays in the tree until no v1 epoch can occur, because one binary
+scores both rule sets and validators upgrade before the activation block.
+Once the flip has held for a full comparison window (48 epochs), remove v1 in
+one reviewed PR. Each item below changes a hash pin or a consensus path, so the
+PR updates `scripts/check_safety_invariants.py` and `docs/INVARIANTS.md` with
+it. Kept here, next to the launch sequence, so it is not forgotten.
+
+- `data/models.json`, `data/benchmark_tokens_v1.json`, `data/reference_frame.json`,
+  their copies under `fugal_subnet/routing_data/`, and their pins
+- `data/observations/benchmark_tokens_v1.jsonl`, `benchmark_tokens_v2.jsonl`
+  (v1 data despite the name; rename anything kept) and `bootstrap_frame_calls_v1.jsonl`
+- `fugal_subnet/benchmarks/pool_manifest.json` and the v1-only loaders
+  (`gsm8k`, `humaneval`, `livecode`, `gpqa`, the v1 `math`/`mmlu`/`aime`/`ifeval` sets)
+- the v1 scoring modules: `reference_frame.py`, `frontier.py`, `scoring.py`,
+  `dedup.py`, `head_distance.py`, the v1 halves of `evidence.py` and `rewards.py`
+- the v1 branch of `neurons/validator.py` and the hold-until-flip logic of
+  `neurons/miner.py`
+- `slicer.protocol_version_for_boundary` and `FUGAL_V2_ACTIVATION_BLOCK`,
+  once every validator runs v2 unconditionally
+- the v1 sections of `MINER_GUIDE.md`, `VALIDATOR_GUIDE.md`, `INVARIANTS.md`
+  and the README's "v1 until the activation block" sentences
+- split `scripts/` into the folders `scripts/README.md` groups it by
+  (checks, rehearsal, build, ops, miner) in the same PR: CI, the systemd
+  watch unit, the guides and CLAUDE.md name the flat paths, so they move once,
+  after the flip, not during it
+- the tests that exist for v1 payout (`test_frontier`, `test_evidence`'s
+  composite, `test_frame_rebuild`, `test_degenerate_constant_policy`,
+  `test_finding2`–`4`, `test_finding6`'s v1 sampler case,
+  `test_rehearsal_frontier_measured`, `test_seniority`, the dedup cases of
+  `test_finding5`): v2 still computes the frame and dedup as diagnostics, so
+  keep whatever guards those, and delete the rest with the code
+- split the two neuron `main()` functions (`neurons/validator.py`, ~1,240
+  lines with the whole epoch loop; `neurons/miner.py`, ~400) into one
+  function per phase, each unit-tested. Rules inside them can only be tested
+  structurally or end to end today (the 2026-11-08 coverage map: both mains
+  at ~0% unit coverage). Do it with the v1 removal, behind the determinism
+  baseline and the rehearsals, not before the flip
+- group `fugal_subnet/` the same way, in the same PR as the v1 removal: a
+  `fugal_subnet/v2/` package for `champion`, `copy_rule`, `payout`,
+  `shared_grades`, `v2_epoch`, `v2_rebuild`, `epoch_plan` and `evidence`
+  (`tee/`, `benchmarks/`, `attacks/` and `vendor/` already are packages).
+  Not before: every module is part of the measured miner image, so a move
+  changes the image and the imports for no functional gain mid-launch. Drop
+  the dead code found by the 2026-11-08 review with it: `soft_targets.py`,
+  `head_eval.evaluate_head` and its helpers, and `api.py`'s unused
+  `SpendTracker`/`call_model`/`fetch_openrouter_prices` (move what the paid-
+  call safety check still needs into tooling)
+- group `tests/` into folders by theme (v2 protocol, TEE, pool and data,
+  neurons, tooling) once the v1-only tests are gone; ~60 test files find the
+  repo by folder depth, so it is one sweep, done once
+- `scripts/build_frame_from_calls.py` and `scripts/build_bootstrap_frame.py`:
+  the reference frame is v1-only (v2 scores on shared grades, never a frame)
+- the `--protocol 1` defaults of `scripts/export_pool.py`,
+  `scripts/build_pool_manifest.py` and `scripts/record_token_observations.py`:
+  default to 2 at the flip, and drop the flag with v1
+- the v1 rehearsal scenarios a–e in `scripts/dress_rehearsal.py`: they are the
+  only chain tests of a steady-state network (two validators agreeing, many
+  epochs, the real backbone), so replace them with v2 equivalents (seat,
+  payout, copy rule, two-validator agreement) first, then remove the v1 ones
+- `scripts/rehearsal_v2.py` and `dress_rehearsal.py --scenario v2_flip` test
+  the crossing: keep their seat, payout and miss checks as plain v2 tests,
+  drop the flip timeline and the `probe_features` skip machinery
+- the pre-v2 frozen files `app-compose.frozen-2026-11-03c-{finney,test}.json` (03b removed 2026-11-06, retired by its published date)
+  and their entries, once every validator has retired them
+  (`docs/APPROVED_ENTRY_ROTATION.md`)
+- release bookkeeping: the 0.3.0 CHANGELOG cut and `pyproject` version bump
+  happen at the flip; the v1 removal is the release after it
+
+---
+
 ## Wallet handling
 
 Testnet keys in this repo's rehearsal were regenerated unencrypted so the run
@@ -320,16 +516,17 @@ could be automated. **Do not do that on mainnet.**
 
 ## What is still unverified
 
-Honest list, as of this branch:
+Honest list, as of 2026-11-06:
 
 | | Status |
 |---|---|
 | Scoring path determinism across x86_64 and aarch64 | **verified** byte-identical (local, and on netuid 552 with real proofs: three consecutive scored epochs, identical weights on both hosts) |
-| Full pipeline against a real chain, multi-miner, multi-validator | **verified** — local chain, and public testnet with two dstack TDX miners and two validators (`docs/REHEARSAL_2026-09-06.md`) |
+| Full pipeline against a real chain, multi-miner, multi-validator | **verified** — local chain, and public testnet with two dstack TDX miners and two validators (`docs/decisions/REHEARSAL_2026-09-06.md`) |
 | Real DCAP verification and measurement matching | **verified** on real Intel TDX (GCP `c3`, dstack 0.6.0-rc0): proofs verified `UpToDate`, a genuine proof refused against a retired entry |
 | A reproducible TDX guest image with a stable measurement | **exists**: dstack 0.6.0-rc0 UKI on GCP, base `12a1f2f5…9141` in September across seven deploys and two instance sizes, `f4be9383…aa427` on 2026-11-03 after a GCP firmware change (image registers identical); the compose hash rotates with the image and the rotation procedure is `docs/APPROVED_ENTRY_ROTATION.md` |
 | Real OpenRouter billing vs the pinned price table | **measured once**, account-level: within ~5% over four miner-epochs; completions averaged 534 tokens against the 256 assumed, and exploration was ~60% of a cheap head's epoch cost |
-| A real trained head outscoring a random one | **measured** offline (`docs/HEAD_EFFICACY.md`); on chain only two synthetic heads have been scored |
+| A real trained head outscoring a random one | **measured** offline (`docs/decisions/HEAD_EFFICACY.md`) and on mainnet since 2026-11-04 (144 UIDs with non-zero incentive at block 9449357) |
 | Behaviour under adversarial miners over weeks | **never executed** |
-| Miner startup cost on a TD | **measured on the legacy profile**: 7 h 39 m to embed the pool at four threads on a `c3-standard-4`; re-paid on every image rotation because the tool recreates the data disk. **Unmeasured** for the 2048-token profile |
-| An end-to-end epoch under the success-contract runtime (protocol since 2026-09-21) | **never executed** on any chain; the runbook is `SUCCESS_CONTRACT.md` |
+| Miner startup cost on a TD | **measured** on the current profile: 3 h 20 min (`c3-standard-8`) to 5–6 h (`c3-standard-4`) for the v1 pool; re-paid on every image rotation because the tool recreates the data disk; **unmeasured** for the v2 pool (28,986 questions) |
+| An end-to-end epoch under the success-contract runtime | **running on mainnet** since 2026-11-04 (protocol v1) |
+| A protocol v2 epoch on a public chain | **never executed**: rehearsed only on the local chain (`dress_rehearsal.py --scenario v2_flip`, 16/16 on 2026-11-05) |

@@ -9,6 +9,10 @@
     "data/success_conformance.json": {
       "vendored": "conformance.json",
       "sha256": "bb5d00b60711bea749f997115d1a72d203747fe6789d14a60b7a42ef17d33529"
+    },
+    "NOTICE": {
+      "vendored": "NOTICE",
+      "sha256": "709b5c97aa5cae53e7f89970ec2969a68f4e0b6d388bfc2be7f6465c24316263"
     }
   },
   "test_snapshot": {

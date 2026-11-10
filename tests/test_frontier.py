@@ -271,3 +271,20 @@ def test_frontier_is_flat_past_the_most_accurate_model():
 def test_empty_frontier_is_harmless():
     f = Frontier(points=())
     assert f.accuracy_at(1.0) == 0.0 and f.max_accuracy == 0.0
+
+
+def test_a_miner_missing_too_many_epochs_earns_nothing():
+    """LIVENESS_MAX_MISSED_EVIDENCE: a miner absent that long is not paid on
+    stale evidence; its share goes to the miners still serving. (Planting a
+    no-op for the cutoff survived every test.)"""
+    from fugal_subnet.config import LIVENESS_MAX_MISSED_EVIDENCE
+    from fugal_subnet.rewards import compute_weights
+    from fugal_subnet.scoring import MinerRecord
+
+    recs = {
+        5: MinerRecord(uid=5, hotkey="gone", composite_score=0.5,
+                       epochs_missed=LIVENESS_MAX_MISSED_EVIDENCE),
+        6: MinerRecord(uid=6, hotkey="here", composite_score=0.5, epochs_missed=0),
+    }
+    got = dict(zip(*compute_weights(recs, paid_fraction=1.0, burn_uid=0)))
+    assert got.get(5, 0.0) == 0.0 and got[6] == pytest.approx(1.0)

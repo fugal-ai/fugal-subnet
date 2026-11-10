@@ -47,7 +47,13 @@ whenever GCP rolls firmware; see the rotation doc for how a base rotation is run
 `docker-compose.yaml` in this directory is the mainnet compose (`finney`, netuid 70);
 `docker-compose.test.yaml` is its testnet twin (`test`, netuid 552) for rehearsals.
 Copy the one for your network into the project as `docker-compose.yaml`. Pin the
-image by digest.
+image by digest. From the protocol v2 release the compose also carries
+`FUGAL_V2_ACTIVATION_BLOCK=<block>`: the miner reads it from here, and it is
+therefore part of the compose hash, so the activation block is fixed by the
+approved entry itself (MINER_GUIDE § "Moving from v1 to v2").
+
+The pool embedding on first boot scales with the pool: the 13-hour figure
+below was measured on the v1 pool (21,553 questions); the v2 pool is 29,036.
 
 ## Identity → approved entry
 
@@ -55,7 +61,7 @@ image by digest.
 dstack-cloud new fugal-miner && cd fugal-miner        # copy docker-compose.yaml in, set fields above
 dstack-cloud prepare                                   # writes shared/app-compose.json
 python scripts/compute_app_identity.py --compose shared/app-compose.json \
-    --base 12a1f2f56907f80576be553f3d71031ec86f2848877ac05c82db5d8627fc9141
+    --base <base measured on the TD you are approving; f4be9383…aa427 on 2026-11-03>
 # -> FUGAL_TEE_MEASUREMENTS=<base>:<compose_hash>  on EVERY validator
 ```
 
@@ -84,7 +90,8 @@ before you hash anything:
 ```bash
 dstack-cloud deploy            # c3-standard-4 is enough; the machine shape is not in the measurement
 dstack-cloud status            # public IP
-gcloud compute instances add-tags <vm> --tags fugal-miner   # firewall: 8091 world, 8092 operator-only
+gcloud compute instances add-tags <vm> --tags fugal-miner   # firewall: 8091 validators only, 8092 operator-only
+python scripts/axon_firewall.py --network finney --netuid 70 --project <gcp-project>   # dry run, then --apply --every 600
 
 python scripts/provision_td.py --inspect --address http://<ip>:8092      # read instance-id, compose hash
 python scripts/provision_td.py --address http://<ip>:8092 \
@@ -116,7 +123,8 @@ Verify from outside, as a validator would:
 
 ```bash
 nc -vz <ip> 8091
-python scripts/verify_live_miner.py --netuid 552 --uid <uid> --coldkey <any registered> \
-    --measurements <base>:<compose_hash>
+python scripts/verify_live_miner.py --network test --netuid 552 --uid <uid> \
+    --coldkey <validator wallet> --hotkey <its hotkey> \
+    --measurements <base>:<compose_hash>   # a live miner answers only validator-staked hotkeys
 python scripts/verify_live_miner.py ... --measurements <base>:<wrong_hash> --expect-reject
 ```

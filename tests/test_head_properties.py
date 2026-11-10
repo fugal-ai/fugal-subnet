@@ -29,6 +29,7 @@ from hypothesis import strategies as st
 
 from fugal_subnet.config import (
     HEAD_HIDDEN_DIM,
+    HEAD_MAX_BYTES,
     HEAD_MAX_MODEL_ID_LEN,
     HEAD_MAX_MODELS,
 )
@@ -48,8 +49,13 @@ SLOW = settings(
 
 
 def _npz(W, b, models, models_dtype="U100") -> bytes:
+    """A success-contract head (validators refuse any other)."""
+    from fugal_subnet import success_test_fixtures as fx
+
+    z = fx.arrays(W, b, list(models))
+    z["models"] = np.array(models, dtype=models_dtype)
     buf = io.BytesIO()
-    np.savez_compressed(buf, W=W, b=b, models=np.array(models, dtype=models_dtype))
+    np.savez_compressed(buf, **z)
     return buf.getvalue()
 
 
@@ -219,3 +225,12 @@ def test_scoring_is_deterministic_for_same_inputs(seed):
     assert a.cost_efficiency == c.cost_efficiency
     assert a.kl_score == c.kl_score
     assert np.array_equal(a.routing_decisions, c.routing_decisions)
+
+
+def test_an_oversize_head_is_refused_before_it_is_parsed():
+    """HEAD_MAX_BYTES bounds miner bytes BEFORE any decoder sees them (I2): an
+    oversize payload is "too large", never a parse attempt. (Planting a no-op
+    for the cap survived everything: the parse error that follows is also a
+    ValueError, so only the message tells them apart.)"""
+    with pytest.raises(ValueError, match="too large"):
+        load_head_from_npz(b"\0" * (HEAD_MAX_BYTES + 1))

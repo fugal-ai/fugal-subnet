@@ -20,7 +20,9 @@ import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from threading import Thread
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from fugal_subnet.config import PROXY_CALL_DEADLINE_S
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +40,32 @@ _OPENROUTER_BASE = os.getenv(
 # provider's shared pool and every failure was scored as a wrong answer, which
 # put an otherwise frontier-level head 0.11 below the frontier. A bounded retry
 # with backoff turns most of those into answers. Hard limits keep the whole
-# attempt inside the harness's own 200 s wait: at most PROXY_MAX_ATTEMPTS tries,
-# no new try after PROXY_RETRY_BUDGET_S, each wait capped at PROXY_MAX_WAIT_S.
+# attempt inside PROXY_CALL_DEADLINE_S (wall clock, retries included), which is
+# itself inside the harness's wait (HARNESS_CALL_TIMEOUT_S): at most
+# PROXY_MAX_ATTEMPTS tries, no new try after PROXY_RETRY_BUDGET_S, each wait
+# capped at PROXY_MAX_WAIT_S.
 # 401/402 are never retried: they mean the operator's key or balance, and
 # they are logged as such so a payment problem is never read as model quality.
 PROXY_RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
-PROXY_OPERATOR_STATUS = {401: "unauthorized key", 402: "payment required: the account balance is exhausted"}
+PROXY_OPERATOR_STATUS = {
+    401: "unauthorized key",
+    402: "payment required: the account balance is exhausted",
+    # A key with a total spend limit returns 403 once the limit is reached, on
+    # every call: an operator problem exactly like 402, never transient.
+    403: "forbidden: the key's spend limit is reached or the key is disabled",
+}
+# OpenRouter's in-flight spending budget (prepaid accounts below a balance
+# threshold, and newer accounts): every running request holds its input plus
+# max_tokens at the endpoint's prices, and a request that does not fit is
+# refused with 402 before it reaches a provider, even with a positive balance.
+# The 402 body's metadata.reason says which: "in_flight_budget_exhausted" is
+# temporary (the holds of running calls release) and is retried like a 429;
+# "weight_exceeds_budget" means this one request is larger than the whole budget
+# and no retry can help. Any other 402 is the balance itself.
+OPENROUTER_402_TRANSIENT = "in_flight_budget_exhausted"
+OPENROUTER_402_TOO_LARGE = "weight_exceeds_budget"
 PROXY_MAX_ATTEMPTS = 3
-PROXY_RETRY_BUDGET_S = 120.0
+PROXY_RETRY_BUDGET_S = 300.0   # no new attempt after this; the call itself ends by PROXY_CALL_DEADLINE_S
 PROXY_MAX_WAIT_S = 20.0
 
 
@@ -62,20 +82,175 @@ def _retry_wait(attempt: int, retry_after: str | None) -> float:
     return min(PROXY_MAX_WAIT_S, base)
 
 
+def _log_cap_overrun(model_id: str, completion_tokens) -> None:
+    """Name any reply that exceeded the harness's answer budget.
+
+    Some providers bound reasoning tokens loosely or not at all, so a reply can
+    bill more than `HARNESS_MAX_TOKENS` asked for (measured 2026-11-04: one model
+    returned 17,763 against 16,384). Nothing is refused, because the call
+    happened and its tokens are attested and billed either way; the warning is so
+    the operator sees which model, how far over and how often, from every call
+    rather than from a one-off probe.
+    """
+    from fugal_subnet.config import HARNESS_MAX_TOKENS
+    try:
+        n = int(completion_tokens or 0)
+    except (TypeError, ValueError):
+        return
+    if n > HARNESS_MAX_TOKENS:
+        logger.warning("Model %s returned %d completion tokens, over the %d answer budget (+%d)",
+                       model_id, n, HARNESS_MAX_TOKENS, n - HARNESS_MAX_TOKENS)
+
+
+def _402_reason(err) -> str:
+    """metadata.reason from an OpenRouter 402 body, or "" when there is none."""
+    try:
+        body = json.loads(err.read() or b"{}")
+        meta = (body.get("error") or {}).get("metadata") or {}
+        reason = meta.get("reason", "")
+        return reason if isinstance(reason, str) else ""
+    except Exception:
+        return ""
+
+
+class UpstreamDeadline(TimeoutError):
+    """The upstream call ran past PROXY_CALL_DEADLINE_S of wall-clock time."""
+
+
+def _post_with_deadline(req, deadline: float) -> bytes:
+    """POST `req` and return the body, or raise by `deadline` (time.monotonic()).
+
+    A socket timeout alone is not a deadline: it bounds each read, and OpenRouter
+    keeps a non-streamed request alive while the model reasons, so a call with a
+    "420 s" timeout was measured at 917 s. Here every read gets the time left as
+    its timeout, and a watchdog shuts the socket down at the deadline, which also
+    ends a read blocked inside a chunk. The connection is closed either way.
+    A non-2xx status raises urllib's HTTPError with the body, as urlopen did.
+    """
+    import http.client
+    import io
+    import socket
+    import ssl
+    from urllib.error import HTTPError
+    from urllib.parse import urlsplit
+
+    def left() -> float:
+        return deadline - time.monotonic()
+
+    if left() <= 0:
+        raise UpstreamDeadline("no time left before the call deadline")
+    u = urlsplit(req.full_url)
+    if u.scheme == "https":
+        conn = http.client.HTTPSConnection(u.hostname, u.port, timeout=left(),
+                                           context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(u.hostname, u.port, timeout=left())
+    fired = threading.Event()
+    sock_box: list = []
+
+    def watchdog() -> None:
+        fired.set()
+        for s in sock_box:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    timer = threading.Timer(max(0.0, left()), watchdog)
+    timer.daemon = True
+    timer.start()
+    try:
+        path = (u.path or "/") + (f"?{u.query}" if u.query else "")
+        conn.connect()
+        sock = conn.sock          # kept: http.client drops conn.sock on Connection: close
+        # The watchdog shuts the connection down through a DUPLICATE descriptor.
+        # When the reply closes the connection (Content-Length plus HTTP/1.0 or
+        # "Connection: close"), getresponse() calls conn.close(), which marks
+        # `sock` closed while the response still reads through it: any call on
+        # `sock` then raises EBADF. shutdown() acts on the TCP connection, not
+        # the descriptor, so the duplicate still ends a blocked read.
+        # Not sock.dup(): SSLSocket.dup() raises NotImplementedError, and every
+        # production call is HTTPS. A plain socket on a dup'd descriptor shuts
+        # down the same TCP connection under the TLS layer.
+        ctl = socket.socket(sock.family, sock.type, sock.proto, fileno=os.dup(sock.fileno()))
+        sock_box.append(ctl)
+        if fired.is_set():
+            raise UpstreamDeadline("deadline reached while connecting")
+        conn.request(req.get_method(), path, body=req.data, headers=dict(req.header_items()))
+        sock.settimeout(max(0.001, left()))
+        resp = conn.getresponse()
+        chunks = []
+        while True:
+            if fired.is_set() or left() <= 0:
+                raise UpstreamDeadline("deadline reached while reading the reply")
+            try:
+                sock.settimeout(max(0.001, left()))
+            except OSError:
+                # `sock` was marked closed by getresponse(); the read keeps the
+                # timeout set before it, and the watchdog still enforces the deadline.
+                pass
+            chunk = resp.read1(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        if fired.is_set():
+            raise UpstreamDeadline("deadline reached while reading the reply")
+        body = b"".join(chunks)
+        if not 200 <= resp.status < 300:
+            raise HTTPError(req.full_url, resp.status, resp.reason, resp.headers, io.BytesIO(body))
+        return body
+    except (TimeoutError, OSError, http.client.HTTPException) as e:
+        if isinstance(e, (UpstreamDeadline, HTTPError)):
+            raise
+        if fired.is_set() or left() <= 0:
+            raise UpstreamDeadline(f"deadline reached ({type(e).__name__})") from e
+        raise
+    finally:
+        timer.cancel()
+        conn.close()
+        for s in sock_box:
+            try:
+                s.close()
+            except OSError:
+                pass
+
+
 def _fetch_upstream(req, model_id: str) -> bytes:
-    """POST to the upstream with the retry policy above. Returns the body or raises."""
+    """POST to the upstream with the retry policy above. Returns the body or raises.
+
+    PROXY_CALL_DEADLINE_S is wall-clock time for the whole call, retries included.
+    """
     from urllib.error import HTTPError
     started = time.time()
+    deadline = time.monotonic() + PROXY_CALL_DEADLINE_S
     attempt = 0
     while True:
         attempt += 1
-        remaining = 180.0 - (time.time() - started)
         try:
-            with urlopen(req, timeout=max(20.0, min(180.0, remaining))) as resp:
-                return resp.read()
+            return _post_with_deadline(req, deadline)
+        except UpstreamDeadline:
+            logger.warning(
+                "Upstream call for %s hit the %.0f s wall-clock deadline; connection closed, "
+                "recorded as failed. The provider bills a non-streamed reply in full, so the "
+                "call may still be charged.", model_id, PROXY_CALL_DEADLINE_S,
+            )
+            raise
         except HTTPError as e:
             code = e.code
-            if code in PROXY_OPERATOR_STATUS:
+            transient = False
+            if code == 402:
+                reason = _402_reason(e)
+                if reason == OPENROUTER_402_TRANSIENT:
+                    transient = True
+                elif reason == OPENROUTER_402_TOO_LARGE:
+                    logger.error(
+                        "Upstream 402 for %s: this one request is larger than the key's whole "
+                        "OpenRouter in-flight budget (weight_exceeds_budget). OPERATOR ACTION "
+                        "REQUIRED: add credits; not retried; the call is recorded as failed",
+                        model_id,
+                    )
+                    raise
+            if code in PROXY_OPERATOR_STATUS and not transient:
                 logger.error(
                     "Upstream %s for %s: %s. OPERATOR ACTION REQUIRED (OpenRouter key or "
                     "balance); not retried; the call is recorded as failed",
@@ -83,11 +258,21 @@ def _fetch_upstream(req, model_id: str) -> bytes:
                 )
                 raise
             elapsed = time.time() - started
-            if code in PROXY_RETRYABLE_STATUS and attempt < PROXY_MAX_ATTEMPTS and elapsed < PROXY_RETRY_BUDGET_S:
+            retryable = code in PROXY_RETRYABLE_STATUS or transient
+            if retryable and attempt < PROXY_MAX_ATTEMPTS and elapsed < PROXY_RETRY_BUDGET_S:
                 wait = _retry_wait(attempt, e.headers.get("Retry-After") if e.headers else None)
-                logger.warning("Upstream %s for %s; retry %d/%d in %.1fs", code, model_id, attempt, PROXY_MAX_ATTEMPTS - 1, wait)
+                logger.warning("Upstream %s%s for %s; retry %d/%d in %.1fs", code,
+                               " (OpenRouter in-flight budget full)" if transient else "",
+                               model_id, attempt, PROXY_MAX_ATTEMPTS - 1, wait)
                 time.sleep(wait)
                 continue
+            if transient:
+                logger.error(
+                    "Upstream 402 for %s: the key's OpenRouter in-flight budget stayed full "
+                    "through %d attempts; the call is recorded as failed. A low balance throttles "
+                    "concurrent calls: add credits (see MINER_GUIDE, harness concurrency)",
+                    model_id, attempt,
+                )
             raise
 
 
@@ -188,6 +373,7 @@ class MeteringProxy:
 
                     cost = proxy.price_call(model_id, prompt_tokens, completion_tokens)
                     resp_hash = hashlib.sha256(resp_body).hexdigest()
+                    _log_cap_overrun(model_id, completion_tokens)
 
                     provider_cost = 0.0
                     try:
@@ -289,8 +475,13 @@ class TEERuntime:
     mock: bool = True
     proxy: MeteringProxy | None = None
 
-    def setup(self, api_key: str = "", proxy_port: int = 8199) -> MeteringProxy:
+    def setup(self, api_key: str = "", proxy_port: int = 8199,
+              prices: dict | None = None) -> MeteringProxy:
         self.proxy = MeteringProxy(port=proxy_port, api_key=api_key)
+        if prices:
+            # The epoch's protocol table (routing_protocol.price_table(version)), so a v2 call is
+            # priced on v2 rates; with none, the proxy loads the v1 table as before.
+            self.proxy.prices = dict(prices)
         self.proxy.start()
         return self.proxy
 

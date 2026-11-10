@@ -31,12 +31,15 @@ WHAT IT MIRRORS, exactly:
   - grading: `graders.grade(build_grader_task(q), text, allow_exec=
     HARNESS_ALLOW_EXEC)`, the harness's own line;
   - aggregation: `aggregate_observations` (one voter here) and
-    `accumulate_exploration` in epoch-sized batches, so decay matches a
-    live run of the same length.
+    `accumulate_exploration`. By default every row folds in ONE undecayed
+    batch, which is how the shipped data/reference_frame.json was built
+    (8fa02e2) and what tests/test_frame_from_calls.py proves reproduces its
+    pin. `--batch N` folds N rows per simulated epoch instead, so decay
+    matches a live run of that length; that is a different frame.
 
     python scripts/build_frame_from_calls.py --live --api-key-file ~/.fugal/openrouter.key \
         --per-model 300 --max-usd 40                     # [PAID ~$1-2 per model]
-    python scripts/build_frame_from_calls.py --build-only  # fold an existing log into a frame
+    python scripts/build_frame_from_calls.py --build-only  # fold the committed log: the pinned frame
 
 Mock mode needs FUGAL_OPENROUTER_BASE pointing at scripts/stub_upstream.py.
 """
@@ -186,14 +189,15 @@ def record(proxy, scheduled, log_path: str, max_usd: float, concurrency: int,
     return totals
 
 
-def build_frame(log_path: str, batch: int):
-    """Fold the log into a ReferenceFrame exactly as a live run of the same length would.
+def build_frame(log_path: str, batch: int = 0):
+    """Fold the log into a ReferenceFrame, reproducibly from the committed log.
 
-    Rows are grouped into epoch-sized batches in a fixed order (model, question)
-    so the result is reproducible from the committed log, and each batch goes
-    through aggregate_observations (one voter) and accumulate_exploration, which
-    applies the per-epoch decay. Rows from a different protocol identity are
-    refused: the frame carries the identity and a validator refuses a mismatch.
+    Rows are sorted (model, question). `batch` <= 0 folds them all as one
+    undecayed batch (the shipped frame's recipe); a positive `batch` groups
+    them into epoch-sized batches, each through aggregate_observations (one
+    voter) and accumulate_exploration, which applies the per-epoch decay. Rows
+    from a different protocol identity are refused: the frame carries the
+    identity and a validator refuses a mismatch.
     """
     from fugal_subnet.reference_frame import (
         Observation,
@@ -209,6 +213,8 @@ def build_frame(log_path: str, batch: int):
         raise SystemExit(f"{len(bad)} rows were recorded under a different protocol identity; "
                          "the frame must be rebuilt from calls made under the current one")
     rows.sort(key=lambda r: (r["model"], r["question_id"]))
+    if batch <= 0:
+        batch = max(1, len(rows))
     frame = None
     for i in range(0, len(rows), batch):
         obs = [Observation(question_id=r["question_id"], model=r["model"], correct=bool(r["correct"]),
@@ -248,8 +254,10 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", default=DEFAULT_SEED)
     ap.add_argument("--question-ids", default="",
                     help="file with one question_id per line: call EVERY model on these (dense block)")
-    ap.add_argument("--batch", type=int, default=150,
-                    help="rows per simulated epoch when folding (the testnet warm-up's quota)")
+    ap.add_argument("--batch", type=int, default=0,
+                    help="rows per simulated epoch when folding; 0 (default) folds every row in one "
+                         "undecayed batch, the shipped frame's recipe. The default used to be 150, "
+                         "which builds a different, decayed frame than the pinned one")
     ap.add_argument("--max-usd", type=float, default=40.0, help="hard cap on this run's priced spend")
     ap.add_argument("--api-key-file", default="", help="0600 file holding the OpenRouter key (--live)")
     ap.add_argument("--live", action="store_true", help="real upstream, real spend [PAID]")

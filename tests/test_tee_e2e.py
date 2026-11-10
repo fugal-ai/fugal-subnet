@@ -228,7 +228,7 @@ def test_full_epoch_miner_to_weights(stubbed_model_call):
     else:
         # Headroom alone is not enough: a router that beats the frontier at its
         # own price but answers far fewer questions than the best model is not
-        # what the subnet is buying (the quality floor, docs/I3_DECISION.md).
+        # what the subnet is buying (the quality floor, docs/decisions/I3_DECISION.md).
         assert rec2.composite_score == 0.0
         assert uids2 == [0], "no headroom over the frontier, or under the floor, must burn"
 

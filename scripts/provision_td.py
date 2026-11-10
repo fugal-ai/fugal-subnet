@@ -5,8 +5,8 @@
 
     python scripts/provision_td.py --address http://<td-ip>:8092 \
         --approved <base_measurement>:<compose_hash> --instance-id <hex> \
-        --head data/rehearsal/head_cheap_a.npz \
-        --wallet fugal_owner2 --hotkey td1 \
+        --head data/my_head.npz \
+        --wallet <miner wallet> --hotkey <its hotkey> \
         --api-key-file ~/.fugal/openrouter.key
 
 `--inspect` asks the TD for a fresh quote over a nonce and prints what it IS —
@@ -76,6 +76,33 @@ def _hotkey_files(wallet_root: str, wallet: str, hotkey: str) -> tuple[bytes, by
     with open(pub_path, "rb") as f:
         pub = f.read()
     return hot, pub, ss58
+
+
+def head_protocols(head_bytes: bytes) -> list[int]:
+    """The protocol versions whose benchmark this head can enter, by the harness's
+    own check (routing_protocol.benchmark_costs_for). Empty means every validator
+    refuses it.
+
+    Loading the .npz is not enough: a legacy W/b/models head loads and is then
+    refused by every validator ("legacy preference heads cannot enter the
+    success benchmark"), after the operator has paid for a TD that earns
+    nothing.
+    """
+    from fugal_subnet.head_eval import load_head_from_npz
+    from fugal_subnet.routing_protocol import benchmark_costs_for
+
+    try:
+        head = load_head_from_npz(head_bytes)
+    except ValueError:
+        return []          # not a head any validator loads (e.g. no success contract)
+    ok = []
+    for version in (1, 2):
+        try:
+            benchmark_costs_for(head, version)
+        except Exception:  # noqa: BLE001 - any refusal means "not this protocol"
+            continue
+        ok.append(version)
+    return ok
 
 
 def inspect(address: str, timeout: int) -> int:
@@ -198,12 +225,15 @@ def main() -> int:
         raise SystemExit("--approved must be <base_measurement>:<compose_hash> with a "
                          "64-hex compose hash; a bare base would push to ANY app on the image")
 
-    from fugal_subnet.head_eval import load_head_from_npz
     from fugal_subnet.tee.provision import push, validate_payload
 
     with open(args.head, "rb") as f:
         head = f.read()
-    load_head_from_npz(head)  # refuse to push a head the validator would reject
+    protocols = head_protocols(head)  # refuse to push a head every validator would reject
+    if not protocols:
+        raise SystemExit(f"{args.head} cannot enter the benchmark under protocol v1 or v2 "
+                         "(a legacy head, or one built against another manifest); every "
+                         "validator would refuse it. Rebuild it with scripts/train_head.py.")
 
     hot, pub, ss58 = _hotkey_files(args.wallet_path, args.wallet, args.hotkey)
 
@@ -222,7 +252,8 @@ def main() -> int:
         payload["openrouter_api_key"] = key
     validate_payload(payload)
 
-    print(f"head               {len(head)} bytes sha256={hashlib.sha256(head).hexdigest()}")
+    print(f"head               {len(head)} bytes sha256={hashlib.sha256(head).hexdigest()} "
+          f"(valid for protocol {', '.join(f'v{v}' for v in protocols)})")
     print(f"hotkey             {args.wallet}/{args.hotkey} = {ss58}")
     print(f"approved entry     {base[:16]}…:{app[:16]}…")
     print(f"instance_id        {args.instance_id or '(ANY — --allow-any-instance)'}")

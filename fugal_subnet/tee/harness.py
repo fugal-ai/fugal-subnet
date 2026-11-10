@@ -22,13 +22,24 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
-from fugal_subnet.benchmarks.slicer import select_slice
-from fugal_subnet.config import HARNESS_ALLOW_EXEC, HARNESS_CONCURRENCY
-from fugal_subnet.exploration import expected_exploration
+from fugal_subnet import epoch_plan
+from fugal_subnet.config import (
+    HARNESS_ALLOW_EXEC,
+    HARNESS_CALL_TIMEOUT_S,
+    HARNESS_CONCURRENCY,
+    HARNESS_MAX_TOKENS,
+)
 from fugal_subnet.graders import grade
 from fugal_subnet.grading_task import build_grader_task
 from fugal_subnet.head_eval import HeadArtifact, load_head_from_npz
-from fugal_subnet.routing_protocol import BENCHMARK_LAMBDA, benchmark_costs, identity
+from fugal_subnet.routing_protocol import (
+    BENCHMARK_LAMBDA,
+    benchmark_costs,
+    benchmark_costs_for,
+    identity,
+    identity_v2,
+    reasoning_for,
+)
 from fugal_subnet.tee.proof import BenchmarkProof, QuestionResult, compute_questions_hash
 from fugal_subnet.tee.runtime import MeteringProxy
 from fugal_subnet.vendor import success_contract as contract
@@ -48,6 +59,7 @@ def run_benchmark(
     explore_models: list[str] | None = None,
     explore_size: int = 0,
     hotkey: str = "",
+    protocol_version: int = 1,
 ) -> BenchmarkProof:
     """Execute the routing benchmark inside the TEE.
 
@@ -71,11 +83,13 @@ def run_benchmark(
         BenchmarkProof with routing results and attestation.
     """
     head = load_head_from_npz(head_bytes)
-    costs = benchmark_costs(head)
+    # v1 keeps calling benchmark_costs exactly as before; v2 prices on its own manifest and table.
+    costs = benchmark_costs(head) if protocol_version == 1 else benchmark_costs_for(head, protocol_version)
     weights_hash = hashlib.sha256(head_bytes).hexdigest()
 
     nonce_bytes = bytes.fromhex(nonce) if len(nonce) == 64 else nonce.encode()
-    questions = select_slice(nonce_bytes, benchmark_pool, slice_size)
+    # One selection entry point for miner and validator (epoch_plan, INVARIANTS I1).
+    questions = epoch_plan.scored_slice(protocol_version, nonce_bytes, benchmark_pool, slice_size)
 
     question_ids = [q["question_id"] for q in questions]
     questions_hash = compute_questions_hash(question_ids)
@@ -116,8 +130,8 @@ def run_benchmark(
     # attack; the interleave removes the cheap version of it.
     if explore_models and explore_size > 0:
         pool_by_id = {q["question_id"]: q for q in benchmark_pool}
-        explore_map = expected_exploration(
-            nonce_bytes, benchmark_pool, set(question_ids), explore_models, explore_size,
+        explore_map = epoch_plan.exploration_plan(
+            protocol_version, nonce_bytes, benchmark_pool, set(question_ids), explore_models, explore_size,
         )
         scheduled += [
             (pool_by_id[qid], explore_map[qid], True)
@@ -131,13 +145,13 @@ def run_benchmark(
         nonce_bytes, f"order:{item[0]['question_id']}".encode("utf-8"), hashlib.sha256,
     ).digest())
     outcomes = {
-        (q["question_id"], is_explore): (response_text, failed, cost, p_tok, c_tok)
-        for q, _model, is_explore, response_text, failed, cost, p_tok, c_tok
-        in _call_all(proxy, call_order, epoch_id)
+        (q["question_id"], is_explore): (response_text, failed, cost, p_tok, c_tok, lat)
+        for q, _model, is_explore, response_text, failed, cost, p_tok, c_tok, lat
+        in _call_all(proxy, call_order, epoch_id, protocol_version)
     }
 
     for q, model_id, is_explore in scheduled:
-        response_text, failed, cost, prompt_tokens, completion_tokens = outcomes[
+        response_text, failed, cost, prompt_tokens, completion_tokens, latency_ms = outcomes[
             (q["question_id"], is_explore)
         ]
         # grade() needs a grader task dict, not a raw loader question: it reads
@@ -166,6 +180,7 @@ def run_benchmark(
             completion_tokens=int(completion_tokens),
             is_exploration=is_explore,
             failed=failed,
+            latency_ms=int(latency_ms),
         ))
 
     proof = BenchmarkProof(
@@ -175,7 +190,7 @@ def run_benchmark(
         questions_hash=questions_hash,
         weights_hash=weights_hash,
         source_hash=source_hash,
-        routing_protocol=identity(),
+        routing_protocol=identity() if protocol_version == 1 else identity_v2(),
         results=results,
         total_cost_usd=proxy.total_cost,
         per_model_costs=proxy.per_model_costs,
@@ -208,7 +223,7 @@ def current_request_id() -> str:
     return getattr(_request_ctx, "request_id", "")
 
 
-def _call_all(proxy, scheduled, epoch_id):
+def _call_all(proxy, scheduled, epoch_id, protocol_version: int = 1):
     """Make every scheduled model call, HARNESS_CONCURRENCY at a time, and yield
     (question, model_id, is_exploration, text, failed, cost, prompt_tokens,
     completion_tokens) in the ORDER SCHEDULED — never completion order. Cost is
@@ -223,25 +238,31 @@ def _call_all(proxy, scheduled, epoch_id):
         q, model_id, _explore = item
         rid = f"{epoch_id}:{q['question_id']}:{model_id}"
         _request_ctx.request_id = rid
+        started = time.monotonic()
         try:
-            text = _call_model(proxy, model_id, q)
+            # v2 sends each model's single pinned reasoning setting; v1 calls exactly as before.
+            setting = reasoning_for(protocol_version, model_id) if protocol_version != 1 else None
+            text = (_call_model(proxy, model_id, q, reasoning=setting) if setting
+                    else _call_model(proxy, model_id, q))
         finally:
             _request_ctx.request_id = ""
+        latency_ms = int(round((time.monotonic() - started) * 1000))
         # A reply that is not text is a wrong answer, never an abort. One
         # aborted question used to take the whole proof.
-        return rid, (text is None), ("" if text is None else text)
+        return rid, (text is None), ("" if text is None else text), latency_ms
 
     if not scheduled:
         return
     with ThreadPoolExecutor(max_workers=HARNESS_CONCURRENCY) as pool:
         outcomes = list(pool.map(one, scheduled))
-    for (q, model_id, explore), (rid, failed, text) in zip(scheduled, outcomes):
+    for (q, model_id, explore), (rid, failed, text, latency_ms) in zip(scheduled, outcomes):
         mine = [r for r in proxy.records if r.request_id == rid]
         yield (
             q, model_id, explore, text, failed,
             sum(r.cost_usd for r in mine),
             sum(r.prompt_tokens for r in mine),
             sum(r.completion_tokens for r in mine),
+            latency_ms,
         )
 
 
@@ -249,6 +270,7 @@ def _call_model(
     proxy: MeteringProxy,
     model_id: str,
     question: dict,
+    reasoning: dict | None = None,
 ) -> str | None:
     """Call a model via the MeteringProxy.
 
@@ -261,7 +283,11 @@ def _call_model(
     payload = json.dumps({
         "model": model_id,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 2048,
+        "max_tokens": HARNESS_MAX_TOKENS,
+        # Protocol v2 pins exactly one OpenRouter `reasoning` setting per model
+        # (routing_protocol.reasoning_for). Sent only when given, so a v1 call is
+        # byte-identical to before.
+        **({"reasoning": reasoning} if reasoning else {}),
     }).encode()
 
     req = Request(
@@ -273,11 +299,11 @@ def _call_model(
     )
 
     try:
-        # Slightly longer than the proxy's own 180 s upstream timeout, so the
-        # proxy's 502 reaches us before we give up on the proxy; otherwise the
-        # proxy writes into a closed socket (BrokenPipe) and the failure is
-        # logged twice as two different errors.
-        with urlopen(req, timeout=200) as resp:
+        # Longer than the proxy's own per-call deadline (PROXY_CALL_DEADLINE_S),
+        # so the proxy's 502 reaches us before we give up on the proxy;
+        # otherwise the proxy writes into a closed socket (BrokenPipe) and the
+        # failure is logged twice as two different errors.
+        with urlopen(req, timeout=HARNESS_CALL_TIMEOUT_S) as resp:
             data = json.loads(resp.read())
         return _text_of(data)
     except Exception:

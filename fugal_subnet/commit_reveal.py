@@ -40,6 +40,31 @@ def compute_commit_hash(questions: list[dict], grader_hash: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def write_json_atomic(path: str, obj: object) -> None:
+    """Write `obj` as JSON so the file is either absent or complete, never partial.
+
+    A crash or a full disk during `json.dump` on the final path left a
+    truncated `reveal.json` that the publisher then uploaded and whose hash it
+    committed on chain, with the `.published` marker stopping the retry from
+    ever replacing it. Write to a sibling temp file, fsync, rename: the rename
+    is atomic and the bytes are on disk before it.
+    """
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # Neither a half-written temp file nor the final path is left behind.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def commit_epoch(epoch_id: str, questions: list[dict], block_hash: str) -> EpochCommitment:
     gh = grader_hash()
     commit_hash = compute_commit_hash(questions, gh)
@@ -52,11 +77,18 @@ def commit_epoch(epoch_id: str, questions: list[dict], block_hash: str) -> Epoch
         block_hash=block_hash,
     )
 
+    # The commitment is computed in memory; the file is what reveal_epoch
+    # checks against later. A failed write (full disk, permissions) must not
+    # take the epoch with it: weights are still set (I6), and the reveal then
+    # finds no commitment, returns False and is logged as commit_reveal_failed.
     epoch_dir = os.path.join(EPOCH_DIR, epoch_id)
-    os.makedirs(epoch_dir, exist_ok=True)
-    commit_path = os.path.join(epoch_dir, "commit.json")
-    with open(commit_path, "w") as f:
-        json.dump(asdict(commitment), f, indent=2)
+    try:
+        os.makedirs(epoch_dir, exist_ok=True)
+        write_json_atomic(os.path.join(epoch_dir, "commit.json"), asdict(commitment))
+    except OSError as e:
+        logger.error("Epoch %s commitment %s could not be written (%s); this epoch's "
+                     "reveal will fail, its weights will not", epoch_id, commit_hash, e)
+        return commitment
 
     logger.info("Epoch %s committed: %s", epoch_id, commit_hash)
     return commitment
@@ -73,6 +105,9 @@ def reveal_epoch(
     scores: dict[int, dict],
     weights: dict[int, float],
     exploration: list[dict] | None = None,
+    protocol_version: int = 1,
+    v2_fields: dict | None = None,
+    frame_excluded_coldkeys: list[str] | None = None,
 ) -> bool:
     """Verify the commitment and publish the full epoch artifact.
 
@@ -90,11 +125,14 @@ def reveal_epoch(
         logger.error("No commitment found for epoch %s", epoch_id)
         return False
 
-    with open(commit_path) as f:
-        commitment = json.load(f)
-
-    committed_grader_hash = commitment["grader_hash"]
-    expected = commitment["commit_hash"]
+    try:
+        with open(commit_path) as f:
+            commitment = json.load(f)
+        committed_grader_hash = commitment["grader_hash"]
+        expected = commitment["commit_hash"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        logger.error("Commitment for epoch %s is unreadable (%s); not revealing", epoch_id, e)
+        return False
     actual = compute_commit_hash(questions, committed_grader_hash)
 
     if actual != expected:
@@ -135,6 +173,14 @@ def reveal_epoch(
             key=lambda e: (e.get("question_id", ""), e.get("model", ""),
                            e.get("coldkey", "")),
         ),
+        # The operators whose exploration samples the detectors kept OUT of
+        # the frame this epoch (reference_frame.implausible_exploration and
+        # disagreeing_exploration). Every observation above is published,
+        # excluded ones included, so a rebuild from this reveal can only
+        # reach the live frame if it knows which voters the live epoch
+        # dropped; before this field existed it re-admitted them and a
+        # rebuilt validator valued the frontier from a different frame (I1).
+        "frame_excluded_coldkeys": sorted(set(frame_excluded_coldkeys or [])),
         "scores": {str(k): v for k, v in scores.items()},
         "weights": {str(k): v for k, v in weights.items()},
         # What these numbers were computed with. Two validators publishing
@@ -144,10 +190,31 @@ def reveal_epoch(
         "environment": environment_fingerprint(),
         "consensus_digest": consensus_digest(),
     }
+    # Protocol v2 fields are added only from the activation boundary, so a v1
+    # reveal is byte-for-byte what it was. `protocol_version` says which rules
+    # scored the epoch. `v2_fields` (fugal_subnet/v2_epoch.run_v2_epoch) carry
+    # `shared_grades` (every (question, model) cell's coldkey-median grade and
+    # attested completion tokens), each UID's failed questions, and the seat
+    # decision, so anyone can recompute every head's v2 grades and spends for
+    # the epoch from this reveal alone, and the paired NV from the window's
+    # reveals; a rebuild from reveals reproduces them.
+    if protocol_version >= 2:
+        reveal["protocol_version"] = int(protocol_version)
+        fields = dict(v2_fields or {})
+        reveal["shared_grades"] = list(fields.pop("shared_grades", []))
+        for key in sorted(fields):
+            reveal[key] = fields[key]
 
+    # Called BEFORE set_weights, so a reveal that cannot be written (full
+    # disk, a value JSON cannot encode) is a failed reveal, never an exception
+    # that ends the epoch with no weights set (I6). Nothing partial is left.
     reveal_path = os.path.join(epoch_dir, "reveal.json")
-    with open(reveal_path, "w") as f:
-        json.dump(reveal, f, indent=2)
+    try:
+        write_json_atomic(reveal_path, reveal)
+    except (OSError, TypeError, ValueError) as e:
+        logger.error("Epoch %s reveal could not be written (%s); weights are still set",
+                     epoch_id, e)
+        return False
 
     logger.info("Epoch %s revealed and verified: %s", epoch_id, expected)
     return True

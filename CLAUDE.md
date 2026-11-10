@@ -4,8 +4,9 @@ Read [AGENTS.md](AGENTS.md) for the full project architecture, file map, SDK
 details, and common gotchas. Everything below is a summary of the most critical
 rules.
 
-> **Workspace note.** This repo is one of four under `../../CLAUDE.md` — read that map first.
-> It is the only **public** Fugal repo: assume anything written here is world-readable.
+> This is the only **public** Fugal repo: assume anything written here is
+> world-readable. Findings that are exploitable on the live subnet go through
+> a GitHub security advisory, never a public issue or PR (SECURITY.md).
 
 ## Critical Constraints
 
@@ -24,10 +25,11 @@ rules.
    (SHA256 checked in CI). Any byte change breaks consensus. It is excluded from
    ruff via `per-file-ignores`. `grading_task.py` is not the grader, but it
    decides what the grader sees — a change there changes every grade.
-7. **`data/models.json` is hash-pinned too.** It is the consensus cost
-   denominator: an unreviewed price edit silently re-scores every miner. Update
-   the pin in `scripts/check_safety_invariants.py` in the same commit, and say
-   why.
+7. **`data/models.json` (v1) and `data/models_v2.json` (v2) are hash-pinned
+   too.** They are the consensus cost denominator: an unreviewed price edit
+   silently re-scores every miner. Update the pin in
+   `scripts/check_safety_invariants.py` in the same commit, and say why. The
+   copies under `fugal_subnet/routing_data/` must stay byte-identical.
 8. **Epoch identity has one source**, `slicer.epoch_id_for_block`. A second
    formatting of the epoch id is a consensus break — it already happened once,
    and it stopped the subnet setting weights at all.
@@ -38,25 +40,27 @@ rules.
 ## Quick Reference
 
 ```bash
-# Lint
-ruff check .
-
-# Unit + integration tests (no API spend)
-python tests/test_integration.py
+# Lint, and the full suite the way CI runs it (no API spend)
+uv run ruff check .
+uv run pytest -q                      # -m "not slow" for a quick local loop
 
 # Attack suites (grader output, hostile miner input, forged TEE proofs)
-python -m fugal_subnet.attacks.run_attacks
-python -m fugal_subnet.attacks.run_miner_attacks
-python -m fugal_subnet.attacks.run_tee_attacks
+uv run python -m fugal_subnet.attacks.run_attacks
+uv run python -m fugal_subnet.attacks.run_miner_attacks
+uv run python -m fugal_subnet.attacks.run_tee_attacks
 
 # Scoring determinism (I1) — --perturb simulates a second host
-python scripts/check_determinism.py --perturb
+uv run python scripts/check_determinism.py --perturb
 
-# Safety invariants (grader hash, no-pickle, no paid defaults)
-python scripts/check_safety_invariants.py
+# Safety invariants (pins, no-pickle, env classification; --release adds the launch gate)
+uv run python scripts/check_safety_invariants.py
 
 # Shipped neurons against a real local chain (Docker, no spend)
-python scripts/dress_rehearsal.py --scenario all
+uv run python scripts/dress_rehearsal.py --scenario all
+
+# Protocol v2 flip rehearsal: on the local chain, and in process (no Docker)
+uv run python scripts/dress_rehearsal.py --scenario v2_flip
+uv run python scripts/rehearsal_v2.py
 ```
 
 ## Project Layout

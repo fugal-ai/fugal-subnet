@@ -27,7 +27,9 @@ RUN uv sync --frozen --no-dev --extra tee --no-install-project
 
 COPY fugal_subnet/ fugal_subnet/
 COPY neurons/ neurons/
-COPY scripts/ scripts/
+# scripts/ is deliberately NOT copied: nothing inside the TD runs a script
+# (the miner imports none; the operator-side tools run on the operator's
+# machine), and every byte here is measured surface.
 COPY data/ data/
 RUN uv sync --frozen --no-dev --extra tee \
     && groupadd --gid 10001 fugal \

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.evaluate_success_contract import load_progress, save_progress
+from scripts.experiments.evaluate_success_contract import load_progress, save_progress
 
 
 def test_interrupted_checkpoint_preserves_previous_progress(tmp_path, monkeypatch):

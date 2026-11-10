@@ -12,21 +12,29 @@ deterministic, stratified sample of the pinned pool, and writes rows that
 
     # $0 dry run against the stub (the default is --mock, which REFUSES to
     # talk to the real upstream):
-    python scripts/stub_upstream.py --pool pool.json --port 8799 &
+    python scripts/export_pool.py --protocol 2
+    python scripts/stub_upstream.py --pool data/benchmarks/pool_v2.json.gz --port 8799 &
     FUGAL_OPENROUTER_BASE=http://127.0.0.1:8799 \\
-      python scripts/record_token_observations.py --per-model 2
+      python scripts/record_token_observations.py --protocol 2 --per-model 2
 
     # Real calls [PAID]: the key comes from a 0600 file, never argv or the
     # shell history, and the run stops at --max-usd.
-    python scripts/record_token_observations.py --live \\
+    python scripts/record_token_observations.py --live --protocol 2 \\
       --api-key-file ~/.fugal/openrouter.key --per-model 40 --max-usd 12
 
+--protocol switches everything protocol-specific: the pinned pool, the model
+table (and its reasoning settings and prices) and, for 2, the v2 category mix.
+--pool-file, --models and --categories override one piece each.
+
+Rows go to results/token_observations_protocol<N>.jsonl by default, never a
+checked-in file: promoting a run into data/observations/ is a reviewed step.
 Re-runs resume: (model, question) pairs already in --out are skipped, so a run
 cut short by the budget can be topped up.
 """
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -38,7 +46,12 @@ from concurrent.futures import ThreadPoolExecutor
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-DEFAULT_OUT = os.path.join(ROOT, "data", "observations", "benchmark_tokens_v2.jsonl")
+# Never a checked-in file. This used to be data/observations/benchmark_tokens_v2.jsonl,
+# v1's shipped evidence: a v2 run appended v2 rows into it, and a fresh
+# re-measure "resumed" past every pair already recorded there and made no calls.
+DEFAULT_OUT = os.path.join(ROOT, "results", "token_observations_protocol{protocol}.jsonl")
+MODELS_TABLE = {1: os.path.join(ROOT, "data", "models.json"),
+                2: os.path.join(ROOT, "data", "models_v2.json")}
 DEFAULT_SEED = "fugal-token-observations-2026-11"
 
 
@@ -63,7 +76,9 @@ def _git_commit() -> str:
         return ""
 
 
-def plan(pool: list[dict], models: list[str], per_model: int, seed: str) -> list[tuple[str, dict]]:
+def plan(pool: list[dict], models: list[str], per_model: int, seed: str,
+         categories: dict[str, str] | None = None,
+         targets: dict[str, float] | None = None) -> list[tuple[str, dict]]:
     """A deterministic, benchmark-stratified sample per model.
 
     Same nonce machinery as an epoch slice, so the sample has the pool's shape
@@ -71,15 +86,53 @@ def plan(pool: list[dict], models: list[str], per_model: int, seed: str) -> list
     K rows happen to be. Different models get different questions, which is
     what the live benchmark does too.
     """
-    from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice
+    from fugal_subnet.benchmarks.slicer import derive_nonce, select_slice, select_slice_v2
 
     seed_hash = "0x" + hashlib.sha256(seed.encode()).hexdigest()
     out = []
     for model in models:
         nonce = derive_nonce(f"obs:{model}", seed_hash)
-        for q in select_slice(nonce, pool, per_model):
+        # Protocol v2: the sample has the v2 slice's category mix (category-first,
+        # largest remainder), so the token means describe what a v2 epoch asks.
+        sample = (select_slice_v2(nonce, pool, per_model, targets, categories)
+                  if categories else select_slice(nonce, pool, per_model))
+        for q in sample:
             out.append((model, q))
     return out
+
+
+def read_pool(path: str) -> list[dict]:
+    """A materialised pool: JSON, or the .json.gz scripts/export_pool.py writes."""
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def resolve_inputs(protocol: int, models_path: str = "", pool_file: str = "",
+                   categories_path: str = ""):
+    """(model table, pool, categories) for this protocol; each override wins.
+
+    Protocol 2 used to change only the reasoning settings: the pool stayed the
+    v1 pool (load_all) and the sample the v1 slice method unless --pool-file
+    and --categories were both given, and the documented v2 command gave
+    neither. So the v2 re-measure sampled v1 questions -- D-010, "anchor
+    measured on the wrong pool", repeated by the tool meant to fix it.
+    """
+    from fugal_subnet.benchmarks.loader import load_all, load_all_v2
+    from fugal_subnet.config import BENCHMARK_CATEGORY_V2
+
+    with open(models_path or MODELS_TABLE[protocol], encoding="utf-8") as f:
+        table = json.load(f)
+    if pool_file:
+        pool = read_pool(pool_file)
+    else:
+        pool = load_all_v2(strict=True) if protocol == 2 else load_all(strict=True)
+    if categories_path:
+        with open(categories_path, encoding="utf-8") as f:
+            categories = json.load(f)
+    else:
+        categories = dict(BENCHMARK_CATEGORY_V2) if protocol == 2 else None
+    return table, pool, categories
 
 
 def already_recorded(path: str) -> set[tuple[str, str]]:
@@ -95,7 +148,7 @@ def already_recorded(path: str) -> set[tuple[str, str]]:
 
 
 def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
-           provenance: dict) -> dict:
+           provenance: dict, reasoning: dict | None = None) -> dict:
     """Make the calls through the proxy, append one JSONL row per completed call."""
     import threading
 
@@ -123,7 +176,9 @@ def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
         rid = f"obs:{model}:{q['question_id']}"
         _request_ctx.request_id = rid
         try:
-            text = _call_model(proxy, model, q)
+            setting = (reasoning or {}).get(model)
+            # v1 runs call exactly as before; v2 adds the model's pinned reasoning setting.
+            text = _call_model(proxy, model, q, reasoning=setting) if setting else _call_model(proxy, model, q)
         finally:
             _request_ctx.request_id = ""
         mine = [r for r in proxy.records if r.request_id == rid]
@@ -183,8 +238,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--per-model", type=int, default=40)
-    ap.add_argument("--models", default=os.path.join(ROOT, "data", "models.json"))
-    ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--models", default="",
+                    help="Price table to measure (default: data/models.json, or models_v2.json for --protocol 2)")
+    ap.add_argument("--out", default="",
+                    help="JSONL to append to (default: results/token_observations_protocol<N>.jsonl)")
     ap.add_argument("--seed", default=DEFAULT_SEED)
     ap.add_argument("--max-usd", type=float, default=12.0,
                     help="Stop scheduling calls once the table-priced total reaches this")
@@ -194,7 +251,16 @@ def main(argv=None) -> int:
                     help="Call the real upstream [PAID]. Default is --mock, which requires "
                          "FUGAL_OPENROUTER_BASE to name a stub and refuses the real endpoint.")
     ap.add_argument("--mock", action="store_true", help="(default)")
+    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2),
+                    help="2: the pinned v2 pool, the v2 table with each model's pinned `reasoning` "
+                         "setting, and the v2 category mix, as a v2 miner sees them")
+    ap.add_argument("--pool-file", default="",
+                    help="Pool to sample from instead of the pinned one (JSON or .json.gz)")
+    ap.add_argument("--categories", default="",
+                    help="JSON {benchmark: category} overriding the v2 categories (v2 default: "
+                         "config.BENCHMARK_CATEGORY_V2)")
     args = ap.parse_args(argv)
+    args.out = args.out or DEFAULT_OUT.format(protocol=args.protocol)
 
     if args.live:
         if not args.api_key_file:
@@ -219,13 +285,16 @@ def main(argv=None) -> int:
 
     # Imports after the environment is settled: runtime.py reads the upstream
     # base at import time.
-    from fugal_subnet.benchmarks.loader import load_all, pool_hash
-    from fugal_subnet.config import HARNESS_CONCURRENCY
+    from fugal_subnet.benchmarks.loader import pool_hash
+    from fugal_subnet.config import CATEGORY_TARGETS_V2, HARNESS_CONCURRENCY
     from fugal_subnet.tee.runtime import MeteringProxy
 
-    models = [r["id"] for r in json.load(open(args.models, encoding="utf-8"))]
-    pool = load_all(strict=True)
-    scheduled = plan(pool, models, args.per_model, args.seed)
+    table, pool, categories = resolve_inputs(args.protocol, args.models, args.pool_file,
+                                             args.categories)
+    models = [r["id"] for r in table]
+    reasoning = {r["id"]: r["reasoning"] for r in table if r.get("reasoning")} if args.protocol == 2 else None
+    scheduled = plan(pool, models, args.per_model, args.seed,
+                     categories=categories, targets=CATEGORY_TARGETS_V2 if categories else None)
     seen = already_recorded(args.out)
     scheduled = [(m, q) for m, q in scheduled if (m, q["question_id"]) not in seen]
     print(f"{len(models)} models x {args.per_model} questions = {len(models) * args.per_model} "
@@ -241,11 +310,15 @@ def main(argv=None) -> int:
         "script_commit": _git_commit(),
         "upstream": "openrouter" if args.live else os.environ.get("FUGAL_OPENROUTER_BASE", ""),
         "seed": args.seed,
+        "protocol": args.protocol,
     }
     proxy = MeteringProxy()
+    from fugal_subnet.api import load_prices
+    proxy.prices = load_prices(args.models or MODELS_TABLE[args.protocol])  # the table being measured
     proxy.start()
     try:
-        totals = record(proxy, scheduled, args.out, args.max_usd, HARNESS_CONCURRENCY, provenance)
+        totals = record(proxy, scheduled, args.out, args.max_usd, HARNESS_CONCURRENCY, provenance,
+                        reasoning=reasoning)
     finally:
         proxy.stop()
     print(f"recorded {totals['rows']} rows ({totals['failed']} failed calls), table cost "

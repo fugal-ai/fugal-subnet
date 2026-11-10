@@ -158,6 +158,83 @@ def test_state_from_a_release_with_extra_fields_still_loads(tmp_path, caplog):
     assert any("some_future_field" in r.message for r in caplog.records)
 
 
+def _crash_between_the_renames(mod, monkeypatch, path, epoch):
+    """save_state up to its second rename, then a power loss."""
+    real_replace = mod.os.replace
+
+    def crash_on_the_second_rename(src, dst):
+        if src.endswith(".tmp"):
+            raise SystemExit("power loss")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", crash_on_the_second_rename)
+    with pytest.raises(SystemExit):
+        mod.save_state(_records(mod), [1], [1.0], epoch, None, path=path)
+    monkeypatch.setattr(mod.os, "replace", real_replace)
+
+
+def test_a_crash_between_the_two_renames_resumes_from_the_completed_save(
+        tmp_path, monkeypatch, caplog):
+    """save_state moves the file to .bak, then renames the new one in. A crash
+    between the two left no state file, and load_state started from scratch:
+    empty evidence and the bootstrap frame while every peer kept its history.
+    The .tmp by then holds the epoch just applied, so that is what resumes,
+    not the .bak one epoch behind (independent review, 2026-11-08)."""
+    mod = _mod()
+    from fugal_subnet.scoring import MinerRecord
+    path = str(tmp_path / "state.json")
+    mod.save_state(_records(mod), [1], [1.0], 5, None, path=path)
+    _crash_between_the_renames(mod, monkeypatch, path, 6)
+    assert not pathlib.Path(path).exists()
+    assert pathlib.Path(path + ".bak").exists() and pathlib.Path(path + ".tmp").exists()
+
+    state = mod.load_state(MinerRecord, path=path)
+    assert state["last_epoch_index"] == 6 and state["records"][1].hotkey == "hk1"
+    assert any("completed save" in r.message for r in caplog.records)
+    # The next save completes normally from there.
+    mod.save_state(_records(mod), [1], [1.0], 7, None, path=path)
+    assert mod.load_state(MinerRecord, path=path)["last_epoch_index"] == 7
+
+
+def test_an_unreadable_interrupted_save_falls_back_to_the_backup(tmp_path, monkeypatch, caplog):
+    mod = _mod()
+    from fugal_subnet.scoring import MinerRecord
+    path = str(tmp_path / "state.json")
+    mod.save_state(_records(mod), [1], [1.0], 5, None, path=path)
+    _crash_between_the_renames(mod, monkeypatch, path, 6)
+    pathlib.Path(path + ".tmp").write_text('{"truncated": ')
+    state = mod.load_state(MinerRecord, path=path)
+    assert state["last_epoch_index"] == 5
+    assert any("missing" in r.message and "its .tmp aside" in r.message
+               for r in caplog.records)
+
+
+def test_a_crash_in_the_very_first_save_resumes_from_it(tmp_path, monkeypatch):
+    mod = _mod()
+    from fugal_subnet.scoring import MinerRecord
+    path = str(tmp_path / "state.json")
+    _crash_between_the_renames(mod, monkeypatch, path, 0)
+    assert not pathlib.Path(path + ".bak").exists()
+    assert mod.load_state(MinerRecord, path=path)["last_epoch_index"] == 0
+
+
+def test_no_file_and_no_backup_is_a_first_start(tmp_path):
+    mod = _mod()
+    from fugal_subnet.scoring import MinerRecord
+    state = mod.load_state(MinerRecord, path=str(tmp_path / "state.json"))
+    assert state["last_epoch_index"] == -1 and state["records"] == {}
+
+
+def test_a_backup_that_cannot_be_loaded_says_how_to_start_fresh(tmp_path):
+    mod = _mod()
+    from fugal_subnet.scoring import MinerRecord
+    path = str(tmp_path / "state.json")
+    pathlib.Path(path + ".bak").write_text('{"records": {}}')     # another protocol's state
+    with pytest.raises(ValueError, match="namespace") as e:
+        mod.load_state(MinerRecord, path=path)
+    assert "its .bak and its .tmp aside" in str(e.value)
+
+
 def test_a_corrupt_file_with_no_backup_still_fails_loudly(tmp_path):
     mod = _mod()
     from fugal_subnet.scoring import MinerRecord
@@ -165,3 +242,25 @@ def test_a_corrupt_file_with_no_backup_still_fails_loudly(tmp_path):
     pathlib.Path(path).write_text("nope")
     with pytest.raises(ValueError, match="Cannot resume"):
         mod.load_state(MinerRecord, path=path)
+
+
+# ------------------------------------------------ pinned metagraph --
+
+def test_a_failed_pinned_metagraph_read_is_reported_not_silent():
+    """The fallback to the live metagraph is a known divergence cause; the
+    epoch log has to carry it, so metagraph_at says whether it pinned."""
+    mod = _mod()
+
+    class _Pinned:
+        def metagraph(self, netuid, block=None):
+            return ("mg", block)
+
+    class _Pruned:
+        def metagraph(self, netuid, block=None):
+            raise RuntimeError("state pruned")
+
+    assert mod.metagraph_at(_Pinned(), 7, 123, "live") == (("mg", 123), True)
+    assert mod.metagraph_at(_Pruned(), 7, 123, "live") == ("live", False)
+    src = VALIDATOR.read_text(encoding="utf-8")
+    assert "metagraph_unpinned" in src
+    assert 'rec = MinerRecord(uid=uid, hotkey="", current_head_hash=h)' in src

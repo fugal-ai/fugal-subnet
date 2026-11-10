@@ -53,7 +53,9 @@ to a commit and a digest should not approve it.
 
 The channel, built 2026-10-14 (diligence finding 7):
 
-1. **Image.** Push a tag `image-v<date>`; `.github/workflows/image.yml` builds
+1. **Image.** Push a BUILD tag `build-v<date>` (not the release tag: that is
+   signed once, in step 4, and never moved; a moved tag is refused by a
+   validator that fetched it earlier); `.github/workflows/image.yml` builds
    the image, pushes it to `ghcr.io/<org>/fugal-miner` **by digest** (public,
    so any validator can pull what it approves), writes the digest into a copy
    of `deploy/dstack/docker-compose.yaml`, and drafts a release carrying both.
@@ -62,18 +64,29 @@ The channel, built 2026-10-14 (diligence finding 7):
 2. **Compose.** Run `dstack-cloud prepare` with that compose (README in
    `deploy/dstack/`), commit the frozen `app-compose.json`, and have a second
    person recompute its hash from the committed bytes.
-3. **Note.** `python scripts/publish_approved_entry.py --digest <digest>
-   --commit <sha> --compose deploy/dstack/app-compose.frozen-<date>.json
-   --base <base> --tag image-v<date>` prints the note with the completed entry.
-4. **Sign.** `git tag -s image-v<date>` with a key listed in
-   `deploy/keys/allowed_signers` (SSH signing; the file is the trust root and
-   is added to by reviewed pull request), push the tag, and
-   `gh release create image-v<date> --notes-file notes.md --verify-tag`.
+3. **Note and tag message.** `python scripts/publish_approved_entry.py
+   --digest <digest> --commit <sha> --base <base> --tag image-v<date>
+   --compose deploy/dstack/app-compose.frozen-<tag>-finney.json
+   --compose deploy/dstack/app-compose.frozen-<tag>-test.json
+   --tag-message tag-message.txt > notes.md` writes both networks' entries:
+   one `approved-entry <network>: <base>:<compose_hash>` line each in the tag
+   message, mirrored in the note.
+4. **Sign.** On the same commit as the build tag, once:
+   `git tag -s image-v<date> -F tag-message.txt` with a key listed
+   in `deploy/keys/allowed_signers` (SSH signing; the file is the trust root
+   and is added to by reviewed pull request), push the tag, and
+   `gh release create image-v<date> --notes-file notes.md --verify-tag`. The
+   entries are what the tag signs; the note is for people.
 5. **Validators.** `python scripts/fetch_approved_entries.py --tag
-   image-v<date>` verifies the tag signature against the committed signers and
-   prints the `FUGAL_TEE_MEASUREMENTS` line. It never edits the environment;
-   adding the entry alongside the current one, restarting, and retiring the
-   old one after the window below is the operator's act.
+   image-v<date> --network <finney|test>` verifies the tag signature against
+   the committed signers, reads that network's entry from the signed message
+   (refusing a note that disagrees; the note is read with `gh` if installed,
+   else from GitHub's public API), and prints the `FUGAL_TEE_MEASUREMENTS`
+   line. It never edits the environment; adding the entry alongside the
+   current one, restarting, and retiring the old one after the window below
+   is the operator's act. Releases whose tag message carries no entry lines
+   (`image-v2026.11.03b`, `03c`) are refused by it; validators keep the
+   entries they already run from those.
 
 A validator does not check GitHub at startup. Its environment is
 authoritative, on purpose: a validator that cannot start because GitHub is
@@ -85,10 +98,10 @@ down is a worse failure than one that needs an operator to run step 5.
 | `12a1f2f5…9141:12d945d2…3910` | `59039d01…692a` | `45729c2` | 2026-09-06 | 2026-09-07 (never verified; TDs recreated) |
 | `12a1f2f5…9141:00354525…ab0d` | `9d7916c3…e0a9` | `d9fa3a5` | 2026-09-07 | 2026-11-03 (private-registry image; pre-success-contract protocol; testnet only) |
 | `12a1f2f5…9141:41de1e4c…9e10` | `e4c2deff…6ca4` | `37495ae` | 2026-09-07 | 2026-11-03 (same) |
-| `f4be9383…aa427:dcd0dd8d…2d7f` (**test / 552**, warm-up; compose sets `FUGAL_EXPLORE_FRACTION=0.5`) | `3f6e3e2d…fda12` (`image-v2026.11.03b`, public ghcr) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
-| `f4be9383…aa427:ed2be85f…85c4` (**finney / 70**, mainnet) | `3f6e3e2d…fda12` (same image) | `bac2a33` (image), this PR's merge (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
-| `f4be9383…aa427:c9b5c43b…0dad8` (**test / 552**, warm-up twin) | `843460e6…4a6f8` (`image-v2026.11.03c`, public ghcr; #121 retries) | `1a0bce0` (image), this PR's merge (compose) | 2026-11-03 | — |
-| `f4be9383…aa427:9ab870cf…f166` (**finney / 70**, mainnet) | `843460e6…4a6f8` (same image) | `1a0bce0` (image), this PR's merge (compose) | 2026-11-03 (base re-measured on the first 03c TD, 23:16 UTC: unchanged) | — ; the 03b entry stays approved beside it for the 48 h window |
+| `f4be9383…aa427:dcd0dd8d…2d7f` (**test / 552**, warm-up; compose sets `FUGAL_EXPLORE_FRACTION=0.5`) | `3f6e3e2d…fda12` (`image-v2026.11.03b`, public ghcr) | `bac2a33` (image), `46507ce` (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
+| `f4be9383…aa427:ed2be85f…85c4` (**finney / 70**, mainnet) | `3f6e3e2d…fda12` (same image) | `bac2a33` (image), `46507ce` (compose) | 2026-11-03 | **2026-11-06 00:00 UTC** (hard date, published; see below) |
+| `f4be9383…aa427:c9b5c43b…0dad8` (**test / 552**, warm-up twin) | `843460e6…4a6f8` (`image-v2026.11.03c`, public ghcr; #121 retries) | `1a0bce0` (image), `79ab299` (compose) | 2026-11-03 | — |
+| `f4be9383…aa427:9ab870cf…f166` (**finney / 70**, mainnet) | `843460e6…4a6f8` (same image) | `1a0bce0` (image), `79ab299` (compose) | 2026-11-03 (base re-measured on the first 03c TD, 23:16 UTC: unchanged) | — (the only live entries since 03b retired on 2026-11-06) |
 
 **03b retirement is a hard date.** The two `image-v2026.11.03b` entries retire at
 **2026-11-06 00:00 UTC**, published 2026-11-04, 48 h after the 03c release plus
@@ -132,6 +145,21 @@ re-embed with margin: **48 hours minimum** for a compose-hash rotation, longer
 for a base rotation, because that one also needs the dstack image re-uploaded
 to the cloud project (about 8 minutes, measured, but it is a new moving part).
 
+**Protocol switches are the exception (v2).** A compose-hash rotation inside one
+protocol version runs both entries side by side for the window above. A
+protocol switch can't: from the activation block every validator scores under
+the new rules, so a proof from the old image can't be scored after it. For v2
+the notice before the activation block is therefore also the whole overlap:
+at least 24 hours, with the v2 code, model list and pool public on
+`release/v2` ahead of the announcement so operators can prepare early. The old
+entries retire at the activation block. The activation block itself travels in
+the v2 compose (`FUGAL_V2_ACTIVATION_BLOCK` in `deploy/dstack/docker-compose.yaml`,
+which the miner image reads), so choosing it is what fixes the v2 compose hash:
+freeze the compose after the block is chosen, not before, and publish that
+entry. `scripts/check_safety_invariants.py` reports a live compose that no
+frozen app-compose embeds (a warning in CI, a failure with `--release`, the
+launch gate), so an edit after a freeze cannot ship unnoticed.
+
 ## What must not happen
 
 - **A bare base entry.** `<base>` alone approves any application on the image.
@@ -149,8 +177,8 @@ to the cloud project (about 8 minutes, measured, but it is a new moving part).
 From any machine holding a registered hotkey:
 
 ```bash
-python scripts/verify_live_miner.py --netuid <N> --uid <uid> \
-    --coldkey <wallet> --measurements <new entry>          # PASS
+python scripts/verify_live_miner.py --network <finney|test> --netuid <N> --uid <uid> \
+    --coldkey <validator wallet> --hotkey <its hotkey> --measurements <new entry>   # PASS
 python scripts/verify_live_miner.py ... --measurements <old entry> --expect-reject   # PASS after the miner moved
 ```
 

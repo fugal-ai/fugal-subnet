@@ -10,7 +10,7 @@ import torch
 
 from fugal_subnet import routing_protocol
 from fugal_subnet import success_test_fixtures as fixtures
-from fugal_subnet.head_eval import evaluate_success_head, load_head_from_npz
+from fugal_subnet.head_eval import HeadArtifact, evaluate_success_head, load_head_from_npz
 from fugal_subnet.reference_frame import ReferenceFrame, rebuild_from_reveals
 from fugal_subnet.success_training import fit, grouped_split, masked_bce
 from fugal_subnet.tee.harness import _route_question
@@ -55,8 +55,9 @@ def test_lambda_environment_cannot_change_benchmark_route():
 def test_old_head_cannot_enter_benchmark_and_candidates_cannot_deploy():
     buf = io.BytesIO()
     np.savez(buf, W=np.zeros((1, 1024)), b=np.zeros(1), models=np.array(["a"]))
-    with pytest.raises(ValueError, match="legacy"):
-        routing_protocol.benchmark_costs(load_head_from_npz(buf.getvalue()))
+    # Refused at the load, before any protocol reads it.
+    with pytest.raises(ValueError, match="success-contract"):
+        load_head_from_npz(buf.getvalue())
     manifest = json.loads(routing_protocol.MANIFEST_PATH.read_text())
     # The shipped manifest is reviewed (2026-11-02) and deploys; the same
     # file with its status rolled back to candidate must not.
@@ -96,12 +97,8 @@ def test_old_reference_frame_and_reveals_are_rejected(tmp_path):
 
 
 def test_incompatible_validator_state_never_silently_resumes(tmp_path):
-    import sys
-
-    from tests import bt_mock
-    with mock.patch.dict(sys.modules, {"bittensor": bt_mock}):
-        from neurons import validator
     from fugal_subnet.rewards import MinerRecord
+    from neurons import validator
     path = tmp_path / "state.json"
     path.write_text('{"records": {}}')
     with mock.patch.object(validator, "STATE_PATH", str(path)), pytest.raises(ValueError, match="namespace"):
@@ -113,3 +110,18 @@ def test_miner_statistics_must_match_manifest_even_with_correct_identity():
     z["mean_in_tokens"][0] += 1
     with pytest.raises(ValueError, match="disagree"):
         c.check_manifest(z, fixtures.manifest(["a"]))
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_a_legacy_head_is_refused_by_name_under_both_protocols(version):
+    """Both protocols refuse a pre-success-contract head with the same named
+    reason, so an operator reads the cause, not a TypeError from deeper in:
+    the archive is refused when it is loaded, and an artifact without a
+    contract built in memory is refused by name by each protocol."""
+    buf = io.BytesIO()
+    np.savez(buf, W=np.zeros((1, 1024)), b=np.zeros(1), models=np.array(["a"]))
+    with pytest.raises(ValueError, match="success-contract"):
+        load_head_from_npz(buf.getvalue())
+    bare = HeadArtifact(W=np.zeros((1, 1024)), b=np.zeros(1), models=["a"], commit_hash="0" * 64)
+    with pytest.raises(ValueError, match="legacy"):
+        routing_protocol.benchmark_costs_for(bare, version)

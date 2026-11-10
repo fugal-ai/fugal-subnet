@@ -9,16 +9,11 @@ Fugal supports Linux or WSL2 with Python 3.11–3.12 (3.10 was dropped on 2026-1
 ```bash
 git clone https://github.com/fugal-ai/fugal-subnet.git
 cd fugal-subnet
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --locked --extra dev      # exactly the committed lock, as CI installs it
 ```
 
-For an installation that exactly follows the committed dependency lock:
-
-```bash
-uv sync --locked --extra dev
-```
+Without uv, `python3 -m venv .venv && pip install -e ".[dev]"` works but can
+drift from the lockfile; see the gate below.
 
 ## Before opening a pull request
 
@@ -29,8 +24,8 @@ scripts/gate.sh
 That is the whole gate, and it is the only thing worth trusting before pushing.
 
 **Do not hand-roll a subset.** This section used to list three commands run
-against whatever `python` was on the path. CI runs nine, in **two different
-environments**, and the gap has already cost a red `main`: `dcap-qvl` lives in
+against whatever `python` was on the path. CI runs far more, in **several
+different environments**, and the gap has already cost a red `main`: `dcap-qvl` lives in
 the optional `[tee]` extra, a local `.venv` happened to have it, and tests that
 imported it unconditionally passed locally nine times and failed in CI. A venv
 that drifts from the lockfile hides exactly the failures CI exists to find.
@@ -45,15 +40,21 @@ that drifts from the lockfile hides exactly the failures CI exists to find.
   them. A step added to CI is picked up on the next run with no edit here, so
   this document cannot fall behind CI again the way it just did.
 
-`scripts/gate.sh test` or `scripts/gate.sh tee` runs one job's environment if
-you are iterating. Exit status is 0 only if every step of every selected job
-passed.
+`scripts/gate.sh test|tee|quality|success` runs one job if you are iterating.
+Exit status is 0 only if every step of every selected job passed. For a faster
+inner loop, `uv run pytest -q -m "not slow"` skips the few statistical tests
+that take most of the suite's time; the gate and CI always run them.
+
+It does not run the backbone-download half of CI's `success-contract` job or
+the `docker build`. A change to the backbone path, the vendored contract or the
+Dockerfile is known green only once CI says so.
 
 None of it requires a chain or paid API calls. For a local chain run of the
 shipped neurons (Docker required, no spend):
 
 ```bash
-python scripts/dress_rehearsal.py --scenario all
+uv run python scripts/dress_rehearsal.py --scenario all
+uv run python scripts/dress_rehearsal.py --scenario v2_flip   # the protocol v2 flip
 ```
 
 Never run real OpenRouter calls as part of automated validation. The only paid
@@ -66,14 +67,23 @@ documented with a `[PAID ~$X]` comment.
 Validators must derive identical grades and compatible scores from the same epoch inputs. The following are consensus-critical:
 
 - Grader semantics and dispatch in `fugal_subnet/graders.py`
-- Benchmark identity, normalization, revision pins, and slicing
-- Epoch nonce derivation and boundary selection
+- Benchmark identity, normalization, revision pins, and slicing (both pool
+  manifests, the v2 category map and weights)
+- Epoch identity, nonce derivation, boundary selection, and the v2
+  activation block
 - Head artifact schema and validation
 - TEE proof verification: every binding in `fugal_subnet/tee/verify.py`, the
-  approved-entry format, and the provisioning allow-list
-- The pinned price table, the pool manifest, and the reference-frame,
-  evidence, scoring, deduplication and reward formulas
-- Commitment eligibility and reveal artifact schema
+  event-log replay, the approved-entry format, and the provisioning allow-list
+- Both pinned price tables and token manifests (`data/models*.json`,
+  `data/benchmark_tokens_*.json`)
+- Protocol v2: the shared grades, the paired net-value test and its
+  constants, the comparison window, the seat machine, the copy rule, the
+  payout split, the burn-in rule E'', and the rebuild from reveals
+- Protocol v1 (live until the activation block): the reference-frame,
+  evidence, frontier scoring, deduplication and reward formulas
+- Commitment eligibility and the reveal artifact schema
+- The lists in `config.py` that classify every `FUGAL_` variable as
+  consensus or operational, and the consensus digest in `fingerprint.py`
 
 Do not make a semantic change to any of these as an ordinary bug fix. Open an issue first and include:
 
@@ -91,6 +101,12 @@ Completed epoch artifacts are immutable. A new grader version applies no earlier
 - `FugalProofSynapse.deserialize()` must return `self`.
 - Never print or log any part of an OpenRouter API key.
 - Never add real paid API calls to the default test path.
+- `fugal_subnet/graders.py` and both price tables are hash-pinned in
+  `scripts/check_safety_invariants.py`; a change updates the pin in the same
+  commit and says why.
+- Epoch ids come from `slicer.epoch_id_for_block` only.
+- A consensus-affecting change updates `docs/INVARIANTS.md` and adds an
+  executable check.
 
 ## Pull requests
 

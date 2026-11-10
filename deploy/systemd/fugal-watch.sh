@@ -4,27 +4,22 @@
 # run itself dies. Driven by fugal-watch.timer; settings in /etc/fugal/watch.env.
 #
 #   FUGAL_WATCH_NETWORK / FUGAL_WATCH_NETUID   which chain and subnet
-#   FUGAL_WATCH_EPOCH_INTERVAL   tempo x 12 s (4320); the script defaults to 3600
-#                            and would then watch the wrong boundaries
+#   FUGAL_WATCH_EPOCH_INTERVAL   tempo x 12 s (4320 on finney/70); without it the
+#                            script reads the chain's tempo
 #   FUGAL_WATCH_VALIDATORS   name=hotkey_ss58,...  (this host's hotkey at least)
 #   FUGAL_WATCH_MINERS       name=hotkey_ss58,...  (optional)
 #   FUGAL_WATCH_REVEALS      name=/path/to/epochs,... (optional)
 #   FUGAL_ALERT_URL          where failures go; empty means journal only
 #   FUGAL_ALERT_KIND         ntfy (plain text POST), discord (JSON webhook) or
 #                            telegram (bot sendMessage; needs FUGAL_ALERT_CHAT_ID)
-#   FUGAL_WATCH_SETTLE_BLOCKS  blocks into an epoch before it is judged (340).
-#                            A validator sets weights after collection, at
-#                            boundary + FUGAL_COLLECT_FRACTION x epoch (180 on a
-#                            360-block epoch), and may use up to its 1800 s
-#                            (150-block) post-collection budget verifying and
-#                            scoring first, so a healthy validator can set
-#                            weights as late as ~boundary + 330. Judging earlier
-#                            reports "did not set weights this epoch" for one
-#                            that simply hasn't got there yet. 340 is ~4 min
-#                            before the next boundary. 0 = no wait.
+#   FUGAL_WATCH_SETTLE_BLOCKS  blocks into an epoch before it is judged
+#                            (watch_subnet.py --settle-blocks, 340; why in its
+#                            docstring). 0 = no wait.
+#   FUGAL_V2_ACTIVATION_BLOCK  set it here too once the flip is scheduled:
+#                            reveals must then say protocol v1 before it, v2 from it
 #
-# A run first waits until the current epoch is FUGAL_WATCH_SETTLE_BLOCKS old,
-# then judges that epoch and exits (at most one epoch, ~72 min). systemd never
+# A run waits until the current epoch is FUGAL_WATCH_SETTLE_BLOCKS old, judges
+# that epoch and exits (at most one epoch, ~72 min). systemd never
 # starts a second instance while one is running, so an hourly timer against a
 # 72-minute epoch simply skips a tick.
 #
@@ -35,27 +30,11 @@ set -u
 cd "${FUGAL_WATCH_CHECKOUT:-/opt/fugal/fugal-subnet}" || exit 2
 log="${FUGAL_WATCH_LOG:-/var/lib/fugal/watch-last.txt}"
 tmp="$(mktemp)"
-# Wait until the epoch has settled. Best effort: if the chain is unreachable
-# the watch below reports that itself.
-.venv/bin/python - "${FUGAL_WATCH_NETWORK:-test}" "${FUGAL_WATCH_EPOCH_INTERVAL:-4320}" \
-  "${FUGAL_WATCH_SETTLE_BLOCKS:-340}" <<'PY' || true
-import sys, time
-import bittensor as bt
-from fugal_subnet.benchmarks.slicer import blocks_per_epoch
-network, interval, settle = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-bpe = blocks_per_epoch(interval)
-settle = max(0, min(settle, bpe - 1))
-st = bt.Subtensor(network=network)
-while settle:
-    pos = st.get_current_block() % bpe
-    if pos >= settle:
-        break
-    time.sleep(min(120, (settle - pos) * 12))
-PY
 .venv/bin/python scripts/watch_subnet.py \
   --network "${FUGAL_WATCH_NETWORK:-test}" --netuid "${FUGAL_WATCH_NETUID:-552}" \
   --epochs 1 --timeout "${FUGAL_WATCH_TIMEOUT:-5400}" \
   --epoch-interval "${FUGAL_WATCH_EPOCH_INTERVAL:-4320}" \
+  --settle-blocks "${FUGAL_WATCH_SETTLE_BLOCKS:-340}" \
   --validators "${FUGAL_WATCH_VALIDATORS:-}" --miners "${FUGAL_WATCH_MINERS:-}" \
   --reveals "${FUGAL_WATCH_REVEALS:-}" >"$tmp" 2>&1
 rc=$?

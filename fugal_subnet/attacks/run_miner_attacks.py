@@ -41,7 +41,14 @@ _DIM = HEAD_HIDDEN_DIM
 
 
 def _npz_bytes(W, b, models, models_dtype="U100") -> bytes:
-    """Serialize exactly as scripts/train_head.py:save_head does.
+    """Serialize a bare three-array (W, b, models) archive.
+
+    Heads are saved by scripts/train_head.py's main(), as
+    `np.savez(path, **success_contract.make_head(...))`, and only such
+    success-contract heads load: head_eval.load_head_from_npz refuses any
+    archive without the `contract` member before reading anything in it.
+    These payloads omit it, so each is refused at that gate; they stay as a
+    regression that no miner-controlled array in them is ever parsed (I2).
 
     The dtype matters: an object-dtype models array is rejected outright by
     allow_pickle=False, which would block every payload here for a reason that
@@ -54,10 +61,13 @@ def _npz_bytes(W, b, models, models_dtype="U100") -> bytes:
 
 
 def _valid_head(n_models: int = 4) -> bytes:
+    """An honest success-contract head: the control every payload differs from."""
+    from fugal_subnet import success_test_fixtures as fx
+
     rng = np.random.RandomState(0)
     W = (rng.randn(n_models, _DIM) * 0.01).astype(np.float32)
     b = np.zeros(n_models, dtype=np.float32)
-    return _npz_bytes(W, b, [f"vendor/m{i}" for i in range(n_models)])
+    return fx.head_bytes(W, b, [f"vendor/m{i}" for i in range(n_models)])
 
 
 # ── Attack constructors ────────────────────────────────────────────────────

@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Print this TD's measurement, and verify the two checks only real TDX can.
+"""Validate the verifier on real TDX: the two checks no other environment can make.
 
-Run this ON a confidential VM. See docs/TDX_VALIDATION.md.
+Run this ON a confidential VM you have a shell on (a plain GCP c3 / Azure
+DCesv5 TDX VM; see docs/TDX_VALIDATION.md).
 
-    python scripts/tdx_measurement.py            # print measurement_id
+    python scripts/tdx_measurement.py            # print this VM's measurement_id
     python scripts/tdx_measurement.py --verify   # assert the two live checks
+
+IT DOES NOT MEASURE THE APPROVED MINER IMAGE. Live entries name the base of
+the dstack miner image, and this cannot run there: the image carries no
+scripts/ and a dstack TD gives no shell. The base half of an entry comes from
+`scripts/provision_td.py --inspect` on a TD booted from that image, and is
+published in the signed release (scripts/fetch_approved_entries.py). The
+number printed here is this VM's own measurement, for diagnosis.
 
 Everything else in this repo is exercised by scripts/dress_rehearsal.py against
 a real chain. These two cannot be: they need genuine Intel-signed quotes and
@@ -51,8 +59,9 @@ def main() -> int:
     print(f"rtmr1           : {quote.rtmr1}")
     print(f"rtmr2           : {quote.rtmr2}")
     print(f"\nmeasurement_id  : {measurement}")
-    print("\nApprove this image with:")
-    print(f"  export FUGAL_TEE_MEASUREMENTS={measurement}")
+    print("\nThis is THIS VM's measurement, not the dstack miner image's. The base half")
+    print("of an approved entry comes from `scripts/provision_td.py --inspect` on a TD")
+    print("booted from that image (docs/APPROVED_ENTRY_ROTATION.md).")
 
     if not args.verify:
         return 0
@@ -82,26 +91,37 @@ def main() -> int:
     from fugal_subnet.tee.proof import BenchmarkProof, compute_questions_hash
     from fugal_subnet.tee.verify import verify_proof
 
+    # verify_proof outside mock refuses to run without the hotkey binding
+    # (a proof not bound to a miner can be relayed), so the probe names one.
     proof = BenchmarkProof(
         epoch_id="probe", nonce="n" * 64,
         questions_hash=compute_questions_hash([]), weights_hash="w" * 64,
         source_hash="claims-to-be-approved", results=[],
         total_cost_usd=0.0, per_model_costs={}, attestation_quote=b"", timestamp=0.0,
+        hotkey="5TdxMeasurementProbe",
     )
     proof.attestation_quote = runtime.generate_attestation(
         bytes.fromhex(proof.content_hash())
     )
     result = verify_proof(
         proof,
-        approved_measurements={"0" * 64},      # deliberately NOT this image
+        approved_measurements={"0" * 64 + ":" + "1" * 64},   # deliberately NOT this image
         expected_questions_hash=proof.questions_hash,
         expected_nonce=proof.nonce, gold_answers={},
+        expected_hotkey="5TdxMeasurementProbe",
         mock=False,
     )
-    rejected = (not result.valid) and "Unapproved runtime image" in result.reason
-    print(f"  [{'PASS' if rejected else 'FAIL'}] an unapproved image is rejected "
-          f"despite a genuine quote")
-    if not rejected:
+    if getattr(result, "unverifiable", False):
+        # Same as the first check: an unreachable collateral endpoint judged
+        # nothing, and calling it "I8 is not enforced" would send the operator
+        # after the wrong fault.
+        print(f"  [SKIP] the unapproved-image probe could not be judged: {result.reason}")
+        rejected = None
+    else:
+        rejected = (not result.valid) and "Unapproved runtime image" in result.reason
+        print(f"  [{'PASS' if rejected else 'FAIL'}] an unapproved image is rejected "
+              f"despite a genuine quote")
+    if rejected is False:
         failures.append(
             f"unapproved image was NOT rejected: valid={result.valid} "
             f"reason={result.reason!r}"

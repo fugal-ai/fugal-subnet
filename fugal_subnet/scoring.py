@@ -16,11 +16,11 @@ stated as arithmetic.
 
 **Why not the best single model.** The previous score compared a miner's
 quality per dollar against ONE point of the frontier — the most accurate
-model. Measured (docs/HEAD_EFFICACY.md): a head with W=0 that always called
+model. Measured (docs/decisions/HEAD_EFFICACY.md): a head with W=0 that always called
 one mid-priced model scored 1.183 against the best trained router's 1.057,
 for free, because a cheaper point on the same curve gets a cost advantage
 over a dearer one whatever exponent trades quality for cost. The exponent
-derivation and the break-even analysis are kept in docs/design-decisions.md
+derivation and the break-even analysis are kept in docs/decisions/design-decisions.md
 as the record; they were correct about the corner they examined and silent
 about the middle of the curve.
 
@@ -52,8 +52,15 @@ from fugal_subnet.config import (
     EVIDENCE_HALF_LIFE,
     SCORE_QUALITY_FLOOR,
     SLICE_SIZE,
+    V2_BURN_IN_QUESTIONS,
 )
-from fugal_subnet.evidence import Evidence, accumulate_epoch, apply_miss
+from fugal_subnet.evidence import (
+    Evidence,
+    accumulate_epoch,
+    accumulate_epoch_v2,
+    apply_miss,
+    apply_miss_v2,
+)
 from fugal_subnet.frontier import Frontier
 from fugal_subnet.head_eval import HeadScore
 
@@ -97,6 +104,7 @@ def update_scores(
     hotkeys: dict[int, str] | None = None,
     n_questions: int = 0,
     pool_size: float = 0.0,
+    protocol_version: int = 1,
 ) -> ScoringState:
     """Update scores with new epoch results using evidence accumulation.
 
@@ -104,6 +112,9 @@ def update_scores(
         frontier: This epoch's constant-policy frontier (fugal_subnet.frontier).
         hotkeys: {uid: hotkey} so a recycled UID drops the old occupant's record.
         pool_size: Distinct questions available, capping the effective sample size.
+        protocol_version: from the epoch's boundary block. From 2 a miss follows
+            the E'' rule (evidence.apply_miss_v2) and accumulation keeps the
+            burn-in counter (evidence.accumulate_epoch_v2).
     """
     # Copy-on-write. The caller's state is untouched until it chooses to adopt
     # the result: the validator holds the result in an epoch-local name and
@@ -129,7 +140,11 @@ def update_scores(
             rec = state.records[uid]
             rec.epochs_missed += 1
             if rec.evidence is not None:
-                rec.evidence = apply_miss(rec.evidence, n_expected, EVIDENCE_HALF_LIFE)
+                if protocol_version >= 2:
+                    rec.evidence = apply_miss_v2(rec.evidence, EVIDENCE_HALF_LIFE,
+                                                 V2_BURN_IN_QUESTIONS)
+                else:
+                    rec.evidence = apply_miss(rec.evidence, n_expected, EVIDENCE_HALF_LIFE)
                 _refresh(rec, frontier)
 
     for uid, score in epoch_scores.items():
@@ -143,7 +158,8 @@ def update_scores(
         rec.epochs_seen += 1
         rec.epochs_missed = 0
 
-        rec.evidence = accumulate_epoch(
+        accumulate = accumulate_epoch_v2 if protocol_version >= 2 else accumulate_epoch
+        rec.evidence = accumulate(
             rec.evidence,
             weights_hash=rec.current_head_hash,
             n_correct=score.n_correct,

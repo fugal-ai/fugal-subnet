@@ -36,6 +36,18 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--n-questions", type=int, default=300)
     args = p.parse_args()
+    if args.synthetic and args.manifest:
+        # It used to be silently ignored, which made the documented commands
+        # look like they built a v2-scoreable test head. They never did.
+        p.error("--synthetic heads carry a test-only token manifest by design and can "
+                "never be scored or deployed; drop --manifest (it is for --matrix)")
+    # Before the expensive part (embedding every question): a model the price
+    # table does not name used to surface as a bare KeyError after training.
+    priced = {r["id"] for r in json.loads(Path(args.prices).read_text())}
+    unpriced = [m for m in args.models if m not in priced]
+    if unpriced:
+        p.error(f"{', '.join(unpriced)} not in --prices {args.prices}; protocol v2 models "
+                "need --prices data/models_v2.json")
     if args.synthetic:
         rng = np.random.default_rng(args.seed)
         questions = [f"test-only-{i}" for i in range(args.n_questions)]

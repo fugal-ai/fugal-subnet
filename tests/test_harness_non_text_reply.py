@@ -88,7 +88,7 @@ def test_run_benchmark_survives_a_none_reply(monkeypatch):
     proxy.start()
     monkeypatch.setattr(harness_mod, "benchmark_costs", success_fixtures.costs)
     monkeypatch.setattr(harness_mod, "_call_model", stub)
-    monkeypatch.setattr(harness_mod, "select_slice", lambda nonce, pool_, n: pool_[:n])
+    monkeypatch.setattr(harness_mod.epoch_plan, "scored_slice", lambda version, nonce, pool_, n: pool_[:n])
 
     try:
         proof = harness_mod.run_benchmark(

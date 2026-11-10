@@ -12,9 +12,14 @@ name: Miner image
 # own token, docker build and push. The pushed digest is what matters, and
 # it is printed, uploaded, and written into the release notes.
 
+# Triggered by a BUILD tag (build-v<date>). The signed release tag
+# (image-v<date>) is created once, afterwards, on the same commit, and never
+# moved: pushing image-v<date> to build and then signing it again made a
+# validator that fetched the first one refuse the second (Fable review
+# 2026-11-09, item 8; docs/APPROVED_ENTRY_ROTATION.md).
 on:
   push:
-    tags: ["image-v*"]
+    tags: ["build-v*"]
   workflow_dispatch:
 
 permissions:

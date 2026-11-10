@@ -24,18 +24,38 @@ IMMUTABLE_V1_GRADER_SHA256 = (
 PINNED_PRICE_TABLE_SHA256 = (
     "7bc8e332a43833bb4eaccef21e784f57ffde9e49e343275f822f35d9a6d19b27"
 )
+# Protocol v2's price table (data/models_v2.json; identical copy in
+# fugal_subnet/routing_data/). 18 models (x-ai/grok-4.7 dropped 2026-11-05:
+# it exceeded the 16,384 answer budget and its provider accepts effort only,
+# so the cap could not be enforced; the other 18 rows are unchanged), prices from the public OpenRouter
+# catalogue of 2026-11-04, one pinned `reasoning` object each. Five rates were
+# then re-pinned from MEASURED effective prices (the v2 token measurement of
+# 2026-11-04, 757 metered calls): OpenRouter routed those models to endpoints
+# priced differently from the catalogue default, billed/table = glm-5.3-flash
+# 2.8594, glm-5.3 0.4858, deepseek-v4-pro-0813 0.7979, minimax-m3.1-flash
+# 1.1522, qwen3.8-27b 1.0857; input and output scaled by that ratio. Consensus
+# from V2_ACTIVATION_BLOCK; a change re-scores every v2 miner.
+# 2026-11-09: anthropic/claude-fable-5.2 added (19 models) at the public
+# OpenRouter catalogue price ($8 / $40 per million tokens), with fable-5.1's
+# reasoning setting; fable-5.1 stays the anchor (CHAMPION_ANCHOR_MODEL). The
+# other 18 rows are unchanged.
+PINNED_PRICE_TABLE_V2_SHA256 = (
+    "9b18e3fbc786c3aea90966b69984717ead66c27f4bf4a98a388a9674f1be2aaa"
+)
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM
 # quote means trusting this CA in addition to Intel's — see docs/INVARIANTS.md.
 # data/reference_frame.json is the bootstrap reference frame: decayed
 # exploration counts every live validator starts from, so the frontier every
 # miner is scored against is valued from it. Consensus state like models.json.
-# None means the file must not exist yet; once scripts/build_bootstrap_frame.py
-# produces it, pin the digest it prints here in the same commit and say why.
+# None means the file must not exist yet; a builder (build_frame_from_calls.py,
+# or build_bootstrap_frame.py from reveals) prints the digest to pin here in
+# the same commit, saying why.
 # Pinned 2026-11-03: built by scripts/build_frame_from_calls.py from
 # data/observations/bootstrap_frame_calls_v1.jsonl (17 models x up to 300 direct,
 # logged, graded calls; mistral stopped at 80 after upstream 429s and is not on
-# the hull). Rebuild with --build-only --batch 6000 to reproduce this digest.
+# the hull). `build_frame_from_calls.py --build-only` reproduces this digest
+# (one undecayed batch, the default; tests/test_frame_from_calls.py).
 PINNED_BOOTSTRAP_FRAME_SHA256: str | None = (
     "c31417505fe7a80e253a11261665fa5f7e63343d28f963f3ed96da2dd521a1c0"
 )
@@ -451,7 +471,7 @@ def check_measured_registers_documented(errors: list[str]) -> None:
         r"(?:\s*(?:[,‖|]|and)\s*RTMR\s*(\d))?[^)]*\)", re.I)
 
     for rel in ("docs/MINER_GUIDE.md", "docs/INVARIANTS.md", "docs/VALIDATOR_GUIDE.md",
-                "docs/design-decisions.md", "AGENTS.md", "README.md"):
+                "docs/decisions/design-decisions.md", "AGENTS.md", "README.md"):
         path = ROOT / rel
         if not path.exists():
             continue
@@ -545,8 +565,63 @@ def check_one_accuracy_definition_on_the_consensus_path(errors: list[str]) -> No
                 )
 
 
+ROUTING_DATA_REQUIRED = (
+    "models.json", "models_v2.json",
+    "benchmark_tokens_v1.json", "benchmark_tokens_protocol_v2.json",
+)
+
+
+def check_routing_data_mirrors_data(errors: list[str]) -> None:
+    """Every file under fugal_subnet/routing_data/ is byte-identical to its copy
+    in data/ (CLAUDE.md rule 7).
+
+    routing_data/ is what the neurons read and what the protocol identity
+    hashes; data/ is the reviewed copy the pins are checked against. A
+    difference means the pins check one file and consensus uses another.
+    """
+    mirror = ROOT / "fugal_subnet" / "routing_data"
+    names = set(ROUTING_DATA_REQUIRED)
+    if mirror.is_dir():
+        names |= {p.name for p in mirror.iterdir() if p.is_file()}
+    for name in sorted(names):
+        copy, reviewed = mirror / name, ROOT / "data" / name
+        missing = [str(p.relative_to(ROOT)) for p in (copy, reviewed) if not p.exists()]
+        if missing:
+            errors.append(f"{', '.join(missing)} missing (routing_data/ and data/ must both hold {name})")
+        elif copy.read_bytes() != reviewed.read_bytes():
+            errors.append(f"data/{name} and fugal_subnet/routing_data/{name} differ")
+
+
+def check_price_table_v2_pinned(errors: list[str]) -> None:
+    """The v2 table matches its pin, ids are unique, and every entry pins
+    exactly one valid reasoning setting. (Its routing_data/ copy is
+    checked by check_routing_data_mirrors_data.)"""
+    a = ROOT / "data" / "models_v2.json"
+    if not a.exists():
+        errors.append("data/models_v2.json is missing")
+        return
+    actual = hashlib.sha256(a.read_bytes()).hexdigest()
+    if actual != PINNED_PRICE_TABLE_V2_SHA256:
+        errors.append(f"data/models_v2.json: hash {actual[:16]}... does not match pin "
+                      f"{PINNED_PRICE_TABLE_V2_SHA256[:16]}... (a v2 price change re-scores every v2 miner)")
+    rows = json.loads(a.read_text())
+    ids = [r.get("id") for r in rows]
+    if len(ids) != len(set(ids)):
+        errors.append("data/models_v2.json: duplicate model id")
+    for r in rows:
+        rs = r.get("reasoning")
+        if not isinstance(rs, dict) or len(rs) != 1 or not (
+            rs.get("effort") in ("minimal", "low", "medium", "high")
+            or (isinstance(rs.get("max_tokens"), int) and 0 < rs["max_tokens"] < 16384)
+            or rs.get("enabled") is True
+        ):
+            errors.append(f"data/models_v2.json: {r.get('id')!r} must pin exactly one valid reasoning setting")
+
+
 def check_price_table_pinned(errors: list[str]) -> None:
-    """The consensus price table must match its pin, and be well-formed."""
+    """The consensus price table must match its pin, and be well-formed.
+    (Its routing_data/ copy is checked by check_routing_data_mirrors_data.)
+    """
     path = ROOT / "data" / "models.json"
     if not path.exists():
         errors.append("data/models.json is missing — validators cannot price proofs")
@@ -748,7 +823,10 @@ def check_upstream_is_inside_the_measurement(errors: list[str]) -> None:
                 errors.append(f"{rel}: image referenced by tag, not digest: {stripped} (I8)")
             if stripped.startswith("#"):
                 continue
-            if "FUGAL_OPENROUTER_BASE" in stripped and "=" in stripped:
+            # Both compose forms: a list entry `- FUGAL_OPENROUTER_BASE=...` and a
+            # mapping entry `FUGAL_OPENROUTER_BASE: ...` (only the first was
+            # matched until 2026-11-08).
+            if re.search(r"\bFUGAL_OPENROUTER_BASE\s*[:=]", stripped):
                 errors.append(
                     f"{rel}: compose sets FUGAL_OPENROUTER_BASE -- the upstream is "
                     "fixed by runtime.py's default and must not be overridden (I8)"
@@ -765,6 +843,79 @@ def check_upstream_is_inside_the_measurement(errors: list[str]) -> None:
                 f"fugal_subnet/tee/runtime.py: contains {needle!r}; the metering "
                 "proxy must validate the upstream certificate (I8)"
             )
+
+
+def check_live_composes_are_frozen(errors: list[str], root: Path | None = None) -> None:
+    """Each live compose (deploy/dstack/docker-compose*.yaml) must be, byte for
+    byte, the `docker_compose_file` of some frozen app-compose*.json.
+
+    The compose hash validators approve is sha256 of the frozen app-compose,
+    which embeds the compose text. A compose edited after its freeze yields a
+    hash no entry names: a miner deploying it is refused, and nothing says
+    why. Found 2026-11-05 (review F-074): both live composes gained
+    FUGAL_POOL_CACHE_V2 after the 2026-11-03c freeze and matched none of the
+    eight frozen files. Clear it by freezing the compose again
+    (`dstack-cloud prepare`, commit the app-compose.json, publish the entry)
+    or by reverting the compose change.
+    """
+    import json
+
+    root = root or ROOT
+    dstack = root / "deploy" / "dstack"
+    frozen_texts: dict[str, str] = {}
+    for path in sorted(dstack.glob("app-compose*.json")):
+        try:
+            frozen_texts[path.name] = json.loads(path.read_text(encoding="utf-8")).get(
+                "docker_compose_file", "")
+        except ValueError:
+            continue  # reported by check_upstream_is_inside_the_measurement
+    for live in sorted(dstack.glob("docker-compose*.yaml")):
+        text = live.read_text(encoding="utf-8")
+        if text not in frozen_texts.values():
+            digest = next((ln.strip().split("@sha256:")[-1][:12] for ln in text.splitlines()
+                           if "@sha256:" in ln), "?")
+            errors.append(
+                f"{live.relative_to(root)} (image {digest}...) is not the embedded compose of "
+                f"any frozen app-compose*.json: a miner deploying it gets a compose hash no "
+                "approved entry names. Freeze it (dstack-cloud prepare -> commit the "
+                "app-compose.json, publish the entry) or revert the change (I8)"
+            )
+
+
+def check_release_composes_target_v2(errors: list[str], root: Path | None = None) -> None:
+    """At a release, each live compose must pin its image by digest and carry
+    a valid FUGAL_V2_ACTIVATION_BLOCK.
+
+    The miner reads the activation block only from its compose, so a compose
+    without one is a v1 miner, whatever image it names. `--release` passed a
+    frozen compose with the v1 image and no activation block (Fable review
+    2026-11-09, item 8): the gate checked that composes were frozen, not what
+    they were frozen as. The block must be an epoch boundary at the compose's
+    own FUGAL_EPOCH_INTERVAL (slicer.validate_activation_block).
+    """
+    import re
+
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
+
+    root = root or ROOT
+    for live in sorted((root / "deploy" / "dstack").glob("docker-compose*.yaml")):
+        text = live.read_text(encoding="utf-8")
+        name = live.relative_to(root)
+        if not re.search(r"^\s*image:\s*\S+@sha256:[0-9a-f]{64}\s*$", text, re.M):
+            errors.append(f"{name}: the image is not pinned by digest (@sha256:<64 hex>)")
+        env = dict(re.findall(r"^\s*-?\s*(FUGAL_[A-Z0-9_]+)\s*[=:]\s*\"?([^\"\s#]*)", text, re.M))
+        raw = env.get("FUGAL_V2_ACTIVATION_BLOCK", "")
+        if not raw:
+            errors.append(f"{name}: no FUGAL_V2_ACTIVATION_BLOCK: a compose without it is a v1 "
+                          "miner (MINER_GUIDE, the flip); set the published block before freezing")
+            continue
+        try:
+            interval = int(env.get("FUGAL_EPOCH_INTERVAL") or 3600)
+            if int(raw) <= 0:
+                raise ValueError("it must be a future block, above 0")
+            validate_activation_block(int(raw), blocks_per_epoch(interval))
+        except (ValueError, TypeError) as e:
+            errors.append(f"{name}: FUGAL_V2_ACTIVATION_BLOCK={raw!r} is not valid: {e}")
 
 
 def check_live_requires_app_identity(errors: list[str]) -> None:
@@ -824,8 +975,9 @@ def check_bootstrap_frame_pinned(errors: list[str]) -> None:
     if digest != PINNED_BOOTSTRAP_FRAME_SHA256:
         errors.append(
             f"data/reference_frame.json: sha256 {digest[:16]}... does not match the "
-            "pin; rebuild with scripts/build_bootstrap_frame.py and update the pin "
-            "in the same commit, saying why (I1)"
+            "pin. Restore it (git checkout), or rebuild with "
+            "scripts/build_frame_from_calls.py --build-only; a deliberately new "
+            "frame updates the pin in the same commit, saying why (I1)"
         )
 
 
@@ -846,7 +998,16 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
     from fugal_subnet import config, fingerprint
 
     source = (ROOT / "fugal_subnet" / "config.py").read_text(encoding="utf-8")
-    read = set(re.findall(r'os\.getenv\(\s*"(FUGAL_[A-Z0-9_]+)"', source))
+    # Every read anywhere in the shipped code, not only config.py: the pool's
+    # skip list and the unpinned-pool switch lived in benchmarks/loader.py and
+    # were consensus-affecting, undigested and unrefused on finney until the
+    # scan was widened (review 2026-11-05, F-027).
+    pattern = re.compile(r'os\.(?:getenv|environ\.get)\(\s*"(FUGAL_[A-Z0-9_]+)"'
+                         r'|os\.environ\[\s*"(FUGAL_[A-Z0-9_]+)"\s*\](?!\s*=)')
+    read: set[str] = set()
+    for path in sorted(list((ROOT / "fugal_subnet").rglob("*.py")) + list((ROOT / "neurons").glob("*.py"))):
+        for a, b in pattern.findall(path.read_text(encoding="utf-8")):
+            read.add(a or b)
     lists = {
         "CONSENSUS_ENV_VARS": set(config.CONSENSUS_ENV_VARS),
         "CONSENSUS_ENV_INPUTS": set(config.CONSENSUS_ENV_INPUTS),
@@ -856,20 +1017,31 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
         where = [k for k, v in lists.items() if name in v]
         if len(where) != 1:
             errors.append(
-                f"fugal_subnet/config.py: {name} is read but listed in "
+                f"{name} is read under fugal_subnet/ or neurons/ but listed in "
                 f"{where or 'no classification list'}; it must be in exactly one "
                 "of CONSENSUS_ENV_VARS, CONSENSUS_ENV_INPUTS, OPERATIONAL_ENV_VARS (I1)"
             )
     for k, v in lists.items():
         for name in sorted(v - read):
             errors.append(f"fugal_subnet/config.py: {k} lists {name}, which nothing reads")
+    # Consensus variables read outside config.py are covered by the epoch
+    # block, not by a module attribute; the attribute scan below is for the
+    # ones config.py defines.
+    outside = {"FUGAL_SKIP_BENCHMARKS", "FUGAL_POOL_UNPINNED", "FUGAL_OPENROUTER_BASE"}
 
     fp = fingerprint.environment_fingerprint()
     covered = set(fp["scoring"]) | {
         "SLICE_SIZE", "SLICE_SHARE_FACTOR", "EPOCH_INTERVAL", "EXPLORE_FRACTION",
-        "EPOCH_COLLECT_FRACTION", "TEE_MODEL_PRICES_PATH",  # via routing_protocol
+        "EPOCH_COLLECT_FRACTION",
+        # Not in the digest (routing_protocol hashes the shipped tables), but a
+        # set FUGAL_MODEL_PRICES is a consensus override: refused on finney.
+        "TEE_MODEL_PRICES_PATH",
     }
-    for env_name in sorted(config.CONSENSUS_ENV_VARS):
+    for key in ("skip_benchmarks", "pool_unpinned", "pool_manifest_v1", "pool_manifest_v2",
+                "openrouter_base"):
+        if key not in fp["epoch"]:
+            errors.append(f"fingerprint epoch block lacks {key} (I1)")
+    for env_name in sorted(set(config.CONSENSUS_ENV_VARS) - outside):
         attr = re.search(
             rf'^([A-Z_]+)\s*=[^\n]*?os\.getenv\(\s*"{env_name}"', source, re.M | re.S,
         )
@@ -886,13 +1058,28 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
             )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    """Every check is a hard failure, except the launch gate: the live composes
+    must match a frozen app-compose at launch (`--release`, the MAINNET_LAUNCH
+    gate and the image release), but between releases a compose legitimately
+    moves ahead of its freeze, so plain CI reports the drift as a warning
+    instead of staying red until the next image is signed."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Fugal safety invariants.")
+    parser.add_argument("--release", action="store_true",
+                        help="also fail on launch-gate drift (live composes not frozen)")
+    args = parser.parse_args(argv)
+
     errors: list[str] = []
+    launch_gate: list[str] = []
     check_np_load_calls(errors)
     check_runtime_annotations(errors)
     check_deserialize_contract(errors)
     check_immutable_v1_grader(errors)
+    check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
+    check_price_table_v2_pinned(errors)
     check_collateral_endpoint_explicit(errors)
     check_external_calls_bounded(errors)
     check_measured_registers_documented(errors)
@@ -904,11 +1091,15 @@ def main() -> None:
     check_tee_safety(errors)
     check_upstream_is_inside_the_measurement(errors)
     check_live_requires_app_identity(errors)
+    check_live_composes_are_frozen(errors if args.release else launch_gate)
+    check_release_composes_target_v2(errors if args.release else launch_gate)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)
     check_documented_flags(errors)
     if errors:
         raise SystemExit("Safety invariant check failed:\n- " + "\n- ".join(errors))
+    for line in launch_gate:
+        print(f"WARNING (launch gate, fails with --release): {line}")
     print("Safety invariants passed.")
 
 

@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """A deterministic OpenAI-compatible endpoint, for running miners without spend.
 
-SECURITY NOTE, READ BEFORE USING THIS ANYWHERE REAL. This script is also an
-exploit. It substitutes the model layer by setting FUGAL_OPENROUTER_BASE, and a
-miner can do exactly the same thing in production: point it at a server that
-returns each question's own gold answer with two tokens of usage, and collect
-perfect accuracy at near-zero attested cost with every hash binding, the DCAP
-signature and the approved measurement still checking out.
-
-That is not a flaw in this file — it is a flaw in the fact that the upstream is
-a runtime environment variable rather than part of what the attestation measures.
-See docs/INVARIANTS.md, "The model upstream is miner-controlled". Until the
-upstream is inside the measured image, a --live subnet is not protected against
-the thing this script does for convenience.
+SECURITY HISTORY. Until 2026-10-14 this script was also an exploit: it
+substitutes the model layer by setting FUGAL_OPENROUTER_BASE, and a live miner
+could do the same, answering every question from its gold answer at near-zero
+attested cost with every binding still checking out. That is closed: the
+upstream is part of what the attestation measures, the live composes do not
+set FUGAL_OPENROUTER_BASE, and scripts/check_safety_invariants.py refuses a
+change that lets anything outside the measured compose set it. See
+docs/INVARIANTS.md, "The model upstream is miner-controlled". It works for
+--mock miners only.
 
 Point a miner's metering proxy here with FUGAL_OPENROUTER_BASE and every
 production code path still runs — the harness, the real MeteringProxy, real
@@ -20,8 +17,11 @@ HTTP, real token accounting, real pricing against the pinned table, real
 grading. The only substitution is where the request lands. No API key exists
 anywhere in a run that uses this.
 
-    python scripts/stub_upstream.py --pool data/rehearsal/pool_2k.json --port 8799
-    FUGAL_OPENROUTER_BASE=http://127.0.0.1:8799 python neurons/miner.py ...
+    python scripts/export_pool.py --protocol 2     # data/benchmarks/pool_v2.json.gz
+    python scripts/stub_upstream.py --pool data/benchmarks/pool_v2.json.gz --port 8799
+    FUGAL_OPENROUTER_BASE=http://127.0.0.1:8799 python neurons/miner.py ... --mock
+
+It knows both protocols' models (the v1 and v2 price tables, ranked together).
 
 Replies are a pure function of (prompt, model), so two miners asked the same
 question of the same model see byte-identical answers, and so do two runs. That
@@ -39,6 +39,7 @@ outscores one that does not.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import logging
@@ -53,8 +54,12 @@ logger = logging.getLogger("fugal.stub")
 # How hard each benchmark is, and how much price buys you on it. Frontier
 # models pull away on reasoning-heavy sets and barely help on arithmetic.
 BENCH_DIFFICULTY = {
+    # v1
     "gsm8k": 0.15, "mmlu": 0.30, "ifeval": 0.25,
     "humaneval": 0.45, "math": 0.55, "aime": 0.80, "gpqa": 0.70,
+    # v2 (config.BENCHMARK_CATEGORY_V2); aime, mmlu and ifeval are shared
+    "mmlupro": 0.40, "math_l35": 0.50, "omnimath_mid": 0.55,
+    "supergpqa_hard": 0.75, "aime25": 0.80, "beyondaime": 0.85, "omnimath_hard": 0.80,
 }
 DEFAULT_DIFFICULTY = 0.4
 
@@ -129,15 +134,17 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--pool", required=True, help="Benchmark pool JSON the miners use")
+    ap.add_argument("--pool", required=True,
+                    help="Benchmark pool the miners use: JSON, or .json.gz from scripts/export_pool.py")
     ap.add_argument("--port", type=int, default=8799)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    from fugal_subnet.api import load_prices
+    from fugal_subnet.routing_protocol import price_table
 
-    with open(args.pool, encoding="utf-8") as f:
+    opener = gzip.open if args.pool.endswith(".gz") else open
+    with opener(args.pool, "rt", encoding="utf-8") as f:
         pool = json.load(f)
 
     # The prompt the model receives is what the harness sends, which is the
@@ -145,7 +152,10 @@ def main() -> int:
     # drift from what the harness actually does.
     Handler.gold = {q["prompt"]: str(q.get("gold", "")) for q in pool}
     Handler.bench = {q["prompt"]: q.get("benchmark", "") for q in pool}
-    Handler.skill = build_skill(load_prices())
+    # Both protocols' models, ranked together by price, so a v1 miner and a v2
+    # miner each see skill rise with price. Ranking only v1's table left every
+    # v2 model at a flat 0.5, where routing is unmeasurable.
+    Handler.skill = build_skill({**price_table(1), **price_table(2)})
 
     logger.info("Pool: %d questions | models: %d", len(pool), len(Handler.skill))
     cheap = min(Handler.skill, key=lambda m: Handler.skill[m]["aime"])

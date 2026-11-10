@@ -61,9 +61,25 @@ class ReferenceFrame:
     prompt_tokens: dict[str, float] = field(default_factory=dict)
     completion_tokens: dict[str, float] = field(default_factory=dict)
     epochs: int = 0
+    # Protocol v2: the same sums with each observation weighted by its
+    # benchmark's scored share over its exploration share this epoch
+    # (slicer.mix_weights), so accuracy and verbosity are estimated on the
+    # SCORED mix even when fifteen exploration slots round away from it. The
+    # raw `trials` above stay unweighted: they count how much was measured,
+    # which is what the frontier's confidence reads. Empty until the first v2
+    # epoch, and omitted from to_dict while empty, so a v1 frame serialises
+    # byte for byte as before.
+    successes_w: dict[str, float] = field(default_factory=dict)
+    trials_w: dict[str, float] = field(default_factory=dict)
+    prompt_tokens_w: dict[str, float] = field(default_factory=dict)
+    completion_tokens_w: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def weighted(self) -> bool:
+        return bool(self.trials_w)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "routing_protocol": identity(),
             "successes": self.successes,
             "trials": self.trials,
@@ -71,6 +87,12 @@ class ReferenceFrame:
             "completion_tokens": self.completion_tokens,
             "epochs": self.epochs,
         }
+        if self.weighted:
+            d["successes_w"] = self.successes_w
+            d["trials_w"] = self.trials_w
+            d["prompt_tokens_w"] = self.prompt_tokens_w
+            d["completion_tokens_w"] = self.completion_tokens_w
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> ReferenceFrame:
@@ -81,7 +103,22 @@ class ReferenceFrame:
             prompt_tokens=dict(d.get("prompt_tokens") or {}),
             completion_tokens=dict(d.get("completion_tokens") or {}),
             epochs=int(d.get("epochs", 0)),
+            successes_w=dict(d.get("successes_w") or {}),
+            trials_w=dict(d.get("trials_w") or {}),
+            prompt_tokens_w=dict(d.get("prompt_tokens_w") or {}),
+            completion_tokens_w=dict(d.get("completion_tokens_w") or {}),
         )
+
+    def _mean(self, model: str, raw: dict, weighted: dict) -> float | None:
+        """Per-trial mean of a sum: weighted when the model has weighted
+        evidence (v2), raw otherwise. None when the model is unmeasured."""
+        nw = self.trials_w.get(model, 0.0)
+        if nw > 1e-9:
+            return weighted.get(model, 0.0) / nw
+        n = self.trials.get(model, 0.0)
+        if n >= 1e-9:                         # main's boundary (`n < 1e-9` is unmeasured)
+            return raw.get(model, 0.0) / n
+        return None
 
     def accuracy(self, model: str) -> float:
         """Posterior mean accuracy under the Beta prior."""
@@ -123,20 +160,28 @@ class ReferenceFrame:
         ramp depends on field size (I4). The prior still serves `accuracy`
         and `best_model`, which are selection and reporting, not valuation.
         """
-        n = self.trials.get(model, 0.0)
-        if n < 1e-9:
+        mean = self._mean(model, self.successes, self.successes_w)
+        if mean is None:
             return 1.0
-        return min(1.0, max(0.0, self.successes.get(model, 0.0) / n))
+        return min(1.0, max(0.0, mean))
 
     def avg_completion_tokens(self, model: str, default: float) -> float:
-        n = self.trials.get(model, 0.0)
-        if n < 1e-9:
-            return default
-        return self.completion_tokens.get(model, 0.0) / n
+        mean = self._mean(model, self.completion_tokens, self.completion_tokens_w)
+        return default if mean is None else mean
 
     def _posterior_counts(self, model: str) -> tuple[float, float]:
+        # The prior's weight is against the RAW count of what was measured;
+        # the success rate it is mixed with is the weighted one in v2.
         n = self.trials.get(model, 0.0)
-        s = self.successes.get(model, 0.0)
+        if self.trials_w.get(model, 0.0) > 1e-9:
+            mean = self._mean(model, self.successes, self.successes_w)
+            s = 0.0 if mean is None else mean * n
+        else:
+            # No weighted evidence (every v1 epoch): the raw count itself, as
+            # main computes it. (s / n) * n is not s in floating point, and a
+            # last-digit difference is a disagreement with main during the
+            # upgrade window (differential fuzz, 2026-11-08).
+            s = self.successes.get(model, 0.0)
         k = float(FRAME_PRIOR_STRENGTH)
         return s + k * FRAME_PRIOR_ACCURACY, n + k
 
@@ -167,7 +212,8 @@ class Observation:
 def aggregate_observations(
     observations: list[Observation],
     exclude_coldkeys: set[str] | frozenset[str] | None = None,
-) -> list[tuple[str, float, float, float]]:
+    with_question: bool = False,
+) -> list[tuple]:
     """Collapse an epoch's shared exploration answers into ONE sample per
     (question, model), robust to a minority of dishonest operators.
 
@@ -206,13 +252,14 @@ def aggregate_observations(
             continue
         by_key.setdefault((o.model, o.question_id), {}).setdefault(o.coldkey, []).append(o)
 
-    out: list[tuple[str, float, float, float]] = []
-    for (model, _qid), by_coldkey in sorted(by_key.items()):
+    out: list[tuple] = []
+    for (model, qid), by_coldkey in sorted(by_key.items()):
         votes = sorted(by_coldkey.items())
         correct = median(sum(float(o.correct) for o in obs) / len(obs) for _, obs in votes)
         p_tok = median(sum(o.prompt_tokens for o in obs) / len(obs) for _, obs in votes)
         c_tok = median(sum(o.completion_tokens for o in obs) / len(obs) for _, obs in votes)
-        out.append((model, float(correct), float(p_tok), float(c_tok)))
+        row = (model, float(correct), float(p_tok), float(c_tok))
+        out.append((qid, *row) if with_question else row)
     return out
 
 
@@ -232,6 +279,11 @@ def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
     what makes two operators rebuilding from the same reveals reach the same
     frame; directory listing order is not deterministic and would silently
     produce different weights.
+
+    Reveals carry `frame_excluded_coldkeys`, the operators the live epoch's
+    detectors kept out of the frame; the replay drops the same voters, so it
+    reaches the frame the live validator held rather than one that re-admits
+    them.
 
     THE TRUST ASSUMPTION, stated plainly. A reveal is a JSON file. Replaying
     your OWN reveals after losing state is self-trusting and safe. Replaying
@@ -282,12 +334,27 @@ def rebuild_from_reveals(source, half_life: int = FRAME_HALF_LIFE):
             for i, e in enumerate(reveal.get("exploration", []))
             if e.get("model")
         ]
-        epochs.append((epoch_id, aggregate_observations(observations)))
+        # Protocol v2 reveals publish the epoch's mix weights and each
+        # explored question's benchmark; the live epoch weighted its samples
+        # by them, so the replay does too.
+        weights = None
+        # The voters the live epoch kept out of the frame (the detectors'
+        # flags); a reveal from before the field existed excluded nobody the
+        # rebuild can know about, so the live frame is reproduced only for
+        # reveals that carry it.
+        excluded = {str(c) for c in (reveal.get("frame_excluded_coldkeys") or [])}
+        keyed = aggregate_observations(observations, exclude_coldkeys=excluded,
+                                       with_question=True)
+        if int(reveal.get("protocol_version", 1)) >= 2 and "frame_mix_weights" in reveal:
+            mix = reveal.get("frame_mix_weights") or {}
+            bench_of = reveal.get("explore_benchmarks") or {}
+            weights = [float(mix.get(bench_of.get(row[0], ""), 1.0)) for row in keyed]
+        epochs.append((epoch_id, [row[1:] for row in keyed], weights))
 
     frame = None
     replayed = 0
-    for epoch_id, samples in sorted(epochs, key=lambda x: x[0]):
-        frame = accumulate_exploration(frame, samples, half_life=half_life)
+    for epoch_id, samples, weights in sorted(epochs, key=lambda x: x[0]):
+        frame = accumulate_exploration(frame, samples, half_life=half_life, weights=weights)
         replayed += 1
     logger.info(
         "Rebuilt reference frame from %d reveals (%d models measured)",
@@ -301,6 +368,8 @@ def implausible_exploration(
     per_miner: dict[int, list[tuple[str, bool]]],
     min_samples: int = 8,
     margin: float = 0.35,
+    min_trials: float = 8.0,
+    protocol_version: int = 2,
 ) -> dict[int, str]:
     """Miners whose exploration accuracy is implausible for the models they used,
     in EITHER direction.
@@ -331,9 +400,29 @@ def implausible_exploration(
     fakes only plausible accuracy evades it. `disagreeing_exploration` is the
     other half, and catches that miner when the other operators do not agree
     with it.
+
+    A model counts toward the expectation only once the frame holds
+    `min_trials` raw trials of it, and the expectation is its raw mean (the
+    frontier's valuation), not the prior-pulled posterior: judged against the
+    posterior from one trial, every honest miner on a 90% model sat 40 points
+    "above" a cold frame. Simulated on the v2 table from empty, every miner
+    was flagged on 2 of the first 120 epochs, each such epoch's samples were
+    dropped, and a false `exploration_excluded_from_frame` went into the
+    public log (review 2026-11-05, F-061).
+
+    PROTOCOL v1 EPOCHS KEEP THE v1 RULE (one trial, the posterior), exactly as
+    `main` computes it. Every epoch before the activation block is v1, and
+    during the upgrade window validators run a mix of main and this release:
+    F-061 applied to v1 epochs made them exclude different miners from the
+    frame, build different frames and set different v1 weights (a
+    differential fuzz of main against this release, 2026-11-08: 160 of 300
+    random cases). The frame pays nothing in v2, so F-061 changes only v2's
+    log; v1 keeps agreeing with main until it is removed.
     """
     if frame is None:
         return {}
+    v1 = int(protocol_version) < 2
+    floor = 1.0 if v1 else min_trials
     flagged: dict[int, str] = {}
     for uid, results in sorted(per_miner.items()):
         by_model: dict[str, list[bool]] = {}
@@ -348,9 +437,13 @@ def implausible_exploration(
         observed = 0.0
         measured = 0
         for model, outcomes in by_model.items():
-            if frame.trials.get(model, 0.0) < 1.0:
-                continue                      # frame has never seen it; no basis
-            expected += frame.accuracy(model) * len(outcomes)
+            if frame.trials.get(model, 0.0) < floor:
+                continue                      # not measured enough to judge against
+            # v2: the RAW mean, not the posterior: the prior (20 pseudo-samples
+            # at 0.5) still pulls a 90% model to 0.69 at 20 trials, which is the
+            # false "above" on every honest miner that F-061 measured.
+            # v1: main's rule, unchanged (see the docstring).
+            expected += (frame.accuracy(model) if v1 else frame.frontier_accuracy(model)) * len(outcomes)
             observed += sum(outcomes)
             measured += len(outcomes)
         if measured < min_samples:
@@ -428,6 +521,7 @@ def accumulate_exploration(
     frame: ReferenceFrame | None,
     samples: list[tuple[str, float, float, float]],
     half_life: int = FRAME_HALF_LIFE,
+    weights: list[float] | None = None,
 ) -> ReferenceFrame:
     """Fold one epoch's exploration samples into the frame.
 
@@ -437,7 +531,16 @@ def accumulate_exploration(
     accepted too, which is what tests and single-voter replays supply. Sample
     order does not affect the result — all terms are sums — so validators
     processing proofs in any order reach identical frames.
+
+    `weights` (protocol v2) are per-sample mix weights, aligned with
+    `samples`; they enter only the weighted sums, never the raw trial count.
+    The first time a frame is weighted, its weighted sums start from the raw
+    history (every past trial at weight 1), so no estimate jumps at the
+    transition; once a frame carries weighted sums, later epochs keep them up
+    to date (weight 1 where none is given), so the two never drift apart.
     """
+    if weights is not None and len(weights) != len(samples):
+        raise ValueError("weights must align with samples")
     alpha = decay_factor(half_life)
     prev = frame or ReferenceFrame()
 
@@ -448,11 +551,38 @@ def accumulate_exploration(
         completion_tokens={m: v * alpha for m, v in prev.completion_tokens.items()},
         epochs=prev.epochs + 1,
     )
-    for model, correct, p_tok, c_tok in samples:
+    keep_weighted = weights is not None or prev.weighted
+    if keep_weighted:
+        if not prev.weighted:
+            # The first weighted epoch. Seeding the weighted sums from the raw
+            # history (weight 1 per past trial) keeps every estimate
+            # continuous: without this, a model with 300 raw trials was valued
+            # at its single newest sample the moment the frame became weighted
+            # (0.863 -> 0.000, completion 315 -> 2000 on the shipped frame;
+            # review 2026-11-05, F-059), and stayed there for hundreds of
+            # epochs while the weighted sums refilled.
+            base_s, base_t = prev.successes, prev.trials
+            base_p, base_c = prev.prompt_tokens, prev.completion_tokens
+        else:
+            base_s, base_t = prev.successes_w, prev.trials_w
+            base_p, base_c = prev.prompt_tokens_w, prev.completion_tokens_w
+        out.successes_w = {m: v * alpha for m, v in base_s.items()}
+        out.trials_w = {m: v * alpha for m, v in base_t.items()}
+        out.prompt_tokens_w = {m: v * alpha for m, v in base_p.items()}
+        out.completion_tokens_w = {m: v * alpha for m, v in base_c.items()}
+    for i, (model, correct, p_tok, c_tok) in enumerate(samples):
         out.trials[model] = out.trials.get(model, 0.0) + 1.0
         out.successes[model] = out.successes.get(model, 0.0) + float(correct)
         out.prompt_tokens[model] = out.prompt_tokens.get(model, 0.0) + float(p_tok)
         out.completion_tokens[model] = out.completion_tokens.get(model, 0.0) + float(c_tok)
+        if keep_weighted:
+            w = 1.0 if weights is None else float(weights[i])
+            out.trials_w[model] = out.trials_w.get(model, 0.0) + w
+            out.successes_w[model] = out.successes_w.get(model, 0.0) + w * float(correct)
+            out.prompt_tokens_w[model] = out.prompt_tokens_w.get(model, 0.0) + w * float(p_tok)
+            out.completion_tokens_w[model] = (
+                out.completion_tokens_w.get(model, 0.0) + w * float(c_tok)
+            )
     return out
 
 
@@ -522,9 +652,9 @@ BOOTSTRAP_FRAME_PATH = os.path.join(
 def load_bootstrap(path: str | None = None, require: bool = False) -> ReferenceFrame:
     """Load the shipped bootstrap frame, or an empty one if absent.
 
-    The bootstrap is real measured evidence (built by
-    scripts/build_bootstrap_frame.py from testnet reveals and hash-pinned),
-    not a prior: it is decayed exploration counts, so the frontier is valued
+    The bootstrap is real measured evidence (the shipped file is built by
+    `scripts/build_frame_from_calls.py --build-only` from a committed call log,
+    and hash-pinned), not a prior: it is decayed exploration counts, so the frontier is valued
     from it exactly as from live samples and pays from epoch 1 instead of
     after FRONTIER_MIN_TRIALS distinct observations per model.
 
@@ -542,9 +672,12 @@ def load_bootstrap(path: str | None = None, require: bool = False) -> ReferenceF
             raise FileNotFoundError(
                 f"No bootstrap reference frame at {path}. A live validator with no "
                 "accumulated frame must start from the shipped one, or it scores the "
-                "field against a different frontier from every other validator. Build "
-                "it with scripts/build_bootstrap_frame.py, or set FUGAL_FRAME_BOOTSTRAP "
-                "to a directory of published reveals."
+                "field against a different frontier from every other validator. Restore "
+                "the shipped file from this release (git checkout -- "
+                "data/reference_frame.json), or set FUGAL_FRAME_BOOTSTRAP to the published "
+                "reveals every validator uses. Do not build your own: a frame built from "
+                "your own reveals differs from the pinned one, and nothing at runtime "
+                "would tell you."
             ) from None
         logger.info("No bootstrap reference frame at %s — starting from the prior", path)
         return ReferenceFrame()

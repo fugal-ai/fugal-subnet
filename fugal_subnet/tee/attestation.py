@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import struct
 import time
 from dataclasses import dataclass
@@ -72,10 +73,6 @@ class TDXQuote:
     report_data: str
     raw: bytes
 
-    @property
-    def report_data_bytes(self) -> bytes:
-        return bytes.fromhex(self.report_data)
-
 
 def parse_quote(data: bytes) -> TDXQuote:
     """Parse a raw TDX v4 quote binary into structured fields."""
@@ -101,6 +98,18 @@ def parse_quote(data: bytes) -> TDXQuote:
         raw=data,
         **fields,
     )
+
+
+def td_is_debug(quote: TDXQuote) -> bool:
+    """True if the TD was launched with the DEBUG attribute.
+
+    A debug TD's host can read and write its memory and registers, so nothing
+    it attests is evidence: the quote is genuine and the content is whatever
+    the host wanted. TDATTRIBUTES is a little-endian 64-bit field and DEBUG is
+    bit 0. Checked here rather than left to the DCAP library, whose behaviour
+    on a debug quote has not been observed, or to the cloud's offering.
+    """
+    return bool(bytes.fromhex(quote.td_attributes)[0] & 0x01)
 
 
 def measurement_id(quote: TDXQuote) -> str:
@@ -136,18 +145,6 @@ def measurement_id(quote: TDXQuote) -> str:
     payload = bytes.fromhex(quote.mrtd + quote.rtmr1 + quote.rtmr2)
     return hashlib.sha256(payload).hexdigest()
 
-
-# The kernel's unified TSM measurement-register ABI. Writing a register-width
-# digest to this file extends that RTMR. Verified on a live GCP c3 TD running
-# 6.17.0-1022-gcp: the file exists, the write succeeds, and the new value
-# appears in the next Intel-signed quote. Absent on older guest kernels, which
-# is why extend_rtmr3 reports failure rather than assuming success.
-#
-# The register name carries its hash algorithm, and the directory is
-# `measurements`, not `mr`. Both were wrong in the first draft of this file and
-# the only symptom was extend_rtmr3 quietly returning False forever — which is
-# why the path is asserted against hardware and not against documentation.
-_TSM_MR_RTMR3 = "/sys/class/misc/tdx_guest/measurements/rtmr3:sha384"
 
 # RTMRs are SHA384 registers. The value written must be register-width, so the
 # runtime identity is SHA384 and not the SHA256 used everywhere else.
@@ -240,6 +237,13 @@ def expected_rtmr3(runtime_identity_hex: str) -> str:
 # dstack tags every runtime event it extends with this type.
 _DSTACK_EVENT_TYPE = 0x08000001
 
+# What an event name may be: every name dstack extends (system-preparing,
+# app-id, compose-hash, gpu-policy-hash, instance-id, boot-mr-done,
+# key-provider, storage-fs, system-ready) and nothing else. No ':' (the first
+# encoding's separator), nothing empty, nothing non-ASCII (where json.dumps
+# and the canonical JSON of the second encoding part ways).
+_EVENT_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
 
 def dstack_event_digest(name: str, payload: bytes, version: int = 2) -> str:
     """The 48-byte value dstack extends for one runtime event.
@@ -275,7 +279,7 @@ def dstack_event_digest(name: str, payload: bytes, version: int = 2) -> str:
     return hashlib.sha384(canonical.encode("utf-8")).hexdigest()
 
 
-def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str, dict]:
+def replay_event_log(events, imr: int = 3) -> tuple[str, dict]:
     """Replay one measurement register from an event log; return (rtmr, events).
 
     THE LOG IS UNTRUSTED. It reaches a validator from the miner, and the only
@@ -288,8 +292,10 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
     verifier that sorted or de-duplicated the log would let a miner rearrange it
     to reach a chosen value.
 
-    `upto` stops after the named event, which is how a verifier can bind only as
-    far as `compose-hash` and ignore per-instance events that follow it.
+    Every event's digest is checked against its own (name, payload) in both
+    dstack encodings, so a field read from the returned map is the one that
+    was actually extended. A name must match `_EVENT_NAME` and may appear only
+    once, so each digest has exactly one reading and each name one value.
     """
     reg = b"\x00" * _RTMR_DIGEST_BYTES
     seen: dict[str, bytes] = {}
@@ -300,79 +306,44 @@ def replay_event_log(events, imr: int = 3, upto: str | None = None) -> tuple[str
         digest = bytes.fromhex(digest_hex) if isinstance(digest_hex, str) else bytes(digest_hex)
         if len(digest) != _RTMR_DIGEST_BYTES:
             raise ValueError(f"event {i} digest is {len(digest)} bytes, need 48")
-
-        # v2 events may carry the preimage. When present it must hash to the
-        # digest, or the log is lying about what it extended.
-        preimage = ev.get("preimage")
-        if preimage:
-            raw = bytes.fromhex(preimage) if isinstance(preimage, str) else bytes(preimage)
-            if hashlib.sha384(raw).hexdigest() != digest.hex():
-                raise ValueError(
-                    f"event {i} ({ev.get('event','?')}) preimage does not hash to "
-                    "its digest"
-                )
         reg = hashlib.sha384(reg + digest).digest()
         name = str(ev.get("event", ""))
         payload = ev.get("event_payload", b"")
-        seen[name] = bytes.fromhex(payload) if isinstance(payload, str) else bytes(payload)
-        if upto is not None and name == upto:
-            break
+        payload = bytes.fromhex(payload) if isinstance(payload, str) else bytes(payload)
+
+        # ONE READING PER DIGEST. The first encoding joins the type, name and
+        # payload with ':', so a name holding ':' lets one digest be read as
+        # a different (name, payload) split. Names are held to what dstack
+        # extends (an allow-list, not a refusal of the one known separator).
+        if not _EVENT_NAME.fullmatch(name):
+            raise ValueError(f"event {i} name {name!r} is not an event name")
+
+        # THE DIGEST MUST BIND THE NAME AND PAYLOAD IT TRAVELS WITH. The
+        # replay above proves only that this SEQUENCE OF DIGESTS reproduces
+        # the register; the (name, payload) pairs beside them are what the
+        # verifier goes on to read, and nothing else ties the two together.
+        # Without this check a miner keeps every genuine digest, relabels the
+        # compose-hash payload to an approved value, and the log still
+        # replays to the register the CPU signed (found 2026-11-05 on the real
+        # fixtures: the forged log verified). dstack computes the digest from
+        # the event's type, name and payload in one of two encodings, so
+        # either reproducing it is proof the pair is the one that was
+        # extended; neither reproducing it is a lie about what was extended.
+        if digest.hex() not in (
+            dstack_event_digest(name, payload, 1),
+            dstack_event_digest(name, payload, 2),
+        ):
+            raise ValueError(
+                f"event {i} ({name or '?'}) digest does not bind its name and "
+                "payload: the log claims an extend it cannot have made"
+            )
+        # ONE VALUE PER NAME. The initrd extends each event once, before any
+        # container runs; a second event under the same name can only be
+        # the application's, so neither copy is believed.
+        if name in seen:
+            raise ValueError(f"event {i} repeats the name {name!r}")
+        seen[name] = payload
     return reg.hex(), seen
-
-
-def extend_rtmr3(identity_hex: str) -> bool:
-    """Extend RTMR3 with the runtime identity. True if the hardware took it.
-
-    ADVISORY UNTIL THE IMAGE IS LOCKED, and the docstring says so because the
-    code cannot. On an unmeasured filesystem an attacker running modified code
-    simply extends the value we expect, so a matching RTMR3 proves nothing on
-    its own. It becomes load-bearing when the extend is performed from a
-    measured initrd inside a dm-verity image, at which point the same value is
-    evidence. Writing it now means that migration completes a design rather
-    than introducing one.
-
-    Never raises: a miner that cannot extend must still run, because the value
-    is not yet enforced. It returns False instead, and callers are expected to
-    say so loudly — a silent failure here would be indistinguishable from a
-    binding that never happened.
-
-    This is an EXTEND, not a set. The hardware computes
-    `RTMR = SHA384(RTMR || input)`, starting from 48 zero bytes at boot, so the
-    register never holds the value written to it. A verifier therefore cannot
-    compare RTMR3 to `runtime_identity()` directly — it must replay the chain
-    of extends from zero and check the result equals the quote's RTMR3. That is
-    the same event-log replay dstack requires, and it is why binding RTMR3 is a
-    verification procedure rather than a term in `measurement_id`.
-
-    Confirmed on live hardware: writing sha384(b"fugal-runtime-test") to a
-    freshly booted TD moved RTMR3 from zeros to
-    f6fdca9f66372d80685dc6be023d9e6ae25a42334f3b59de24c78da941883a64..., which
-    equals sha384(bytes(48) + input) and appeared unchanged in the next quote.
-    """
-    try:
-        digest = bytes.fromhex(identity_hex)
-    except ValueError:
-        logger.error("runtime identity %r is not hex; RTMR3 not extended", identity_hex)
-        return False
-    if len(digest) != _RTMR_DIGEST_BYTES:
-        logger.error(
-            "runtime identity is %d bytes, RTMR3 needs %d (SHA384); not extended",
-            len(digest), _RTMR_DIGEST_BYTES,
-        )
-        return False
-    try:
-        with open(_TSM_MR_RTMR3, "wb") as f:
-            f.write(digest)
-    except OSError as e:
-        logger.warning(
-            "RTMR3 not extended (%s): %s. The runtime identity is NOT bound to "
-            "this TD's measurement registers. This kernel may predate the "
-            "tsm-mr interface, or the process may lack write access.",
-            _TSM_MR_RTMR3, e,
-        )
-        return False
-    logger.info("RTMR3 extended with runtime identity %s", identity_hex[:16])
-    return True
 
 
 _pccs_logged: set[str] = set()
@@ -452,7 +423,8 @@ class CollateralBudget:
     """
 
     __slots__ = (
-        "_max_timeouts", "_proofs_left", "_remaining", "_timeouts", "_total",
+        "_collateral", "_max_timeouts", "_proofs_left", "_remaining", "_timeouts",
+        "_total",
     )
 
     def __init__(
@@ -473,6 +445,28 @@ class CollateralBudget:
         self._proofs_left = (
             None if expected_proofs is None else max(1, int(expected_proofs))
         )
+        # This epoch's collateral, by platform. See `collateral_for`.
+        self._collateral: dict = {}
+
+    def collateral_for(self, key):
+        """Collateral already fetched this epoch for this platform, or None.
+
+        Collateral depends only on the platform (FMSPC), the PCK issuing CA and
+        the quote type -- not on the quote -- and every miner on one cloud
+        instance family shares a platform (both real deploys: FMSPC
+        00806F050000). Fetching it once per epoch instead of once per proof
+        turns ~256 round trips into about one, which removes most of the time,
+        the network-luck divergence between validators, and the per-proof
+        dependency on the PCCS. It adds no trust: the collateral is
+        Intel-signed and checked on every use. It carries no PCK chain
+        (`_without_pck_chain`), so each quote is judged by its own. Only
+        successes are kept, so a failed fetch is retried for the next proof
+        under the usual bounds.
+        """
+        return self._collateral.get(key)
+
+    def remember_collateral(self, key, collateral) -> None:
+        self._collateral[key] = collateral
 
     @property
     def remaining(self) -> float:
@@ -557,6 +551,37 @@ class CollateralBudget:
             self._proofs_left = max(1, self._proofs_left - 1)
 
 
+def collateral_window(collateral) -> tuple[int, int]:
+    """[start, end) in unix seconds during which this collateral can verify.
+
+    Start is the latest issue date of the TCB info and QE identity; end is the
+    earliest next-update of those two and of both CRLs (measured on real
+    collateral: the PCK CRL expires minutes BEFORE the TCB info, so the TCB
+    date alone is not the window). Used only to explain a failed
+    verification, never to refuse one the library accepted.
+    """
+    import datetime
+    import json
+
+    from cryptography import x509
+
+    def ts(s: str) -> int:
+        return int(datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")
+                   .replace(tzinfo=datetime.timezone.utc).timestamp())
+
+    starts, ends = [], []
+    for doc in (collateral.tcb_info, collateral.qe_identity):
+        d = json.loads(doc)
+        starts.append(ts(d["issueDate"]))
+        ends.append(ts(d["nextUpdate"]))
+    for der in (collateral.root_ca_crl, collateral.pck_crl):
+        crl = x509.load_der_x509_crl(bytes(der))
+        if crl.next_update_utc is None:
+            raise ValueError("a CRL with no next update")
+        ends.append(int(crl.next_update_utc.timestamp()))
+    return max(starts), min(ends)
+
+
 class CollateralUnavailable(Exception):
     """DCAP collateral could not be fetched, so the quote was never judged.
 
@@ -575,6 +600,7 @@ def verify_dcap(
     quote_bytes: bytes,
     pccs_url: str | None = None,
     budget: "CollateralBudget | None" = None,
+    now: int | None = None,
 ) -> bool:
     """Verify TDX quote via Intel DCAP collateral.
 
@@ -615,7 +641,19 @@ def verify_dcap(
     verify loop is serial, so 256 individually-bounded fetches still overrun the
     epoch. Once it is spent this returns unavailable without touching the
     network. Omitting it leaves only the per-call bound, which is correct for a
-    one-off caller and NOT sufficient inside the epoch loop.
+    one-off caller and NOT sufficient inside the epoch loop. The budget also
+    holds the epoch's collateral per platform, so a field on one platform costs
+    one fetch (`CollateralBudget.collateral_for`).
+
+    A verification that fails while the collateral is outside its validity
+    window (`collateral_window`: a PCCS serving stale collateral, or this
+    validator's clock) is the operator's, and raises CollateralUnavailable
+    rather than returning False. Measured: expired collateral fails every
+    genuine quote with "TCBInfo expired", which used to read as every miner's
+    proof being bad at once.
+
+    `now` (unix seconds) defaults to the clock; tests pin it so recorded
+    collateral keeps verifying.
 
     Raises:
         ImportError: If dcap_qvl is not installed (configuration error).
@@ -633,11 +671,7 @@ def verify_dcap(
             "Install with: pip install dcap-qvl"
         )
 
-    from fugal_subnet.config import (
-        TEE_COLLATERAL_MAX_TIMEOUTS,
-        TEE_COLLATERAL_TIMEOUT,
-        TEE_PCCS_URL,
-    )
+    from fugal_subnet.config import TEE_PCCS_URL
 
     url = (pccs_url or TEE_PCCS_URL or "").strip()
     if not url:
@@ -651,18 +685,60 @@ def verify_dcap(
         )
     _log_pccs_endpoint(url)
 
+    now_s = int(time.time()) if now is None else int(now)
+
     # 1. Parse before fetching. Miner-controlled bytes, judged locally, with no
     #    network involved -- so a malformed quote can never be misreported as
-    #    an infrastructure failure, and never costs a round trip either.
+    #    an infrastructure failure, and never costs a round trip either. The
+    #    platform it names is the collateral cache key.
     try:
-        _parse(quote_bytes)
+        parsed = _parse(quote_bytes)
+        platform = (parsed.fmspc(), parsed.ca(), parsed.quote_type())
     except Exception as e:  # noqa: BLE001 - miner-controlled bytes
         logger.warning("DCAP: quote does not parse (%s: %s)", type(e).__name__, e)
         return False
 
-    # 2. Fetch collateral. Everything here is the operator's infrastructure,
-    #    so a failure raises rather than condemning the miner.
-    # 1b. Refuse before dialling if the epoch's collateral budget is gone.
+    # 2. Collateral: this epoch's for the platform, else one bounded fetch.
+    collateral = budget.collateral_for(platform) if budget is not None else None
+    if collateral is None:
+        collateral = _fetch_collateral(get_collateral, url, quote_bytes, budget)
+        if budget is not None:
+            budget.remember_collateral(platform, collateral)
+
+    # 3. Judge the quote against the collateral. Local and deterministic given
+    #    both inputs, so a failure here is the miner's -- unless the collateral
+    #    itself was not valid at this moment, which is the operator's.
+    try:
+        result = _verify(quote_bytes, collateral, now_s)
+    except Exception as e:  # noqa: BLE001 - the library raises ValueError for all of it
+        try:
+            start, end = collateral_window(collateral)
+        except Exception as w:  # noqa: BLE001 - collateral from the PCCS, not the miner
+            raise CollateralUnavailable(
+                f"DCAP collateral from {url} is unreadable ({w}); the proof was "
+                "never judged -- this is an outage, not a bad proof."
+            ) from e
+        if not start <= now_s < end:
+            raise CollateralUnavailable(
+                f"DCAP collateral from {url} is valid for [{start}, {end}) but "
+                f"this validator's time is {now_s}: the PCCS served stale "
+                "collateral or this clock is wrong. The proof was never judged "
+                "-- this is an outage, not a bad proof."
+            ) from e
+        logger.warning("DCAP verification failed: %s: %s", type(e).__name__, e)
+        return False
+    return _report_status(result)
+
+
+def _fetch_collateral(get_collateral, url: str, quote_bytes: bytes, budget):
+    """One bounded fetch. Everything here is the operator's infrastructure, so
+    every failure raises CollateralUnavailable rather than condemning a miner."""
+    from fugal_subnet.config import (
+        TEE_COLLATERAL_MAX_TIMEOUTS,
+        TEE_COLLATERAL_TIMEOUT,
+    )
+
+    # Refuse before dialling if the epoch's collateral budget is gone.
     #     Checked BEFORE the fetch, not after: the point is to stop spending
     #     time, and a call that is going to be abandoned anyway should never
     #     leave the process. This is what gives the phase a hard ceiling.
@@ -729,15 +805,33 @@ def verify_dcap(
         # the upstream is at its worst -- which is the case it exists for.
         if budget is not None:
             budget.spend(time.monotonic() - started)
+    return _without_pck_chain(collateral)
 
-    # 3. Judge the quote against the collateral. Local and deterministic given
-    #    both inputs, so a failure here is the miner's again.
-    try:
-        result = _verify(quote_bytes, collateral, int(time.time()))
-    except Exception:
-        logger.exception("DCAP verification failed")
-        return False
 
+def _without_pck_chain(collateral):
+    """The collateral with no PCK certificate chain attached.
+
+    `get_collateral` copies the QUOTE's PCK chain into the collateral, and
+    `verify` then checks the quote against the collateral's chain instead of
+    the quote's own (measured: a garbage chain in the collateral fails a
+    genuine quote; no chain falls back to the quote's and passes). Shared
+    across proofs, that would check every miner against the first miner's
+    PCK certificate: honest miners on other machines fail, and one miner
+    chooses the chain everyone else is judged by. Without it, each quote is
+    checked against the chain it carries, which every dstack quote does.
+    Rebuilt from the PCCS's own response, never from miner JSON.
+    """
+    import json
+
+    from dcap_qvl import QuoteCollateralV3
+
+    fields = json.loads(collateral.to_json())
+    fields["pck_certificate_chain"] = None
+    return QuoteCollateralV3.from_json(json.dumps(fields))
+
+
+def _report_status(result) -> bool:
+    """Record the verdict rather than only the fact one was reached."""
     # Record the verdict rather than only the fact one was reached.
     #
     # `verify` returns a report, and `report.status` is the TCB state of the

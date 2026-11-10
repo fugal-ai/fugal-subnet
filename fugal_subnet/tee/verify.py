@@ -15,33 +15,45 @@ runs *modified* code on real hardware. What separates honest from modified is
 the measurement register the CPU filled in, not a string the workload wrote
 about itself.
 
-The chain that makes a proof trustworthy:
+The chain that makes a proof trustworthy (docs/INVARIANTS.md I8, "what
+attested actually means", is the full statement):
 
+    Google TPM quote, signed by a Google-chained AK, over sha256(tdx_quote)
+      -> the TDX quote came from a Google Confidential VM (unwrap_attestation)
     Intel DCAP signature
       -> quote is genuine, from real TDX hardware
+    TDATTRIBUTES.DEBUG clear
+      -> the host could not read or change the TD
     measurement_id(quote) in approved_measurements
-      -> the image that ran is the published one
+      -> the image that booted is the published one
+    the RTMR3 event log replays to the quote, and names an approved compose hash
+      -> the application that ran is the published one
     report_data == proof.content_hash()
       -> the proof body is exactly what that image produced
+    proof.hotkey == this uid's hotkey, nonce == this epoch's
+      -> the proof is this miner's, for this epoch
     proof.weights_hash == on-chain commitment, == sha256(head bytes)
       -> the head that ran is the head that was committed, before the nonce
-    result question ids == the assigned slice
+    result question ids == the assigned slice, exploration == the nonce's targets
       -> those answers are to the questions we asked
+    per-question costs reconcile with the totals
+      -> the cost figures are internally consistent
 """
 from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 
 from fugal_subnet.config import EXPLORE_FAIL_MARGIN
 from fugal_subnet.tee.attestation import (
     CollateralUnavailable,
-    expected_rtmr3,
     extract_report_data,
     measurement_id,
     parse_quote,
     replay_event_log,
+    td_is_debug,
     verify_dcap,
 )
 from fugal_subnet.tee.proof import (
@@ -52,6 +64,10 @@ from fugal_subnet.tee.proof import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Both halves of a live entry: measurement_id() is a sha256, and the app half is
+# the sha256 of the frozen app-compose.json, replayed out of the RTMR3 log.
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass
@@ -78,7 +94,7 @@ def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
     An entry is either
 
         <base>                 the image is approved, nothing is required of RTMR3
-        <base>:<app_identity>  and the runtime identity must also match
+        <base>:<compose_hash>  and the compose hash in the RTMR3 log must match
 
     Two halves rather than one hash, because they have different lifecycles and
     different approvers. The base rotates when the image or kernel changes,
@@ -97,6 +113,11 @@ def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
     (diligence 2026-10, finding 1). `require_app=True` makes a bare base a
     loud ValueError; the live validator passes it at startup, and
     `verify_proof` refuses a bare-base match outside mock regardless.
+
+    `require_app=True` also holds both halves to the one live shape, 64 hex
+    each (case-insensitive, stored lower-case). Anything else is a typo that
+    would match no proof, or an identity the live verifier cannot check, and
+    either way the operator would see the whole field refused with no hint.
 
     THE APP IDENTITY IS NEVER AN RTMR3 VALUE, and storing one here would be a
     subtle, expensive mistake. A measured image extends RTMR3 several times
@@ -117,7 +138,7 @@ def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
         if not entry:
             continue
         base, sep, app = entry.partition(":")
-        base, app = base.strip(), app.strip()
+        base, app = base.strip().lower(), app.strip().lower()
         # A colon with nothing after it is a typo, not an intention, and
         # interpreting it as the weaker form silently disables the app binding
         # while the operator believes they configured one. That is the exact
@@ -139,6 +160,11 @@ def parse_approved(entries, require_app: bool = False) -> dict[str, set[str]]:
                 "identity. A bare base approves ANY application on that image, "
                 "including one whose model upstream the miner chose. Live entries "
                 "must be '<base>:<compose_hash>' (docs/APPROVED_ENTRY_ROTATION.md)."
+            )
+        if require_app and not (_HEX64.fullmatch(base) and _HEX64.fullmatch(app)):
+            raise ValueError(
+                f"Approved measurement {entry!r} is not '<base>:<compose_hash>' "
+                "with 64 hex characters in each half (docs/APPROVED_ENTRY_ROTATION.md)."
             )
         out.setdefault(base, set())
         if app:
@@ -184,16 +210,11 @@ def unwrap_attestation(blob: bytes, extra_certs: "list[bytes] | None" = None
 
     try:
         # extra_certs: intermediates the proof carries (BenchmarkProof.
-        # tpm_intermediates). Safe to accept from the miner in the sense that
-        # matters for forgery: they only help if they chain to the pinned root
-        # by signature. They are NOT bound to proof_hash or report_data (they
-        # are outside content_hash), so a miner can send different
-        # intermediates to different validators under the same proof_hash, a
-        # valid chain to one and junk to another, and split them on its own
-        # proof. That costs the miner, not the field, and is no more than a
-        # miner can already do by answering only some validators; it is still
-        # an I1 gap, recorded in INVARIANTS. Closed when the harness puts them
-        # inside content_hash (next image).
+        # tpm_intermediates). Safe to accept from the miner: they only help if
+        # they chain to the pinned root by signature. Since 2026-11-08 they are
+        # inside content_hash when present, so they are bound to proof_hash and
+        # report_data and every validator sees the same set (I1). The miner
+        # attaches them to v2 proofs (tpm.intermediates_for).
         ok = verify_tpm_quote(att["tpm"], extra_certs=extra_certs)
     except TpmError as e:
         raise ValueError(f"TPM quote rejected: {e}") from e
@@ -210,7 +231,6 @@ def unwrap_attestation(blob: bytes, extra_certs: "list[bytes] | None" = None
     # Without this check a genuine Google-signed TPM quote from any Confidential
     # VM could be stapled onto any TDX quote, and the "second trust root" proved
     # only that some GCP vTPM exists somewhere (found 2026-11-02; I8).
-    import hashlib
     try:
         extra = parse_attest(att["tpm"]["message"])["extra_data"]
     except (TpmError, KeyError, ValueError) as e:
@@ -242,6 +262,7 @@ def verify_proof(
     event_log: list | None = None,
     mock: bool = False,
     collateral_budget=None,
+    protocol_version: int = 1,
 ) -> VerifyResult:
     """Verify a miner's TEE-attested benchmark proof.
 
@@ -262,14 +283,22 @@ def verify_proof(
         expected_proof_hash: content_hash the miner advertised over the axon.
         head_bytes: The head artifact shipped in the bundle.
         mock: If True, skip hardware-trust checks (DCAP, measurement).
+        protocol_version: the epoch's version (slicer.protocol_version_for_boundary).
+            The proof's routing evidence namespace and the head's cost profile
+            are checked against that version's (identity() / identity_v2(),
+            benchmark_costs_for(head, version)); the harness stamps the same.
 
     Returns:
         VerifyResult with pass/fail and reason.
     """
     warnings: list[str] = []
-    from fugal_subnet.routing_protocol import identity
-    if proof.routing_protocol != identity():
-        return VerifyResult(False, "Incompatible routing protocol evidence namespace")
+    from fugal_subnet.routing_protocol import identity, identity_v2
+    expected_namespace = identity_v2() if int(protocol_version) >= 2 else identity()
+    if proof.routing_protocol != expected_namespace:
+        return VerifyResult(
+            False,
+            f"Incompatible routing protocol evidence namespace for protocol v{int(protocol_version)}",
+        )
 
     # 1. DCAP attestation — proves the quote is genuine Intel-signed hardware.
     #    It does NOT prove the code was unmodified; check 3 does that.
@@ -335,6 +364,16 @@ def verify_proof(
         report_data = extract_report_data(attestation_quote)
     except ValueError as e:
         return VerifyResult(False, f"Invalid attestation quote: {e}")
+
+    # 2a. A debug TD's host can read and change its memory, so its quote proves
+    #     nothing about what ran. Free, so it runs in every mode, before any
+    #     network fetch.
+    if td_is_debug(quote):
+        return VerifyResult(
+            False,
+            "The quote comes from a DEBUG TD: its host can read and change the "
+            "TD's memory, so nothing it attests is evidence",
+        )
 
     content_hash = proof.content_hash()
     expected_report_data = bytes.fromhex(content_hash).ljust(64, b"\x00")[:64]
@@ -436,11 +475,11 @@ def verify_proof(
 
     if not mock:
         from fugal_subnet.head_eval import load_head_from_npz
-        from fugal_subnet.routing_protocol import benchmark_costs
+        from fugal_subnet.routing_protocol import benchmark_costs_for
         try:
             if head_bytes is None:
                 raise ValueError("missing success head bytes")
-            benchmark_costs(load_head_from_npz(head_bytes))
+            benchmark_costs_for(load_head_from_npz(head_bytes), int(protocol_version))
         except (ValueError, KeyError, TypeError) as e:
             return VerifyResult(False, f"Incompatible success head: {e}")
 
@@ -460,6 +499,22 @@ def verify_proof(
             False,
             f"{len(unknown)} results reference questions with no gold answer "
             f"(e.g. {unknown[:3]})",
+        )
+
+    # 9a. Token counts are bounded (I2). They are attested, so an honest proof
+    #     never comes near the bound; a JSON integer is unbounded, and every
+    #     value used downstream (the frame, the v2 spend) must be bounded.
+    from fugal_subnet.config import PROOF_MAX_TOKENS
+    bad_tokens = [
+        r.question_id for r in proof.results
+        if not (0 <= r.prompt_tokens <= PROOF_MAX_TOKENS
+                and 0 <= r.completion_tokens <= PROOF_MAX_TOKENS)
+    ]
+    if bad_tokens:
+        return VerifyResult(
+            False,
+            f"{len(bad_tokens)} results carry a token count outside 0..{PROOF_MAX_TOKENS} "
+            f"(e.g. {bad_tokens[:3]})",
         )
 
     # 9b. A failed call is a wrong answer and nothing more. The harness
@@ -569,15 +624,14 @@ def verify_proof(
                 f"not among {len(approved)} approved measurements",
             )
 
-        # 3b. Runtime identity, when the approved entry names one.
-        #     RTMR3 is an EXTEND, not a set — the register holds
-        #     SHA384(SHA384(...zeros || first) || second)..., never the value
-        #     written. So this replays from zero and compares the result to what
-        #     the CPU signed, which is also what makes an untrusted extend log
-        #     safe to read later: a log that does not reproduce the quote's
-        #     register is discarded before any field of it is believed.
-        required_apps = approved[measured]
-        if not required_apps:
+        # 3b. The application, from the compose hash in the RTMR3 event log.
+        #     RTMR3 is an EXTEND, not a set, and a dstack TD extends it nine
+        #     times during boot, including `instance-id`, which changes on
+        #     every deploy. So the register is never compared to a fixed value:
+        #     the log is replayed from zero, the result must equal what the CPU
+        #     signed, and only then is the compose-hash payload read. A log that
+        #     does not reproduce the register is discarded whole.
+        if not approved[measured]:
             # A bare base says nothing about the application, and the
             # application is what fixes the model upstream. Outside mock that
             # is the upstream-substitution exploit with every signature intact
@@ -591,66 +645,40 @@ def verify_proof(
                 "app identity, so the application (and its model upstream) is "
                 "unchecked. Live verification requires <base>:<compose_hash>.",
             )
-        if required_apps:
-            if event_log:
-                # A measured image extends RTMR3 several times during boot, so
-                # the register is a chain and the log is the only description of
-                # it. Replay first, compare to the quote, and only then read a
-                # field: a log that does not reproduce what the CPU signed is
-                # discarded whole rather than partially believed.
-                try:
-                    replayed, events = replay_event_log(event_log, imr=3)
-                except ValueError as e:
-                    return VerifyResult(False, f"Malformed TDX event log: {e}")
-                if replayed != quote.rtmr3:
-                    return VerifyResult(
-                        False,
-                        f"Event log does not reproduce RTMR3: replayed "
-                        f"{replayed[:16]}... but the quote says "
-                        f"{quote.rtmr3[:16]}...",
-                    )
-                app_seen = events.get("compose-hash", b"").hex()
-                if app_seen not in required_apps:
-                    return VerifyResult(
-                        False,
-                        f"Unapproved application: compose-hash {app_seen[:16]}... "
-                        f"not among {len(required_apps)} approved for this image",
-                    )
-            elif any(len(a) == 64 for a in required_apps):
-                # A 64-hex identity is a dstack compose hash, and a dstack TD
-                # extends RTMR3 NINE times during boot — including `instance-id`,
-                # WHICH CHANGES ON EVERY DEPLOY. Two honest miners running the
-                # identical approved compose therefore produce DIFFERENT RTMR3
-                # values, and so does one miner after a redeploy. Measured on two
-                # real deploys: same compose, different RTMR3.
-                #
-                # So RTMR3 can never be compared to a fixed value for this shape,
-                # and without the log there is nothing to replay. Refusing is the
-                # only correct answer; falling through to the single-extend
-                # comparison below would reject an honest miner on their second
-                # deploy and look exactly like an attack.
-                return VerifyResult(
-                    False,
-                    "Approved entry names a compose hash but the proof carries no "
-                    "TDX event log. RTMR3 on a measured image is a chain that "
-                    "includes per-deploy values, so it can only be checked by "
-                    "replaying the log — never by comparison.",
-                )
-            else:
-                # No log: the single-extend case a Fugal miner produces today,
-                # where the whole chain is one runtime_identity from a zeroed
-                # register. A fresh TD really does start from zero — a GCP
-                # confidential VM stop/start yields a new TD with RTMR3 cleared,
-                # measured twice — so a miner cannot accumulate extends across
-                # restarts to reach a chosen value.
-                candidates = {expected_rtmr3(app) for app in required_apps}
-                if quote.rtmr3 not in candidates:
-                    return VerifyResult(
-                        False,
-                        f"Runtime identity mismatch: RTMR3 {quote.rtmr3[:16]}... "
-                        f"replays from none of the {len(required_apps)} approved "
-                        f"runtime identities for this image",
-                    )
+        # Only a compose hash is checkable: it is the one app identity the
+        # replayed log carries. Any other app half approves nothing.
+        required_apps = {a for a in approved[measured] if _HEX64.fullmatch(a)}
+        if not required_apps:
+            return VerifyResult(
+                False,
+                f"Approved entry for image {measured[:16]}... names no compose "
+                "hash. Live verification requires <base>:<compose_hash>.",
+            )
+        if not event_log:
+            return VerifyResult(
+                False,
+                "The proof carries no TDX event log. RTMR3 on a measured image is "
+                "a chain that includes per-deploy values, so the application can "
+                "only be checked by replaying the log, never by comparison.",
+            )
+        try:
+            replayed, events = replay_event_log(event_log, imr=3)
+        except ValueError as e:
+            return VerifyResult(False, f"Malformed TDX event log: {e}")
+        if replayed != quote.rtmr3:
+            return VerifyResult(
+                False,
+                f"Event log does not reproduce RTMR3: replayed "
+                f"{replayed[:16]}... but the quote says "
+                f"{quote.rtmr3[:16]}...",
+            )
+        app_seen = events.get("compose-hash", b"").hex()
+        if app_seen not in required_apps:
+            return VerifyResult(
+                False,
+                f"Unapproved application: compose-hash {app_seen[:16]}... "
+                f"not among {len(required_apps)} approved for this image",
+            )
 
     return VerifyResult(
         valid=True,

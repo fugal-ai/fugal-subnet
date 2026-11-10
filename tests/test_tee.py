@@ -690,18 +690,22 @@ def test_runtime_identity_is_register_width_and_deterministic():
     assert runtime_identity(args[0], args[1], "z" * 64) != ident
 
 
-def test_extend_rtmr3_reports_failure_rather_than_pretending():
-    """A miner that cannot extend must still run, because the value is not yet
-    enforced — but it must return False so the caller can say so. A silent
-    success here would be indistinguishable from a binding that never happened,
-    which is the exact shape of the humaneval bug.
-    """
-    from fugal_subnet.tee.attestation import extend_rtmr3
+def test_nothing_writes_rtmr3_from_userspace():
+    """The validator replays dstack's RTMR3 log. An extend from the miner's own
+    code is not in that log, so it would stop every honest proof replaying.
+    Nothing shipped may write a measurement register (the tsm-mr sysfs files,
+    or the configfs RTMR interface)."""
+    import pathlib
 
-    assert extend_rtmr3("not-hex") is False
-    assert extend_rtmr3("ab" * 32) is False          # 32 bytes, wrong width
-    # No /sys/class/misc/tdx_guest on a non-TDX host: must be False, not a raise.
-    assert extend_rtmr3("ab" * 48) is False
+    root = pathlib.Path(__file__).resolve().parent.parent
+    writers = [
+        str(path.relative_to(root))
+        for d in ("fugal_subnet", "neurons", "scripts")
+        for path in (root / d).rglob("*.py")
+        if any(m in path.read_text()
+               for m in ("tdx_guest/measurements", "rtmr3:sha384", "/tsm/rtmr"))
+    ]
+    assert writers == []
 
 
 def test_parse_quote_rejects_non_tdx():
@@ -710,6 +714,59 @@ def test_parse_quote_rejects_non_tdx():
     struct.pack_into("<I", bad, 4, 0x0)  # tee_type: not TDX
     with pytest.raises(ValueError, match="not TDX"):
         parse_quote(bytes(bad))
+
+
+def test_parse_quote_rejects_other_versions():
+    """The field offsets are v4's. A v5 quote has a body header before the
+    TD report, so reading it at v4 offsets yields shifted, wrong registers."""
+    import struct
+    for version in (3, 5):
+        bad = bytearray(_mock_quote(b"x" * 64))
+        struct.pack_into("<H", bad, 0, version)
+        with pytest.raises(ValueError, match="Unsupported quote version"):
+            parse_quote(bytes(bad))
+
+
+def test_parse_quote_rejects_a_quote_shorter_than_the_td_report():
+    """A quote that ends inside the TD report would yield truncated fields."""
+    quote = _mock_quote(b"x" * 64)
+    parse_quote(quote[:632])                      # header + full report: parses
+    with pytest.raises(ValueError, match="expected at least 632"):
+        parse_quote(quote[:631])
+    with pytest.raises(ValueError, match="too short"):
+        extract_report_data(quote[:631])
+
+
+def _with_debug_bit(quote: bytes) -> bytes:
+    q = bytearray(quote)
+    q[168] |= 0x01                                # TDATTRIBUTES bit 0: DEBUG
+    return bytes(q)
+
+
+def test_td_is_debug_reads_bit_0_of_td_attributes():
+    from fugal_subnet.tee.attestation import td_is_debug
+
+    quote = _mock_quote(b"x" * 64)
+    assert not td_is_debug(parse_quote(quote))
+    assert td_is_debug(parse_quote(_with_debug_bit(quote)))
+    # Another attribute bit alone (SEPT_VE_DISABLE, bit 28, set on real GCP
+    # TDs) is not DEBUG.
+    q = bytearray(quote)
+    q[171] |= 0x10
+    assert not td_is_debug(parse_quote(bytes(q)))
+
+
+def test_verify_proof_refuses_a_debug_td():
+    """Checked in every mode: it costs nothing and needs no hardware."""
+    proof = _make_proof()
+    gold = {f"q{i}": {"question_id": f"q{i}"} for i in range(5)}
+    kw = dict(approved_measurements={"approved_measurement_1"},
+              expected_questions_hash=proof.questions_hash,
+              expected_nonce=proof.nonce, gold_answers=gold, mock=True)
+    assert verify_proof(proof, **kw).valid
+    proof.attestation_quote = _with_debug_bit(proof.attestation_quote)
+    result = verify_proof(proof, **kw)
+    assert not result.valid and "DEBUG TD" in result.reason
 
 
 # --- runtime identity in the approved list (I8) --------------------------------
@@ -823,26 +880,6 @@ def test_replay_filters_to_the_register_and_keeps_order():
     assert replay_event_log(reordered, imr=3)[0] != rtmr3
 
 
-def test_replay_stops_at_upto():
-    from fugal_subnet.tee.attestation import replay_event_log
-
-    log = [_ev("compose-hash", "abcd"), _ev("instance-id", "beef")]
-    partial, seen = replay_event_log(log, upto="compose-hash")
-    assert set(seen) == {"compose-hash"}
-    assert partial != replay_event_log(log)[0]
-
-
-def test_replay_rejects_a_lying_preimage():
-    """A v2 event carrying a preimage that does not hash to its digest is a log
-    claiming to have extended something it did not."""
-    from fugal_subnet.tee.attestation import replay_event_log
-
-    ev = _ev("compose-hash", "abcd")
-    ev["preimage"] = "00" * 16          # hashes to something else entirely
-    with pytest.raises(ValueError, match="preimage"):
-        replay_event_log([ev])
-
-
 def test_changing_the_compose_hash_changes_the_register():
     """The property the whole scheme rests on: different app, different RTMR3."""
     from fugal_subnet.tee.attestation import replay_event_log
@@ -850,6 +887,97 @@ def test_changing_the_compose_hash_changes_the_register():
     a = [_ev("compose-hash", "aaaa"), _ev("instance-id", "beef")]
     b = [_ev("compose-hash", "bbbb"), _ev("instance-id", "beef")]
     assert replay_event_log(a)[0] != replay_event_log(b)[0]
+
+
+def test_replay_rejects_a_relabelled_payload():
+    """The exploit the digest binding closes: keep every genuine digest and
+    rewrite the compose-hash PAYLOAD to an approved value. The chain of digests
+    still reproduces RTMR3, so a replay that only checks the register believes
+    the relabelled field. The digest must bind the (name, payload) it travels
+    with, in either dstack encoding."""
+    from fugal_subnet.tee.attestation import replay_event_log
+
+    for version in (1, 2):
+        honest = [_ev("compose-hash", "abcd", version=version),
+                  _ev("instance-id", "beef", version=version)]
+        rtmr3, seen = replay_event_log(honest)
+        assert seen["compose-hash"].hex() == "abcd"
+        forged = [dict(honest[0], event_payload="ab" * 32), honest[1]]
+        with pytest.raises(ValueError, match="does not bind"):
+            replay_event_log(forged)
+        renamed = [dict(honest[0], event="instance-id"), honest[1]]
+        with pytest.raises(ValueError, match="does not bind"):
+            replay_event_log(renamed)
+    # A mixed-encoding log is fine: each event binds in its own encoding.
+    mixed = [_ev("compose-hash", "abcd", version=1), _ev("instance-id", "beef", version=2)]
+    assert replay_event_log(mixed)[1]["compose-hash"].hex() == "abcd"
+
+
+def test_replay_refuses_a_repeated_name():
+    """The initrd extends compose-hash once, before any container runs. A
+    second event under the same name is the application's, so a log that
+    carries two is refused rather than read either way, in both encodings."""
+    from fugal_subnet.tee.attestation import replay_event_log
+
+    for version in (1, 2):
+        log = [_ev("compose-hash", "abcd", version=version),
+               _ev("instance-id", "beef", version=version),
+               _ev("compose-hash", "dead", version=version)]
+        with pytest.raises(ValueError, match="repeats the name 'compose-hash'"):
+            replay_event_log(log)
+        assert replay_event_log(log[:2])[1]["compose-hash"].hex() == "abcd"
+    # Every name, not only compose-hash.
+    with pytest.raises(ValueError, match="repeats the name 'instance-id'"):
+        replay_event_log([_ev("instance-id", "beef"), _ev("instance-id", "beef")])
+
+
+def _colon_compose_hash():
+    """A sha256 compose hash whose first byte is ':', found by varying the
+    compose, as a miner can for its own compose (about 1 try in 256)."""
+    i = 0
+    while True:
+        h = hashlib.sha256(b'{"compose": %d}' % i).digest()
+        if h[0] == ord(":"):
+            return h
+        i += 1
+
+
+def test_replay_refuses_a_name_that_resplits_a_digest():
+    """The v1 encoding joins type, name and payload with ':', so a compose
+    hash that starts with ':' lets the genuine compose-hash digest be read as
+    the name 'compose-hash:' over the rest. The real event then no longer
+    carries its name, and a later extend under 'compose-hash' would be the
+    only one. A name may not contain ':', so every digest has one reading."""
+    from fugal_subnet.tee.attestation import replay_event_log, replay_rtmr
+
+    mine = _colon_compose_hash()
+    genuine = [_ev("compose-hash", mine.hex(), version=1),
+               _ev("instance-id", "beef", version=1),
+               _ev("compose-hash", "ab" * 32, version=1)]
+    resplit = [dict(genuine[0], event="compose-hash:", event_payload=mine[1:].hex()),
+               genuine[1], genuine[2]]
+    # Same digests, so the same register: only the name rule tells them apart.
+    rtmr3 = replay_rtmr([e["digest"] for e in genuine])
+    assert replay_rtmr([e["digest"] for e in resplit]) == rtmr3
+    with pytest.raises(ValueError, match="is not an event name"):
+        replay_event_log(resplit)
+    # Anywhere in the name, in either encoding: a ':' inside the payload
+    # moves the split point just as well as one at its start.
+    for version in (1, 2):
+        with pytest.raises(ValueError, match="is not an event name"):
+            replay_event_log([_ev("compose-hash:x", "beef", version=version)])
+    # Names are an allow-list: empty, non-ASCII, whitespace and other
+    # separators are refused in both encodings, before the digest is checked.
+    for bad in ("", "compose hash", "compose-hash\u00e9", "compose/hash", "x" * 65):
+        for version in (1, 2):
+            with pytest.raises(ValueError, match="is not an event name"):
+                replay_event_log([_ev(bad, "beef", version=version)])
+    for good in ("compose-hash", "boot-mr-done", "os_image.hash2", "x" * 64):
+        replay_event_log([_ev(good, "beef")])
+    # The v2 (JSON) encoding has no such split: the digest itself refuses it.
+    v2 = _ev("compose-hash", mine.hex(), version=2)
+    with pytest.raises(ValueError, match="does not bind"):
+        replay_event_log([dict(v2, event="compose-hash2", event_payload=mine[1:].hex())])
 
 
 def test_event_log_must_reproduce_the_quote_before_it_is_read():
@@ -878,3 +1006,27 @@ def test_a_fresh_td_starts_from_zero():
     from fugal_subnet.tee.attestation import replay_rtmr
 
     assert replay_rtmr([]) == "00" * 48
+
+
+@pytest.mark.parametrize("override, reason", [
+    ({"total_cost_usd": 0.5}, "per-question sum"),
+    ({"per_model_costs": {"model-a": 0.004, "model-b": 0.5}}, "per-model sum"),
+])
+def test_attested_costs_must_reconcile(override, reason):
+    """Under real attestation the proxy produces every cost figure, so figures
+    that disagree mean the proof is not what it claims. Built and attested
+    with the inconsistency, so report_data binding passes and only the cost
+    check can refuse it. (Planting a no-op for the per-model check survived the
+    whole suite and every attack suite; the per-question one only the TEE
+    attack suite caught.)"""
+    proof = _make_proof(**override)
+    result = verify_proof(
+        proof,
+        approved_measurements={"approved_measurement_1"},
+        expected_questions_hash=proof.questions_hash,
+        expected_nonce=proof.nonce,
+        gold_answers={f"q{i}": {"question_id": f"q{i}"} for i in range(5)},
+        mock=True,
+    )
+    assert not result.valid
+    assert "Cost inconsistency" in result.reason and reason in result.reason

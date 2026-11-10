@@ -17,8 +17,10 @@ Two facts shape the design:
   holds one commitment per hotkey, so the validator's own commitment is a
   rolling pointer: `reveal:<epoch_id>:<sha256>` for the newest reveal it has
   published. Anyone can fetch the file from the store and check it against
-  the chain, and two validators' commitments for the same epoch should carry
-  the same hash (I1).
+  the chain. Two validators' reveals for the same epoch agree on everything
+  except `environment` (each records its own Python, platform and packages), so
+  their file hashes differ; compare the reveals with `environment` removed, as
+  scripts/watch_subnet.py does (I1).
 
 The store is a public-read GCS bucket named by FUGAL_REVEAL_BUCKET. Uploads go
 through `google-cloud-storage` when it is installed, otherwise through the
@@ -137,6 +139,18 @@ def publish_due_reveals(
         epoch_id = os.path.basename(os.path.dirname(path))
         with open(path, "rb") as f:
             data = f.read()
+        # Never publish bytes that are not the epoch's complete reveal. The
+        # writer is atomic now, but the publisher is the last line: a file
+        # that does not parse, or names another epoch, is left unmarked and
+        # reported, never uploaded and never committed on chain.
+        try:
+            parsed = json.loads(data)
+            ok = isinstance(parsed, dict) and parsed.get("epoch_id") == epoch_id
+        except ValueError:
+            ok = False
+        if not ok:
+            logger.error("Reveal %s is not a complete reveal for its epoch; not published", path)
+            break
         digest = reveal_digest(data)
         key = f"{netuid}/{epoch_id}/reveal.json"
         try:

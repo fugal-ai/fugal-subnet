@@ -13,6 +13,9 @@ FUGAL_BENCHMARK_POOL override.
 import json
 import pathlib
 
+import pytest
+
+from fugal_subnet.benchmarks import loader
 from scripts.build_pool_manifest import content_hash
 
 
@@ -123,6 +126,28 @@ def test_the_default_configuration_does_not_bypass_verification(monkeypatch):
         _verify_against_manifest(wrong_pool, _default_skip(), strict=True)
 
 
+def test_a_skip_list_mismatch_is_refused_in_strict_mode(monkeypatch, caplog):
+    """The other half of the bug above: with FUGAL_SKIP_BENCHMARKS set to
+    something the manifest was not built with, strict mode still returned
+    early with a warning, so a live neuron on its own skip list scored a pool
+    nobody else had and the check that would have said so switched itself off.
+    Strict refuses; non-strict keeps the warning."""
+    import logging
+
+    import pytest
+
+    from fugal_subnet.benchmarks.loader import _default_skip, _verify_against_manifest
+
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+    odd = set(_default_skip()) ^ {"mmlu"}            # differs from the pinned list
+    pool = [{"question_id": "q1", "prompt": "x", "gold": "y", "grader_id": "exec_io"}]
+    with pytest.raises(RuntimeError, match="FUGAL_SKIP_BENCHMARKS"):
+        _verify_against_manifest(pool, odd, strict=True)
+    with caplog.at_level(logging.WARNING, logger="fugal_subnet.benchmarks.loader"):
+        _verify_against_manifest(pool, odd, strict=False)
+    assert any("Skipping content verification" in r.getMessage() for r in caplog.records)
+
+
 def test_the_manifest_ships_in_the_wheel(tmp_path):
     """The bug this closes twice over.
 
@@ -197,3 +222,74 @@ def test_an_absent_manifest_is_never_silent(monkeypatch, tmp_path, caplog):
 
     with pytest.raises(RuntimeError, match="No pool manifest"):
         loader._verify_against_manifest([{"question_id": "q"}], set(), strict=True)
+
+
+# --- The builder must describe the pool the loader builds -------------------
+
+def test_the_builder_records_the_skip_list_the_loader_applies(monkeypatch):
+    """Unset, the loader skips the pinned list; the builder read the env var
+    alone and recorded []. --check then failed on the correct pool, and a
+    rebuild would have pinned 'skip nothing' into the live v1 manifest."""
+    import scripts.build_pool_manifest as bpm
+    from fugal_subnet.benchmarks.loader import _default_skip, _manifest_path
+
+    monkeypatch.delenv("FUGAL_SKIP_BENCHMARKS", raising=False)
+    pinned = sorted(json.load(open(_manifest_path(), encoding="utf-8"))["skip_benchmarks"])
+    assert bpm.effective_skip() == sorted(_default_skip()) == pinned
+    monkeypatch.setenv("FUGAL_SKIP_BENCHMARKS", "")
+    assert bpm.effective_skip() == []
+
+
+def test_the_builder_writes_the_files_the_loader_reads(tmp_path, monkeypatch):
+    """Not cwd-relative: from any directory the builder targets the package
+    data the loader verifies against."""
+    import os
+
+    import scripts.build_pool_manifest as bpm
+    from fugal_subnet.benchmarks.loader import _manifest_path, manifest_path_v2
+
+    monkeypatch.chdir(tmp_path)
+    assert os.path.isabs(bpm.MANIFEST_PATH) and os.path.isabs(bpm.MANIFEST_PATH_V2)
+    assert bpm.MANIFEST_PATH == _manifest_path() and bpm.MANIFEST_PATH_V2 == manifest_path_v2()
+    assert os.path.exists(bpm.MANIFEST_PATH) and os.path.exists(bpm.MANIFEST_PATH_V2)
+
+
+def test_the_builder_reads_export_pool_output(tmp_path):
+    import gzip
+
+    import scripts.build_pool_manifest as bpm
+
+    pool = [{"question_id": "q1", "prompt": "p", "gold": "1", "grader_id": "numeric_final",
+             "benchmark": "mmlu", "metadata": {}}]
+    (tmp_path / "pool.json").write_text(json.dumps(pool), encoding="utf-8")
+    with gzip.open(tmp_path / "pool.json.gz", "wt", encoding="utf-8") as f:
+        json.dump(pool, f)
+    assert bpm.read_pool(str(tmp_path / "pool.json")) == bpm.read_pool(str(tmp_path / "pool.json.gz")) == pool
+
+
+# --- The content half of the identity is checked, not only the ids ----------
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_a_pool_with_the_pinned_ids_but_a_changed_answer_is_refused(tmp_path, monkeypatch, version):
+    """The manifest pins pool_hash (ids: the slice) AND content_hash (what is
+    asked and what counts as right). A pool whose ids match but one gold answer
+    differs selects the same slice and grades differently: refused in strict.
+    (Planting an ids-only comparison in the v1 verifier survived everything.)"""
+    import scripts.build_pool_manifest as bpm
+    from tests.test_pool_override_verified import _tiny_pool
+
+    pool = _tiny_pool()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(bpm.build(pool, [])), encoding="utf-8")
+    tampered = [dict(q) for q in pool]
+    tampered[7]["gold"] = "999999"
+    assert loader.pool_hash(tampered) == loader.pool_hash(pool)     # same slice ids
+    if version == 1:
+        monkeypatch.setattr(loader, "_manifest_path", lambda: str(manifest))
+        verify = lambda p: loader._verify_against_manifest(p, set(), strict=True)   # noqa: E731
+    else:
+        monkeypatch.setattr(loader, "manifest_path_v2", lambda: str(manifest))
+        verify = lambda p: loader._verify_against_manifest_v2(p, strict=True)        # noqa: E731
+    verify(pool)
+    with pytest.raises(RuntimeError):
+        verify(tampered)

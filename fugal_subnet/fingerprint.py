@@ -130,6 +130,37 @@ def environment_fingerprint() -> dict:
             "epoch_interval_s": EPOCH_INTERVAL,
             "explore_fraction": EXPLORE_FRACTION,
             "collect_fraction": EPOCH_COLLECT_FRACTION,
+            # Which rules an epoch is scored under is a function of its
+            # boundary block and this value (slicer.protocol_version_for_boundary).
+            # In the digest so a validator that would flip at a different
+            # block, or never, is visibly different from its first epoch.
+            "v2_activation_block": config.V2_ACTIVATION_BLOCK,
+            # The v2 price table is consensus from the flip, and a release/v2
+            # validator ships it while still scoring v1 epochs; its hash is here
+            # so two validators that would score v2 differently differ visibly
+            # from their first epoch (routing_protocol.identity() covers v1).
+            "price_table_v2": _file_sha256(_routing_data("models_v2.json")),
+            # Which questions a neuron scores: the pinned pool manifests (the
+            # loader refuses a pool that disagrees with them in strict mode),
+            # the skip list in effect, and whether verification is switched
+            # off. Two neurons with different values select different
+            # questions, and before 2026-11-05 nothing in the digest said so.
+            "pool_manifest_v1": _file_sha256(_benchmarks_data("pool_manifest.json")),
+            "pool_manifest_v2": _file_sha256(_benchmarks_data("pool_manifest_v2.json")),
+            "skip_benchmarks": _skip_benchmarks(),
+            "pool_unpinned": _pool_unpinned(),
+            # The model upstream, if overridden (tee/runtime.py). Miner-side,
+            # but a neuron that sets it is scoring against a different world.
+            "openrouter_base": os.environ.get("FUGAL_OPENROUTER_BASE") or "default",
+        },
+        # The code itself, beside the digest and deliberately OUTSIDE it: two
+        # validators on different commits whose score-affecting inputs agree
+        # are not a divergence, but when they do diverge the reveal must say
+        # which code each ran. The same hash the miner reports as
+        # `source_hash` in its proof (neurons/miner._get_source_hash).
+        "code": {
+            "source_sha256": source_sha256(),
+            "git_commit": _git_commit(),
         },
         # Every constant that decides a score or which proofs verify, as in
         # effect right now (read off the module, so an override is recorded
@@ -137,17 +168,30 @@ def environment_fingerprint() -> dict:
         # env-overridable and absent from the digest, so a validator with one
         # exported scored the field differently and nothing said why.
         "scoring": {
-            name: getattr(config, name)
-            for name in _SCORING_CONSTANTS
+            **{name: getattr(config, name) for name in _SCORING_CONSTANTS},
+            # Derived from pinned files (the reviewed v2 token manifest and the
+            # v2 price table) and CHAMPION_ANCHOR_MODEL: the anchor spend V is
+            # built from. In the digest so a validator pricing it differently
+            # is visibly different.
+            "CHAMPION_ANCHOR_SPEND_PER_Q": _anchor_spend_or_error(config.CHAMPION_ANCHOR_MODEL),
         },
         "approved_entries": sorted(config.TEE_APPROVED_MEASUREMENTS),
     }
 
 
+def _anchor_spend_or_error(model: str):
+    try:
+        from fugal_subnet.v2_epoch import anchor_spend_per_question
+
+        return anchor_spend_per_question(model)
+    except Exception as e:  # noqa: BLE001 - recorded, not raised: a fingerprint never fails
+        return f"unavailable: {type(e).__name__}"
+
+
 # Module attribute names, in a fixed order, so the digest is stable.
 _SCORING_CONSTANTS = (
     "WILSON_CONFIDENCE", "SCORE_QUALITY_FLOOR", "FRONTIER_MIN_TRIALS",
-    "BURN_IN_QUESTIONS", "EXPLORE_FAIL_MARGIN", "EXPLORE_DISAGREE_MAX",
+    "BURN_IN_QUESTIONS", "V2_BURN_IN_QUESTIONS", "EXPLORE_FAIL_MARGIN", "EXPLORE_DISAGREE_MAX",
     "EXPLORE_DISAGREE_MIN_SAMPLES", "EXPLORE_DISAGREE_MIN_VOTERS",
     "DEDUP_SIMILARITY_THRESHOLD", "DEDUP_PARAM_DISTANCE",
     "DEDUP_EPSILON_AGREEMENT", "DEDUP_EPSILON", "EVIDENCE_HALF_LIFE",
@@ -156,7 +200,71 @@ _SCORING_CONSTANTS = (
     "BENCHMARK_POOL_MIN_SIZE", "MAX_WEIGHT_DELTA", "REQUIRE_COMMITMENT",
     "HARNESS_ALLOW_EXEC", "HEAD_HIDDEN_DIM", "HEAD_MAX_MODELS", "HEAD_MAX_BYTES",
     "HEAD_MAX_DECOMPRESSED_BYTES", "HEAD_MAX_MODEL_ID_LEN",
+    # Protocol v2 (in effect from config.V2_ACTIVATION_BLOCK).
+    "CHAMPION_ACCURACY_VALUE", "CHAMPION_HARD_WEIGHT", "CHAMPION_ANCHOR_MODEL",
+    "CHAMPION_MARGIN",
+    "CHAMPION_CONFIDENCE", "CHAMPION_BOOTSTRAP_RESAMPLES",
+    "CHAMPION_HARD_GATE_MIN_QUESTIONS", "CHAMPION_TIME_GATE_FACTOR",
+    "CHAMPION_GHOST_OFF", "CHAMPION_GHOST_RETIRE", "CHAMPION_WINDOW_EPOCHS",
+    "CHAMPION_MIN_ACCURACY", "CHAMPION_MIN_PAIRED_QUESTIONS", "PAYOUT_SEAT_SHARES",
 )
+
+
+def _routing_data(name: str):
+    from pathlib import Path
+    return Path(__file__).resolve().parent / "routing_data" / name
+
+
+def _benchmarks_data(name: str):
+    from pathlib import Path
+    return Path(__file__).resolve().parent / "benchmarks" / name
+
+
+def _skip_benchmarks() -> list[str]:
+    from fugal_subnet.benchmarks.loader import _default_skip
+    return sorted(_default_skip())
+
+
+def _pool_unpinned() -> bool:
+    from fugal_subnet.benchmarks.loader import _unpinned_pool_declared
+    return bool(_unpinned_pool_declared())
+
+
+def source_sha256() -> str:
+    """SHA256 over every .py file under fugal_subnet/, path-prefixed, sorted:
+    the miner's `source_hash` (neurons/miner._get_source_hash), computed the
+    same way so a validator's reveal and a miner's proof name code the same way."""
+    src_dir = Path(fugal_subnet.__file__).resolve().parent
+    h = hashlib.sha256()
+    for root, _dirs, files in sorted(os.walk(src_dir)):
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            fpath = os.path.join(root, fname)
+            h.update(fpath[len(str(src_dir)):].encode())
+            with open(fpath, "rb") as f:
+                h.update(f.read())
+    return h.hexdigest()
+
+
+def _git_commit() -> str:
+    """The checkout's HEAD, best effort; empty in a wheel or outside git."""
+    import subprocess
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=Path(fugal_subnet.__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+    except Exception:  # noqa: BLE001 - provenance is best effort
+        return ""
+
+
+def _file_sha256(path) -> str | None:
+    import hashlib
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
 
 
 def consensus_digest(fingerprint: dict | None = None) -> str:
@@ -173,8 +281,9 @@ def consensus_digest(fingerprint: dict | None = None) -> str:
         "epoch": fp["epoch"],
         "scoring": fp.get("scoring", {}),
         # The contract, profile, lambda, token manifest and price table in one
-        # id; a validator pointed at a different price file via
-        # FUGAL_MODEL_PRICES diverges here.
+        # id. It hashes the SHIPPED tables (routing_data/), so FUGAL_MODEL_PRICES
+        # (a consensus override, refused on finney) does NOT move it:
+        # tests/test_infra_rules_gaps.py holds that as a strict xfail.
         "routing_protocol": fp.get("routing_protocol", ""),
         "packages": fp["packages"],
         "numpy_blas": fp["numpy_blas"],

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fugal-subnet"
-version = "0.2.0"
+version = "0.3.0"
 description = "Bittensor subnet for continuous LLM router optimization"
 readme = "README.md"
 license = "MIT"
@@ -90,13 +90,17 @@ include = ["fugal_subnet*", "neurons*"]
 [tool.setuptools.package-data]
 "fugal_subnet" = ["routing_data/*.json", "vendor/SOURCE.json", "vendor/conformance.json", "vendor/LICENSE", "vendor/NOTICE"]
 "fugal_subnet.tee" = ["roots/*.der"]
-# The pinned pool manifest is read by load_all() at startup. Left out of
-# the wheel it does not fail — it goes quiet, and the validator loads an
-# unverified pool while logging nothing.
-"fugal_subnet.benchmarks" = ["pool_manifest.json"]
+# The pinned pool manifests are read at startup (load_all for v1,
+# load_pool(2) for v2). Left out of the wheel the v1 one does not fail — it
+# goes quiet, and the validator loads an unverified pool while logging
+# nothing. tests/test_packaging.py holds both names here.
+"fugal_subnet.benchmarks" = ["pool_manifest.json", "pool_manifest_v2.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# CI and scripts/gate.sh run everything. `-m "not slow"` skips the few
+# statistical tests that dominate the runtime, for a quick local loop only.
+markers = ["slow: statistical property tests over hundreds of epochs (minutes)"]
 
 [tool.ruff]
 # Immutable test-only core projection, checked against Git objects in CI.

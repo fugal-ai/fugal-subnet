@@ -496,3 +496,195 @@ def test_the_base_measurement_ignores_instance_shape_and_application():
             bytes.fromhex(MRTD_2026_11_03 + quote.rtmr1 + quote.rtmr2)
         ).hexdigest()
         assert rebased == BASE_2026_11_03
+
+
+def test_the_committed_attestation_fixtures_are_present():
+    """About seventeen TPM and dstack tests read these files and skip when one
+    is missing, so deleting a fixture would turn them into skips and leave CI
+    green. They are committed; their absence is a failure, here, by name."""
+    missing = [n for n in ("attestation_A.bin", "attestation_B.bin", "app-compose_A.json")
+               if not (FIXTURES / n).is_file()]
+    assert not missing, f"tests/fixtures is missing {missing}: the tests that read them would skip"
+
+
+# --- Each chain rule, alone, against a throwaway CA --------------------------
+#
+# The real Google chain can only show rules passing: nobody holds a Google key
+# to sign a chain that breaks one rule and nothing else. Planted bugs
+# (2026-11-08) showed five rules no test exercised: removing the CA check,
+# accepting an issuer with no basicConstraints, an unbounded chain depth, an
+# unchecked root pin, or a non-EC attestation key passed every test. The
+# genuine-AK minting test above refuses for a DIFFERENT reason (its minted
+# certificate is not signed by the AK's key, which nobody but Google's vTPM
+# holds). Here a throwaway CA stands in for the pinned root, so each case can
+# be signed correctly and break exactly one rule.
+
+def _cn(name):
+    return x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, name)])
+
+
+def _issue(subject, key, issuer_name, issuer_key, ca=None):
+    """ca=None: no basicConstraints at all."""
+    b = (x509.CertificateBuilder()
+         .subject_name(_cn(subject)).issuer_name(_cn(issuer_name))
+         .public_key(key.public_key()).serial_number(x509.random_serial_number())
+         .not_valid_before(NOW - datetime.timedelta(days=1))
+         .not_valid_after(NOW + datetime.timedelta(days=365)))
+    if ca is not None:
+        b = b.add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+    return b.sign(issuer_key, hashes.SHA256())
+
+
+@pytest.fixture
+def test_root(monkeypatch):
+    """A throwaway root, installed as the pinned one. Returns its key."""
+    from fugal_subnet.tee import tpm
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    root = _issue("Test Root", key, "Test Root", key, ca=True)
+    monkeypatch.setattr(tpm, "_load_pinned", lambda name_hint="": (root, []))
+    return key
+
+
+def _der(cert):
+    return cert.public_bytes(serialization.Encoding.DER)
+
+
+def _chain(root_key, n_intermediates, *, middle_ca=True):
+    """root -> I1 -> ... -> In -> leaf. Returns (leaf_der, [intermediate ders])."""
+    issuer_name, issuer_key, inter = "Test Root", root_key, []
+    for i in range(n_intermediates):
+        k = ec.generate_private_key(ec.SECP256R1())
+        inter.append(_der(_issue(f"I{i}", k, issuer_name, issuer_key, ca=middle_ca)))
+        issuer_name, issuer_key = f"I{i}", k
+    leaf_key = ec.generate_private_key(ec.SECP256R1())
+    leaf = _issue("AK", leaf_key, issuer_name, issuer_key, ca=False)
+    return _der(leaf), inter
+
+
+def test_the_throwaway_chain_is_accepted(test_root):
+    """The control: every case below differs from this by one thing."""
+    leaf, inter = _chain(test_root, 1)
+    assert verify_ak_chain(leaf, extra_certs=inter)
+
+
+def test_a_certificate_naming_the_root_must_be_signed_by_it(test_root):
+    """Issuer names are free text: anyone can write the root's name into a
+    certificate. Only the signature check refuses one signed by another key
+    (until 2026-11-08 only the attack suite exercised this)."""
+    forged = _issue("AK", ec.generate_private_key(ec.SECP256R1()), "Test Root",
+                    ec.generate_private_key(ec.SECP256R1()), ca=False)
+    assert not verify_ak_chain(_der(forged))
+
+
+def test_a_leaf_cannot_issue_even_when_its_signature_is_genuine(test_root):
+    """The minting attack done properly: the AK's OWN key signs a further
+    certificate, so the signature verifies. Only the CA rule refuses it."""
+    ak_key = ec.generate_private_key(ec.SECP256R1())
+    ak = _issue("AK", ak_key, "Test Root", test_root, ca=False)
+    minted = _issue("Minted", ec.generate_private_key(ec.SECP256R1()), "AK", ak_key, ca=False)
+    assert verify_ak_chain(_der(ak))                       # the AK itself is fine
+    assert not verify_ak_chain(_der(minted), extra_certs=[_der(ak)])
+
+
+def test_an_issuer_without_basic_constraints_cannot_issue(test_root):
+    leaf, inter = _chain(test_root, 1, middle_ca=None)
+    assert not verify_ak_chain(leaf, extra_certs=inter)
+
+
+def test_the_chain_depth_is_bounded_at_eight_links(test_root):
+    """A miner supplies part of the pool, so the walk is bounded. Seven
+    intermediates (eight links) pass; eight are refused."""
+    leaf, inter = _chain(test_root, 7)
+    assert verify_ak_chain(leaf, extra_certs=inter)
+    leaf, inter = _chain(test_root, 8)
+    assert not verify_ak_chain(leaf, extra_certs=inter)
+
+
+def test_a_non_ec_attestation_key_is_refused_not_a_crash(test_root):
+    """A chain-valid RSA AK used to reach an ECDSA verify under an RSA key,
+    which raises TypeError, if the type check were missing."""
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from fugal_subnet.tee.tpm import verify_tpm_quote
+
+    rsa_ak = _issue("AK", rsa.generate_private_key(public_exponent=65537, key_size=2048),
+                    "Test Root", test_root, ca=False)
+    quote = {**_quote("A"), "ak_cert": _der(rsa_ak)}
+    with pytest.raises(TpmError, match="expected EC"):
+        verify_tpm_quote(quote)
+
+
+def test_a_substituted_root_file_is_refused(monkeypatch, tmp_path):
+    """The pin is checked when the root is loaded, not only in CI: a swapped
+    file refuses every quote rather than trusting a new anchor."""
+    from fugal_subnet.tee import tpm
+
+    other = _issue("Not Google", (k := ec.generate_private_key(ec.SECP256R1())),
+                   "Not Google", k, ca=True)
+    (tmp_path / "google_ek_ak_root.der").write_bytes(_der(other))
+    monkeypatch.setattr(tpm, "_ROOTS_DIR", tmp_path)
+    with pytest.raises(TpmError, match="unrecognised trust anchor"):
+        verify_ak_chain(_quote("A")["ak_cert"])
+
+
+# --- The signature and TPMS_ATTEST formats, rule by rule ---------------------
+
+def _sig_with(alg=0x0018, hash_alg=0x000B):
+    q = _quote("A")
+    return q, alg.to_bytes(2, "big") + hash_alg.to_bytes(2, "big") + q["signature"][4:]
+
+
+@pytest.mark.parametrize("alg,hash_alg,why", [
+    (0x0014, 0x000B, "not ECDSA"),            # RSASSA
+    (0x0018, 0x000C, "not SHA256"),           # SHA384
+])
+def test_only_ecdsa_over_sha256_is_accepted(alg, hash_alg, why):
+    q, sig = _sig_with(alg, hash_alg)
+    with pytest.raises(TpmError, match=why):
+        verify_quote_signature(q["message"], sig, q["ak_cert"])
+
+
+def test_a_truncated_signature_is_a_rejection_not_a_crash():
+    """Cut after r, inside s's length, inside s, and with an overlong r: each a
+    TpmError. These escaped as struct.error until 2026-11-08 (found by fuzzing
+    real blobs), out of verify_proof, which must not raise on miner bytes."""
+    import struct
+
+    q = _quote("A")
+    sig = q["signature"]
+    rn = struct.unpack_from(">H", sig, 4)[0]
+    overlong_r = sig[:4] + (0xFFFF).to_bytes(2, "big") + sig[6:]
+    for bad in (sig[:6 + rn], sig[:6 + rn + 1], sig[:6 + rn + 4], overlong_r):
+        with pytest.raises(TpmError, match="truncated"):
+            verify_quote_signature(q["message"], bad, q["ak_cert"])
+
+
+def test_a_truncated_signature_in_a_real_envelope_is_a_rejection():
+    """The same, end to end: the envelope is re-encoded with the cut signature
+    and unwrap_attestation must refuse it with a ValueError, as verify_proof
+    expects, not let anything else out."""
+    import struct
+
+    from fugal_subnet.scale import encode_compact
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    blob = (FIXTURES / "attestation_A.bin").read_bytes()
+    sig = decode_dstack_attestation(blob)["tpm"]["signature"]
+    at, prefix = blob.index(sig), encode_compact(len(sig))
+    assert blob[at - len(prefix):at] == prefix
+    cut = sig[:6 + struct.unpack_from(">H", sig, 4)[0]]
+    forged = blob[:at - len(prefix)] + encode_compact(len(cut)) + cut + blob[at + len(sig):]
+    with pytest.raises(ValueError, match="TPM quote rejected: signature is truncated"):
+        unwrap_attestation(forged)
+
+
+def test_the_attest_structure_rules_each_refuse():
+    msg = _quote("A")["message"]
+    with pytest.raises(TpmError, match="trailing bytes"):
+        parse_attest(msg + b"\x00")
+    with pytest.raises(TpmError, match="not a TPM-generated structure"):
+        parse_attest(b"\x00TCG" + msg[4:])
+    # extraData's length points past the end of the structure.
+    with pytest.raises(TpmError, match="runs past the end"):
+        parse_attest(msg[:6 + 2 + int.from_bytes(msg[6:8], "big")] + b"\xff\xff")

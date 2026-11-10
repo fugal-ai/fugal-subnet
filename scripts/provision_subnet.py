@@ -20,7 +20,14 @@ Ordering is load-bearing:
 5. **register** hotkeys (pays the recycle burn each).
 6. **stake** validators, so they hold a permit before the first epoch.
 
-Spending is gated: the run prints every cost and stops unless --yes is given.
+EVERY CHAIN WRITE IS GATED. Without --yes the run reads the chain, prints what
+it would change (and what it would cost) and changes nothing, so a plain run is
+a dry run. Two writes are also opt-in on their own, because on a live subnet
+they are never routine: --set-tempo (a tempo change misaligns every running
+validator's epoch) and --set-identity (the defaults here would replace a
+customised identity: finney/70 carries its own URL, contact, logo and
+Discord). Without them a mismatch is reported, never written. Launching a new
+subnet is therefore `--create --set-identity --set-tempo --yes`.
 
 Two parties, two halves. Steps 1-4 need the subnet OWNER coldkey; 5-6 need only
 the wallets being registered. When the slot is held by someone else (a launch
@@ -33,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 
@@ -126,6 +134,14 @@ def step_create(subtensor, owner, args) -> int | None:
 
 
 def step_identity(subtensor, owner, netuid: int, args) -> None:
+    """Write the subnet identity: only with --set-identity, and only with --yes."""
+    if not args.set_identity:
+        logger.info("Identity left as it is on chain (--set-identity to replace it)")
+        return
+    if not args.yes:
+        logger.warning("Would replace the subnet identity with name=%r url=%r (no --yes: "
+                       "nothing written)", args.subnet_name, args.url)
+        return
     from bittensor.core.chain_data.subnet_identity import SubnetIdentity
 
     try:
@@ -146,13 +162,16 @@ def step_identity(subtensor, owner, netuid: int, args) -> None:
     logger.info("Identity set: %s%s", ok, "" if ok else f" ({msg})")
 
 
-def step_activate(subtensor, owner, netuid: int) -> bool:
+def step_activate(subtensor, owner, netuid: int, args) -> bool:
     """start_call. The single most consequential step in this script."""
     if subtensor.is_subnet_active(netuid):
         logger.info("Subnet %d is already active", netuid)
         return True
     delay = subtensor.get_start_call_delay()
     logger.info("Subnet %d is INACTIVE. start_call delay is %d blocks.", netuid, delay)
+    if not args.yes:
+        logger.warning("Would submit start_call for subnet %d (no --yes: nothing written)", netuid)
+        return False
     ok, msg = _ok(subtensor.start_call(owner, netuid))
     if not ok:
         logger.error("start_call failed: %s", msg)
@@ -166,8 +185,8 @@ def step_activate(subtensor, owner, netuid: int) -> bool:
     return False
 
 
-def step_hyperparams(subtensor, owner, netuid: int, epoch_interval: int) -> dict:
-    """Apply the hyperparameters Fugal depends on. Reports every outcome."""
+def step_hyperparams(subtensor, owner, netuid: int, epoch_interval: int, args) -> dict:
+    """Apply the hyperparameters Fugal depends on (with --yes). Reports every outcome."""
     results: dict[str, str] = {}
     hp = subtensor.get_subnet_hyperparameters(netuid=netuid)
 
@@ -185,6 +204,9 @@ def step_hyperparams(subtensor, owner, netuid: int, epoch_interval: int) -> dict
         if already:
             results[call] = "already set"
             continue
+        if not args.yes:
+            results[call] = f"would set {params} (no --yes)"
+            continue
         ok, msg = _ok(_sudo_call(subtensor, owner, call, params))
         results[call] = "set" if ok else f"FAILED: {msg}"
 
@@ -193,6 +215,16 @@ def step_hyperparams(subtensor, owner, netuid: int, epoch_interval: int) -> dict
     tempo = int(getattr(hp, "tempo", 0) or 0)
     if tempo == blocks_per_epoch:
         results["tempo"] = f"aligned ({tempo} blocks)"
+    elif not args.set_tempo:
+        # Never retuned implicitly: every running validator's epoch is the
+        # chain's tempo, and an interval left in one shell is not a decision.
+        results["tempo"] = (
+            f"MISALIGNED: chain tempo {tempo} blocks vs Fugal epoch {blocks_per_epoch} "
+            f"blocks. Not changed: set FUGAL_EPOCH_INTERVAL={tempo * BLOCK_TIME_S} on "
+            "every neuron, or pass --set-tempo --yes to change the chain deliberately."
+        )
+    elif not args.yes:
+        results["tempo"] = f"would set {tempo} -> {blocks_per_epoch} (no --yes)"
     else:
         ok, msg = _sudo_call(
             subtensor, owner, "sudo_set_tempo",
@@ -309,15 +341,21 @@ def main() -> int:
                    help="Comma-separated wallet/hotkey pairs, e.g. w1/val1,w1/val2")
     p.add_argument("--miners", default="", help="Same format as --validators")
     p.add_argument("--stake", type=float, default=0.5, help="TAO to stake per validator")
-    p.add_argument("--epoch-interval", type=int, default=3600,
-                   help="FUGAL_EPOCH_INTERVAL the neurons will run with")
+    p.add_argument("--epoch-interval", type=int, default=None,
+                   help="FUGAL_EPOCH_INTERVAL the neurons will run with (default: the "
+                        "FUGAL_EPOCH_INTERVAL in the environment, else the chain's tempo x 12)")
     p.add_argument("--subnet-name", default="Fugal")
     p.add_argument("--description", default="Continuous cost-aware LLM router optimization")
     p.add_argument("--github", default="https://github.com/fugal-ai/fugal-subnet")
     p.add_argument("--url", default="https://github.com/fugal-ai/fugal-subnet")
     p.add_argument("--contact", default="")
     p.add_argument("--status", action="store_true", help="Report only; change nothing")
-    p.add_argument("--yes", action="store_true", help="Authorise spending")
+    p.add_argument("--yes", action="store_true",
+                   help="Authorise every chain write and its cost; without it the run is a dry run")
+    p.add_argument("--set-tempo", action="store_true",
+                   help="Owner: change the chain's tempo to the Fugal epoch (never implicit)")
+    p.add_argument("--set-identity", action="store_true",
+                   help="Owner: replace the subnet identity with --subnet-name/--url/... (never implicit)")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
 
@@ -334,6 +372,21 @@ def main() -> int:
     logger.info("Network %s at block %d", args.network, subtensor.get_current_block())
 
     netuid = args.netuid
+    if args.epoch_interval is None:
+        # A hard-coded 3600 reported an aligned tempo-360 subnet (4320) as
+        # MISALIGNED whenever the flag was forgotten. Take the deployment's
+        # value, else what the chain's tempo implies, and say which.
+        env = os.getenv("FUGAL_EPOCH_INTERVAL", "").strip()
+        if env:
+            args.epoch_interval = int(env)
+            logger.info("epoch interval %d from FUGAL_EPOCH_INTERVAL", args.epoch_interval)
+        elif netuid is not None:
+            tempo = int(getattr(subtensor.get_subnet_hyperparameters(netuid=netuid), "tempo", 0) or 0)
+            args.epoch_interval = max(1, tempo) * BLOCK_TIME_S
+            logger.info("epoch interval %d from the chain's tempo %d x %d s",
+                        args.epoch_interval, tempo, BLOCK_TIME_S)
+        else:
+            args.epoch_interval = 3600
     if args.status:
         # Report only. No wallet is loaded: a validator host holds a hotkey
         # and never the owner coldkey, and it must still be able to ask the
@@ -370,11 +423,11 @@ def main() -> int:
                          args.owner_wallet, netuid, owner_ck)
             return 1
         step_identity(subtensor, owner, netuid, args)
-        if not step_activate(subtensor, owner, netuid):
+        if not step_activate(subtensor, owner, netuid, args):
             logger.error("Subnet %d could not be activated — stopping. Nothing "
                          "downstream can work: no permits, no weights.", netuid)
             return 1
-        step_hyperparams(subtensor, owner, netuid, args.epoch_interval)
+        step_hyperparams(subtensor, owner, netuid, args.epoch_interval, args)
     else:
         # The owner steps belong to whoever holds the slot. What this side can
         # do is refuse to register into a subnet that cannot pay anyone yet:

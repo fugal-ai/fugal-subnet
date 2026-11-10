@@ -35,6 +35,10 @@ LimitNOFILE=65536
 # The validator never needs the coldkey; the wallet dir holds hotkey + coldkeypub only.
 ProtectSystem=full
 NoNewPrivileges=true
+PrivateTmp=true
+# Not ProtectHome: the pool loader caches Hugging Face datasets under
+# ~/.cache and the wallet lives under ~/.bittensor, both in the service
+# user's home.
 
 [Install]
 WantedBy=multi-user.target

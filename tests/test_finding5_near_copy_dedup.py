@@ -17,7 +17,7 @@ Required behaviour, delivered by PR 5:
 
 Delivered by `head_distance.relative_distance`, the parameter and epsilon
 clauses in `dedup.py`, and `miner.caller_allowed`. Thresholds are measured by
-scripts/experiment_head_similarity.py and recorded in docs/HEAD_EFFICACY.md.
+scripts/experiments/experiment_head_similarity.py and recorded in docs/decisions/HEAD_EFFICACY.md.
 """
 from __future__ import annotations
 
@@ -125,3 +125,22 @@ def test_renaming_model_rows_does_not_dodge_the_parameter_clause():
     renamed_many = _head(1, W_base=leader["W"], nudge=1e-4)
     renamed_many["models"] = [f"x/{i}" for i in range(17)]
     assert relative_distance(leader, renamed_many) == float("inf")
+
+
+def test_a_near_copy_above_the_threshold_is_flagged_and_one_below_is_not():
+    """The threshold is the rule, not identity: 199 of 200 routes shared
+    (0.995 >= DEDUP_SIMILARITY_THRESHOLD 0.99) is a copy; 196 of 200 (0.98) is
+    not. (Planting `sim > 1.0` survived every test: they used exact copies,
+    whose float32 similarity rounds to 1.0 or just above.)"""
+    import numpy as np
+
+    from fugal_subnet.config import DEDUP_SIMILARITY_THRESHOLD
+    from fugal_subnet.dedup import find_duplicates
+
+    assert DEDUP_SIMILARITY_THRESHOLD == 0.99
+    author = np.array([i % 4 for i in range(200)])
+    near, far = author.copy(), author.copy()
+    near[0] = (near[0] + 1) % 4                      # 199/200 shared
+    far[:4] = (far[:4] + 1) % 4                      # 196/200 shared
+    assert find_duplicates({1: author, 2: near}, {1: 100, 2: 200}) == {2}
+    assert find_duplicates({1: author, 2: far}, {1: 100, 2: 200}) == set()

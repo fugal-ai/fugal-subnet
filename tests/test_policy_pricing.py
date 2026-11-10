@@ -98,3 +98,20 @@ def test_cost_matches_the_rate_card():
     prompt = "a" * 400
     expected = question_input_tokens(prompt) * rate_in + 200 * rate_out
     assert policy_cost(prompt, model, prices, 200) == expected
+
+
+def test_the_neurons_price_from_the_copy_the_identity_hashes():
+    """data/models.json is the reviewed, pinned copy; routing_data/models.json
+    is the one hashed into the protocol identity. The neurons must read the
+    latter, and the two must agree (checked by scripts/check_safety_invariants)."""
+    import pathlib
+
+    from fugal_subnet.api import load_prices
+    from fugal_subnet.routing_protocol import price_table
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    assert price_table(1) == load_prices()
+    src = (root / "neurons" / "validator.py").read_text(encoding="utf-8")
+    assert "prices = price_table(1)" in src and "prices = load_prices()" not in src
+    miner = (root / "neurons" / "miner.py").read_text(encoding="utf-8")
+    assert "else price_table(1)" in miner

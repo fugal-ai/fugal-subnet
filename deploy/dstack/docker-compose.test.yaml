@@ -22,14 +22,15 @@
 # entries, one per network. Keep them in lockstep: any other change to one
 # that is not made to the other is a difference between what was rehearsed
 # and what ships.
-# STATUS 2026-11-10: the image line is the v2 release, tag image-v2026.11.10
-# (built from main 80e5859 by .github/workflows/image.yml, public). The
+# STATUS 2026-11-10: the image line is the v2 release, tag image-v2026.11.10b
+# (built from main 3d39339, v0.3.1, by .github/workflows/image.yml, public;
+# it supersedes build-v2026.11.10, which was never signed). The
 # warm-up's FUGAL_EXPLORE_FRACTION=0.5 is gone: v2 pays nothing from the
 # frame, so testnet validators must not set it either. Earlier digests are
 # kept in the frozen app-compose files beside this one.
 services:
   miner:
-    image: ghcr.io/fugal-ai/fugal-miner@sha256:7ba5217da51b61e300565c5d0b9efe5ffd3169f680bd2f20185eaec2557ae8e5
+    image: ghcr.io/fugal-ai/fugal-miner@sha256:6c1f85e6ed349d61a7650cba0c557c8b236e4cf4e36a1842134f0ecc53a2040f
     restart: unless-stopped
     ports:
       - "8091:8091"   # axon: validators reach the miner here (open to the world)

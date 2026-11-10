@@ -970,7 +970,7 @@ Use a second instance:
    `data/models_v2.json` on `main`, and pinned in the signed v2 image), labelling your own
    data. Allow one to two days if you start from no labels. The notice is 24
    hours, so start early: the v2 model list and code are already public
-   on `main` (v0.3.0; the `release/v2` branch was merged and deleted).
+   on `main` (v0.3.1; the `release/v2` branch was merged and deleted).
 2. **Bring up a second TD on the v2 image** (`<V2_IMAGE_DIGEST>`) **with the
    same hotkey**, beside the running v1 TD, and provision it as usual. It
    embeds and then **holds**: no axon and no commitment until the epoch before

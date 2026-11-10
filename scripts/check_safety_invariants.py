@@ -14,8 +14,17 @@ AXON_PROTOCOL_FILES = (
     ROOT / "fugal_subnet" / "protocol.py",
 )
 _GUARDED = {"fugal_subnet", "neurons"}
-IMMUTABLE_V1_GRADER_SHA256 = (
-    "895809dedf0d14c45d9ec046bcbec2f50a09fcf7d31d9996a178e35f3539c55f"
+# The grading contract. Any byte of graders.py is a consensus change: the hash
+# is in every validator's epoch commitment and in the consensus digest, and the
+# miner image grades with the file it was built from. History:
+#   895809de...  v1, and the v2 image build-v2026.11.10 (never activated on finney)
+#   319340e8...  2026-11-10, before the v2 flip (v0.3.1): letter_mcq reads an explicit
+#                answer marker (a capital standing alone), then a line that is
+#                only the letter, then a marked-up letter opening the reply,
+#                before the 40-character fallback. Measured on 1,703 real
+#                replies from the 19 v2 models (INVARIANTS, I4).
+GRADER_SHA256 = (
+    "319340e8aeaac5fedf2b488c94ad11c1e79e0606fcfc5e002552a60a4108a9d9"
 )
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole
@@ -161,13 +170,13 @@ def check_deserialize_contract(errors: list[str]) -> None:
             errors.append(f"fugal_subnet/protocol.py: {synapse_name} class was not found")
 
 
-def check_immutable_v1_grader(errors: list[str]) -> None:
+def check_pinned_grader(errors: list[str]) -> None:
     path = ROOT / "fugal_subnet" / "graders.py"
     actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-    if actual != IMMUTABLE_V1_GRADER_SHA256:
+    if actual != GRADER_SHA256:
         errors.append(
             f"fugal_subnet/graders.py: grader hash {actual[:16]}... does not match "
-            f"immutable v1 pin {IMMUTABLE_V1_GRADER_SHA256[:16]}... — "
+            f"the pin {GRADER_SHA256[:16]}... — "
             "a grader change is a consensus break"
         )
 
@@ -1076,7 +1085,7 @@ def main(argv: list[str] | None = None) -> None:
     check_np_load_calls(errors)
     check_runtime_annotations(errors)
     check_deserialize_contract(errors)
-    check_immutable_v1_grader(errors)
+    check_pinned_grader(errors)
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)

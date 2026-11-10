@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   dress-rehearsal:
-    name: Dress rehearsal against a real chain (${{ matrix.ref }}, ${{ matrix.scenario }})
+    name: Dress rehearsal against a real chain (${{ matrix.scenario }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -32,9 +32,12 @@ jobs:
         # deleted; the two jobs that checked it out failed on 2026-11-10).
         # The v2_flip scenario (the activation boundary, the first seat, a
         # take, a ghost, a resume) is the only chain-level exercise of v2.
+        # No ref: the run checks out what triggered it. The schedule fires on
+        # the default branch; a manual dispatch on a branch rehearses that
+        # branch before it merges (used for the 2026-11-10 grader change).
         include:
-          - { ref: main, scenario: all }
-          - { ref: main, scenario: v2_flip }
+          - { scenario: all }
+          - { scenario: v2_flip }
     env:
       PYTHONUTF8: "1"
       FUGAL_SKIP_BENCHMARKS: mmlu,math,gsm8k,humaneval,livecode,gpqa,ifeval,aime
@@ -42,8 +45,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ matrix.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0

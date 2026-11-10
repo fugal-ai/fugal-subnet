@@ -2308,6 +2308,30 @@ coldkeys is only as robust as those few, so on a thin field a single operator
 can move a cell it shares with one other operator halfway. The majority
 assumption is the frame's, applied per cell.
 
+**Accepted residual: several voters grade a cell by majority.** The median of
+three or more votes is their majority, so a cell several coldkeys answered is
+graded at the majority answer and a cell one coldkey answered at its single
+answer. Where a model is right more often than wrong on a question, more
+voters raise the cell's expected grade (right 80% of the time: 0.80 with one
+vote, 0.90 with three, 0.94 with five); where it is more often wrong they
+lower it. Measured on mainnet v1 reveals (2026-11-10: 123 epochs, 1,653 cells
+with 20 or more independent answers, two answers disagreeing on 7.7% of
+cells, the figure above): a three-voter cell is graded +0.39 points above a
+one-voter cell on average (95% interval +0.20 to +0.59), a five-voter cell
++0.58 (+0.32 to +0.85). It acts only on the questions two heads route
+differently (the top heads differ on a median 24% of questions), so between
+typical heads it is worth about 0.1 to 0.15 points of net value, below the
+margin, and more the more differently two heads route. Two consequences: an
+operator running one routing under several coldkeys gains that much on its
+own routes (each coldkey costs a registration, a TDX VM and the epoch's
+inference), and a head routing where nobody else does is measured that much
+below a route the field shares. With the shipped `paired_test` and constants
+and the measured cells, a challenger with no real edge that routes 30% of
+questions differently took the seat in 1 of 60 30-epoch runs alone and in 3
+of 60 with three or with five coldkeys. A mean across coldkeys does not
+depend on the number of voters; it is a consensus change, to be decided on
+v2 reveals (v2.1).
+
 **Determinism.** Every step is order-independent and the published form is
 sorted (`cells_for_reveal`); the `shared_grades` stage of
 `check_determinism.py` feeds proofs in the opposite order to the frame stage.

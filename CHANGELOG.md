@@ -46,6 +46,14 @@ bound for a zero-edge challenger (own answers): 2 runs 6%, 5 runs 28%, 10 runs
 50% of 30-epoch runs take the seat; shared cell grades limit it where many
 coldkeys answer the same cell. "One run per epoch" is a v2.1 design.
 
+### Documented — a cell with several voters is graded by majority (accepted residual, INVARIANTS)
+The coldkey median of three or more votes is their majority, so a route
+several coldkeys share is graded slightly above the same route under one.
+Measured on mainnet v1 reveals: +0.39 points per differently-routed question
+with three voters, +0.58 with five; about 0.1 to 0.15 points of net value
+between typical heads, below the 0.2 margin. A mean across coldkeys would
+remove it: a consensus change, to be decided on v2 reveals (v2.1).
+
 ### Documented — the provider is the miner's account's choice; m stays 30
 Measured with a few metered calls (2026-11-09): identical harness requests are
 answered by different providers at different precisions, and OpenRouter

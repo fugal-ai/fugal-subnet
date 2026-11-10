@@ -4,6 +4,14 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Docs — fable-5.2 is no longer single-provider
+MINER_GUIDE and SUCCESS_CONTRACT said `anthropic/claude-fable-5.2` had two
+endpoints, both Anthropic. OpenRouter's public endpoint list on 2026-11-10
+shows five endpoints across four providers (Anthropic, Google, Amazon Bedrock,
+Azure), so it meets the three-endpoint rule. One Anthropic endpoint still
+lists twice the catalogue price. Docs only: the price table, the token
+manifest and every pin are unchanged.
+
 ### Docs — v2 is on main; the v2 embedding pass, measured
 MINER_GUIDE and APPROVED_ENTRY_ROTATION pointed miners at the `release/v2`
 branch, merged and deleted at v0.3.0: they now say `main`. MINER_GUIDE gains

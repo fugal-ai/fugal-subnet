@@ -729,14 +729,16 @@ to one slow model can still take about 30 minutes. Longer answers cost more. The
 been measured yet. Measure your own first epochs before you budget.
 
 **The model list** (`data/models_v2.json`, hash-pinned). Every model on it has at least three
-OpenRouter endpoints, is text-only, and runs at exactly one reasoning setting,
-with one exception below. The list has 19 models. `anthropic/claude-fable-5.2`
-was added 2026-11-09, the day it reached OpenRouter, with **two endpoints, both
-Anthropic** (one at twice the catalogue price): an Anthropic outage fails every
-call routed to it (scored as a wrong answer), and a call OpenRouter sends to
-the dearer endpoint costs you more than the pinned price your score is
-computed at. The scoring yardstick is unaffected either way; weigh it in your
-routing until more providers carry it. x-ai/grok-4.7 was on the draft list and was removed
+OpenRouter endpoints, is text-only, and runs at exactly one reasoning setting.
+The list has 19 models. `anthropic/claude-fable-5.2` was added 2026-11-09, the
+day it reached OpenRouter, with two endpoints, both Anthropic. Read from
+OpenRouter's public endpoint list on 2026-11-10, it has **five endpoints across
+four providers** (Anthropic, Google, Amazon Bedrock, Azure), so it meets the
+three-endpoint rule and an Anthropic outage alone no longer fails every call
+routed to it. One Anthropic endpoint still lists twice the catalogue price
+($16 / $80 per million tokens): a call OpenRouter sends there costs you more
+than the pinned price your score is computed at. The scoring yardstick is
+unaffected either way. x-ai/grok-4.7 was on the draft list and was removed
 before release: its provider does not bound reasoning by `max_tokens`, and one
 measured call billed 48,132 completion tokens against a 16,384 budget. It can
 return in v2.1, once the harness streams calls and can abort one at its

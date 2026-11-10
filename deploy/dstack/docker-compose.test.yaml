@@ -15,20 +15,21 @@
 # (.github/workflows/image.yml publishes to ghcr.io by digest), never from a
 # local or private build: an image nobody can pull is an entry nobody can audit.
 #
-# TESTNET TWIN (test / netuid 552) of docker-compose.yaml, for the warm-up
-# rehearsal. The two files differ ONLY in FUGAL_NETWORK, FUGAL_NETUID,
-# --network/--netuid and the warm-up's FUGAL_EXPLORE_FRACTION (below), so one
-# image digest yields two compose hashes and two approved entries, one per
-# network. Keep them in lockstep: any other change to one that is not made to
-# the other is a difference between what was rehearsed and what ships.
-# STATUS 2026-11-03 (evening): the image line is the second signed release,
-# tag image-v2026.11.03c (commit 1a0bce0: proxy retries, operator errors named,
-# canonical result types), built by .github/workflows/image.yml and public. The 2026-09-07 private-registry digest that stood
-# here before is kept in the frozen app-compose files beside this one, so the
-# recorded September entries can still be recomputed.
+# TESTNET TWIN (test / netuid 552) of docker-compose.yaml, for the protocol
+# v2 flip rehearsal. The two files differ ONLY in FUGAL_NETWORK, FUGAL_NETUID,
+# --network/--netuid and FUGAL_V2_ACTIVATION_BLOCK (each network's own flip
+# block), so one image digest yields two compose hashes and two approved
+# entries, one per network. Keep them in lockstep: any other change to one
+# that is not made to the other is a difference between what was rehearsed
+# and what ships.
+# STATUS 2026-11-10: the image line is the v2 release, tag image-v2026.11.10
+# (built from main 80e5859 by .github/workflows/image.yml, public). The
+# warm-up's FUGAL_EXPLORE_FRACTION=0.5 is gone: v2 pays nothing from the
+# frame, so testnet validators must not set it either. Earlier digests are
+# kept in the frozen app-compose files beside this one.
 services:
   miner:
-    image: ghcr.io/fugal-ai/fugal-miner@sha256:843460e6277be6a3af2ec749b210f7ec00f05a802dd32d07427441e57954a6f8
+    image: ghcr.io/fugal-ai/fugal-miner@sha256:7ba5217da51b61e300565c5d0b9efe5ffd3169f680bd2f20185eaec2557ae8e5
     restart: unless-stopped
     ports:
       - "8091:8091"   # axon: validators reach the miner here (open to the world)
@@ -51,14 +52,10 @@ services:
       - FUGAL_NETUID=552
       # MUST equal tempo x 12 s on every neuron (validators included).
       - FUGAL_EPOCH_INTERVAL=4320
-      # Warm-up only: half the slice explores, so the reference frame reaches
-      # FRONTIER_MIN_TRIALS on every model in about 2 days instead of about 17
-      # (150 slots an epoch over 17 models). A consensus constant: every
-      # testnet validator sets the same value (validator.env.example), it is
-      # in this compose hash so the testnet entry attests it, and the neurons
-      # refuse it on finney by genesis hash. The mainnet twin does NOT set it
-      # (default 0.05). The frame built from the warm-up does not depend on it.
-      - FUGAL_EXPLORE_FRACTION=0.5
+      # Protocol v2 switches on at this block (an epoch boundary). The miner
+      # reads it only from here, so it is part of this compose hash and of the
+      # approved entry (MINER_GUIDE, "Moving from v1 to v2").
+      - FUGAL_V2_ACTIVATION_BLOCK=8414640
       - FUGAL_EMBEDDING_CACHE=/app/results/embeddings
       # The v2 pool after its first manifest-verified load, so a restart does not
       # need Hugging Face. Verified on every read; rebuilt if it fails.

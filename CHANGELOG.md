@@ -58,16 +58,21 @@ Found on the first v2 epoch of the testnet rehearsal (552, e00023374).
 - Nightly: the dress rehearsal checked out `release/v2`, deleted at the
   v0.3.0 merge; both scenarios now run on main.
 
-### Changed — the v2 composes are frozen (image `build-v2026.11.10`, activation blocks)
+### Changed — the v2 composes are frozen (image `build-v2026.11.10b`, activation blocks)
 Both live composes name the v2 miner image by digest
-(`ghcr.io/fugal-ai/fugal-miner@sha256:7ba5217d…57ae8e5`, built from main
-`80e5859`) and carry `FUGAL_V2_ACTIVATION_BLOCK`: 9,484,920 on finney (netuid
-70) and 8,414,640 on test (netuid 552, the flip rehearsal). The testnet twin
-no longer sets `FUGAL_EXPLORE_FRACTION`. Frozen as
-`deploy/dstack/app-compose.frozen-2026-11-10-{finney,test}.json` (compose
-hashes `d2575175…b095e5` and `3c31e593…9ea5f8`); the approved entries are
-published with the signed `image-v2026.11.10` release.
-`deploy/env/validator.env.example` sets the finney block.
+(`ghcr.io/fugal-ai/fugal-miner@sha256:6c1f85e6…3a2040f`, built from main
+`3d39339`, v0.3.1 with the 2026-11-10 letter rule) and carry
+`FUGAL_V2_ACTIVATION_BLOCK`: **9,485,640 on finney** (netuid 70, about
+2026-11-11 21:10 UTC) and 8,414,640 on test (netuid 552, already active
+there). `deploy/env/validator.env.example` carries the finney block. Frozen
+files: `app-compose.frozen-2026-11-10b-{finney,test}.json`, compose hashes
+`5408259ffb5e1971f7552fdef7011415737651eb5aa737996b222dd638c7e796` (finney)
+and `ba6eb6f254dd6b4ef7f3f9860af1aeba00061b96f4a4d7260700f041eab5d458` (test).
+The `2026-11-10` pair (image `7ba5217d…`, finney block 9,484,920) is removed:
+that image carried the old letter rule and was never signed, so no approved
+entry exists for it. The testnet rehearsal of 2026-11-10 ran on it (flip,
+five v2 epochs, first seat; identical reveals on two validators); the
+testnet twin drops `FUGAL_EXPLORE_FRACTION` as before.
 
 ## [0.3.0] - 2026-11-10
 

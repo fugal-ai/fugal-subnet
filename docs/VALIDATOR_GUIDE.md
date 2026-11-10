@@ -287,7 +287,7 @@ warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every neuron.
 | `FUGAL_CHAMPION_ANCHOR_MODEL` | `anthropic/claude-fable-5.1` | The model whose expected spend per question prices V |
 | `FUGAL_CHAMPION_HARD_WEIGHT` | `2` | Weight of a `hard`-category question in the net-value test |
 | `FUGAL_CHAMPION_MARGIN` | `0.2` | NV points a challenger's lower bound must clear to take the seat |
-| `FUGAL_CHAMPION_CONFIDENCE` | `0.90` | One-sided confidence of the paired bootstrap lower bound |
+| `FUGAL_CHAMPION_CONFIDENCE` | `0.99` | One-sided confidence of the paired bootstrap lower bound |
 | `FUGAL_CHAMPION_BOOTSTRAP_RESAMPLES` | `2000` | Resamples in the paired bootstrap |
 | `FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS` | `1500` | Paired questions a take needs |
 | `FUGAL_CHAMPION_MIN_ACCURACY` | `0.30` | Window-accuracy floor to take or hold a seat, or be paid as a former champion |
@@ -396,7 +396,7 @@ The validator automatically flags:
 - **TEE attestation** — hardware-attested proofs prevent result fabrication
 - **Measurement pinning** — only approved runtime images are accepted
 - **One seat, no margin to hold it** — a champion keeps the seat unless a
-  challenger is measurably better on the same questions (90% lower bound of
+  challenger is measurably better on the same questions (99% lower bound of
   net value above the margin, over at least 1,500 paired questions), so the
   seat cannot change hands on noise
 - **The copy rule** — a head belongs to the coldkey that first committed it;
@@ -486,21 +486,26 @@ After a v2 epoch a follower did not observe (it was down, or it scored
 nothing), it logs `v2 epochs ... were not observed` and keeps working as
 usual; once the root has published past the gap (the commit-reveal hold) it
 logs `re-anchored on it`, and once a later epoch matches, `gap closed`.
-Nothing to do by hand. A follower with no gap never re-anchors: if it
-disagrees with the root it logs `ALARM: ... NOT re-anchoring` and keeps its
-own state.
+Nothing to do by hand. A follower that observed every epoch but still
+differs from the root (it did not receive one miner's proof that the root
+did, or the other way round) logs `ALARM: ... differs from its reference's`;
+if that persists for 3 reference epochs it logs `treating it as a gap` and
+re-anchors the same way. The root is the arbiter: every follower converges
+on it.
 
-**Recovering the root.** A root that missed v2 epochs logs `v2 epochs ...
-were not observed`, and its own reveals cannot repair it (they lack those
-epochs). Recover it from a follower that did not miss them:
+**The root.** Its outages count for the whole network: an epoch the root
+missed is followed by everyone (a champion that was not seen leaves a ghost
+and resumes when seen; a challenger's burn-in run restarts). Keep it up and
+monitored. A root that lost its state files (a dead disk) rebuilds from a
+follower:
 1. Stop the root. Move its state files aside: `$FUGAL_STATE_PATH` and every
    `$FUGAL_STATE_PATH.*` next to it (`.v2window.npz` among them).
-2. Sync that follower's public reveals to a directory, as followers do from
-   the root, and set `FUGAL_FRAME_BOOTSTRAP` to it.
+2. Sync a follower's public reveals to a directory, as followers do from the
+   root, and set `FUGAL_FRAME_BOOTSTRAP` to it.
 3. Start the root. It rebuilds from the follower's reveals, re-anchors, and
    logs `gap closed` after the hold.
 4. Unset `FUGAL_FRAME_BOOTSTRAP` and restart it.
-Followers need nothing: one without a gap never moves.
+Followers need nothing.
 
 ### At the flip
 
@@ -511,11 +516,12 @@ Followers need nothing: one without a gap never moves.
   hard date published in the release. Remove them from
   `FUGAL_TEE_MEASUREMENTS` and restart, at or after the activation block,
   never before.
-- **Expect the miner share to burn for the first days.** Every head is new at
+- **Expect the miner share to burn for the first hours.** Every head is new at
   the flip, and no head can take the seat until it has scored
-  `V2_BURN_IN_QUESTIONS` (1500, five epochs) in an unbroken run. Until then
-  each epoch logs `v2 seat: empty` and the weight goes to the burn UID. This is
-  intended, not a fault.
+  `V2_BURN_IN_QUESTIONS` (1500, five epochs, about six hours) in an unbroken
+  run. Until then each epoch logs `v2 seat: empty` and the weight goes to the
+  burn UID; an epoch with no valid proof at all burns too (`No valid proofs:
+  the miner share burns`). This is intended, not a fault.
 
 ### What to watch
 

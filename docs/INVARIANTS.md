@@ -2331,8 +2331,8 @@ the seat changes hands by a paired test (`fugal_subnet/champion.py`):
   miner's self-report. `V = CHAMPION_ACCURACY_VALUE ×` a pinned anchor's
   expected spend per question: `CHAMPION_ANCHOR_MODEL` (Claude Fable 5.1) at
   the reviewed v2 token manifest's mean input and output tokens and the
-  pinned v2 prices (`v2_epoch.anchor_spend_per_question`, about $0.026, so V
-  is about $0.77 at m = 30), recorded in the digest as
+  pinned v2 prices (`v2_epoch.anchor_spend_per_question`, about $0.0163, so V
+  is about $0.49 at m = 30), recorded in the digest as
   `CHAMPION_ANCHOR_SPEND_PER_Q`. One extra correct answer is worth m of the
   anchor's questions, whoever holds the seat.
   **Why pinned.** With the champion's own spend as the anchor, the champion
@@ -2465,6 +2465,23 @@ delayed from epoch 15 to 85; 0.53 points: 1.1x) and gained nothing from about
 epoch as wrong answers in the pairing was considered and rejected: axons are
 public addresses, so knocking the champion offline for one collection would
 then be cheaper than building a better router.
+
+**Accepted residual: serving the luckiest of several runs (best-of-N).**
+A proof binds the hotkey, the epoch's nonce and the head, but nothing makes
+it the only run: an operator can run N TDs on one hotkey, each producing a
+valid proof, and serve the one that scored best. Unlike withholding it never
+misses an epoch, so the miss rule does not price it; it helps a challenger
+take the seat and a champion keep it, and different proofs to different
+validators split them (one lost proof's worth each, which verify-and-resync
+now heals). Measured with the shipped `paired_test` and constants for a
+challenger with no real edge, grading each run on its own answers (Fable
+review 2026-11-09, item 3): one run 0%, two 6%, three 16%, five 28%, ten 50%
+of 30-epoch runs took the seat. That is an upper bound: a head is graded on
+the shared cell, the coldkey median (I4), so a lucky run moves a grade only
+where few other coldkeys answer the same (question, model). It costs N times
+the inference. Closing it needs "one run per epoch": the TD's identity
+committed with the head and a measured harness that refuses a second run of
+an epoch, a v2.1 image and consensus change.
 
 **The challenger is measured on its current run.** A challenger's paired
 epochs are only its current unbroken run of served epochs (back from the
@@ -2612,6 +2629,21 @@ model per epoch:
    bias (through provider choice on its own account), not choose. Using a
    head's own answer when a cell has fewer than K other coldkeys is the
    candidate fix for a later release.
+   **Accepted residual: the miner's account chooses the provider.** Measured
+   2026-11-09 (Fable review item 7, a few metered calls): one model is served
+   by many providers at different precisions (qwen3.8-27b 24, from 4-bit to
+   16-bit; deepseek-v4.1-flash 37), identical harness requests were answered
+   by different providers, and OpenRouter applies the ACCOUNT's default sort
+   and allowed/ignored provider lists to every request. The harness pins
+   model, URL and token budget, not the provider, and does not record which
+   one answered. So an operator can steer its own calls to the best or the
+   cheapest precision. It moves only that operator's vote in a cell (the
+   coldkey median), never the price (pinned) and never the model. The fix,
+   for v2.1: a pinned provider per model in the request (`provider.order`,
+   `allow_fallbacks: false`), so an account setting can only make that
+   operator's own calls fail, and the answering provider recorded in the
+   proof; it needs an availability decision per model (single-provider
+   outages fail every call to it).
 
 **What still reads the frame in v2, all informational:** the v1 composite,
 headroom, quality and thrift (computed and published as diagnostics, deciding
@@ -2924,11 +2956,26 @@ in their reveals only after the hold, so some lag is unavoidable.
 - **Verify.** The gap closes on a match at an epoch at or after both the gap
   and the last re-anchor; a mismatch there re-anchors again. A gap is bounded
   by one window, after which it closes with a warning.
-- **Only a validator with a gap follows; the root never marks itself
+- **Followers converge on the root; the root never marks itself
   unverified.** A follower with no gap that disagrees with its reference logs
-  an alarm and keeps its state (the reference may be the wrong one), and a
-  reveal published while unverified is never used to verify, so two
-  validators with gaps cannot confirm each other's wrong state.
+  an alarm; once it has differed on `v2_sync.DRIFT_CHECKS` (3) consecutive
+  verified reference epochs (`v2_sync.drifted`) it treats that as a gap at
+  the newest one and re-anchors. That is how a LOST PROOF heals: a miner's
+  reply that reached the root but not this validator (or the other way
+  round) leaves no gap, since the epoch was observed, but leaves the burn-in
+  counters, and sometimes the seat, apart for good (Fable review, item 5:
+  28 of 30 simulated cases never agreed again). In a star the root is the
+  arbiter, and agreement is what Yuma pays. More than one check, so a
+  difference that heals by itself (the weight cap converging after an
+  outage) is not followed. A reveal published while unverified is never used
+  to verify or to detect drift, so two validators with gaps cannot confirm
+  each other's wrong state.
+- **An epoch with no valid proof burns.** In v2 a seat pays only while its
+  head is live, and with no proof no head is, so the validator sets the
+  capped all-burn vector (`neurons/validator._burn_epoch_weights`); it used
+  to set nothing, which left the last vector on chain and, at the flip, kept
+  paying the v1 winners until the first v2 proof verified (Fable review,
+  item 6). v1 epochs keep main's behaviour.
 - **Never stops an epoch (I6).** Any failure (a malformed reference reveal
   included) keeps the state and the gap.
 - **Zero weights are not compared.** The weight cap keeps, at 0.0, every
@@ -2949,17 +2996,16 @@ of 4 it took 14-34 epochs and 3-7 re-anchors; with a change every 4 epochs
 and a hold of 2-3 it did not converge inside the window (the gap then closes
 with a warning, and the follower alarms). A take needs at least five epochs
 of paired questions, so changes that fast are not expected. A network-wide
-epoch with no proofs changes nobody; a healthy follower whose reference
-missed epochs is never moved. **Accepted residuals:** a root that misses
-epochs diverges from its followers; until it is recovered, a follower that
-later opens a gap of its own re-anchors onto the root's state and joins it
-(a follower that never misses keeps its own state and alarms). The root is
-recovered by hand (VALIDATOR_GUIDE, "Recovering the root"): stop it, move its
-state files aside, and restart it with `FUGAL_FRAME_BOOTSTRAP` pointed at a
-healthy follower's reveals until it logs `gap closed`, then unset it
-(simulated: it agrees again, followers never move). Validators referencing
-each other that miss overlapping epochs wait out the window instead of
-recovering (use a star).
+epoch with no proofs changes nobody's agreement (everyone burns). One lost
+proof heals within about the hold plus `DRIFT_CHECKS` epochs (12 simulated
+cases, holds 1 and 3). **Accepted residuals:** the root's outages count for
+the whole network: an epoch the root missed is followed by every follower
+within a few epochs (a champion not seen leaves a ghost and resumes; a
+challenger's burn-in run restarts), so the root is kept up and monitored. A
+root that lost its state rebuilds from a follower (VALIDATOR_GUIDE, "The
+root"; simulated: it agrees again, followers never move). Validators
+referencing each other that miss overlapping epochs wait out the window
+instead of recovering (use a star).
 Nothing here changes a scoring rule: it chooses which state the rules run
 from, so it can be improved without a coordinated upgrade.
 
@@ -3023,6 +3069,14 @@ size of the head's capacity bought 60% of every score. `SLICE_SHARE_FACTOR`
 the small three hold 17% of the slice, MMLU 48%, and a 2,500-question
 memoriser buys 17% of a score. That is the accepted residual; closing it
 needs questions that are not in the public pool, which the design rejects.
+**v2 (2026-11-09, Fable review item 4):** v2's small sets are the olympiad
+math sets and IFEval (2,118 questions). With the hard category weighted 50%
+to them and the hard weight of 2 they carried 27% of the seat test's net
+value, and every cell's grade is published, so the lookup table costs
+nothing. The hard category now splits by pool size (`BENCHMARK_WEIGHT_V2` is
+empty): about 19 olympiad slots an epoch instead of 45, the olympiad set
+every 99 epochs (longer than the 48-epoch window) instead of 42, and 14% of
+net value (`tests/test_pool_v2.py` holds it at 15% or less).
 
 The intended defence is held-out evaluation: the validator runs the head on
 questions the miner has not been scored on and checks it still routes sensibly.

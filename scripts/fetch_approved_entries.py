@@ -19,7 +19,10 @@ deliberately.
     python scripts/fetch_approved_entries.py --tag image-v<date> --network finney
     # -> FUGAL_TEE_MEASUREMENTS=<base>:<compose_hash>
 
-Requires `git` and `gh` (the GitHub CLI) and network access; no API spend.
+Requires `git` and network access; no API spend. The release note (a
+mirror, cross-checked) is read with the GitHub CLI when it is installed and
+from GitHub's public API otherwise; if neither answers, the signed message
+alone decides, with a warning.
 """
 from __future__ import annotations
 
@@ -39,6 +42,52 @@ NOTE_ROW_RE = re.compile(rf"^\| (finney|test) \| `({_ENTRY})` \|", re.M)
 
 def run(*cmd, **kw) -> str:
     return subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=120, **kw).stdout
+
+
+_TAG_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+def fetch_tag(tag: str, cwd: str = ROOT) -> None:
+    """Fetch `tag` from origin, replacing a local copy that differs.
+
+    A tag the team moved (a build tag later signed under the same name) made a
+    plain `git fetch --tags` refuse with `would clobber existing tag`, so a
+    validator that fetched early could not approve (Fable review, item 8).
+    Taking the remote's tag is safe: its signature is verified after this,
+    against the committed signers, and that is what is trusted."""
+    if not _TAG_NAME.match(tag) or ".." in tag:
+        raise SystemExit(f"{tag!r} is not a release tag name")
+    run("git", "fetch", "--no-tags", "origin", f"+refs/tags/{tag}:refs/tags/{tag}", cwd=cwd)
+
+
+def _api_release_body(owner: str, repo: str, tag: str) -> str:
+    import json
+    import urllib.request
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                               "User-Agent": "fugal-fetch-approved-entries"})
+    with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 - fixed https URL
+        return json.loads(r.read(1 << 20).decode("utf-8")).get("body") or ""
+
+
+def release_notes(tag: str, cwd: str = ROOT) -> str:
+    """The release note's body: through `gh` if installed, else the public
+    API; "" (with a warning) if neither answers. The note is only a mirror."""
+    try:
+        return run("gh", "release", "view", tag, "--json", "body", "--jq", ".body", cwd=cwd)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+    try:
+        url = run("git", "remote", "get-url", "origin", cwd=cwd).strip()
+        m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url)
+        if not m:
+            raise ValueError(f"origin {url!r} is not a GitHub repository")
+        return _api_release_body(m.group(1), m.group(2), tag)
+    except Exception as e:  # noqa: BLE001 - the note is a mirror; the signature decides
+        print(f"# release note for {tag} unreadable ({e}); using the signed message alone",
+              file=sys.stderr)
+        return ""
 
 
 def verify_tag(tag: str) -> None:
@@ -88,7 +137,7 @@ def main() -> int:
                     help="skip the signature check (reading only; never for approval)")
     args = ap.parse_args()
 
-    run("git", "fetch", "--tags", "origin", args.tag, cwd=ROOT)
+    fetch_tag(args.tag)
     if args.no_verify:
         print(f"# tag {args.tag}: signature NOT verified (--no-verify); do not approve from this",
               file=sys.stderr)
@@ -97,7 +146,7 @@ def main() -> int:
         print(f"# tag {args.tag}: signature verified against deploy/keys/allowed_signers",
               file=sys.stderr)
     message = run("git", "tag", "-l", "--format=%(contents)", args.tag, cwd=ROOT)
-    notes = run("gh", "release", "view", args.tag, "--json", "body", "--jq", ".body", cwd=ROOT)
+    notes = release_notes(args.tag)
     print(f"FUGAL_TEE_MEASUREMENTS={select(args.tag, args.network, message, notes)}")
     return 0
 

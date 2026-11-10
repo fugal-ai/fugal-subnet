@@ -882,6 +882,42 @@ def check_live_composes_are_frozen(errors: list[str], root: Path | None = None) 
             )
 
 
+def check_release_composes_target_v2(errors: list[str], root: Path | None = None) -> None:
+    """At a release, each live compose must pin its image by digest and carry
+    a valid FUGAL_V2_ACTIVATION_BLOCK.
+
+    The miner reads the activation block only from its compose, so a compose
+    without one is a v1 miner, whatever image it names. `--release` passed a
+    frozen compose with the v1 image and no activation block (Fable review
+    2026-11-09, item 8): the gate checked that composes were frozen, not what
+    they were frozen as. The block must be an epoch boundary at the compose's
+    own FUGAL_EPOCH_INTERVAL (slicer.validate_activation_block).
+    """
+    import re
+
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
+
+    root = root or ROOT
+    for live in sorted((root / "deploy" / "dstack").glob("docker-compose*.yaml")):
+        text = live.read_text(encoding="utf-8")
+        name = live.relative_to(root)
+        if not re.search(r"^\s*image:\s*\S+@sha256:[0-9a-f]{64}\s*$", text, re.M):
+            errors.append(f"{name}: the image is not pinned by digest (@sha256:<64 hex>)")
+        env = dict(re.findall(r"^\s*-?\s*(FUGAL_[A-Z0-9_]+)\s*[=:]\s*\"?([^\"\s#]*)", text, re.M))
+        raw = env.get("FUGAL_V2_ACTIVATION_BLOCK", "")
+        if not raw:
+            errors.append(f"{name}: no FUGAL_V2_ACTIVATION_BLOCK: a compose without it is a v1 "
+                          "miner (MINER_GUIDE, the flip); set the published block before freezing")
+            continue
+        try:
+            interval = int(env.get("FUGAL_EPOCH_INTERVAL") or 3600)
+            if int(raw) <= 0:
+                raise ValueError("it must be a future block, above 0")
+            validate_activation_block(int(raw), blocks_per_epoch(interval))
+        except (ValueError, TypeError) as e:
+            errors.append(f"{name}: FUGAL_V2_ACTIVATION_BLOCK={raw!r} is not valid: {e}")
+
+
 def check_live_requires_app_identity(errors: list[str]) -> None:
     """A live validator must refuse a bare base approved entry at startup.
 
@@ -1056,6 +1092,7 @@ def main(argv: list[str] | None = None) -> None:
     check_upstream_is_inside_the_measurement(errors)
     check_live_requires_app_identity(errors)
     check_live_composes_are_frozen(errors if args.release else launch_gate)
+    check_release_composes_target_v2(errors if args.release else launch_gate)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)
     check_documented_flags(errors)

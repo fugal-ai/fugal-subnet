@@ -923,12 +923,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # A v2 epoch this validator scored nothing in (a local
                 # collateral outage, or miners it could not reach) may be one
                 # its peers scored: a gap until it is verified again.
+                burned = None
                 if protocol_version >= 2:
                     v2_gap_until = epoch_index
+                    # In v2 a seat pays only while its head is live, and with
+                    # no proof no head is: the miner share burns. Keeping the
+                    # last vector instead paid the v1 winners after the flip
+                    # until the first v2 proof verified (Fable review, item 6).
+                    burned = _burn_epoch_weights(
+                        subtensor, wallet, netuid, my_uid, boundary_block, metagraph, live,
+                        prev_uids, prev_weights, epoch_index, blocks_per_epoch)
                 last_epoch_index = epoch_index
                 # The v2 seat is not advanced on an epoch with no proofs at
                 # all: there is nothing to compare, and the champion's ghost
                 # window is counted in epochs, so it still expires on time.
+                # The burn vector is the next epoch's cap base, rebound only
+                # here, at the commit point (tests/test_epoch_atomicity.py).
+                prev_uids, prev_weights = burned or (prev_uids, prev_weights)
                 save_state(scoring_state.records, prev_uids, prev_weights,
                            last_epoch_index, frame,
                            v2={"seat": seat_to_dict(v2_seat), copy_rule.REVEAL_KEY: v2_copy.to_reveal(),
@@ -2100,7 +2111,7 @@ def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_
     from fugal_subnet.config import CHAMPION_WINDOW_EPOCHS
     from fugal_subnet.evidence import Evidence
     from fugal_subnet.scoring import MinerRecord
-    from fugal_subnet.v2_sync import check, load_reveals, resync
+    from fugal_subnet.v2_sync import DRIFT_CHECKS, check, drifted, load_reveals, resync
 
     scoring_state, window, seat, copy_state, window_degraded, gap_until, anchor_at = state
     epoch_dir = epoch_dir or EPOCH_DIR
@@ -2128,12 +2139,22 @@ def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_
     ref, own = load_reveals(reference_dir, since), load_reveals(epoch_dir, since)
     chk = check(ref, own, epoch_index)
     if gap_until is None:
-        if chk.status == "differs":
+        if chk.status != "differs":
+            return _V2Sync(changed, state)
+        if drifted(ref, own, epoch_index) is None:
             logger.error("ALARM: this validator's v2 state differs from its reference's at "
-                         "e%08d and it has no gap to explain it; NOT re-anchoring (the "
-                         "reference may be the one that is wrong). Compare the two reveals.",
-                         chk.k)
-        return _V2Sync(changed, state)
+                         "e%08d with no gap to explain it; it re-anchors if that persists "
+                         "for %d reference epochs. Compare the two reveals.", chk.k, DRIFT_CHECKS)
+            return _V2Sync(changed, state)
+        # Persistent: a proof this validator did not receive (or the
+        # reference's own) left the states apart, and nothing else will bring
+        # them together. In a star the reference is the arbiter, so this is a
+        # gap at k: re-anchor on it below, then verify (Fable review, item 5).
+        logger.error("v2 state has differed from the reference's for %d reference epochs "
+                     "through e%08d: treating it as a gap and re-anchoring on the reference",
+                     DRIFT_CHECKS, chk.k)
+        gap_until, changed = chk.k, True
+        state = state[:5] + (gap_until, anchor_at)
     if chk.status == "no_reference":
         logger.error("v2 gap open (through e%08d) but %s holds no reference reveal before "
                      "e%08d: is it synced from gs://<reference-bucket>/<netuid>?",
@@ -2263,6 +2284,32 @@ def _v1_weights(records: dict, routing_decisions: dict, commit_blocks: dict, dup
             confidence, 100.0 * (1.0 - confidence), burn_uid,
         )
     return uids, weights, dupes
+
+
+def _burn_epoch_weights(subtensor, wallet, netuid, my_uid, boundary_block, metagraph, live,
+                        prev_uids, prev_weights, epoch_index, blocks_per_epoch):
+    """Set the all-burn vector for a v2 epoch with no valid proof; returns the
+    (uids, weights) the next epoch's cap starts from.
+
+    Capped against the previous vector like every epoch, so it moves at most
+    MAX_WEIGHT_DELTA per epoch. Never raises (I6): an unreadable owner hotkey
+    (live refuses to guess the burn UID) or a failed submit logs and keeps the
+    previous vector.
+    """
+    try:
+        burn_uid = resolve_burn_uid(subtensor, netuid, boundary_block, metagraph, live)
+        uids, weights, _ = _capped([burn_uid], [1.0], prev_uids, prev_weights)
+        ok, msg = set_weights_with_retry(
+            subtensor, wallet, netuid, my_uid, uids, weights,
+            deadline_block=_weights_deadline(epoch_index, blocks_per_epoch),
+        )
+        if ok:
+            logger.info("No valid proofs: the miner share burns this epoch (UID %d)", burn_uid)
+            return list(uids), list(weights)
+        logger.error("No valid proofs: setting the burn vector failed: %s", msg)
+    except Exception as e:  # noqa: BLE001 - an epoch with no proofs must still end cleanly
+        logger.error("No valid proofs: could not set the burn vector: %s", e)
+    return prev_uids, prev_weights
 
 
 def _capped(uids, weights, prev_uids, prev_weights):

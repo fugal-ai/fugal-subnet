@@ -237,3 +237,59 @@ def test_an_epoch_with_no_proofs_is_still_marked_done():
     src = ast.unparse(branch)
     assert "last_epoch_index = epoch_index" in src
     assert src.index("last_epoch_index = epoch_index") < src.index("save_state(")
+
+
+def test_a_v2_epoch_with_no_proofs_burns_instead_of_keeping_the_last_weights():
+    """FABLE REVIEW, item 6 (2026-11-09): with no valid proof the validator
+    skipped set_weights, so the chain kept its last vector. At the flip that
+    paid the v1 winners until the first v2 proof verified. In v2 a seat pays
+    only while its head is live, and with no proof no head is: the share
+    burns. v1 epochs keep main's behaviour (agreement through the window)."""
+    main = _main()
+    (branch,) = [n for n in ast.walk(main) if isinstance(n, ast.If)
+                 and ast.unparse(n.test) == "not verified_proofs"]
+    src = ast.unparse(branch)
+    assert "_burn_epoch_weights(" in src
+    burn = src[src.index("if protocol_version >= 2:"):]
+    # the vector it set is the next epoch's cap base, rebound at the commit point
+    assert "burned = _burn_epoch_weights(" in burn[:burn.index("save_state(")]
+    rebind = "prev_uids, prev_weights = burned or (prev_uids, prev_weights)"
+    assert rebind in burn
+    assert burn[burn.index(rebind) + len(rebind):].lstrip().startswith("save_state(")
+    assert src.index("_burn_epoch_weights(") < src.index("save_state(")
+
+
+def test_burn_epoch_weights_sets_the_burn_uid_and_never_raises():
+    from types import SimpleNamespace
+
+    import neurons.validator as v
+
+    calls = []
+
+    class Sub:
+        def get_subnet_owner_hotkey(self, netuid, block=None):
+            return "owner"
+
+    mg = SimpleNamespace(hotkeys=["a", "owner", "b"])
+    orig = v.set_weights_with_retry
+    try:
+        v.set_weights_with_retry = lambda *a, **k: (calls.append((a[4], a[5])) or (True, ""))
+        out = v._burn_epoch_weights(Sub(), None, 1, 0, 100, mg, True, [], [], 5, 360)
+        assert calls[-1] == ([1], [1.0]) and out == ([1], [1.0])
+        # capped against the previous vector, like every epoch
+        out = v._burn_epoch_weights(Sub(), None, 1, 0, 100, mg, True, [2], [1.0], 5, 360)
+        assert calls[-1][0] == [1, 2] and abs(calls[-1][1][0] - 0.3) < 1e-9
+        assert out == (calls[-1][0], calls[-1][1])
+        # a failed submit keeps the previous vector as the cap's base
+        v.set_weights_with_retry = lambda *a, **k: (False, "rate limited")
+        assert v._burn_epoch_weights(Sub(), None, 1, 0, 100, mg, True, [2], [1.0], 5, 360) == ([2], [1.0])
+
+        def boom(*a, **k):
+            raise RuntimeError("chain down")
+        v.set_weights_with_retry = boom
+        assert v._burn_epoch_weights(Sub(), None, 1, 0, 100, mg, True, [2], [1.0], 5, 360) == ([2], [1.0])
+        # an unreadable owner (live refuses to guess) never raises either
+        bad = SimpleNamespace(hotkeys=["a"])
+        assert v._burn_epoch_weights(Sub(), None, 1, 0, 100, bad, True, [2], [1.0], 5, 360) == ([2], [1.0])
+    finally:
+        v.set_weights_with_retry = orig

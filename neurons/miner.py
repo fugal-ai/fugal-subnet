@@ -641,9 +641,18 @@ def _v2_commit_window(activation_block: int, blocks_per_epoch: int) -> tuple[int
 
 
 def _wait_for_block(subtensor, block: int, purpose: str, poll_s: float = 30.0) -> None:
-    """Block until the chain reaches `block`, logging what the miner is waiting to do."""
+    """Block until the chain reaches `block`, logging what the miner is waiting to do.
+
+    A failed read is logged and retried: miners start days before the flip, and
+    one dropped connection must not end the process (the container would
+    restart without its provisioned secrets and miss the flip)."""
     while True:
-        current = subtensor.get_current_block()
+        try:
+            current = subtensor.get_current_block()
+        except Exception as e:  # noqa: BLE001 - a dropped socket must not end the hold
+            logger.warning("Could not read the current block (%s); retrying", e)
+            time.sleep(poll_s)
+            continue
         if current >= block:
             return
         logger.info("Holding for v2: %d blocks until block %d, then %s", block - current, block, purpose)

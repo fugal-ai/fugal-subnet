@@ -89,3 +89,57 @@ def test_the_real_03c_files_publish_the_entries_validators_run(tmp_path, monkeyp
     message = msg.read_text(encoding="utf-8")
     assert fetch.select("image-vX", "finney", message, note) == f"{BASE}:{FINNEY}"
     assert fetch.select("image-vX", "test", message, note) == f"{BASE}:{TEST}"
+
+
+def _git(*a, cwd):
+    import subprocess
+    return subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+def test_a_tag_that_moved_on_the_remote_is_fetched_not_refused(tmp_path):
+    """FABLE REVIEW, item 8 (2026-11-09): the rotation pushed image-v<date> to
+    build, then signed and pushed the same tag again; a validator that had
+    fetched the first got `would clobber existing tag` and could not approve.
+    The fetch takes the remote's tag (the signature is verified after it, and
+    is what is trusted)."""
+    origin, clone = tmp_path / "origin", tmp_path / "clone"
+    _git("init", "-q", "-b", "main", str(origin), cwd=tmp_path)
+    for k, v in (("user.email", "t@example.com"), ("user.name", "t")):
+        _git("config", k, v, cwd=origin)
+    _git("commit", "-q", "--allow-empty", "-m", "a", cwd=origin)
+    _git("tag", "-a", "image-v1", "-m", "first", cwd=origin)
+    _git("clone", "-q", str(origin), str(clone), cwd=tmp_path)
+    _git("commit", "-q", "--allow-empty", "-m", "b", cwd=origin)
+    _git("tag", "-f", "-a", "image-v1", "-m", "second", cwd=origin)
+    fetch.fetch_tag("image-v1", cwd=str(clone))
+    assert _git("tag", "-l", "--format=%(contents)", "image-v1", cwd=clone).strip() == "second"
+
+
+def test_a_tag_name_is_never_a_refspec():
+    import pytest
+    for bad in ("image-v1:refs/heads/main", "+image-v1", "a b", "", "../x"):
+        with pytest.raises(SystemExit):
+            fetch.fetch_tag(bad, cwd=".")
+
+
+def test_the_release_note_needs_no_gh(monkeypatch):
+    """The note is a mirror for a cross-check; validators were never told to
+    install the GitHub CLI. Without it the public API is read; without either
+    the signed message alone decides, with a warning."""
+    def no_gh(*cmd, **kw):
+        if cmd[0] == "gh":
+            raise FileNotFoundError("gh")
+        if cmd[:2] == ("git", "remote"):
+            return "https://github.com/fugal-ai/fugal-subnet.git\n"
+        raise AssertionError(cmd)
+    monkeypatch.setattr(fetch, "run", no_gh)
+    seen = []
+    monkeypatch.setattr(fetch, "_api_release_body",
+                        lambda owner, repo, tag: seen.append((owner, repo, tag)) or "the note")
+    assert fetch.release_notes("image-v1", cwd=".") == "the note"
+    assert seen == [("fugal-ai", "fugal-subnet", "image-v1")]
+
+    def api_down(owner, repo, tag):
+        raise OSError("no network")
+    monkeypatch.setattr(fetch, "_api_release_body", api_down)
+    assert fetch.release_notes("image-v1", cwd=".") == ""

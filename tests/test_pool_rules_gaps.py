@@ -32,7 +32,6 @@ from fugal_subnet.benchmarks.slicer import (
 )
 from fugal_subnet.config import (
     BENCHMARK_CATEGORY_V2,
-    BENCHMARK_WEIGHT_V2,
     CATEGORY_TARGETS_V2,
 )
 
@@ -114,7 +113,12 @@ def test_v1_tiny_benchmark_cap_floor_is_one():
 V2_SIZES = {"mmlupro": 60, "mmlu": 30, "math_l35": 40, "omnimath_mid": 20, "supergpqa_hard": 50,
             "aime": 30, "aime25": 5, "beyondaime": 8, "omnimath_hard": 25, "ifeval": 12}
 V2_POOL = [{"question_id": f"{b}_{i:03d}", "benchmark": b} for b, n in V2_SIZES.items() for i in range(n)]
-T, C, W = CATEGORY_TARGETS_V2, BENCHMARK_CATEGORY_V2, BENCHMARK_WEIGHT_V2
+# A weighted category, as a fixture: the slicer's weighted path stays pinned
+# by these vectors. Production weights no category since 2026-11-09
+# (config.BENCHMARK_WEIGHT_V2 = {}); these are the weights it had before.
+WEIGHTED_HARD = {"supergpqa_hard": 0.5, "aime": 0.244369, "aime25": 0.007858,
+                 "beyondaime": 0.026192, "omnimath_hard": 0.221582}
+T, C, W = CATEGORY_TARGETS_V2, BENCHMARK_CATEGORY_V2, WEIGHTED_HARD
 
 
 def _v2_nonce(k: int) -> bytes:
@@ -193,10 +197,10 @@ def test_v2_within_category_split_is_unbiased_largest_remainder_when_caps_do_not
     assert seen_round_up
 
 
-def test_v2_exploration_with_the_production_category_weights():
-    # Only the hard category is weighted in production (BENCHMARK_WEIGHT_V2), so the
-    # within-category shares must be computed per category: computing them over every
-    # benchmark at once would mix weighted and unweighted benchmarks and refuse.
+def test_v2_exploration_with_one_weighted_category():
+    # With only one category weighted (the fixture), the within-category shares must be
+    # computed per category: computing them over every benchmark at once would mix
+    # weighted and unweighted benchmarks and refuse.
     assert set(W) < set(C)
     for k in range(8):
         nonce = _v2_nonce(k)

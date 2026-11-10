@@ -359,7 +359,11 @@ The release:
 
 4. Merge `release/v2` into `main`; cut the CHANGELOG `[Unreleased]` block into
    `0.3.0` and bump `pyproject.toml`.
-5. Build and sign the v2 image **from `main`** (`image-v*` release). The draft
+5. Build and sign the v2 image **from `main`**: push a `build-v<date>` tag to
+   build it, then sign `image-v<date>` once on the same commit
+   (APPROVED_ENTRY_ROTATION, steps 1-4; never move a pushed release tag), and
+   pass `scripts/check_safety_invariants.py --release` (live composes frozen,
+   image by digest, `FUGAL_V2_ACTIVATION_BLOCK` set). The draft
    `image-v2026.11.05b` targets `main` but is tagged on `release/v2`; do not
    publish it.
 6. **Rehearse the flip on testnet (netuid 552) first** [PAID: GCP TDX VMs].
@@ -391,7 +395,12 @@ The release:
 11. Every validator: place the v2 pool file (`export_pool.py --protocol 2`,
     §3), upgrade to the release, set `FUGAL_V2_ACTIVATION_BLOCK`,
     `FUGAL_VALIDATOR_IP` (its egress IP, recorded on chain at startup) and add
-    the v2 entry beside the current one, restart, before the block.
+    the v2 entry beside the current one, restart, before the block. Every
+    validator except the ROOT (the owner's) also sets `FUGAL_FRAME_BOOTSTRAP`
+    to a directory kept synced from the root's reveal bucket
+    (`gsutil -m rsync -r gs://<root-bucket>/<netuid> <dir>` on a timer): that
+    is how it re-syncs after a missed epoch or a lost proof (VALIDATOR_GUIDE,
+    "A missed epoch heals itself"). The root leaves it unset.
 12. Every miner: re-provision on the v2 image before the block (the v2 miner
     holds its head until the last v1 boundary, then commits it). Once every
     active validator's IP is on chain, turn on the axon allowlist
@@ -400,10 +409,24 @@ The release:
     go first. Check from step 11's logs that every validator shows
     `validator IP ... on chain`.
 13. After the block: `scripts/watch_subnet.py` for a few epochs; two
-    validators' reveals must agree byte for byte apart from `environment` (what
-    `watch_subnet.py` checks) and carry `protocol_version: 2`.
+    validators' reveals must agree byte for byte apart from `environment` and
+    `v2_sync` (what `watch_subnet.py` checks) and carry `protocol_version: 2`.
 
 ---
+
+## After the first v2 week: revisit m (`CHAMPION_ACCURACY_VALUE`)
+
+Launched at 30 (decided 2026-11-09): one extra correct answer is worth 30
+questions of the anchor's spend, about $0.49, so the whole price range of the
+v2 list is worth about 4 points of accuracy. Correct first, then cheapest:
+a router that keeps the champion's accuracy and cuts its cost wins clearly;
+one that gives up more than ~4 points to save money loses to "always the top
+model". It stays 30 because no v2 accuracy data existed at launch. After a
+week, read the reveals: each head's accuracy and spend per question. If the
+champion is a constant policy (one model, no routing) while routers within a
+point or two of its accuracy are far cheaper, lower m (a consensus constant:
+a coordinated release, re-baseline, docs). Under any m the ideal router (the
+cheapest model that is correct, per question) wins.
 
 ## After the flip: remove protocol v1
 

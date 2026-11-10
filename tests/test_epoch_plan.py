@@ -58,27 +58,31 @@ def test_an_unknown_version_is_refused():
         epoch_plan.exploration_plan(3, _n(0), V2_POOL, set(), MODELS, 15)
 
 
-def test_v2_hard_category_follows_its_benchmark_weights_not_pool_size():
-    """Within `hard`, BENCHMARK_WEIGHT_V2 sets the mix (supergpqa_hard 50%).
-    Dropping the weights falls back to pool size (supergpqa_hard ~78% here),
-    a different consensus question mix that no other test noticed (planted
-    bug, 2026-11-08)."""
+def test_v2_hard_category_follows_pool_size():
+    """Within `hard`, the mix follows pool size (no benchmark weights since
+    2026-11-09, Fable review item 4). A weight slipped back in changes the
+    consensus question mix: this catches it (it caught the opposite change,
+    weights dropped, as a planted bug on 2026-11-08)."""
     from fugal_subnet.config import BENCHMARK_WEIGHT_V2
 
+    assert BENCHMARK_WEIGHT_V2 == {}
+    sizes = Counter(q["benchmark"] for q in V2_POOL if BENCHMARK_CATEGORY_V2[q["benchmark"]] == "hard")
     hard = Counter()
     for i in range(20):
         hard.update(q["benchmark"] for q in epoch_plan.scored_slice(2, _n(100 + i), V2_POOL, 300)
                     if BENCHMARK_CATEGORY_V2[q["benchmark"]] == "hard")
-    total = sum(hard.values())
-    for bench, w in BENCHMARK_WEIGHT_V2.items():
-        assert abs(hard[bench] / total - w) < 0.02, (bench, hard[bench] / total, w)
+    total, size = sum(hard.values()), sum(sizes.values())
+    for bench, n in sizes.items():
+        assert abs(hard[bench] / total - n / size) < 0.03, (bench, hard[bench] / total, n / size)
 
 
 # Pinned outputs for one nonce. Both neurons must select exactly these; any
 # change to selection, apportionment, the exploration nonce or model
 # assignment is a consensus change and must update these on purpose.
-GOLDEN_V2_SLICE_SHA256 = "4fc11fbddbcb506abff9395018f18bb72d9de4886961a76814c1496f80a02632"
-GOLDEN_V2_PLAN_SHA256 = "c6cdaf83463d6ed770818e75aef80a0fa68da42b536b95fa4082c47cc0ea2720"
+# Updated 2026-11-09: the hard category splits by pool size (Fable review,
+# item 4; config.BENCHMARK_WEIGHT_V2 = {}).
+GOLDEN_V2_SLICE_SHA256 = "cefdcb454c7aba6abc1f20c1013b155c4427e2c3b2fdfc29ac4b5f53bdfce75d"
+GOLDEN_V2_PLAN_SHA256 = "2e8933e914ac607b12b8f31a4e93132a23a577184f89677c4c54a2ac1324a98a"
 
 
 def test_v2_selection_is_pinned():

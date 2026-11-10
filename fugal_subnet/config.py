@@ -110,16 +110,18 @@ BENCHMARK_CATEGORY_V2 = {
     "supergpqa_hard": "hard", "aime": "hard", "aime25": "hard", "beyondaime": "hard", "omnimath_hard": "hard",
     "ifeval": "instruction",
 }
-# Within-category weights; only the hard category is weighted: 50% the open
-# multiple-choice set, 50% integer olympiad math split by pool size
-# (aime 933, aime25 30, beyondaime 100, omnimath_hard 846 of 1,909, counted
-# before the 2026-11-09 ungradeable filter left 932 and 845 of 1,907; the
-# weights are consensus constants and were kept: the difference is under 3e-5).
-# Every other category splits by pool share.
-BENCHMARK_WEIGHT_V2 = {
-    "supergpqa_hard": 0.5,
-    "aime": 0.244369, "aime25": 0.007858, "beyondaime": 0.026192, "omnimath_hard": 0.221582,
-}
+# Within-category weights: none. Every category, hard included, splits by
+# pool share. The hard category used to be weighted 50% open multiple-choice
+# (supergpqa_hard, 7,050 questions) and 50% integer olympiad math (1,907):
+# 45 olympiad slots an epoch, the whole set every 42 epochs, and with the hard
+# weight of 2 the small sets (olympiad and IFEval, 2,118 questions) carried
+# 27% of the seat test's net value. A head can memorise about 2,000-2,500
+# questions (INVARIANTS, pool size) and every cell's grade is published, so
+# that share was a lookup table worth more than any routing edge (Fable
+# review 2026-11-09, item 4). By pool share: about 19 olympiad slots, the set
+# every 99 epochs (longer than the 48-epoch window), 14% of net value.
+# A consensus constant (in the pool manifest, whose hash is in the digest).
+BENCHMARK_WEIGHT_V2: dict[str, float] = {}
 
 # Miner-side only (never a score): an epoch is not started with fewer than this
 # many blocks left before its collection block (~12 min at 12 s/block).
@@ -578,6 +580,9 @@ V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
 # decides between heads of near-equal accuracy. It is a published policy
 # constant. With no champion there is no comparison: the eligible head with
 # the highest measured net value takes the empty seat (champion.solo_value).
+# At today's prices (V about $0.49) the whole v2 price range is worth about 4
+# points of accuracy. Kept at 30 at launch for lack of v2 accuracy data;
+# revisited after the first week (MAINNET_LAUNCH, "revisit m").
 CHAMPION_ACCURACY_VALUE = float(os.getenv("FUGAL_CHAMPION_ACCURACY_VALUE", "30"))
 CHAMPION_HARD_WEIGHT = float(os.getenv("FUGAL_CHAMPION_HARD_WEIGHT", "2"))
 # The anchor that prices one extra correct answer: V = CHAMPION_ACCURACY_VALUE

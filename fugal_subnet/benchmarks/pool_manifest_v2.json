@@ -24,19 +24,19 @@
    "category": "hard",
    "licence": "MIT (qq8933/AIME_1983_2024)",
    "n": 932,
-   "weight": 0.244369
+   "weight": null
   },
   "aime25": {
    "category": "hard",
    "licence": "MIT (opencompass/AIME2025)",
    "n": 30,
-   "weight": 0.007858
+   "weight": null
   },
   "beyondaime": {
    "category": "hard",
    "licence": "CC0-1.0 (ByteDance-Seed/BeyondAIME)",
    "n": 100,
-   "weight": 0.026192
+   "weight": null
   },
   "ifeval": {
    "category": "instruction",
@@ -66,7 +66,7 @@
    "category": "hard",
    "licence": "Apache-2.0 (KbsdJames/Omni-MATH)",
    "n": 845,
-   "weight": 0.221582
+   "weight": null
   },
   "omnimath_mid": {
    "category": "math",
@@ -78,7 +78,7 @@
    "category": "hard",
    "licence": "ODC-BY (m-a-p/SuperGPQA)",
    "n": 7050,
-   "weight": 0.5
+   "weight": null
   }
  },
  "pool_hash": "7a7255197e1c0c7a24d8fcd8e57ec059618858612bd59111e0c5ed93e184375a",

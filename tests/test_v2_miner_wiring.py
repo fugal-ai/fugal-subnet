@@ -137,3 +137,27 @@ def test_the_commit_deadline_sits_after_the_commit_block_and_before_the_flip():
     bpe = blocks_per_epoch(EPOCH_INTERVAL)
     assert 0 < COMMIT_RETRY_BLOCKS < COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS
     assert COMMIT_AFTER_BOUNDARY_BLOCKS + 10 * COMMIT_RETRY_BLOCKS < bpe - COMMIT_DEADLINE_BEFORE_FLIP_BLOCKS
+
+
+def test_the_miners_hold_for_the_flip_survives_a_failed_chain_read(monkeypatch):
+    """FABLE REVIEW, item 9 (2026-11-09): _wait_for_block read the chain with no
+    retry. Miners are told to start days before the flip; one dropped
+    connection ended the process, the container restarted without its
+    provisioned secrets, and the miner missed the flip. A failed read is now
+    logged and retried, as the validator's own wait does."""
+    import sys
+    sys.path.insert(0, "neurons")
+    import miner  # noqa: E402
+
+    reads = iter([100, ConnectionError("socket closed"), TimeoutError("no reply"), 199, 200])
+
+    class _Sub:
+        def get_current_block(self):
+            r = next(reads)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+    monkeypatch.setattr(miner.time, "sleep", lambda s: None)
+    miner._wait_for_block(_Sub(), 200, "serve the axon")
+    assert next(reads, "done") == "done"

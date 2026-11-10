@@ -4,6 +4,57 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — pre-launch review (Fable, 2026-11-09): lost proofs, no-proof epochs, the miner's hold, the release flow
+- **One lost proof no longer splits a validator for good.** A validator that
+  did not receive one miner's proof (the root did) had no gap, so it only
+  alarmed, and its state differed for good (28 of 30 simulated cases).
+  A follower that differs from the root on 3 consecutive verified root epochs
+  (`v2_sync.drifted`, `DRIFT_CHECKS`) now re-anchors on it: in a star the
+  root is the arbiter. The root's own outages are then followed by everyone
+  (documented); a root that lost its state rebuilds from a follower.
+- **A v2 epoch with no valid proof burns.** The validator set no weights, so
+  after the flip the chain kept paying the v1 winners until the first v2 proof
+  verified. It now sets the capped all-burn vector (`_burn_epoch_weights`;
+  never raises). v1 epochs unchanged.
+- **The miner's hold for the flip survives a failed chain read** (retried, as
+  the validator's wait does); one dropped connection ended the process.
+- **Release flow:** the image builds from a `build-v<date>` tag and
+  `image-v<date>` is signed once (a moved tag was refused by validators that
+  fetched it early); `fetch_approved_entries.py` takes the remote's tag (the
+  signature is verified after), needs no `gh` (public API fallback), and
+  refuses a tag name that is a refspec; `check_safety_invariants.py
+  --release` now requires each live compose to pin its image by digest and
+  set a valid `FUGAL_V2_ACTIVATION_BLOCK`.
+- Docs: V is $0.49 (anchor $0.0163), confidence 0.99, the flip's burn lasts
+  hours not days, followers set `FUGAL_FRAME_BOOTSTRAP` (launch step 11, env
+  example), the model list is 19 since fable-5.2.
+
+### Changed — v2 question mix: the hard category splits by pool size (consensus)
+`BENCHMARK_WEIGHT_V2` is empty. The hard category was 50% SuperGPQA, 50%
+integer olympiad math, so the olympiad sets and IFEval (2,118 questions,
+memorisable, every cell's grade published) carried 27% of the seat test's
+net value. By pool size: about 19 olympiad slots an epoch instead of 45, the
+set every 99 epochs (longer than the 48-epoch window), 14% of net value. The
+v2 pool manifest records no weights (its pool and content hashes are
+unchanged; its file hash, in the consensus digest, moves). Golden selection
+hashes updated on purpose; the slicer's weighted path keeps its vectors as a
+fixture.
+
+### Documented — best-of-N runs (accepted residual, INVARIANTS)
+An operator can run several TDs on one hotkey and serve the best run. Upper
+bound for a zero-edge challenger (own answers): 2 runs 6%, 5 runs 28%, 10 runs
+50% of 30-epoch runs take the seat; shared cell grades limit it where many
+coldkeys answer the same cell. "One run per epoch" is a v2.1 design.
+
+### Documented — the provider is the miner's account's choice; m stays 30
+Measured with a few metered calls (2026-11-09): identical harness requests are
+answered by different providers at different precisions, and OpenRouter
+applies the account's provider settings to every request. It moves only that
+operator's vote in a cell; the fix (a pinned provider per model, recorded in
+the proof) is v2.1 (INVARIANTS, accepted residual). `CHAMPION_ACCURACY_VALUE`
+stays 30 at launch (the whole price range is worth about 4 points); revisit
+after the first week with reveal data (MAINNET_LAUNCH).
+
 ### Changed — the v2 pool leaves out 50 items the pinned grader cannot judge
 
 Measured on the real items: IFEval's `number_bullet_lists` prompts ask for

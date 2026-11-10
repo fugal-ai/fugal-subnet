@@ -26,11 +26,12 @@ def test_no_gated_dataset_is_in_the_v2_pool():
     assert not any("hle" in d.lower() for d in MANIFEST["dataset_revisions"])
 
 
-def test_the_hard_category_is_weighted_50_50_and_fully():
-    hard = [b for b, c in BENCHMARK_CATEGORY_V2.items() if c == "hard"]
-    assert set(BENCHMARK_WEIGHT_V2) == set(hard)                  # a weighted category weights all of it
-    assert abs(sum(BENCHMARK_WEIGHT_V2.values()) - 1.0) < 1e-5
-    assert BENCHMARK_WEIGHT_V2["supergpqa_hard"] == 0.5
+def test_no_category_is_weighted_so_the_small_sets_stay_small():
+    """FABLE REVIEW, item 4 (2026-11-09): the hard category was weighted 50%
+    supergpqa_hard / 50% integer olympiad, so the olympiad and IFEval sets
+    (2,118 questions, memorisable) carried 27% of the seat test's net value.
+    Every category now splits by pool share."""
+    assert BENCHMARK_WEIGHT_V2 == {}
 
 
 def test_the_manifest_pins_the_same_categories_weights_and_licences_as_the_code():
@@ -51,7 +52,33 @@ def test_a_v2_slice_on_the_manifest_shape_hits_the_targets():
     for q in s:
         by_cat[BENCHMARK_CATEGORY_V2[q["benchmark"]]] = by_cat.get(BENCHMARK_CATEGORY_V2[q["benchmark"]], 0) + 1
     assert by_cat == {"knowledge": 120, "math": 75, "hard": 90, "instruction": 15}
-    assert sum(1 for q in s if q["benchmark"] == "supergpqa_hard") == 45
+    n = MANIFEST["per_benchmark"]
+    olympiad = ("aime", "aime25", "beyondaime", "omnimath_hard")
+    share = n["supergpqa_hard"]["n"] / (n["supergpqa_hard"]["n"] + sum(n[b]["n"] for b in olympiad))
+    assert abs(sum(1 for q in s if q["benchmark"] == "supergpqa_hard") - 90 * share) <= 1
+    assert sum(1 for q in s if q["benchmark"] in olympiad) <= 20
+
+
+def test_the_memorisable_sets_carry_at_most_a_seventh_of_the_net_value():
+    """The olympiad sets and IFEval (about 2,100 questions, within what a head
+    can memorise, and every cell's grade is published) must not decide the
+    seat: at most 15% of the net-value weight (the hard weight counted),
+    measured over 200 epochs of the shipped slicer on the manifest's sizes."""
+    import hashlib
+
+    from fugal_subnet.config import CHAMPION_HARD_WEIGHT
+
+    pool = [{"question_id": f"{b}_{i:05d}", "benchmark": b}
+            for b, r in MANIFEST["per_benchmark"].items() for i in range(r["n"])]
+    small = {"aime", "aime25", "beyondaime", "omnimath_hard", "ifeval"}
+    total = mem = 0.0
+    for e in range(200):
+        for q in select_slice_v2(hashlib.sha256(b"e%d" % e).digest(), pool, 300, CATEGORY_TARGETS_V2,
+                                 BENCHMARK_CATEGORY_V2, bench_weight=BENCHMARK_WEIGHT_V2):
+            w = CHAMPION_HARD_WEIGHT if BENCHMARK_CATEGORY_V2[q["benchmark"]] == "hard" else 1.0
+            total += w
+            mem += w if q["benchmark"] in small else 0.0
+    assert mem / total <= 0.15, mem / total
 
 
 def test_a_v2_pool_file_that_disagrees_with_the_manifest_is_refused(tmp_path, monkeypatch):

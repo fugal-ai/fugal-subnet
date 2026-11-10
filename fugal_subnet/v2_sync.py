@@ -130,6 +130,32 @@ def check(reference: Mapping[int, tuple[str, dict]], own: Mapping[int, tuple[str
     return SyncCheck(k, "in_sync" if same else "differs")
 
 
+# A follower with no gap re-anchors on its reference once its state has
+# differed on this many consecutive verified reference epochs (drifted()).
+# More than one, so a difference that heals by itself (the weight cap
+# converging after an outage) is not followed; few, because every epoch of a
+# split costs agreement (Fable review, item 5: one lost proof split a
+# validator for good).
+DRIFT_CHECKS = 3
+
+
+def drifted(reference: Mapping[int, tuple[str, dict]], own: Mapping[int, tuple[str, dict]],
+            before: int, n: int = DRIFT_CHECKS) -> int | None:
+    """The oldest of the newest `n` verified reference epochs before `before`
+    if this validator has a reveal for each and every one of them differs from
+    it; else None. A single lost proof (a miner's reply that reached the
+    reference but not this validator) leaves no gap, because the epoch was
+    observed, but leaves the state different for good: this is how it shows."""
+    ks = sorted((k for k in reference if k < before
+                 and not ((reference[k][1].get("v2_sync") or {}).get("unverified"))),
+                reverse=True)[:n]
+    if len(ks) < n or any(k not in own for k in ks):
+        return None
+    if all(consensus_view(reference[k][1]) != consensus_view(own[k][1]) for k in ks):
+        return min(ks)
+    return None
+
+
 def carry_burn_in(snapshot_burn_in: Mapping[str, float], snapshot_serving: Mapping[str, int],
                   own: Mapping[int, tuple[str, dict]], k: int, before: int,
                   ) -> dict[int, tuple[str, float]] | None:

@@ -610,8 +610,8 @@ so the comparison is question by question, over the last
 NV_i = u_i * (g_challenger,i - g_champion,i) - (s_challenger,i - s_champion,i) / V
 V    = CHAMPION_ACCURACY_VALUE (30) x the pinned anchor's expected spend per
        question (CHAMPION_ANCHOR_MODEL, claude-fable-5.1: its mean tokens in the
-       reviewed v2 token manifest at the pinned v2 prices, about $0.026, so
-       V is about $0.77); the same V whoever holds the seat
+       reviewed v2 token manifest at the pinned v2 prices, about $0.0163, so
+       V is about $0.49); the same V whoever holds the seat
 u_i  = CHAMPION_HARD_WEIGHT (2) on a question in the `hard` category, else 1
 NV   = 100 x mean_i NV_i                          (percentage points)
 ```
@@ -755,9 +755,9 @@ pool is split into four categories by `BENCHMARK_CATEGORY_V2`:
 | `hard` | 30% | SuperGPQA (hard), AIME 1983–2025, BeyondAIME, Omni-MATH (difficulty ≥ 5 on its 1–10 scale, integer answers; `v2_sets.OMNI_HARD_DIFFICULTY`) |
 | `instruction` | 5% | IFEval (the constraint kinds the pinned grader checks) |
 
-Inside `hard`, half the weight is the multiple-choice set and half is the
-integer olympiad math (`BENCHMARK_WEIGHT_V2`). Elsewhere a category splits by
-pool size. Miner and validator both choose each epoch's questions through
+Inside every category, `hard` included, benchmarks split by pool size
+(`BENCHMARK_WEIGHT_V2` is empty): about 71 of `hard`'s 90 slots are SuperGPQA
+and about 19 are olympiad math. Miner and validator both choose each epoch's questions through
 `fugal_subnet/epoch_plan.py` with the epoch's protocol version. For v2,
 `epoch_plan.scored_slice` takes the category quotas first and then the
 benchmark quotas (`slicer.select_slice_v2`), and `epoch_plan.exploration_plan`
@@ -941,7 +941,9 @@ be retrained**. The v1 rules are recorded in `docs/INVARIANTS.md` and in this
 guide's history (`git log -- docs/MINER_GUIDE.md`); they are not repeated here.
 
 Values marked `<LIKE_THIS>` are not final, except `<V2_MODEL_LIST>`, which is
-final (`data/models_v2.json`). They are published together at the
+final (`data/models_v2.json`, 19 models since anthropic/claude-fable-5.2 was
+added on 2026-11-09: a head must be exported against today's list and token
+manifest, and one exported before that is refused). They are published together at the
 v2 announcement, at least 24 hours before the flip, in a signed release:
 
 | Placeholder | What it will be |

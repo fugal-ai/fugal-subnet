@@ -337,12 +337,82 @@ def _run_pair(tmp_path, seed, *, ref_down=(), b_down=(), mutual=False, epochs=45
 
 
 @pytest.mark.parametrize("seed", range(3))
-def test_a_healthy_validator_never_follows_a_reference_that_missed_epochs(tmp_path, seed):
-    """REVIEW 2026-11-09: any mismatch re-anchored, so a healthy validator whose
-    reference missed epochs copied the reference's wrong state for good. A
-    validator with no gap only raises an alarm."""
-    agree, a, b = _run_pair(tmp_path, seed, ref_down={10, 11})
-    assert all(agree["b"]) and b.anchors == 0
+def test_a_follower_converges_on_a_root_that_missed_epochs(tmp_path, seed):
+    """REVIEW 2026-11-09 made a follower with no gap only alarm, so it would
+    never copy a root that missed epochs. FABLE REVIEW (item 5) showed the
+    price: any lost proof split a validator from the root for good. In a star
+    the root is the arbiter and agreement is what Yuma pays: a follower that
+    differs from the root on DRIFT_CHECKS consecutive verified root epochs
+    re-anchors on it. A wrong root is repaired once, by its operator, and the
+    followers follow it back. Not on a single mismatch."""
+    from fugal_subnet.v2_sync import DRIFT_CHECKS
+
+    agree, a, b = _run_pair(tmp_path, seed, ref_down={10, 11}, epochs=60)
+    assert b.anchors >= 1 and b.gap is None
+    same = []
+    for i in range(60):
+        pa = a.dir / f"e{i + 1:08d}" / "reveal.json"
+        pb = b.dir / f"e{i + 1:08d}" / "reveal.json"
+        same.append(pa.exists() and pb.exists() and consensus_view(json.loads(pa.read_text()))
+                    == consensus_view(json.loads(pb.read_text())))
+    first = next(i for i in range(12, 60) if all(same[i:]))
+    assert first <= 12 + DRIFT_CHECKS + 4, same
+
+
+def _lost_proof_pair(tmp_path, seed, drop_epoch, drop_uid, *, epochs=90, hold=1):
+    """A (root, sees everything) and B (follower) that does not receive one
+    miner's proof in one epoch; the chain's commitments are the same for both,
+    as they are read from chain, not from proofs."""
+    import tests.test_v2_sync as me
+    from tests.test_v2_epoch import C, H
+    from tests.test_v2_epoch import run as _run
+
+    full = {}
+
+    def run_with_chain_commits(e, pols, **kw):
+        kw["commits"] = [C(u, H(u), u) for u in sorted(full[e])]
+        return _run(e, pols, **kw)
+
+    pols = schedule(seed)
+    a, b = Sim(tmp_path, "a"), ValidatorSim(tmp_path, "b")
+    pub = tmp_path / "pub"
+    pub.mkdir()
+    same = []
+    orig, me.run = me.run, run_with_chain_commits
+    try:
+        for e in range(epochs):
+            index = e + 1
+            publish(a.dir, pub, index - 1 - hold)
+            pa = pols(e)
+            full[e] = pa
+            pb = {u: f for u, f in pa.items() if not (e == drop_epoch and u == drop_uid)}
+            a.epoch(e, pa)
+            b.epoch(e, pb, sync_from=pub)
+            ra = json.loads((a.dir / f"e{index:08d}" / "reveal.json").read_text())
+            rb = json.loads((b.dir / f"e{index:08d}" / "reveal.json").read_text())
+            same.append(consensus_view(ra) == consensus_view(rb))
+    finally:
+        me.run = orig
+    return same, b
+
+
+@pytest.mark.parametrize("seed,drop_epoch,drop_uid",
+                         [(0, 30, 5), (1, 30, 8), (2, 16, 8), (3, 40, 8), (4, 30, 5), (5, 30, 6)])
+@pytest.mark.parametrize("hold", [1, 3])
+def test_one_lost_proof_does_not_split_a_validator_for_good(tmp_path, seed, drop_epoch,
+                                                           drop_uid, hold):
+    """FABLE REVIEW, item 5 (2026-11-09): a validator that did not receive one
+    miner's proof in one epoch had no gap (it observed the epoch), so it only
+    alarmed; its burn-in counters, and sometimes its seat, differed from its
+    peers' for good (28 of 30 cases). It now agrees again within a bounded
+    number of epochs."""
+    from fugal_subnet.v2_sync import DRIFT_CHECKS
+
+    same, b = _lost_proof_pair(tmp_path, seed, drop_epoch, drop_uid, hold=hold)
+    first = next((i for i in range(drop_epoch, len(same)) if all(same[i:])), None)
+    assert first is not None, "".join("." if x else "X" for x in same)
+    assert first <= drop_epoch + 2 * hold + DRIFT_CHECKS + 3, "".join("." if x else "X" for x in same)
+    assert b.gap is None
 
 
 @pytest.mark.parametrize("seed", range(3))
@@ -422,13 +492,21 @@ class Zero(ValidatorSim):
         if observe and zero:
             self.sync(sync_from, e + 1)
             self.gap, self.last = e + 1, e + 1
+            # The validator sets the capped all-burn vector (_burn_epoch_weights),
+            # so the next epoch's cap starts from it.
+            self.prev = (cap_weight_change([0], [1.0], *self.prev) if self.prev[0]
+                         else ([0], [1.0]))
             return None
         return super().epoch(e, pols, observe=observe, sync_from=sync_from)
 
 
 class Truth(Sim):
     def epoch(self, e, pols, *, zero=False, **kw):
-        return None if zero else super().epoch(e, pols, **kw)
+        if zero:                                   # the burn vector, as the validator sets it
+            self.prev = (cap_weight_change([0], [1.0], *self.prev) if self.prev[0]
+                         else ([0], [1.0]))
+            return None
+        return super().epoch(e, pols, **kw)
 
 
 def _star(tmp_path, pols, n, *, down=None, zero=(), hold=1, mutual=False):
@@ -562,23 +640,55 @@ def test_a_validator_started_from_a_rebuild_verifies(tmp_path, pols, hold):
     assert all(marks[restart + hold + 1:]), marks[restart:]
 
 
-@pytest.mark.parametrize("pols", [schedule(1), churn(12), churn(6)],
+def _view(v, index):
+    p = v.dir / f"e{index:08d}" / "reveal.json"
+    return consensus_view(json.loads(p.read_text())) if p.exists() else None
+
+
+@pytest.mark.parametrize("pols,busy", [(schedule(1), False), (churn(12), False), (churn(6), True)],
                          ids=["schedule", "churn12", "churn6"])
 @pytest.mark.parametrize("hold", [1, 2, 4])
-def test_a_root_that_missed_epochs_recovers_from_a_follower(tmp_path, pols, hold):
-    """FINAL REVIEW, finding 3: the documented recovery for a root that missed
-    epochs, a rebuild from its own reveals, cannot work (they lack those
-    epochs). The guide's recovery: state moved aside, restart with the
-    reference set to a healthy follower until the gap closes, then unset.
-    The root agrees again; no follower ever moves."""
+def test_after_a_root_misses_epochs_every_validator_agrees_with_it(tmp_path, pols, busy, hold):
+    """FABLE REVIEW, item 5: followers converge on the root (DRIFT_CHECKS), so
+    a root that missed epochs is followed, and its missed epochs count as
+    missed for the whole network, instead of splitting the root from its
+    followers. (FINAL REVIEW, finding 3's recovery from a healthy follower is
+    then unnecessary: no follower stays apart.)"""
+    from fugal_subnet.v2_sync import DRIFT_CHECKS
+
+    a, b, c = Zero(tmp_path, "a"), Zero(tmp_path, "b"), Zero(tmp_path, "c")
+    pa = tmp_path / "pa"
+    pa.mkdir()
+    for e in range(110):
+        publish(a.dir, pa, e - hold)
+        a.epoch(e, pols(e), observe=e not in (60, 61))
+        b.epoch(e, pols(e), sync_from=pa)
+        c.epoch(e, pols(e), sync_from=pa)
+    agree = [_view(a, i) == _view(b, i) == _view(c, i) for i in range(1, 111)]
+    first = next((i for i in range(62, 110) if all(agree[i:])), None)
+    row = "".join("." if x else "X" for x in agree)
+    assert first is not None, row
+    # A seat change inside the re-anchor span is applied late, so with the
+    # seat changing every 6 epochs it takes longer (INVARIANTS: convergence
+    # needs a stretch of about twice the hold with no seat change).
+    bound = 8 * hold + DRIFT_CHECKS if busy else 2 * hold + DRIFT_CHECKS + 4
+    assert first <= 62 + bound, row
+    assert b.gap is None and c.gap is None and b.anchors >= 1
+
+
+@pytest.mark.parametrize("pols", [schedule(1), churn(6)], ids=["schedule", "churn6"])
+@pytest.mark.parametrize("hold", [1, 3])
+def test_a_root_that_lost_its_state_rebuilds_from_a_follower(tmp_path, pols, hold):
+    """VALIDATOR_GUIDE, "Recovering the root": a root whose state files are
+    gone restarts with the reference set to a follower until its gap closes,
+    then unsets it. It agrees with its followers again; they never move."""
     restart = 70
-    t = Truth(tmp_path, "t")
     a, b, c = Zero(tmp_path, "a"), Zero(tmp_path, "b"), Zero(tmp_path, "c")
     pa, pb = tmp_path / "pa", tmp_path / "pb"
     pa.mkdir()
     pb.mkdir()
-    a_ref, marks = None, {"a": [], "b": [], "c": []}
-    for e in range(120):
+    a_ref = None
+    for e in range(110):
         index = e + 1
         publish(a.dir, pa, index - 1 - hold)
         publish(b.dir, pb, index - 1 - hold)
@@ -586,17 +696,13 @@ def test_a_root_that_missed_epochs_recovers_from_a_follower(tmp_path, pols, hold
             a.gap = None
             _startup_rebuild(a, pb, restart + 1)
             a_ref = pb
-        t.epoch(e, pols(e))
-        a.epoch(e, pols(e), observe=e not in (60, 61), sync_from=a_ref)
+        a.epoch(e, pols(e), observe=e not in range(restart - 4, restart), sync_from=a_ref)
         if a_ref is not None and e > restart and a.gap is None:
-            a_ref = None                                     # gap closed: unset the reference
+            a_ref = None
         b.epoch(e, pols(e), sync_from=pa)
         c.epoch(e, pols(e), sync_from=pa)
-        for x, v in (("a", a), ("b", b), ("c", c)):
-            marks[x].append(_agrees(v, t, index))
     assert a_ref is None and a.gap is None
-    assert all(marks["a"][-30:])
-    assert all(marks["b"]) and all(marks["c"]) and b.anchors == c.anchors == 0
+    assert all(_view(a, i) == _view(b, i) == _view(c, i) for i in range(70 + 6 * hold, 111))
 
 
 def test_zero_weights_are_not_compared_and_real_differences_still_are():
@@ -627,3 +733,29 @@ def test_every_agreement_check_shares_one_definition():
     watch = pathlib.Path(__file__).resolve().parents[1].joinpath(
         "scripts", "watch_subnet.py").read_text()
     assert "comparable_reveal(rv)" in watch and 'k != "environment"' not in watch
+
+
+def test_drift_needs_every_one_of_the_newest_verified_reference_epochs_to_differ():
+    from fugal_subnet.v2_sync import DRIFT_CHECKS, drifted
+
+    assert DRIFT_CHECKS == 3
+
+    def rv(seat, unverified=False):
+        return ("p", {"v2_state": {"seat": seat}, "weights": {"5": 1.0},
+                      "v2_sync": {"unverified": unverified}})
+
+    ref = {k: rv("A") for k in range(10, 20)}
+    own = {k: rv("B") for k in range(10, 20)}
+    assert drifted(ref, own, 20) == 17                         # 17, 18, 19 all differ
+    assert drifted(ref, own, 19) == 16
+    own[18] = rv("A")                                          # one of them agrees: not drift
+    assert drifted(ref, own, 20) is None
+    own[18] = rv("B")
+    del own[19]                                                # a reveal of ours is missing
+    assert drifted(ref, own, 20) is None
+    own[19] = rv("B")
+    ref[19] = rv("A", unverified=True)                         # skipped, like check()
+    assert drifted(ref, own, 20) == 16
+    assert drifted({k: ref[k] for k in (18,)}, own, 20) is None   # too few reference epochs
+    same = {k: ("p", {**ref[k][1], "weights": {"5": 1.0, "0": 0.0}}) for k in ref}
+    assert drifted(ref, same, 20) is None                      # zero weights are not a difference

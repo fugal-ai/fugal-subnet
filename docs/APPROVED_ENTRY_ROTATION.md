@@ -53,7 +53,9 @@ to a commit and a digest should not approve it.
 
 The channel, built 2026-10-14 (diligence finding 7):
 
-1. **Image.** Push a tag `image-v<date>`; `.github/workflows/image.yml` builds
+1. **Image.** Push a BUILD tag `build-v<date>` (not the release tag: that is
+   signed once, in step 4, and never moved; a moved tag is refused by a
+   validator that fetched it earlier); `.github/workflows/image.yml` builds
    the image, pushes it to `ghcr.io/<org>/fugal-miner` **by digest** (public,
    so any validator can pull what it approves), writes the digest into a copy
    of `deploy/dstack/docker-compose.yaml`, and drafts a release carrying both.
@@ -69,7 +71,8 @@ The channel, built 2026-10-14 (diligence finding 7):
    --tag-message tag-message.txt > notes.md` writes both networks' entries:
    one `approved-entry <network>: <base>:<compose_hash>` line each in the tag
    message, mirrored in the note.
-4. **Sign.** `git tag -s image-v<date> -F tag-message.txt` with a key listed
+4. **Sign.** On the same commit as the build tag, once:
+   `git tag -s image-v<date> -F tag-message.txt` with a key listed
    in `deploy/keys/allowed_signers` (SSH signing; the file is the trust root
    and is added to by reviewed pull request), push the tag, and
    `gh release create image-v<date> --notes-file notes.md --verify-tag`. The
@@ -77,7 +80,8 @@ The channel, built 2026-10-14 (diligence finding 7):
 5. **Validators.** `python scripts/fetch_approved_entries.py --tag
    image-v<date> --network <finney|test>` verifies the tag signature against
    the committed signers, reads that network's entry from the signed message
-   (refusing a note that disagrees), and prints the `FUGAL_TEE_MEASUREMENTS`
+   (refusing a note that disagrees; the note is read with `gh` if installed,
+   else from GitHub's public API), and prints the `FUGAL_TEE_MEASUREMENTS`
    line. It never edits the environment; adding the entry alongside the
    current one, restarting, and retiring the old one after the window below
    is the operator's act. Releases whose tag message carries no entry lines

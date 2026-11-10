@@ -10,6 +10,19 @@ branch, merged and deleted at v0.3.0: they now say `main`. MINER_GUIDE gains
 the first measurement of the v2 pool's embedding pass (8 h 28 min on a
 `c3-standard-8` in TDX, testnet 552, 2026-11-10); it had only the v1 figure.
 
+### Fixed — the subnet watcher against a real reveal (tooling; no consensus change)
+Found on the first v2 epoch of the testnet rehearsal (552, e00023374).
+- `scripts/watch_subnet.py` read each uid's score as a bare number; a
+  validator publishes a dict per uid, so the watcher raised a TypeError on
+  the first reveal that scored a miner. Its test fixture used a bare number.
+- `consensus.compute_consensus` (the offline audit; no validator calls it)
+  took the consensus weights over scored uids only, so weight on the burn
+  uid read as 100% divergence: two validators with identical vectors were
+  both reported as outliers on every all-burn epoch. Weights are now compared
+  over every weighted uid.
+- Nightly: the dress rehearsal checked out `release/v2`, deleted at the
+  v0.3.0 merge; both scenarios now run on main.
+
 ### Changed — the v2 composes are frozen (image `build-v2026.11.10`, activation blocks)
 Both live composes name the v2 miner image by digest
 (`ghcr.io/fugal-ai/fugal-miner@sha256:7ba5217d…57ae8e5`, built from main

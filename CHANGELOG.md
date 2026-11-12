@@ -4,6 +4,8 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-12
+
 ### Fixed — proof collection no longer makes miners wait behind axons that never answer (validator only; not a consensus change)
 The validator queried every axon through bittensor's default dendrite session,
 whose aiohttp pool allows 100 connections. An axon that never answers holds its

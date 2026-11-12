@@ -396,6 +396,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
     import bittensor as bt
 
+    from fugal_subnet.collect import CollectDendrite
+
     # After bittensor: importing it disables every logger that already exists,
     # so without this the neuron's own output — including every error and
     # traceback — is silently discarded. See fugal_subnet/logging_setup.
@@ -469,7 +471,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
     metagraph = subtensor.metagraph(netuid)
-    dendrite = bt.Dendrite(wallet=wallet)
+    # Not bt.Dendrite: its default pool of 100 connections lets axons that
+    # never answer starve the rest of the field at collection (fugal_subnet/collect).
+    dendrite = CollectDendrite(wallet=wallet)
 
     my_hotkey = wallet.hotkey.ss58_address
     if my_hotkey not in metagraph.hotkeys:

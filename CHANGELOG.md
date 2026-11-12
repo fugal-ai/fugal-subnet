@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — proof collection no longer makes miners wait behind axons that never answer (validator only; not a consensus change)
+The validator queried every axon through bittensor's default dendrite session,
+whose aiohttp pool allows 100 connections. An axon that never answers holds its
+connection for the full 120 s timeout, so with more than 100 of them on netuid
+70 the rest of the field was not contacted until those timed out. Miners whose
+proof was ready and served were recorded as absent. In v2 a miss before burn-in
+resets the head's burn-in, so this could keep resetting a miner through no
+fault of its own. Seen on finney in e00026350 (nine miners, all UID ≥ 128; one
+miner's log shows the request arriving ~127 s after the query) and e00026351,
+reported by two miners from their own logs and firewall records.
+- `fugal_subnet/collect.py`: `CollectDendrite`, a `bt.Dendrite` with an
+  unbounded connection pool; the validator collects with it. The timeout, the
+  axons queried and scoring are unchanged; the consensus digest is unchanged
+  (`728bd86eb90ae405` on finney).
+- `tests/test_collect_pool.py` reproduces the delay with 110 hanging axons
+  against the default session and shows the fix reaching the honest miner at once.
+
 ## [0.3.1] - 2026-11-10
 
 ### Changed — the letter rule reads the answer models actually give (consensus: a new grader hash, before the v2 flip)

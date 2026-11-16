@@ -231,6 +231,9 @@ class EpochPairs:
     y: np.ndarray                 # (pairs,) int32
     prompt_tokens: np.ndarray     # (pairs,) int32
     completion_tokens: np.ndarray  # (pairs,) int32
+    # (pairs,) int64 inverse-probability weights in explore_weights.WEIGHT_SCALE
+    # units (cost-aware exploration); None weighs every pair one.
+    weight: np.ndarray | None = None
 
     def __post_init__(self):
         n = len(self.question_ids)
@@ -239,6 +242,8 @@ class EpochPairs:
         for name in ("y", "prompt_tokens", "completion_tokens"):
             if getattr(self, name).shape != (n,):
                 raise ValueError(f"{name} must hold one value per pair")
+        if self.weight is not None and (self.weight.shape != (n,) or (n and int(self.weight.min()) < 1)):
+            raise ValueError("weight must hold one positive value per pair")
 
 
 @dataclass

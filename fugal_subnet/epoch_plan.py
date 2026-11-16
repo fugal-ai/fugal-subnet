@@ -47,7 +47,8 @@ def scored_slice(version: int, nonce: bytes, pool: list[dict], size: int) -> lis
 
 def exploration_plan(version: int, nonce: bytes, pool: list[dict], scored_ids: set[str],
                      models: list[str], size: int, hotkey: str | None = None,
-                     index: PoolIndex | None = None) -> dict[str, str]:
+                     index: PoolIndex | None = None,
+                     shares: dict[str, int] | None = None) -> dict[str, str]:
     """{question_id: required_model}: the epoch's exploration set (disjoint from the scored
     slice) and the model each question must be sent to.
 
@@ -55,9 +56,13 @@ def exploration_plan(version: int, nonce: bytes, pool: list[dict], scored_ids: s
     miner answers it) plus, when `hotkey` is given, that miner's private set. The miner
     passes its own hotkey; the validator calls this once per miner it verifies, so the
     proof check stays an exact match of what was assigned.
+
+    v3 draws each question's entry by `shares` (explore_shares: cost-aware, the
+    same numbers on every node); None draws every entry equally.
     """
     if version == 3:
-        shared, private = exploration_plan_v3(nonce, pool, scored_ids, models, hotkey, index)
+        shared, private = exploration_plan_v3(nonce, pool, scored_ids, models, hotkey, index,
+                                              shares=shares)
         return {**shared, **private}
     if size <= 0:
         return {}
@@ -77,8 +82,19 @@ def pool_index_v3(pool: list[dict]) -> PoolIndex:
     return PoolIndex(pool, config.BENCHMARK_CATEGORY_V3, config.BENCHMARK_WEIGHT_V3)
 
 
+def explore_shares(version: int, models: list[str]) -> dict[str, int] | None:
+    """The epoch's exploration sampling shares: v3's cost-aware shares from the
+    pinned menu and token manifest (explore_weights.plan_shares), None before v3.
+    The miner and the validator both call this, so they draw the same entries."""
+    if version < 3:
+        return None
+    from fugal_subnet import explore_weights
+    return explore_weights.plan_shares(list(models))
+
+
 def exploration_plan_v3(nonce: bytes, pool: list[dict], scored_ids: set[str], models: list[str],
                         hotkey: str | None, index: PoolIndex | None = None,
+                        shares: dict[str, int] | None = None,
                         ) -> tuple[dict[str, str], dict[str, str]]:
     """(shared, private) exploration for one miner in a v3 epoch.
 
@@ -87,21 +103,27 @@ def exploration_plan_v3(nonce: bytes, pool: list[dict], scored_ids: set[str], mo
       the cross-miner agreement check reads.
     - **Private**: `EXPLORE_PRIVATE_SIZE` questions drawn for this hotkey
       (slicer.select_private_explore), disjoint from the scored slice and the shared set,
-      each sent to a model by round-robin over a model list permuted with the same
+      each sent to an entry drawn by `shares` (explore_weights.assign_by_share:
+      systematic sampling, so equal shares are a round-robin) with the same
       per-miner nonce. Empty when `hotkey` is None (the shared half alone).
     """
+    from fugal_subnet.explore_weights import assign_by_share
+    if shares is None:
+        shares = dict.fromkeys(models, 1)
+    elif set(shares) != set(models):
+        raise ValueError("exploration shares must name exactly the epoch's models")
     shared: dict[str, str] = {}
     if config.EXPLORE_SHARED_SIZE > 0:
         chosen = select_explore_set_v2(explore_nonce(nonce), pool, scored_ids,
                                        config.EXPLORE_SHARED_SIZE, config.CATEGORY_TARGETS_V3,
                                        config.BENCHMARK_CATEGORY_V3,
                                        bench_weight=config.BENCHMARK_WEIGHT_V3)
-        shared = assign_explore_models(nonce, chosen, models)
+        shared = assign_by_share(nonce, chosen, shares)
     private: dict[str, str] = {}
     if hotkey and config.EXPLORE_PRIVATE_SIZE > 0:
         mine = private_nonce(nonce, hotkey)
         chosen = select_private_explore(mine, index or pool_index_v3(pool),
                                         set(scored_ids) | set(shared),
                                         config.EXPLORE_PRIVATE_SIZE, config.CATEGORY_TARGETS_V3)
-        private = assign_explore_models(mine, chosen, models)
+        private = assign_by_share(mine, chosen, shares)
     return shared, private

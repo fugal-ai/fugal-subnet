@@ -61,6 +61,7 @@ STAGES = (
     "head_odds",
     "explore_pool",
     "odds_seat",
+    "explore_weights",
 )
 
 
@@ -451,10 +452,11 @@ def _protocol_v3(seed: int) -> dict:
     """
     import dataclasses
     import random
+    from fractions import Fraction
 
     import numpy as np
 
-    from fugal_subnet import config, epoch_plan, head_odds, odds_score
+    from fugal_subnet import config, epoch_plan, explore_weights, head_odds, odds_score
     from fugal_subnet.champion import (
         Candidate,
         EpochPairs,
@@ -477,7 +479,18 @@ def _protocol_v3(seed: int) -> dict:
             for b in sorted(config.BENCHMARK_CATEGORY_V3) for i in range(120)]
     rnd.shuffle(pool)
     scored = {q["question_id"] for q in epoch_plan.scored_slice(3, nonce, pool, 300)}
-    plans = {hk: epoch_plan.exploration_plan(3, nonce, pool, scored, models, 0, hotkey=hk)
+    # Cost-aware exploration: shares from exact costs, the exponent the spend
+    # cap selects, and the weights every pooled pair carries.
+    costs = {m: Fraction(3 ** i, 10_000) for i, m in enumerate(models)}
+    halves = explore_weights.choose_exponent(costs, n_calls=32, cap_usd=Fraction(1, 2),
+                                             floor=Fraction(1, 4), max_halves=4)
+    shares = explore_weights.shares(costs, exponent_halves=halves, floor=Fraction(1, 4))
+    weights = explore_weights.weights(shares)
+    weights_out = {"halves": halves, "shares": sorted(shares.items()),
+                   "weights": sorted(weights.items()),
+                   "spend": str(explore_weights.expected_spend(shares, costs, 32))}
+    plans = {hk: epoch_plan.exploration_plan(3, nonce, pool, scored, models, 0, hotkey=hk,
+                                             shares=shares)
              for hk in ("5Fhotkey-a", "5Fhotkey-b", "5Fhotkey-c")}
     private_out = {hk: sorted(p.items()) for hk, p in sorted(plans.items())}
 
@@ -526,7 +539,8 @@ def _protocol_v3(seed: int) -> dict:
         flagged = private_implausible([a for a, _, _ in answers],
                                       {(a.question_id, a.model): 6000 for a, _, _ in answers},
                                       z=4, min_samples=8)
-        pooled = pool_pairs([a for a, _, _ in answers], nonce=nonce, coldkey_cap=36, flagged=flagged)
+        pooled = pool_pairs([a for a, _, _ in answers], nonce=nonce, coldkey_cap=36, flagged=flagged,
+                            weights=weights)
         meta = {(a.question_id, a.model): (d, b) for a, d, b in answers}
         pairs = EpochPairs(
             question_ids=tuple(p.question_id for p in pooled), models=tuple(p.model for p in pooled),
@@ -534,7 +548,8 @@ def _protocol_v3(seed: int) -> dict:
             categories=tuple(meta[(p.question_id, p.model)][1] for p in pooled),
             y=np.array([p.y for p in pooled], dtype=np.int32),
             prompt_tokens=np.array([p.prompt_tokens for p in pooled], dtype=np.int32),
-            completion_tokens=np.array([p.completion_tokens for p in pooled], dtype=np.int32))
+            completion_tokens=np.array([p.completion_tokens for p in pooled], dtype=np.int32),
+            weight=np.array([p.weight for p in pooled], dtype=np.int64))
         d_of = np.array([meta[(p.question_id, p.model)][0] for p in pooled])
         a_of = np.array([acc[models.index(p.model)] for p in pooled])
         predict = {noise_name: np.rint(10_000 / (1 + np.exp(-(a_of - d_of - shift) / width))
@@ -552,7 +567,7 @@ def _protocol_v3(seed: int) -> dict:
         seat_out.append({"event": decision.event, "seat": seat_to_dict(state),
                          "detail": [list(x) for x in decision.detail]})
     return {"exploration_private": private_out, "head_odds": odds_out,
-            "explore_pool": pool_out, "odds_seat": seat_out}
+            "explore_pool": pool_out, "odds_seat": seat_out, "explore_weights": weights_out}
 
 
 def _child(seed: int) -> dict:

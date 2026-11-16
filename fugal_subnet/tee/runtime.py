@@ -301,11 +301,23 @@ def _post_with_deadline(req, deadline: float) -> bytes:
                 pass
 
 
-def _fetch_upstream(req, model_id: str, meter_unanswered=None) -> bytes:
+def _deadline_for(request_data) -> float:
+    """This call's wall-clock deadline: a v3 entry's own (config.call_deadline_s),
+    or PROXY_CALL_DEADLINE_S for every older request."""
+    from fugal_subnet import config
+    if isinstance(request_data, dict) and "provider" in request_data:
+        return config.call_deadline_s(request_data)
+    return PROXY_CALL_DEADLINE_S
+
+
+def _fetch_upstream(req, model_id: str, meter_unanswered=None,
+                    deadline_s: float | None = None) -> bytes:
     """POST to the upstream with the retry policy above. Returns the body of a
     reply that carries `choices`, or raises.
 
-    PROXY_CALL_DEADLINE_S is wall-clock time for the whole call, retries included.
+    PROXY_CALL_DEADLINE_S is wall-clock time for the whole call, retries included;
+    `deadline_s` replaces it for a call that has its own (a v3 menu entry,
+    _deadline_for).
 
     `meter_unanswered(body, data)` is called for a 200 body that has no answer
     but reports tokens used, before the retry is decided. The provider billed
@@ -315,7 +327,8 @@ def _fetch_upstream(req, model_id: str, meter_unanswered=None) -> bytes:
     import http.client
     from urllib.error import HTTPError
     started = time.time()
-    deadline = time.monotonic() + PROXY_CALL_DEADLINE_S
+    limit = PROXY_CALL_DEADLINE_S if deadline_s is None else float(deadline_s)
+    deadline = time.monotonic() + limit
     attempt = 0
     while True:
         attempt += 1
@@ -330,7 +343,7 @@ def _fetch_upstream(req, model_id: str, meter_unanswered=None) -> bytes:
             logger.warning(
                 "Upstream call for %s hit the %.0f s wall-clock deadline; connection closed, "
                 "recorded as failed. The provider bills a non-streamed reply in full, so the "
-                "call may still be charged.", model_id, PROXY_CALL_DEADLINE_S,
+                "call may still be charged.", model_id, limit,
             )
             raise
         except HTTPError as e:
@@ -493,8 +506,12 @@ class MeteringProxy:
                 content_length = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(content_length)
                 request_data = json.loads(body)
-                model_id = request_data.get("model", "unknown")
+                # The price-table key: the v3 menu ENTRY (`model@effort`) the
+                # harness names, else the request's model id (v1, v2).
+                model_id = (self.headers.get("X-Fugal-Entry", "")
+                            or request_data.get("model", "unknown"))
                 request_id = self.headers.get("X-Fugal-Request", "")
+                deadline_s = _deadline_for(request_data)
 
                 upstream_url = f"{_OPENROUTER_BASE}/chat/completions"
                 req = Request(
@@ -539,7 +556,8 @@ class MeteringProxy:
                     # Only a reply with `choices` comes back from here. A 200
                     # that carried none was retried, and metered on the way if
                     # it reported tokens; a call left without an answer raises.
-                    resp_body = _fetch_upstream(req, model_id, meter_unanswered=meter)
+                    resp_body = _fetch_upstream(req, model_id, meter_unanswered=meter,
+                                                deadline_s=deadline_s)
                     meter(resp_body, json.loads(resp_body))
 
                     self.send_response(200)

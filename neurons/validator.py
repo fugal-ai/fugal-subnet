@@ -478,6 +478,7 @@ def _v3_explore_answers(verified_proofs: dict, coldkey_of: dict, shared: dict) -
             correct=bool(r.correct), failed=bool(r.failed),
             private=shared.get(r.question_id) != r.routed_model,
             prompt_tokens=int(r.prompt_tokens), completion_tokens=int(r.completion_tokens),
+            latency_ms=int(getattr(r, "latency_ms", None) or 0),
         )
         for uid in sorted(verified_proofs)
         for r in verified_proofs[uid].exploration_results
@@ -562,6 +563,9 @@ class _SlicePlan(NamedTuple):
     questions_hash: str
     explore_map: dict
     slice_gold: dict
+    # v3: the epoch's cost-aware exploration shares (epoch_plan.explore_shares),
+    # used for every miner's private plan and for the pool's pair weights.
+    explore_shares: dict | None = None
 
 
 def _epoch_slice(protocol_version: int, epoch_id: str, block_hash: str, pool: list,
@@ -575,17 +579,18 @@ def _epoch_slice(protocol_version: int, epoch_id: str, block_hash: str, pool: li
     proof reference any question in it and still verify.
     """
     from fugal_subnet.benchmarks.slicer import derive_nonce
-    from fugal_subnet.epoch_plan import exploration_plan, scored_slice
+    from fugal_subnet.epoch_plan import exploration_plan, explore_shares, scored_slice
     from fugal_subnet.tee.verify import compute_questions_hash
     nonce = derive_nonce(epoch_id, block_hash)
     questions = scored_slice(protocol_version, nonce, pool, slice_size)
     question_ids = [q["question_id"] for q in questions]
+    shares = explore_shares(protocol_version, pool_models)
     explore_map = exploration_plan(protocol_version, nonce, pool, set(question_ids),
-                                   pool_models, explore_size)
+                                   pool_models, explore_size, shares=shares)
     slice_gold = {qid: gold_answers[qid]
                   for qid in list(question_ids) + list(explore_map) if qid in gold_answers}
     return _SlicePlan(nonce, questions, question_ids, compute_questions_hash(question_ids),
-                      explore_map, slice_gold)
+                      explore_map, slice_gold, shares)
 
 
 @click.command()
@@ -1146,6 +1151,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             expected_questions_hash = plan.questions_hash
             expected_question_ids = set(question_ids)
             explore_map, slice_gold = plan.explore_map, plan.slice_gold
+            explore_shares = plan.explore_shares
             logger.info("Slice: %d questions, hash=%s...",
                         len(questions), expected_questions_hash[:16])
 
@@ -1244,7 +1250,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     from fugal_subnet import epoch_plan as _plan
                     mine = _plan.exploration_plan(3, nonce, benchmark_pool, expected_question_ids,
                                                   pool_models, 0, hotkey=hotkey_ss58,
-                                                  index=v3_index)
+                                                  index=v3_index, shares=explore_shares)
                     uid_checks = checks._replace(
                         explore_map=mine,
                         slice_gold={**slice_gold,
@@ -1462,6 +1468,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 epoch_rules = _rules_tag(protocol_version, on_odds)
                 v3_odds = None
                 if protocol_version >= 3:
+                    from fugal_subnet import explore_weights as _xw
                     from fugal_subnet.v2_epoch import OddsInput
                     v3_odds = OddsInput(
                         nonce=nonce,
@@ -1477,6 +1484,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         ref_prior=_cfg.ODDS_REF_PRIOR,
                         single_model_min_pairs=_cfg.SINGLE_MODEL_MIN_PAIRS,
                         category_targets=_cfg.CATEGORY_TARGETS_V3,
+                        explore_weights=(_xw.weights(explore_shares) if explore_shares else None),
                     )
                 v2_result = run_v2_epoch(
                     epoch_index=epoch_index, epoch_id=epoch_id,

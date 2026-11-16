@@ -195,13 +195,23 @@ def _by_category(units: list[np.ndarray], cats: list[np.ndarray]) -> OddsUnits:
     return OddsUnits({name: u[c == name] for name in sorted(set(c.tolist()))}, int(u.size))
 
 
+def _weighted(units: np.ndarray, ep: EpochPairs) -> np.ndarray:
+    """Per-pair units times the pair's exploration weight (explore_weights):
+    pairs of entries drawn less often count for more, so the sum estimates what
+    uniform sampling would have. Exact integers; a pair count stays a count."""
+    if ep.weight is None:
+        return units
+    from fugal_subnet.explore_weights import apply
+    return apply(units, ep.weight)
+
+
 def skill_units(window: Window, ref: Reference, head: str, since_epoch: int | None = None,
                 run_only: bool = True) -> OddsUnits:
     """Per pair, R's loss minus `head`'s: positive where the head beat R."""
     units, cats = [], []
     for e in scored_epochs(window, head, since_epoch, run_only):
         ep = window.pairs[e]
-        units.append(loss(ref.of(e), ep.y) - loss(head_odds_on(window, ref, head, e), ep.y))
+        units.append(_weighted(loss(ref.of(e), ep.y) - loss(head_odds_on(window, ref, head, e), ep.y), ep))
         cats.append(np.asarray(ep.categories))
     return _by_category(units, cats)
 
@@ -217,8 +227,8 @@ def brier_units(window: Window, ref: Reference, challenger: str, bar: str,
         if e not in bar_epochs:
             continue
         ep = window.pairs[e]
-        units.append(loss(head_odds_on(window, ref, bar, e), ep.y)
-                     - loss(head_odds_on(window, ref, challenger, e), ep.y))
+        units.append(_weighted(loss(head_odds_on(window, ref, bar, e), ep.y)
+                               - loss(head_odds_on(window, ref, challenger, e), ep.y), ep))
         cats.append(np.asarray(ep.categories))
     return _by_category(units, cats)
 

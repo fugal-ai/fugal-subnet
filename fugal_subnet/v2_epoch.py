@@ -143,6 +143,8 @@ def save_window(path: str, window: Window) -> None:
             arrays[f"x_y_{e}"] = ep.y
             arrays[f"x_p_{e}"] = ep.prompt_tokens
             arrays[f"x_c_{e}"] = ep.completion_tokens
+            if ep.weight is not None:
+                arrays[f"x_w_{e}"] = ep.weight
     arrays["meta"] = np.frombuffer(json.dumps(meta, sort_keys=True).encode("utf-8"), dtype=np.uint8)
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
@@ -185,6 +187,7 @@ def load_window(path: str, size: int) -> Window:
                 y=np.array(z[f"x_y_{e}"], dtype=np.int32),
                 prompt_tokens=np.array(z[f"x_p_{e}"], dtype=np.int32),
                 completion_tokens=np.array(z[f"x_c_{e}"], dtype=np.int32),
+                weight=(np.array(z[f"x_w_{e}"], dtype=np.int64) if f"x_w_{e}" in z.files else None),
             )
             for e, v in meta.get("pairs", {}).items()
         }
@@ -392,6 +395,9 @@ class OddsInput:
     ref_prior: int = 20
     single_model_min_pairs: int = 300
     category_targets: Mapping[str, float] | None = None
+    # {entry: inverse-probability weight} of the epoch's cost-aware exploration
+    # (explore_weights.weights of epoch_plan.explore_shares); None weighs one.
+    explore_weights: Mapping[str, int] | None = None
 
 
 def odds_b64(odds: np.ndarray) -> str:
@@ -442,7 +448,7 @@ def _pool_and_odds(window: Window, oi: OddsInput, serving: Mapping[str, int],
         oi.answers, expected, z=oi.implausible_z, min_samples=oi.implausible_min_samples)
     pooled = explore_pool.pool_pairs(
         oi.answers, nonce=oi.nonce, coldkey_cap=oi.coldkey_cap,
-        flagged=set(oi.flagged) | set(implausible))
+        flagged=set(oi.flagged) | set(implausible), weights=oi.explore_weights)
     benches = tuple(str(oi.benchmark_of.get(p.question_id, "")) for p in pooled)
     pairs = EpochPairs(
         question_ids=tuple(p.question_id for p in pooled),
@@ -452,6 +458,8 @@ def _pool_and_odds(window: Window, oi: OddsInput, serving: Mapping[str, int],
         y=np.array([p.y for p in pooled], dtype=np.int32),
         prompt_tokens=np.array([p.prompt_tokens for p in pooled], dtype=np.int32),
         completion_tokens=np.array([p.completion_tokens for p in pooled], dtype=np.int32),
+        weight=(np.array([p.weight for p in pooled], dtype=np.int64)
+                if oi.explore_weights is not None else None),
     )
     hidden = [oi.hidden_of(q) for q in pairs.question_ids]
     odds: dict[str, np.ndarray] = {}

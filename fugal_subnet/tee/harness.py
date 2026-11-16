@@ -189,6 +189,10 @@ def run_benchmark(
     if explore_models and (explore_size > 0 or protocol_version >= 3):
         pool_by_id = {q["question_id"]: q for q in benchmark_pool}
         plan_kwargs = {"hotkey": hotkey or None} if protocol_version >= 3 else {}
+        if protocol_version >= 3:
+            # The same cost-aware shares the validator draws with (pinned menu
+            # and token manifest), or every proof fails the exploration check.
+            plan_kwargs["shares"] = epoch_plan.explore_shares(protocol_version, explore_models)
         explore_map = epoch_plan.exploration_plan(
             protocol_version, nonce_bytes, benchmark_pool, set(question_ids), explore_models,
             explore_size, **plan_kwargs,
@@ -368,11 +372,18 @@ def _call_model(
             **({"reasoning": reasoning} if reasoning else {}),
         }).encode()
 
+    headers = {"Content-Type": "application/json", "X-Fugal-Request": current_request_id()}
+    wait_s = HARNESS_CALL_TIMEOUT_S
+    if request is not None:
+        # v3: the proxy prices the call under the ENTRY id (the table's key) and
+        # holds it to the entry's own deadline; we wait a margin past that.
+        from fugal_subnet import config as _config
+        headers["X-Fugal-Entry"] = model_id
+        wait_s = _config.call_deadline_s(request) + _config.HARNESS_WAIT_MARGIN_S
     req = Request(
         f"http://127.0.0.1:{proxy.port}/chat/completions",
         data=payload,
-        headers={"Content-Type": "application/json",
-                 "X-Fugal-Request": current_request_id()},
+        headers=headers,
         method="POST",
     )
 
@@ -383,7 +394,7 @@ def _call_model(
             # so the proxy's 502 reaches us before we give up on the proxy;
             # otherwise the proxy writes into a closed socket (BrokenPipe) and the
             # failure is logged twice as two different errors.
-            with urlopen(req, timeout=HARNESS_CALL_TIMEOUT_S) as resp:
+            with urlopen(req, timeout=wait_s) as resp:
                 data = json.loads(resp.read())
             break
         except Exception as e:

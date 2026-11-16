@@ -178,6 +178,13 @@ def pairs_from_reveal(reveal: Mapping, answered: Mapping[str, HeadEpoch],
         _require(all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in vals),
                  eid, f"exploration_pool `{k}` must be non-negative integers")
     _require(all(v <= ODDS_SCALE for v in ints["y"]), eid, "exploration_pool `y` above the scale")
+    # Cost-aware exploration weights (explore_weights). A reveal from before
+    # them carries none: every pair weighs one.
+    weights = None
+    if any("weight" in r for r in rows):
+        weights = [r.get("weight") for r in rows]
+        _require(all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 10**9
+                     for v in weights), eid, "exploration_pool `weight` must be positive integers")
     _require(list(zip(qids, models)) == sorted(set(zip(qids, models))),
              eid, "exploration_pool must be sorted with no repeated pair")
     pairs = EpochPairs(
@@ -186,6 +193,7 @@ def pairs_from_reveal(reveal: Mapping, answered: Mapping[str, HeadEpoch],
         y=np.array(ints["y"], dtype=np.int32),
         prompt_tokens=np.array(ints["prompt_tokens"], dtype=np.int32),
         completion_tokens=np.array(ints["completion_tokens"], dtype=np.int32),
+        weight=None if weights is None else np.array(weights, dtype=np.int64),
     )
     published = reveal.get("head_odds") or {}
     _require(isinstance(published, Mapping), eid, "`head_odds` must be a map")

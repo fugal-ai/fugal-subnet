@@ -144,6 +144,23 @@ EXPLORE_PRIVATE_SIZE = int(os.getenv("FUGAL_EXPLORE_PRIVATE_SIZE", "24"))
 # hotkeys' worth: an operator with one hotkey is never cut, and one with fifty
 # supplies a twelfth of a twenty-operator pool, not most of it.
 EXPLORE_COLDKEY_CAP = int(os.getenv("FUGAL_EXPLORE_COLDKEY_CAP", "36"))
+# Cost-aware exploration (protocol v3; fugal_subnet/explore_weights.py). Menu
+# entries are drawn for exploration with a probability that falls with their
+# expected cost (pinned prices x token means), never below EXPLORE_COST_FLOOR
+# of a uniform share, at the most uniform exponent (0, 1/2, ... up to
+# EXPLORE_COST_MAX_HALVES / 2) whose expected spend for a miner's
+# EXPLORE_SHARED_SIZE + EXPLORE_PRIVATE_SIZE calls is within
+# EXPLORE_SPEND_CAP_USD. Pooled pairs carry inverse-probability weights, so the
+# odds score still estimates what uniform sampling would have. At the
+# provisional v3 token means (2026-11-16) uniform exploration costs a miner
+# $0.316 per epoch; the $0.20 cap selects exponent 1/2 ($0.163, design effect
+# 1.32). The cap is EXPECTED spend: a sampling rule that stopped at a realized
+# total would make an entry's chance depend on the draws before it, and the
+# weights would no longer undo it. Compiled constants: they decide which pairs
+# every miner is assigned and how every pair is weighted (consensus).
+EXPLORE_SPEND_CAP_USD = "0.20"
+EXPLORE_COST_FLOOR = "1/4"
+EXPLORE_COST_MAX_HALVES = 4
 # An operator whose private answers are more than this many standard
 # deviations from what the reference expects of those models on those kinds of
 # question has its pairs left out of the epoch's pool
@@ -281,6 +298,46 @@ HARNESS_MAX_TOKENS = 16384
 HARNESS_SYSTEM_PROMPT_V3: str | None = None
 PROXY_CALL_DEADLINE_S = 420.0      # total time the proxy spends on one call, retries included
 HARNESS_CALL_TIMEOUT_S = 450.0     # the harness's wait on the proxy; > PROXY_CALL_DEADLINE_S
+
+# Protocol v3: one deadline per menu entry, by its reasoning effort. A v3
+# entry carries its own answer budget (up to ~128k tokens, models_v3.json), and
+# a long answer is what the product would really return, so cutting it off at
+# 420 s would teach heads that slow, careful entries fail. The live check of
+# 2026-11-16 measured 100-300 s for high/max entries at a 16k budget and one
+# low-effort cheap reasoner at 1,117 s.
+#
+# The ceiling is the collection point, not the epoch: validators collect at
+# EPOCH_COLLECT_FRACTION (0.5) of a 72-minute epoch, 36 min after the
+# boundary, and the proof must be built and attested before then. 30 min for
+# the slow efforts leaves ~6 min for the rest of the proof.
+#
+# Throughput, worst case (docs/decisions/V3_MENU_BUDGETS.md has the
+# arithmetic): 300 scored calls at a 60 s mean plus all 32 exploration calls
+# at the 30-min deadline is 75,600 s of calls; at HARNESS_CONCURRENCY 24 that is
+# 3,150 s, past the 2,160 s collection point; it needs >= 38 in flight. The
+# expected case (exploration mostly fast) is ~1,470 s at 24.
+PROXY_CALL_DEADLINE_V3_S = {
+    "minimal": 600.0, "low": 600.0, "medium": 900.0,
+    "high": 1800.0, "xhigh": 1800.0, "max": 1800.0,
+}
+PROXY_CALL_DEADLINE_V3_DEFAULT_S = 900.0   # a v3 entry without an effort (thinking on, or none)
+HARNESS_WAIT_MARGIN_S = 30.0               # the harness waits this much longer than the proxy
+
+
+def call_deadline_s(request: dict) -> float:
+    """The proxy's wall-clock deadline for one upstream call, from its request.
+
+    A v3 request names pinned providers (routing_protocol.request_for); its
+    deadline comes from its reasoning effort. Any other request (v1, v2) keeps
+    PROXY_CALL_DEADLINE_S, byte-for-byte the old behaviour.
+    """
+    if not isinstance(request, dict) or "provider" not in request:
+        return PROXY_CALL_DEADLINE_S
+    reasoning = request.get("reasoning")
+    effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    if effort is None:
+        return PROXY_CALL_DEADLINE_V3_DEFAULT_S
+    return PROXY_CALL_DEADLINE_V3_S.get(str(effort), PROXY_CALL_DEADLINE_V3_DEFAULT_S)
 
 # Checkers that grade by running the candidate's code, and therefore return 0
 # unless HARNESS_ALLOW_EXEC. Named here rather than in graders.py, which is

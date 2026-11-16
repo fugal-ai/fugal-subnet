@@ -26,6 +26,15 @@ _GUARDED = {"fugal_subnet", "neurons"}
 GRADER_SHA256 = (
     "319340e8aeaac5fedf2b488c94ad11c1e79e0606fcfc5e002552a60a4108a9d9"
 )
+# The v3 code grading contract (exec_stdio, exec_func), pinned for the same
+# reason as graders.py: a byte change changes which code answers pass, so it is
+# a consensus change and a new grader version. graders.py itself is untouched;
+# protocol v3 adds this file beside it. History:
+#   92bceddc...  2026-11-16, first version (docs/decisions/CODE_GRADER_V3.md):
+#                seccomp-filtered child, CPU-time limits, token compare.
+CODE_GRADER_SHA256 = (
+    "92bceddcee0c6fad9eed2b217aa9de3fa9c309b0276fc5180095703e38862a60"
+)
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole
 # subnet. Pinned for the same reason graders.py is. Changing prices is a
@@ -178,6 +187,17 @@ def check_pinned_grader(errors: list[str]) -> None:
             f"fugal_subnet/graders.py: grader hash {actual[:16]}... does not match "
             f"the pin {GRADER_SHA256[:16]}... — "
             "a grader change is a consensus break"
+        )
+
+
+def check_pinned_code_grader(errors: list[str]) -> None:
+    path = ROOT / "fugal_subnet" / "graders_code.py"
+    actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    if actual != CODE_GRADER_SHA256:
+        errors.append(
+            f"fugal_subnet/graders_code.py: code grader hash {actual[:16]}... does not "
+            f"match the pin {CODE_GRADER_SHA256[:16]}... — a code grader change is a "
+            "consensus break"
         )
 
 
@@ -1086,6 +1106,7 @@ def main(argv: list[str] | None = None) -> None:
     check_runtime_annotations(errors)
     check_deserialize_contract(errors)
     check_pinned_grader(errors)
+    check_pinned_code_grader(errors)
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)

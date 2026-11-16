@@ -57,6 +57,9 @@ jobs:
       - name: Run grader attack suite
         run: uv run python -m fugal_subnet.attacks.run_attacks
 
+      - name: Run code grader attack suite (v3 exec_stdio / exec_func sandbox)
+        run: uv run python -m fugal_subnet.attacks.run_code_attacks
+
       - name: Run adversarial miner suite (I2, I6)
         run: uv run python -m fugal_subnet.attacks.run_miner_attacks
 

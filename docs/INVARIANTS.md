@@ -3297,6 +3297,22 @@ again, in either direction. Putting them back is
 [CODE_BENCHMARK_PLAN.md](decisions/CODE_BENCHMARK_PLAN.md); its final phase needs the
 entry rotation procedure, which now exists (`docs/APPROVED_ENTRY_ROTATION.md`).
 
+**Protocol v3 code grading (built 2026-11-16, not yet active).** v3 grades code
+with a second pinned file, `fugal_subnet/graders_code.py` (`exec_stdio`,
+`exec_func`), leaving `graders.py` untouched. Its child runs under a seccomp
+filter (no sockets, no fork/exec, no open-for-write or path changes, no ptrace,
+no signals or limits on other processes), CPU-time rlimits, `-S` (stdlib only),
+a pinned hash seed and a cleared environment, and the grading process makes
+itself non-dumpable so the child cannot read the pool's gold from its memory.
+The grade is decided in the parent from exit status, measured CPU and stdout.
+Pinned as `CODE_GRADER_SHA256` in `check_safety_invariants.py` (a byte change
+fails the check); hostile programs in `fugal_subnet/attacks/run_code_attacks.py`
+(CI). Determinism rests on CPU-time limits plus calibration that keeps only tests
+a reference passes in ≤ 25% of the limit (`scripts/calibrate_code_tests.py`),
+with shared grades absorbing the borderline residual. The harness must run
+`sandbox_selftest()` at start and refuse code questions if it fails. Design:
+[CODE_GRADER_V3.md](decisions/CODE_GRADER_V3.md).
+
 **The model upstream is miner-controlled (fixed 2026-10-14; was OPEN, breaks I3).**
 
 *Status.* Closed by making the application binding mandatory. The upstream is

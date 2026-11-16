@@ -12,9 +12,17 @@ from fugal_subnet import config, epoch_plan
 from fugal_subnet.benchmarks.slicer import PoolIndex, select_private_explore
 from fugal_subnet.exploration import private_nonce
 
-BENCHES = {b: (400 if c != "instruction" else 60) for b, c in config.BENCHMARK_CATEGORY_V3.items()}
+# Each category sized in proportion to its target (about 4,000 questions in all), split
+# evenly across its benchmarks, so every question has about the same chance per draw and
+# coverage measures the sampler, not the mix.
+_PER_CAT = {c: sum(1 for v in config.BENCHMARK_CATEGORY_V3.values() if v == c)
+            for c in config.CATEGORY_TARGETS_V3}
+BENCHES = {b: max(20, round(4000 * config.CATEGORY_TARGETS_V3[c] / _PER_CAT[c]))
+           for b, c in config.BENCHMARK_CATEGORY_V3.items()}
 POOL = [{"question_id": f"{b}-{i:05d}", "benchmark": b, "prompt": f"q {b} {i}"}
         for b in sorted(BENCHES) for i in range(BENCHES[b])]
+POOL_V2 = [{"question_id": f"{b}-{i:05d}", "benchmark": b, "prompt": f"q {b} {i}"}
+           for b in sorted(config.BENCHMARK_CATEGORY_V2) for i in range(400)]
 MODELS = [f"vendor/model-{i:02d}" for i in range(19)]
 NONCE = hashlib.sha256(b"epoch-1").digest()
 SCORED = {q["question_id"] for q in epoch_plan.scored_slice(3, NONCE, POOL, 300)}
@@ -108,8 +116,9 @@ def test_a_nearly_exhausted_benchmark_still_fills_its_slots():
 
 
 def test_v2_plans_do_not_read_the_hotkey():
-    a = epoch_plan.exploration_plan(2, NONCE, POOL, SCORED, MODELS, 15)
-    b = epoch_plan.exploration_plan(2, NONCE, POOL, SCORED, MODELS, 15, hotkey="anyone")
+    scored = {q["question_id"] for q in epoch_plan.scored_slice(2, NONCE, POOL_V2, 300)}
+    a = epoch_plan.exploration_plan(2, NONCE, POOL_V2, scored, MODELS, 15)
+    b = epoch_plan.exploration_plan(2, NONCE, POOL_V2, scored, MODELS, 15, hotkey="anyone")
     assert a == b and len(a) == 15
 
 

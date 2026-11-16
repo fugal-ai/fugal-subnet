@@ -93,7 +93,7 @@ def test_a_v2_pool_file_that_disagrees_with_the_manifest_is_refused(tmp_path, mo
 
 def test_load_pool_dispatches_on_the_protocol_version():
     with pytest.raises(ValueError):
-        loader.load_pool(3)
+        loader.load_pool(4)
 
 
 @pytest.mark.parametrize("raw,want", [("336^\\circ", "336"), (" 42 ", "42"), ("1,024", "1024"), ("-7", "-7")])

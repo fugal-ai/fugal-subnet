@@ -78,15 +78,17 @@ def _torch_runtime() -> dict[str, str]:
 
 
 def grader_hash() -> str:
-    """The canonical grader version string.
+    """The canonical grading version string: every file that decides a grade.
 
-    Delegates to fugal_subnet.graders rather than recomputing the digest. A
-    second implementation of the same hash is a thing that can silently drift
-    from the first, and this value is published in every reveal.
+    graders.py, and from protocol v3 graders_code.py (the code checkers), each
+    by its own grader_hash() rather than a recomputed digest: a second
+    implementation of the same hash is a thing that can silently drift from the
+    first, and this value is published in every reveal and commitment.
     """
+    from fugal_subnet import graders_code
     from fugal_subnet.graders import grader_hash as canonical
 
-    return canonical()
+    return f"{canonical()}+code:{graders_code.grader_hash()}"
 
 
 def environment_fingerprint() -> dict:

@@ -246,6 +246,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         logger.warning("%s (mock: continuing)", msg)
     logger.info("Benchmark pool: %d questions, pool_hash=%s",
                 len(pool), pool_hash(pool)[:16])
+    # v3 pools hold code questions, graded in the code sandbox. Its self-test runs
+    # once at start, so a machine that cannot build it says so now, not mid-epoch.
+    from fugal_subnet.benchmarks.code_sets import code_sandbox_required
+    if code_sandbox_required(pool):
+        from fugal_subnet.tee.harness import code_sandbox_status
+        ok, why = code_sandbox_status()
+        if not ok and not mock:
+            raise click.ClickException(
+                f"The code sandbox self-test failed ({why}). This pool has code questions, which "
+                "this machine cannot grade, so it would produce no proof for any epoch. Run the "
+                "miner image on x86_64 Linux with seccomp available.")
 
     # The globally agreed model space. Exploration targets are drawn from this
     # sorted list, never from the miner's own head, so the samples the reference

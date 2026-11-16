@@ -134,11 +134,28 @@ BENCHMARK_CATEGORY_V2 = {
 BENCHMARK_WEIGHT_V2: dict[str, float] = {}
 
 # --- Protocol v3 benchmark pool and exploration ---
-# PROVISIONAL until the v3 pool manifest is built: the v2 categories, so the
-# v3 selection code runs and is tested against the pool that exists. The
-# release that pins pool_manifest_v3.json sets these to its categories.
-CATEGORY_TARGETS_V3 = dict(CATEGORY_TARGETS_V2)
-BENCHMARK_CATEGORY_V3 = dict(BENCHMARK_CATEGORY_V2)
+# Decided 2026-11-16 (owner). Scoring rewards honest odds, which only questions
+# where models DISAGREE can teach, so the saturated knowledge share falls and
+# chat-like instruction following, everyday reasoning and code (most of real
+# router traffic) come in. Easy maths stays small: nearly every model gets it
+# right. Pinned in pool_manifest_v3.json (whose hash is in the digest).
+CATEGORY_TARGETS_V3 = {
+    "knowledge": 0.20, "hard": 0.20, "math": 0.10, "instruction": 0.15,
+    "everyday": 0.15, "easy_math": 0.05, "code": 0.15,
+}
+BENCHMARK_CATEGORY_V3 = {
+    "mmlupro": "knowledge", "mmlu": "knowledge",
+    "supergpqa_hard": "hard", "aime": "hard", "aime25": "hard", "beyondaime": "hard",
+    "omnimath_hard": "hard",
+    "math_l35": "math", "omnimath_mid": "math",
+    "ifeval": "instruction", "rlvr_ifeval": "instruction",
+    # BIG-Bench Hard stays held back (its only split is its published test set), so
+    # everyday reasoning is ARC (train split) in v3.0.
+    "arc": "everyday",
+    "gsm8k_train": "easy_math", "math_l12": "easy_math",
+    "code_leetcode": "code", "code_mbppplus": "code", "code_humanevalplus": "code",
+    "code_contests": "code",
+}
 BENCHMARK_WEIGHT_V3: dict[str, float] = {}
 # Exploration in v3 (epoch_plan.exploration_plan_v3). Every miner answers the
 # SHARED pairs: eight, which is EXPLORE_DISAGREE_MIN_SAMPLES, the fewest the
@@ -375,6 +392,12 @@ def call_deadline_s(request: dict) -> float:
 # unless HARNESS_ALLOW_EXEC. Named here rather than in graders.py, which is
 # hash-pinned and must stay byte-identical.
 EXECUTION_CHECKERS = frozenset({"exec_io", "exec_unittest"})
+# Protocol v3's code checkers (graders_code.py). They also run the candidate's
+# code, but in the seccomp sandbox, and are gated by its self-test
+# (graders_code.sandbox_selftest, run by harness.code_sandbox_status), NOT by
+# HARNESS_ALLOW_EXEC: the loader keeps their questions, and a harness whose
+# sandbox failed refuses to produce a proof for an epoch that has any.
+SANDBOXED_CODE_CHECKERS = frozenset({"exec_stdio", "exec_func"})
 
 # --- Proof bounds (I2) ---
 # The largest token count a proof result may carry, prompt or completion. Not
@@ -1242,6 +1265,9 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_POOL_FILE",
     "FUGAL_BENCHMARK_POOL_V2",
     "FUGAL_POOL_FILE_V2",
+    "FUGAL_BENCHMARK_POOL_V3",
+    "FUGAL_POOL_FILE_V3",
+    "FUGAL_POOL_CACHE_V3",
     "FUGAL_FRAME_BOOTSTRAP",
     "FUGAL_EMBEDDINGS_FILE",
     "FUGAL_BACKBONE_THREADS",

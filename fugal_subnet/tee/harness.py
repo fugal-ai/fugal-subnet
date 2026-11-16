@@ -25,13 +25,14 @@ from urllib.request import HTTPHandler, Request, build_opener
 
 import numpy as np
 
-from fugal_subnet import epoch_plan
+from fugal_subnet import epoch_plan, graders_code
 from fugal_subnet.config import (
     HARNESS_ALLOW_EXEC,
     HARNESS_CALL_TIMEOUT_S,
     HARNESS_CONCURRENCY,
     HARNESS_MAX_TOKENS,
     HARNESS_SYSTEM_PROMPT_V3,
+    SANDBOXED_CODE_CHECKERS,
 )
 from fugal_subnet.graders import grade
 from fugal_subnet.grading_task import build_grader_task
@@ -208,6 +209,14 @@ def run_benchmark(
     call_order = sorted(scheduled, key=lambda item: hmac.new(
         nonce_bytes, f"order:{item[0]['question_id']}".encode("utf-8"), hashlib.sha256,
     ).digest())
+    # Code questions are graded by running the answer in the code sandbox
+    # (graders_code). A TD that cannot build it must not grade them: every code
+    # question would grade 0 and the proof would read as a router that cannot
+    # code. Checked before any call is made, so nothing is spent on a proof
+    # that will not be produced.
+    if any(q.get("grader_id") in SANDBOXED_CODE_CHECKERS for q, _m, _e in scheduled):
+        require_code_sandbox()
+
     outcomes = {
         (q["question_id"], is_explore): (response_text, failed, cost, p_tok, c_tok, lat)
         for q, _model, is_explore, response_text, failed, cost, p_tok, c_tok, lat
@@ -228,8 +237,7 @@ def run_benchmark(
         # A failed call is graded as what it is -- no answer -- and recorded
         # as failed; the grade of "" is wrong by construction, so `correct`
         # stays False and the proof says why.
-        correct = (not failed) and bool(grade(build_grader_task(q), response_text,
-                                              allow_exec=HARNESS_ALLOW_EXEC))
+        correct = (not failed) and grade_question(q, response_text)
         # Canonical number types at the source: a failed call sums an empty
         # record list to the int 0, and canonical JSON tells 0 from 0.0. The
         # validator keeps numbers as serialised since #120; writing them as
@@ -263,6 +271,46 @@ def run_benchmark(
     )
 
     return proof
+
+
+class CodeSandboxUnavailable(RuntimeError):
+    """The code sandbox's self-test failed on this machine, so code questions cannot be graded."""
+
+
+_CODE_SANDBOX: tuple[bool, str] | None = None
+_CODE_SANDBOX_LOCK = threading.Lock()
+
+
+def code_sandbox_status() -> tuple[bool, str]:
+    """graders_code.sandbox_selftest(), run once per process and logged."""
+    global _CODE_SANDBOX
+    with _CODE_SANDBOX_LOCK:
+        if _CODE_SANDBOX is None:
+            _CODE_SANDBOX = graders_code.sandbox_selftest()
+            if _CODE_SANDBOX[0]:
+                logger.info("Code sandbox self-test passed: code questions can be graded")
+            else:
+                logger.error("CODE SANDBOX UNAVAILABLE (%s): this machine refuses to grade code "
+                             "questions, so it produces no proof for an epoch that has any",
+                             _CODE_SANDBOX[1])
+        return _CODE_SANDBOX
+
+
+def require_code_sandbox() -> None:
+    ok, why = code_sandbox_status()
+    if not ok:
+        raise CodeSandboxUnavailable(f"the code sandbox self-test failed: {why}")
+
+
+def grade_question(q: dict, response_text: str) -> bool:
+    """Grade one reply with the checker its question names: graders_code for the v3 code
+    checkers (in the sandbox, which must have passed its self-test), graders.py otherwise
+    (with execution as config.HARNESS_ALLOW_EXEC says, off in every shipped image)."""
+    task = build_grader_task(q)
+    if q.get("grader_id") in SANDBOXED_CODE_CHECKERS:
+        require_code_sandbox()
+        return bool(graders_code.grade(task, response_text, allow_exec=True))
+    return bool(grade(task, response_text, allow_exec=HARNESS_ALLOW_EXEC))
 
 
 def _route_question(head: HeadArtifact, hidden_state: np.ndarray, costs=None) -> int:

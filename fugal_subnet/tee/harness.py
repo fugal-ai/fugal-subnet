@@ -32,6 +32,7 @@ from fugal_subnet.config import (
     HARNESS_CONCURRENCY,
     HARNESS_MAX_TOKENS,
     HARNESS_SYSTEM_PROMPT_V3,
+    SANDBOXED_CODE_CHECKERS,
 )
 from fugal_subnet.graders import grade
 from fugal_subnet.grading_task import build_grader_task
@@ -209,7 +210,7 @@ def run_benchmark(
     # question would grade 0 and the proof would read as a router that cannot
     # code. Checked before any call is made, so nothing is spent on a proof
     # that will not be produced.
-    if any(q.get("grader_id") in graders_code.CHECKERS for q, _m, _e in scheduled):
+    if any(q.get("grader_id") in SANDBOXED_CODE_CHECKERS for q, _m, _e in scheduled):
         require_code_sandbox()
 
     outcomes = {
@@ -302,7 +303,7 @@ def grade_question(q: dict, response_text: str) -> bool:
     checkers (in the sandbox, which must have passed its self-test), graders.py otherwise
     (with execution as config.HARNESS_ALLOW_EXEC says, off in every shipped image)."""
     task = build_grader_task(q)
-    if q.get("grader_id") in graders_code.CHECKERS:
+    if q.get("grader_id") in SANDBOXED_CODE_CHECKERS:
         require_code_sandbox()
         return bool(graders_code.grade(task, response_text, allow_exec=True))
     return bool(grade(task, response_text, allow_exec=HARNESS_ALLOW_EXEC))

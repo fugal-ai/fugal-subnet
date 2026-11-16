@@ -394,7 +394,8 @@ LOADERS_CODE = {b: (lambda b=b: load_code(b)) for b in CANDIDATES}
 
 
 def code_sandbox_required(pool: list[dict]) -> bool:
-    return any(q.get("grader_id") in graders_code.CHECKERS for q in pool)
+    from fugal_subnet.config import SANDBOXED_CODE_CHECKERS
+    return any(q.get("grader_id") in SANDBOXED_CODE_CHECKERS for q in pool)
 
 
 __all__ = ["CANDIDATES", "CODE_LICENCES", "LOADERS_CODE", "apply_keep", "read_keep", "to_question",

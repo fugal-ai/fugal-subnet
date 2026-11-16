@@ -233,6 +233,38 @@ def test_a_non_code_question_never_reaches_the_code_grader(monkeypatch):
     assert harness.grade_question(q, "Answer: A") is True
 
 
+def test_the_sandboxed_code_checkers_are_exactly_the_code_graders_and_never_need_allow_exec():
+    from fugal_subnet.config import EXECUTION_CHECKERS, SANDBOXED_CODE_CHECKERS
+
+    assert SANDBOXED_CODE_CHECKERS == set(graders_code.CHECKERS)
+    assert not SANDBOXED_CODE_CHECKERS & EXECUTION_CHECKERS
+    q = cs.to_question(_func_cand(), [0, 1, 2, 3, 4])
+    assert loader._drop_unscoreable([q]) == [q]               # kept with HARNESS_ALLOW_EXEC off
+    for cid in SANDBOXED_CODE_CHECKERS:                       # and inert unless the sandbox is allowed
+        task = {"checker": {"id": cid, "params": {"func": "f", "inputs": [[1]], "tests": [{"input": "", "output": ""}]}},
+                "gold": [1]}
+        assert graders_code.grade(task, "```python\ndef f(x): return x\nprint('')\n```", allow_exec=False) == 0
+
+
+def test_the_harness_refuses_a_code_epoch_before_any_call_when_the_sandbox_failed(monkeypatch):
+    import numpy as np
+
+    from fugal_subnet.tee import harness
+
+    q = cs.to_question(_func_cand(), [0, 1, 2, 3, 4])
+    monkeypatch.setattr(harness, "_CODE_SANDBOX", (False, "no seccomp"))
+    monkeypatch.setattr(harness, "load_head_from_npz", lambda b: type("H", (), {"models": ["m"]})())
+    monkeypatch.setattr(harness, "benchmark_costs_for", lambda head, v: None)
+    monkeypatch.setattr(harness, "_route_question", lambda head, h, costs: 0)
+    monkeypatch.setattr(harness.epoch_plan, "scored_slice", lambda v, n, pool, size: pool)
+    called = []
+    monkeypatch.setattr(harness, "_call_all", lambda *a, **k: called.append(1) or iter(()))
+    with pytest.raises(harness.CodeSandboxUnavailable):
+        harness.run_benchmark("00" * 32, b"", [q], type("P", (), {"clear": lambda self: None})(),
+                              np.zeros((1, 4)), protocol_version=3)
+    assert called == []
+
+
 def test_the_grading_identity_covers_both_grader_files():
     from fugal_subnet import fingerprint, graders
 

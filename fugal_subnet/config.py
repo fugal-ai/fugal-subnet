@@ -303,6 +303,12 @@ HARNESS_CALL_TIMEOUT_S = 450.0     # the harness's wait on the proxy; > PROXY_CA
 # unless HARNESS_ALLOW_EXEC. Named here rather than in graders.py, which is
 # hash-pinned and must stay byte-identical.
 EXECUTION_CHECKERS = frozenset({"exec_io", "exec_unittest"})
+# Protocol v3's code checkers (graders_code.py). They also run the candidate's
+# code, but in the seccomp sandbox, and are gated by its self-test
+# (graders_code.sandbox_selftest, run by harness.code_sandbox_status), NOT by
+# HARNESS_ALLOW_EXEC: the loader keeps their questions, and a harness whose
+# sandbox failed refuses to produce a proof for an epoch that has any.
+SANDBOXED_CODE_CHECKERS = frozenset({"exec_stdio", "exec_func"})
 
 # --- Proof bounds (I2) ---
 # The largest token count a proof result may carry, prompt or completion. Not

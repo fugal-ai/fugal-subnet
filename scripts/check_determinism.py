@@ -56,6 +56,7 @@ STAGES = (
     "scores",
     "weights",
     "v2_epoch",
+    "seat_confirmation",
 )
 
 
@@ -389,7 +390,52 @@ def run_pipeline(seed: int) -> dict:
         "scores": _digest(scores_out),
         "weights": _digest({"uids": uids, "weights": weight_values}),
         "v2_epoch": _digest(v2_out),
+        "seat_confirmation": _digest(_seat_confirmation(seed)),
     }
+
+
+def _seat_confirmation(seed: int) -> list:
+    """The seat over ten epochs with fresh-data confirmation in force: a
+    challenger passes, waits as a pending record, and is confirmed on the
+    questions drawn since (its own resampling stream), with candidates fed in
+    reverse order. Every published seat and every decision line is digested.
+    """
+    import dataclasses
+
+    import numpy as np
+
+    from fugal_subnet.benchmarks.slicer import epoch_id_for_block
+    from fugal_subnet.champion import (
+        Candidate,
+        EpochSlice,
+        HeadEpoch,
+        SeatState,
+        Window,
+        seat_step,
+    )
+    from fugal_subnet.v2_epoch import seat_params_from_config, seat_to_dict
+
+    q, cats = 300, ["knowledge"] * 120 + ["math"] * 75 + ["hard"] * 90 + ["instruction"] * 15
+    params = dataclasses.replace(seat_params_from_config(1, 0), min_paired_questions=300,
+                                 confirm_questions=600, confirm_open_epochs=2)
+    heads = {"champion": 1, "challenger": 2, "equal": 1}      # the model each always routes to
+    rng = np.random.default_rng(seed)
+    window, state, out = Window.empty(6), SeatState(champion="champion", champion_since=0), []
+    for epoch in range(1, 11):
+        difficulty = rng.random(q)
+        grades = (difficulty[:, None] < np.array([0.55, 0.80, 0.84])[None, :]).astype(np.float64)
+        sl = EpochSlice(epoch=epoch, question_ids=tuple(f"e{epoch}q{i}" for i in range(q)),
+                        categories=tuple(cats), hard=tuple(c == "hard" for c in cats),
+                        grades=grades, spends=np.tile(np.array([0.0001, 0.004, 0.005]), (q, 1)))
+        window = window.add_epoch(sl, {h: HeadEpoch(np.full(q, m, dtype=np.int64),
+                                                    np.zeros(q, dtype=bool))
+                                       for h, m in heads.items()})
+        cands = {h: Candidate(h, (i,), True, 1) for i, h in reversed(list(enumerate(sorted(heads))))}
+        decision = seat_step(state, epoch, epoch_id_for_block(epoch), window, cands, params=params)
+        state = decision.state
+        out.append({"event": decision.event, "seat": seat_to_dict(state),
+                    "detail": [list(d) for d in decision.detail]})
+    return out
 
 
 def _child(seed: int) -> dict:

@@ -556,6 +556,11 @@ MAX_WEIGHT_DELTA = float(os.getenv("FUGAL_MAX_WEIGHT_DELTA", "0.3"))
 # protocol v2 activates at one named boundary".
 _v2_activation = os.getenv("FUGAL_V2_ACTIVATION_BLOCK", "").strip()
 V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
+# Finney's flip block, as it happened (2026-11-11). A live finney validator
+# whose FUGAL_V2_ACTIVATION_BLOCK is unset or different is refused at startup
+# (neurons/validator.py, _check_chain_configuration): unset, it would score
+# every epoch by the v1 rules with nothing in its log to say so.
+FINNEY_V2_ACTIVATION_BLOCK = 9485640
 
 # --- Protocol v2: champion scoring (paired net value) ---
 # From the activation block, a challenger is compared with the current
@@ -646,6 +651,84 @@ CHAMPION_GHOST_RETIRE = int(os.getenv("FUGAL_CHAMPION_GHOST_RETIRE", "24"))
 # up to 14,400 paired questions, about two and a half days.
 CHAMPION_WINDOW_EPOCHS = int(os.getenv("FUGAL_CHAMPION_WINDOW_EPOCHS", "48"))
 
+# --- Protocol v2: fresh-data confirmation of a take ---
+# From the confirmation activation block (below), beating a settled champion
+# on the paired test once does not take its seat. The epoch of that first
+# pass is recorded, and the challenger takes the seat when it passes the SAME
+# test (same margin, same confidence) on questions drawn after that epoch: at
+# least CHAMPION_CONFIRM_QUESTIONS of them, while the first pass is still in
+# the comparison window. The champion holds, and is paid, meanwhile.
+#
+# Why. The take test runs every epoch for every challenger, so its false
+# positives add up over epochs AND over challengers: k heads with no real
+# edge pass by luck about k times as often as one, which makes registering
+# more hotkeys worth something. The first pass is therefore a selection, and
+# a selection is confirmed on data it did not see. A head with no edge has to
+# be lucky twice, on two samples that share no question.
+#
+# 1,500 fresh questions is five epochs and the same count as the burn-in and
+# CHAMPION_MIN_PAIRED_QUESTIONS, so "enough to judge on" means one thing.
+# Measured on the mainnet reveals e00026349-e00026384 (36 epochs): the one
+# take in them (+0.83 points at its first pass) measured +1.06 on its first
+# 1,500 fresh questions and confirms at 2,400 (eight epochs).
+CHAMPION_CONFIRM_QUESTIONS = int(os.getenv("FUGAL_CHAMPION_CONFIRM_QUESTIONS", "1500"))
+# A head seated from an EMPTY seat (the first fill, or over a retired ghost)
+# beat nobody, and the pick is the best of several noisy measurements. So for
+# this many epochs after such a fill the seat can still be taken by the plain
+# test, as before the rule; only then is the champion settled and a challenger
+# confirmed against it. Without this the confirmation would also protect a
+# lucky first fill. A champion that was itself confirmed is settled at once.
+CHAMPION_CONFIRM_OPEN_EPOCHS = int(os.getenv("FUGAL_CHAMPION_CONFIRM_OPEN_EPOCHS", "5"))
+# From the same block, a RETIRED champion's ghost bars for this many epochs
+# instead of CHAMPION_GHOST_RETIRE. A retired head answers no new questions,
+# so a head committed after it retired can never be paired with it, and for
+# the whole window the seat can only go to a head that already overlapped it;
+# otherwise the miner share burns (24 epochs is about 29 hours). The window
+# exists so that the owner's replacement head can finish burn-in and compete
+# for the empty seat on equal terms with copies of the retired one, which is
+# V2_BURN_IN_QUESTIONS (five epochs) plus slack for one early miss.
+CHAMPION_GHOST_RETIRE_CONFIRM = int(os.getenv("FUGAL_CHAMPION_GHOST_RETIRE_CONFIRM", "8"))
+# The activation block: the two rules above apply to every epoch whose
+# boundary block is at or after it (the boundary decides, as for v2, so a
+# retried or late epoch applies the same rules as every peer).
+#
+# Finney's value is COMPILED IN, not read from the environment. The v2 flip
+# asked every validator operator to set a variable, and a validator that had
+# not set it ran the old rules with nothing to say so. A validator that runs
+# this release agrees on the block by construction, and one that sets the
+# variable on finney to anything else is refused at startup
+# (confirm_activation_block). None means not scheduled: the release that
+# schedules it sets the number here. Other chains (testnet, the rehearsals)
+# have no compiled value and read FUGAL_CONFIRM_ACTIVATION_BLOCK.
+FINNEY_CONFIRM_ACTIVATION_BLOCK: int | None = 9542160
+_confirm_activation = os.getenv("FUGAL_CONFIRM_ACTIVATION_BLOCK", "").strip()
+CONFIRM_ACTIVATION_BLOCK_ENV = int(_confirm_activation) if _confirm_activation else None
+
+
+def confirm_activation_block(genesis_hash: str | None) -> int | None:
+    """The confirmation rule's activation block on the chain with this genesis.
+
+    Finney: the compiled value, and the environment variable is refused unless
+    it says the same. Any other chain: the environment variable. An unreadable
+    genesis with the variable unset is treated as finney (the compiled value),
+    which is the safe reading: it can only be a chain this release knows.
+    """
+    env = CONFIRM_ACTIVATION_BLOCK_ENV
+    if env is not None and env < 0:
+        raise ValueError(f"FUGAL_CONFIRM_ACTIVATION_BLOCK must not be negative, got {env}")
+    if genesis_hash is not None and str(genesis_hash).lower() != FINNEY_GENESIS_HASH.lower():
+        return env
+    if env is not None and env != FINNEY_CONFIRM_ACTIVATION_BLOCK:
+        where = ("on finney" if genesis_hash is not None else
+                 "and the chain's genesis hash could not be read, so this cannot be shown "
+                 "not to be finney")
+        raise ValueError(
+            f"FUGAL_CONFIRM_ACTIVATION_BLOCK={env} is set {where}, where the block is "
+            f"fixed by the release ({FINNEY_CONFIRM_ACTIVATION_BLOCK}). Unset it."
+        )
+    return FINNEY_CONFIRM_ACTIVATION_BLOCK
+
+
 # --- Protocol v2: payout ---
 # The miner share is split across the last three champions: current, previous,
 # the one before. A seat pays only while its head is live and passes the
@@ -706,6 +789,65 @@ REVEAL_BUCKET = os.getenv("FUGAL_REVEAL_BUCKET", "").strip()
 # Override the hold (epochs) read from the chain's commit-reveal period. 0 =
 # read it from the chain.
 REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
+
+# --- The v2 star: root and followers (operational) ---
+# Every validator but the root verifies its v2 seat state against the root's
+# published reveals and re-anchors on them after a missed epoch
+# (fugal_subnet/v2_sync.py). A follower fetches those reveals itself
+# (fugal_subnet/reveal_sync.py): on finney from the root's public bucket with
+# nothing to set, elsewhere from FUGAL_REFERENCE_BUCKET. The root is the
+# validator with FUGAL_ROOT=1, or the one whose FUGAL_REVEAL_BUCKET is the
+# reference bucket. FUGAL_FRAME_BOOTSTRAP (a directory the operator keeps in
+# sync) still works and takes precedence over the built-in fetch.
+# FUGAL_ROOT=0 says the opposite, for the one case that needs it: a root that
+# lost its state follows another validator's reveals until it has caught up
+# (docs/VALIDATOR_GUIDE.md, "The root"), although it publishes to the
+# reference bucket. Unset: decided by the bucket.
+# Only the explicit values count; anything else is refused at import, so a
+# typo such as FUGAL_ROOT=off cannot make a validator the root.
+
+
+def parse_root_flag(raw: str) -> bool | None:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return None
+    if value in ("1", "true", "yes"):
+        return True
+    if value in ("0", "false", "no"):
+        return False
+    raise ValueError(f"FUGAL_ROOT={raw!r} is not one of 1, true, yes, 0, false, no "
+                     "(or unset). Fix it before starting the validator.")
+
+
+ROOT_VALIDATOR: bool | None = parse_root_flag(os.getenv("FUGAL_ROOT", ""))
+REFERENCE_BUCKET = os.getenv("FUGAL_REFERENCE_BUCKET", "").strip()
+
+# The root validator's hotkey. Followers verify the reveals they download
+# against this hotkey's on-chain commitment (`reveal:<epoch_id>:<sha256>`,
+# reveal_publisher), so the bucket alone cannot change what they re-anchor
+# on. Built into the release on finney (uid 0 of netuid 70, the subnet
+# owner's validator), where the variable cannot change it; other chains name
+# their root in FUGAL_ROOT_HOTKEY, and without it a follower fetches
+# unverified, as before. Not a consensus input: it decides which published
+# files a follower accepts, never how an epoch is scored.
+FINNEY_ROOT_HOTKEY = "5E4x811vM4DLkrTwMhrMX1deUp9zPt3GJLinxZneBvAMTL5U"
+ROOT_HOTKEY_ENV = os.getenv("FUGAL_ROOT_HOTKEY", "").strip()
+
+
+def root_hotkey(finney: bool, env: str | None = None) -> str | None:
+    """The hotkey whose reveal commitment a follower verifies against.
+
+    On finney the release's; a FUGAL_ROOT_HOTKEY that names another hotkey is
+    refused, so a typo or a stale value cannot point followers elsewhere.
+    Elsewhere the variable, or None (unverified, as before this check)."""
+    value = (ROOT_HOTKEY_ENV if env is None else env).strip()
+    if finney:
+        if value and value != FINNEY_ROOT_HOTKEY:
+            raise ValueError(
+                f"FUGAL_ROOT_HOTKEY={value} is set on finney, where the root's hotkey is "
+                f"fixed by the release ({FINNEY_ROOT_HOTKEY}). Unset it.")
+        return FINNEY_ROOT_HOTKEY
+    return value or None
 
 # --- Head archive (operational; nothing here reads back into a score) ---
 # Directory where the validator keeps every VERIFIED miner head, raw bytes
@@ -816,6 +958,9 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_CHAMPION_WINDOW_EPOCHS",
     "FUGAL_CHAMPION_MIN_ACCURACY",
     "FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS",
+    "FUGAL_CHAMPION_CONFIRM_QUESTIONS",
+    "FUGAL_CHAMPION_CONFIRM_OPEN_EPOCHS",
+    "FUGAL_CHAMPION_GHOST_RETIRE_CONFIRM",
     "FUGAL_PAYOUT_SEAT_SHARES",
     # Read by benchmarks/loader.py: both change which questions a neuron
     # scores (or whether the pool is verified at all), so they are refused on
@@ -833,6 +978,9 @@ CONSENSUS_ENV_INPUTS = (
     "FUGAL_EPOCH_INTERVAL",
     "FUGAL_TEE_MEASUREMENTS",
     "FUGAL_V2_ACTIVATION_BLOCK",
+    # Read off finney only: there the block is compiled in
+    # (FINNEY_CONFIRM_ACTIVATION_BLOCK) and a different value is refused.
+    "FUGAL_CONFIRM_ACTIVATION_BLOCK",
 )
 OPERATIONAL_ENV_VARS = (
     "FUGAL_VALIDATOR_IP",
@@ -851,6 +999,9 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_MIN_VALIDATOR_STAKE",
     "FUGAL_REVEAL_BUCKET",
     "FUGAL_REVEAL_DELAY_EPOCHS",
+    "FUGAL_ROOT",
+    "FUGAL_REFERENCE_BUCKET",
+    "FUGAL_ROOT_HOTKEY",
     "FUGAL_HEAD_ARCHIVE_DIR",
     "FUGAL_ARCHIVE_ENDPOINTS",
     "FUGAL_FALLBACK_ENDPOINTS",

@@ -274,6 +274,196 @@ def _check_live_configuration(live: bool, approved, activation_block, epoch_inte
                     f"protocol v{version} token manifest is not deployable: {e}") from e
 
 
+def v2_compose_hashes(activation_block: int, root: str | None = None) -> set[str] | None:
+    """Compose hashes of the frozen miner composes in this checkout that are
+    built for `activation_block` (they set FUGAL_V2_ACTIVATION_BLOCK to it).
+
+    An approved entry is `<base>:<compose hash>`, and the compose hash is
+    sha256 of a frozen app-compose.json's raw bytes (deploy/dstack/). None when
+    the checkout carries no frozen composes at all (an installed wheel): there
+    is then nothing to compare against, and the caller says so.
+    """
+    import glob
+    import hashlib
+    import re
+
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    paths = sorted(glob.glob(os.path.join(root, "deploy", "dstack", "app-compose.frozen-*.json")))
+    if not paths:
+        return None
+    wanted = re.compile(rf"FUGAL_V2_ACTIVATION_BLOCK=[\"']?{int(activation_block)}\b")
+    out: set[str] = set()
+    for path in paths:
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            compose = str(json.loads(raw).get("docker_compose_file", ""))
+        except (OSError, ValueError, AttributeError):
+            continue
+        if wanted.search(compose):
+            out.add(hashlib.sha256(raw).hexdigest())
+    return out
+
+
+def _check_chain_configuration(genesis: str | None, live: bool, approved, activation_block,
+                               validator_ip: str) -> int | None:
+    """Refuse, once the chain is known, what would make a FINNEY validator
+    score differently from its peers while looking healthy. Returns the
+    fresh-data confirmation rule's activation block for this chain.
+
+    Each of these was got wrong on mainnet by an operator following the guide,
+    and each failed silently:
+
+    - FUGAL_V2_ACTIVATION_BLOCK unset or not finney's flip block: every epoch
+      is scored by the v1 rules.
+    - No approved entry for a v2 miner image: every v2 proof fails the
+      runtime-image check, the seat stays empty and all weight burns.
+    - FUGAL_VALIDATOR_IP unset: miners that admit only validators at their
+      firewall drop this validator's queries, so it verifies fewer proofs than
+      its peers and its seat can differ from theirs.
+
+    Mock, and every chain but finney, keep the warnings they had: a rehearsal
+    legitimately runs without some of these.
+    """
+    from fugal_subnet import config
+    from fugal_subnet.axon_allowlist import _routable_v4
+    from fugal_subnet.tee.verify import parse_approved
+
+    try:
+        confirm_block = config.confirm_activation_block(genesis)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    if confirm_block is None:
+        logger.info("Fresh-data confirmation of a seat take: not scheduled on this chain")
+    else:
+        logger.info("Fresh-data confirmation of a seat take: from the first epoch whose "
+                    "boundary is at or after block %d", confirm_block)
+    finney = genesis is not None and str(genesis).lower() == config.FINNEY_GENESIS_HASH.lower()
+    if not (finney and live):
+        return confirm_block
+
+    if activation_block != config.FINNEY_V2_ACTIVATION_BLOCK:
+        raise click.ClickException(
+            f"FUGAL_V2_ACTIVATION_BLOCK is {activation_block if activation_block is not None else 'unset'}"
+            f" on finney, where protocol v2 activated at block {config.FINNEY_V2_ACTIVATION_BLOCK}. "
+            f"Set FUGAL_V2_ACTIVATION_BLOCK={config.FINNEY_V2_ACTIVATION_BLOCK}: with any other "
+            "value this validator scores epochs by different rules from every peer."
+        )
+    v2_hashes = v2_compose_hashes(activation_block)
+    if v2_hashes is None:
+        logger.warning("This checkout has no deploy/dstack/app-compose.frozen-*.json, so the "
+                       "approved entries could not be checked for a protocol v2 miner image.")
+    else:
+        apps = {app for apps in parse_approved(approved, require_app=True).values() for app in apps}
+        if not apps & v2_hashes:
+            raise click.ClickException(
+                "FUGAL_TEE_MEASUREMENTS approves no protocol v2 miner image. None of its "
+                f"{len(apps)} compose hash(es) is a frozen compose in this checkout built for "
+                f"block {activation_block} ({', '.join(sorted(h[:12] + '…' for h in v2_hashes)) or 'none found'}). "
+                "Every v2 proof would fail the runtime-image check, the seat would stay empty "
+                "and this validator would burn all of its weight. Add the current entry: "
+                "`scripts/fetch_approved_entries.py --tag <image tag> --network finney` "
+                "(docs/APPROVED_ENTRY_ROTATION.md)."
+            )
+    if not validator_ip or not _routable_v4(validator_ip):
+        raise click.ClickException(
+            f"FUGAL_VALIDATOR_IP is {validator_ip or 'unset'}, not a public IPv4 address. Miners "
+            "admit only the validator IPs recorded on chain at their firewall, so without it "
+            "they drop this validator's queries: it verifies fewer proofs than its peers and "
+            "its seat can differ from theirs. Set it to this host's public egress address "
+            "(`curl -s https://ifconfig.me`)."
+        )
+    return confirm_block
+
+
+def _sync_reference(role, netuid: int, *, since: int, budget_s: float, required: bool,
+                    subtensor=None):
+    """Fetch the root's reveals for a follower that syncs them itself; a no-op
+    for a root or an operator-managed directory. Returns the SyncResult or None.
+
+    With the root's hotkey known (built in on finney), every fetched reveal is
+    verified against the root's on-chain reveal commitment, read here from
+    `subtensor` (reveal_sync, TRUST); a reveal that differs never reaches
+    disk and is logged as an ERROR.
+
+    `required` (startup): a follower that has no reference reveals at all and
+    cannot fetch any is refused, because it would start with an empty seat and
+    burn its weight, the failure this exists to remove. In the epoch loop it
+    is never required: a failed fetch is logged and the epoch runs on what is
+    already on disk (I6).
+    """
+    from fugal_subnet import reveal_sync
+
+    if role is None or role.root or not role.bucket:
+        return None
+    if role.root_hotkey:
+        pointer = (reveal_sync.read_root_pointer(subtensor, netuid, role.root_hotkey)
+                   if subtensor is not None else None)
+        result = reveal_sync.sync(role.bucket, netuid, role.reference_dir, since=since,
+                                  budget_s=budget_s, verify=True, pointer=pointer,
+                                  ledger_path=reveal_sync.pointer_ledger_path(role.reference_dir))
+    else:
+        result = reveal_sync.sync(role.bucket, netuid, role.reference_dir, since=since,
+                                  budget_s=budget_s)
+    if result.rejected:
+        logger.error(
+            "Root reveals from gs://%s/%d: %d reveal(s) differ from the root's on-chain "
+            "commitment and were NOT used (%s). This validator keeps the reveals it already "
+            "verified; tell the subnet owner.", role.bucket, netuid, len(result.rejected),
+            "; ".join(result.rejected[:3]))
+    (logger.info if result.ok else logger.warning)(
+        "Root reveals from gs://%s/%d: %s", role.bucket, netuid, result.summary())
+    if required and result.newest is None:
+        raise click.ClickException(
+            f"Could not fetch the root validator's reveals from gs://{role.bucket}/{netuid} "
+            f"({result.summary()}) and {role.reference_dir} holds none. A validator that is "
+            "not the root starts from them; without them it would start with an empty seat "
+            "and burn its weight. Check outbound HTTPS to storage.googleapis.com, or set "
+            "FUGAL_ROOT=1 if this validator is the root."
+        )
+    return result
+
+
+def _log_following(role, epoch_index: int, n_entries: int, own_seat, epoch_dir: str | None = None,
+                   differ_limit: int | None = None) -> dict | None:
+    """One line saying whose state this follower tracks and how far behind
+    the reference is; an ERROR once its own seat has differed from the root's
+    for longer than verify-and-resync takes to correct it."""
+    import fugal_subnet
+    from fugal_subnet import reveal_sync
+    from fugal_subnet.commit_reveal import EPOCH_DIR
+    from fugal_subnet.v2_sync import DRIFT_CHECKS
+
+    if role is None or role.root:
+        return None
+    limit = differ_limit or DRIFT_CHECKS + 2
+    st = reveal_sync.reference_status(role.reference_dir, epoch_dir or EPOCH_DIR, epoch_index,
+                                      differ_limit=limit)
+    if st["k"] is None:
+        logger.error("Following root: NO reference reveal before e%08d in %s. This validator "
+                     "cannot verify its seat against the root's.", epoch_index,
+                     role.reference_dir)
+        return st
+    logger.info(
+        "Following root: seat uid %s (head %s) at e%08d, entries %d, fugal v%s (root v%s), "
+        "reference lag %d epoch(s); own seat %s",
+        st["uid"] if st["uid"] is not None else "none", (st["champion"] or "none")[:12],
+        st["k"], n_entries, fugal_subnet.__version__, st["version"] or "?", st["lag"],
+        (getattr(own_seat, "champion", None) or "none")[:12],
+    )
+    if st["seat_differs"] >= limit:
+        logger.error(
+            "This validator's champion has differed from the root's on the newest %d reference "
+            "epochs (root %s, own %s at e%08d), longer than verify-and-resync takes to correct. "
+            "Check: the approved entries (FUGAL_TEE_MEASUREMENTS), FUGAL_VALIDATOR_IP on chain, "
+            "and that this is the root's release (v%s here, v%s there).",
+            st["seat_differs"], (st["champion"] or "none")[:12],
+            (st["own_champion"] or "none")[:12], st["k"], fugal_subnet.__version__,
+            st["version"] or "?",
+        )
+    return st
+
+
 def _epoch_to_run(current_block: int, blocks_per_epoch: int, last_epoch_index: int,
                   once: bool) -> int | None:
     """The epoch to run at `current_block`, or None to wait for the next one.
@@ -470,6 +660,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         assert_consensus_overrides_allowed(genesis)
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
+    from fugal_subnet.config import VALIDATOR_IP
+    confirm_block = _check_chain_configuration(
+        genesis, live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, VALIDATOR_IP)
+    on_finney = genesis is not None and str(genesis).lower() == _cfg.FINNEY_GENESIS_HASH.lower()
     metagraph = subtensor.metagraph(netuid)
     # Not bt.Dendrite: its default pool of 100 connections lets axons that
     # never answer starve the rest of the field at collection (fugal_subnet/collect).
@@ -493,13 +687,35 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.reveal_publisher import GcsUploader, delay_epochs_for
     reveal_uploader = GcsUploader(REVEAL_BUCKET) if REVEAL_BUCKET else None
     reveal_delay = REVEAL_DELAY_EPOCHS or delay_epochs_for(subtensor, netuid)
-    if reveal_uploader is None:
+    # Root or follower in the v2 star (fugal_subnet/reveal_sync.resolve_role).
+    from fugal_subnet import reveal_sync
+    try:
+        root_hotkey = _cfg.root_hotkey(on_finney)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    role = reveal_sync.resolve_role(
+        finney=on_finney, root_flag=_cfg.ROOT_VALIDATOR, own_bucket=REVEAL_BUCKET,
+        reference_bucket=_cfg.REFERENCE_BUCKET,
+        explicit_dir=os.getenv("FUGAL_FRAME_BOOTSTRAP") or None,
+        state_path=STATE_PATH, netuid=netuid, root_hotkey=root_hotkey,
+    )
+    if role is not None:
+        logger.info("v2 role: %s", role.describe())
+        if not role.root and role.bucket and not role.root_hotkey:
+            logger.warning("The reveals this follower fetches are not verified against the "
+                           "chain: set FUGAL_ROOT_HOTKEY to the root validator's hotkey.")
+    if reveal_uploader is not None:
+        logger.info("Reveals publish to gs://%s after %d epoch(s)", REVEAL_BUCKET, reveal_delay)
+    elif role is not None and not role.root:
+        # Only the root's reveals are read by anyone (followers verify against
+        # them), so a follower without a bucket is missing nothing.
+        logger.info("FUGAL_REVEAL_BUCKET is unset: this validator's reveals stay on local "
+                    "disk. Only the root's are read by other validators.")
+    else:
         (logger.warning if live else logger.info)(
             "FUGAL_REVEAL_BUCKET is unset: epoch reveals stay on local disk and are "
             "not published. Set it to a public-read GCS bucket (docs/VALIDATOR_GUIDE.md)."
         )
-    else:
-        logger.info("Reveals publish to gs://%s after %d epoch(s)", REVEAL_BUCKET, reveal_delay)
     own_permit = False
     try:
         own_permit = bool(metagraph.validator_permit[my_uid])
@@ -518,7 +734,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # Publish this host's egress IP so miners can admit only validators at
     # their firewall (fugal_subnet/axon_allowlist.py). Never stops startup.
     from fugal_subnet.axon_allowlist import publish_validator_ip
-    from fugal_subnet.config import VALIDATOR_IP
     ip_ok, ip_note = publish_validator_ip(subtensor, wallet, netuid, metagraph, my_uid,
                                           VALIDATOR_IP)
     (logger.info if ip_ok or not live else logger.warning)(ip_note)
@@ -613,8 +828,24 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     if v2_window_degraded:
         logger.error(
             "v2 seat state present but its comparison window is missing: no first or "
-            "take decisions until it is rebuilt (FUGAL_FRAME_BOOTSTRAP) or refills."
+            "take decisions until it is rebuilt from the reference reveals or refills."
         )
+    # Where state is rebuilt from when this validator has none: a follower's
+    # reference reveals (fetched here, now, when it syncs them itself), or the
+    # directory a root's operator named for a rebuild from its own reveals.
+    blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
+    fresh_start = not state["frame"] or (not v2_raw and not v2_window.slices)
+    if role is not None and not role.root:
+        now_epoch = epoch_index_for_block(subtensor.get_current_block(), blocks_per_epoch)
+        # Everything on a first start (the frame is rebuilt from the whole
+        # history); afterwards only what the comparison window reads.
+        _sync_reference(role, netuid, required=live and fresh_start,
+                        since=0 if fresh_start else now_epoch - CHAMPION_WINDOW_EPOCHS - 2,
+                        budget_s=1800.0 if fresh_start else 120.0, subtensor=subtensor)
+        rebuild_dir = role.reference_dir
+    else:
+        rebuild_dir = os.getenv("FUGAL_FRAME_BOOTSTRAP") or None
+    reference_dir = role.reference_dir if role is not None and not role.root else None
     scoring_state = ScoringState(records=state["records"])
     prev_uids: list[int] = state["prev_uids"]
     prev_weights: list[float] = state["prev_weights"]
@@ -626,7 +857,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # well-defined at epoch 1 with zero samples.
     if state["frame"]:
         frame = ReferenceFrame.from_dict(state["frame"])
-    elif os.getenv("FUGAL_FRAME_BOOTSTRAP"):
+    elif rebuild_dir:
         # No local state. Rebuild from published reveals rather than starting
         # from the neutral prior, because a fresh frame is not a smaller version
         # of an established one — it is a DIFFERENT one. acc_best is the
@@ -634,7 +865,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         # scores the whole field differently from its peers: 0.500 against 0.832
         # on measured data. Without this a lost disk, or simply a second
         # validator joining, diverges the subnet.
-        frame = rebuild_from_reveals(os.environ["FUGAL_FRAME_BOOTSTRAP"])
+        frame = rebuild_from_reveals(rebuild_dir)
     else:
         # Live requires the shipped frame: every validator must value the
         # frontier from the same evidence, and "start cold" is a different
@@ -646,8 +877,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         logger.warning(
             "Starting from the bootstrap frame with no accumulated history. If "
             "other validators have history, this one will score the field "
-            "differently until it catches up. Set FUGAL_FRAME_BOOTSTRAP to a "
-            "directory of published reveals to rebuild instead."
+            "differently until it catches up. A root that lost its state sets "
+            "FUGAL_FRAME_BOOTSTRAP to a directory of its published reveals to rebuild instead."
         )
 
     # Protocol v2 state, rebuilt the same way when this validator has none of
@@ -663,12 +894,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # lacks those epochs and the seat is as of the newest reveal. That opens a
     # sync gap (below: `behind`), and verify-and-resync re-anchors on the
     # reference once it has published past it (fugal_subnet/v2_sync.py).
-    if ((not v2_raw or v2_window_degraded) and not v2_window.slices
-            and os.getenv("FUGAL_FRAME_BOOTSTRAP")):
+    if (not v2_raw or v2_window_degraded) and not v2_window.slices and rebuild_dir:
         from fugal_subnet.evidence import Evidence
         from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
         rebuilt = rebuild_v2_from_reveals(
-            os.environ["FUGAL_FRAME_BOOTSTRAP"], window_size=CHAMPION_WINDOW_EPOCHS,
+            rebuild_dir, window_size=CHAMPION_WINDOW_EPOCHS,
             # The replayed window is v2 epochs, so it is priced at v2's table.
             prices=epoch_inputs.get(2, epoch_inputs[1])[2],
             bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
@@ -688,7 +918,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 rec.evidence = Evidence(weights_hash=h, burn_in_n=rebuilt.burn_in[h])
                 scoring_state.records[uid] = rec
             resume_epoch = epoch_index_for_block(
-                subtensor.get_current_block(), blocks_per_epoch_fn(EPOCH_INTERVAL),
+                subtensor.get_current_block(), blocks_per_epoch,
             )
             behind = resume_epoch - 1 - int(rebuilt.newest_epoch_id.lstrip("e"))
             v2_window_degraded = False
@@ -705,7 +935,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 logger.info("v2 state rebuilt exactly from reveals up to %s",
                             rebuilt.newest_epoch_id)
 
-    blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
+    _log_following(role, epoch_index_for_block(subtensor.get_current_block(), blocks_per_epoch),
+                   len(approved_measurements), v2_seat)
 
     epoch_failed = False
     while True:
@@ -738,10 +969,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # at once: a re-anchor is a state correction, not an epoch, and a
             # retry recomputes the same one.
             if protocol_version >= 2:
+                # A follower that fetches the root's reveals itself brings
+                # them up to date first. Never the epoch's failure (I6).
+                _sync_reference(role, netuid, required=False, budget_s=120.0,
+                                since=epoch_index - CHAMPION_WINDOW_EPOCHS - 2,
+                                subtensor=subtensor)
                 synced = _v2_sync_step(
                     epoch_index=epoch_index, last_epoch_index=last_epoch_index,
                     first_v2_epoch=V2_ACTIVATION_BLOCK // blocks_per_epoch,
-                    reference_dir=os.getenv("FUGAL_FRAME_BOOTSTRAP") or None,
+                    reference_dir=reference_dir,
                     scoring_state=scoring_state, window=v2_window, seat=v2_seat,
                     copy_state=v2_copy, window_degraded=v2_window_degraded,
                     gap_until=v2_gap_until, anchor_at=v2_anchor_at, prices=epoch_inputs[2][2],
@@ -757,6 +993,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                                    "window_degraded": v2_window_degraded,
                                    "gap_until": v2_gap_until, "anchor_at": v2_anchor_at},
                                v2_window=v2_window)
+                _log_following(role, epoch_index, len(approved_measurements), v2_seat)
 
             # --- COMMITMENTS, pinned to the boundary block ---
             # Read NOW, while the boundary block is seconds old, not after the
@@ -849,6 +1086,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # could not check is not a proof it rejected, and the difference is
             # the difference between an outage and an accusation.
             n_unverifiable = 0
+            outcomes: dict[int, str] = {}
 
             # One ceiling for the whole phase. Every fetch is already bounded
             # individually; this bounds their SUM, which is the quantity I6
@@ -889,6 +1127,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     chain_commitments.get(hotkey_ss58, ("", 0)),
                     registration_block_of(metagraph, uid), checks,
                 )
+                outcomes[uid] = checked.status
                 if checked.seniority is not None:
                     commit_blocks[uid] = checked.seniority
                 if checked.status == "invalid":
@@ -905,6 +1144,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # Diagnostics only: keep the verified heads on private disk. Feeds
             # no score, hash, reveal or fingerprint, and can't fail the epoch.
             _archive_heads(epoch_id, verified_heads, head_hashes, metagraph)
+            # Diagnostics only: who was reached, how long it took, and what
+            # became of each proof (the epoch log keeps it per UID).
+            collection, collection_line = _collection_report(
+                responses, list(metagraph.hotkeys), chain_commitments, outcomes)
+            logger.info(collection_line)
 
             if not verified_proofs:
                 logger.warning("No valid proofs received, skipping epoch")
@@ -915,6 +1159,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     n_heads_invalid=n_invalid,
                     n_heads_unverifiable=n_unverifiable,
                     commit_hash=commitment.commit_hash,
+                    collection=collection,
                     anomalies=(
                         ["no_valid_proofs"]
                         + (["collateral_unavailable"] if n_unverifiable else [])
@@ -1093,7 +1338,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     # holder (the copy rule, copy_rule.py).
                     records=epoch_state.records, commitments=snapshot,
                     window=v2_window, seat=v2_seat, copy_state=v2_copy, burn_uid=burn_uid,
-                    params=seat_params_from_config(), shares=PAYOUT_SEAT_SHARES,
+                    params=seat_params_from_config(boundary_block, confirm_block),
+                    shares=PAYOUT_SEAT_SHARES,
                     burn_in_questions=V2_BURN_IN_QUESTIONS,
                     bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
                     allow_take=not v2_window_degraded,
@@ -1108,9 +1354,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 if v2_window_degraded:
                     logger.error(
                         "v2 comparison window was lost and has not been rebuilt: holding "
-                        "the seat but making NO first or take decision this epoch. Set "
-                        "FUGAL_FRAME_BOOTSTRAP to a directory of reveals and restart to "
-                        "rebuild it (it also refills itself after %d epochs).",
+                        "the seat but making NO first or take decision this epoch. Restart "
+                        "to rebuild it from the reference reveals (a root: set "
+                        "FUGAL_FRAME_BOOTSTRAP to a directory of its own); it also refills "
+                        "itself after %d epochs.",
                         CHAMPION_WINDOW_EPOCHS,
                     )
                 uids, weights = v2_result.uids, v2_result.weights
@@ -1255,7 +1502,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 commit_hash=commitment.commit_hash,
                 reveal_verified=reveal_ok,
                 scores=epoch_score_dicts, n_failed=epoch_n_failed,
-                weights=epoch_weight_map,
+                weights=epoch_weight_map, collection=collection,
                 dedup_disqualified=list(dupes),
                 weight_capped=weight_capped,
                 set_weights_success=success,
@@ -1554,6 +1801,72 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
     for w in result.warnings or ():
         logger.info("UID %d proof warning: %s", uid, w)
     return _Checked("valid", seniority, proof, head_bytes)
+
+
+def _query_outcome(resp) -> tuple[str, float | None]:
+    """How the query to one axon ended, as the dendrite recorded it:
+    (status, seconds). The status message is text the far end chose, so it is
+    cut to printable ASCII and a short length before it reaches a log (I2)."""
+    d = getattr(resp, "dendrite", None)
+    code = getattr(d, "status_code", None)
+    try:
+        seconds = round(float(getattr(d, "process_time", None)), 2)
+    except (TypeError, ValueError):
+        seconds = None
+    if code is None:
+        return "no reply", seconds
+    status = str(code)[:8]
+    if status != "200":
+        msg = str(getattr(d, "status_message", "") or "")
+        msg = "".join(ch if 32 <= ord(ch) < 127 else "?" for ch in msg)[:80]
+        if msg:
+            status = f"{status} {msg}"
+    return status, seconds
+
+
+# How many UIDs the one-line collection summary names; the epoch log has all.
+_COLLECTION_LINE_UIDS = 40
+
+
+def _collection_report(responses, hotkeys: list, chain_commitments: dict,
+                       outcomes: dict) -> tuple[dict, str]:
+    """({uid: what happened} for the epoch log, the one-line summary).
+
+    Covers every UID whose hotkey had a head committed at the boundary (a
+    miner that meant to be scored) and every UID that answered anything. The
+    summary names the committed miners that ended the epoch without a valid
+    proof, each with how its query ended, because that is the question a
+    miner asks: was I never reached, was I slow, or was my proof refused?
+    Never raises: it is a log.
+    """
+    report: dict[str, dict] = {}
+    counts = {"valid": 0, "invalid": 0, "unverifiable": 0, "absent": 0}
+    missing: list[str] = []
+    try:
+        for uid, resp in enumerate(responses):
+            result = outcomes.get(uid, "absent")
+            counts[result] = counts.get(result, 0) + 1
+            hotkey = hotkeys[uid] if uid < len(hotkeys) else ""
+            committed = bool(hotkey) and hotkey in chain_commitments
+            status, seconds = _query_outcome(resp)
+            if not committed and status == "no reply" and result == "absent":
+                continue
+            report[str(uid)] = {"query": status, "seconds": seconds, "result": result,
+                                "committed": committed}
+            if committed and result != "valid":
+                took = f" after {seconds:.1f}s" if seconds is not None else ""
+                missing.append(f"{uid} ({result}; query {status}{took})")
+    except Exception as e:  # noqa: BLE001 - diagnostics must not cost the epoch
+        logger.debug("collection report failed: %s", e)
+    line = (f"Collection: {len(responses)} queried; {counts['valid']} valid, "
+            f"{counts['invalid']} invalid, {counts['unverifiable']} unverifiable, "
+            f"{counts['absent']} absent")
+    if missing:
+        shown = missing[:_COLLECTION_LINE_UIDS]
+        more = f", and {len(missing) - len(shown)} more" if len(missing) > len(shown) else ""
+        line += (f". Committed miners without a valid proof ({len(missing)}): "
+                 f"uid {', uid '.join(shown)}{more}")
+    return report, line
 
 
 def _get_bundle_for_uid(uid, resp):
@@ -2094,10 +2407,11 @@ def _v2_sync_step(*, epoch_index: int, last_epoch_index: int, first_v2_epoch: in
     if last_epoch_index >= 0 and epoch_index > last_epoch_index + 1 \
             and epoch_index - 1 >= first_v2_epoch:
         gap_until = max(-1 if gap_until is None else gap_until, epoch_index - 1)
-        logger.error("v2 epochs %d..%d were not observed by this validator: its state is "
-                     "unverified until it matches the reference again (decisions go on as "
-                     "usual; its reveals are marked v2_sync.unverified)",
-                     max(last_epoch_index + 1, first_v2_epoch), epoch_index - 1)
+        (logger.error if reference_dir else logger.warning)(
+            "v2 epochs %d..%d were not run by this validator%s",
+            max(last_epoch_index + 1, first_v2_epoch), epoch_index - 1,
+            (": its state is unverified until it matches the reference again (decisions go "
+             "on as usual; its reveals are marked v2_sync.unverified)") if reference_dir else "")
         state, changed = state[:5] + (gap_until, anchor_at), True
     try:
         return _v2_sync_inner(epoch_index=epoch_index, reference_dir=reference_dir,
@@ -2136,10 +2450,16 @@ def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_
         # star). It has nothing to verify against, so it never marks itself
         # unverified, which would only stop its followers from verifying.
         if gap_until is not None:
-            logger.error("v2 epochs through e%08d were not observed and no reference is set: "
-                         "this validator's state may now differ from its peers'. A root "
-                         "validator recovers by restarting from a rebuild "
-                         "(docs/VALIDATOR_GUIDE.md).", gap_until)
+            # Not an error for a root, and worded so it is not read as one: an
+            # epoch in which no miner had a valid proof leaves the seat state
+            # exactly as it was, and the root is what the others verify
+            # against. It matters only if the root was DOWN while its
+            # followers scored epochs.
+            logger.warning("Root: no verified proof in the v2 epoch(s) through e%08d. Nothing "
+                           "to do if no miner served then: the seat state is unchanged, and a "
+                           "root has no reference to verify against. If this validator was "
+                           "down while others scored those epochs, see docs/VALIDATOR_GUIDE.md, "
+                           "\"If the root misses epochs\".", gap_until)
             return _V2Sync(True, state[:5] + (None, None))
         return _V2Sync(changed, state)
     since = epoch_index - window_epochs - 1
@@ -2164,7 +2484,8 @@ def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_
         state = state[:5] + (gap_until, anchor_at)
     if chk.status == "no_reference":
         logger.error("v2 gap open (through e%08d) but %s holds no reference reveal before "
-                     "e%08d: is it synced from gs://<reference-bucket>/<netuid>?",
+                     "e%08d: the root's reveals have not been fetched (see the 'Root reveals' "
+                     "line above, or the operator's own sync of that directory).",
                      gap_until, reference_dir, epoch_index)
         return _V2Sync(changed, state)
     if anchor_at is not None and chk.k < anchor_at:

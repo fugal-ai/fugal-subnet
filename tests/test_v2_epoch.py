@@ -80,7 +80,7 @@ def C(uid, head, block, coldkey=None):
 
 
 def run(epoch, policies, *, window=None, seat=None, copy=None, commits=None, burn_in=0,
-        blocks=None, records=None, heads=None, coldkeys=None, failed=None):
+        blocks=None, records=None, heads=None, coldkeys=None, failed=None, params=None):
     """One v2 epoch. Epoch e is chain epoch e + 1, so every head's first-commit
     epoch (>= 1) is at or before it. By default UID u serves head H(u) from
     hotkey hk{u} under coldkey ck{u}, committed at block `blocks[u]` (= u).
@@ -100,7 +100,8 @@ def run(epoch, policies, *, window=None, seat=None, copy=None, commits=None, bur
         head_hashes=heads, coldkey_of=coldkeys, hotkey_of={u: f"hk{u}" for u in uids},
         records=records if records is not None else {u: burned(heads[u]) for u in uids},
         commitments=commits, window=window or Window.empty(48), seat=seat or SeatState(),
-        copy_state=copy or CopyState(), burn_uid=0, params=seat_params_from_config(),
+        copy_state=copy or CopyState(), burn_uid=0,
+        params=params or seat_params_from_config(),
         shares=(0.85, 0.10, 0.05), burn_in_questions=burn_in, bench_category=CATEGORY,
     )
 

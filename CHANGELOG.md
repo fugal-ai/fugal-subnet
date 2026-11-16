@@ -4,6 +4,99 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-16
+
+### Added — a take is confirmed on fresh questions (consensus, validators only; from an activation block compiled into the release)
+The take test runs every epoch for every challenger, so heads with no real
+edge over the champion pass it by luck now and then, and more heads means more
+lucky passes. From the confirmation activation block a challenger that beats a
+settled champion is recorded as pending, the champion keeps the seat and is
+paid, and the challenger takes the seat when it passes the same test again on
+at least 1,500 questions drawn after its first pass (INVARIANTS I3, "a take is
+confirmed on fresh questions"). No miner image changes.
+- `champion.py`: `Pending`, `SeatState.pending` / `confirm_from`,
+  `seat_step` and `_live_pending`; the fresh test is the same `paired_test`
+  on epochs after the pass, with its own resampling stream. A seat filled
+  from empty can be taken by the plain test in the 4 epochs after the fill
+  and is settled from fill + 5 (`CHAMPION_CONFIRM_OPEN_EPOCHS`). A
+  champion that only missed is still confirmed against; a retired ghost is
+  not (it answers no new questions).
+- From the same block a retired champion's ghost bars for 8 epochs
+  (`CHAMPION_GHOST_RETIRE_CONFIRM`) instead of 24: a head committed after the
+  retirement can never be paired with the ghost, so the old window could
+  leave the seat empty and burning for about 29 hours.
+- `config.confirm_activation_block`: finney's block is in the release
+  (`FINNEY_CONFIRM_ACTIVATION_BLOCK` = 9,542,160, epoch e00026506, about Thu 2026-11-19 17:30 UTC), and the variable
+  cannot move it there; other chains read `FUGAL_CONFIRM_ACTIVATION_BLOCK`.
+  Before the block nothing changes: the same weights and a byte-identical
+  published seat. The consensus digest changes with the release (three new
+  constants and the block).
+- Measured with the shipped rule
+  (`scripts/experiments/experiment_seat_confirmation.py`): ten challengers
+  with no edge took a settled champion's seat in 8% to 18% of 60-epoch runs
+  before and in none of 120 with the rule (thirty near-copies: 22.5% and
+  2.5%). A challenger with a real edge still takes the seat, in about twice
+  the epochs (+1.5 points: epoch 5 becomes 10; +0.85: median 8 becomes 18;
+  +0.5: 94% of runs inside 150 epochs).
+- A validator whose window is not trusted (lost or refilling) makes no take,
+  and it now also passes the pending records through as published instead of
+  judging them against that window, where every record read as a broken run.
+- The consensus digest leaves out a `FUGAL_CONFIRM_ACTIVATION_BLOCK` equal to
+  finney's compiled block (the only value finney accepts), so two finney
+  validators on the same rule publish the same digest whether or not they set
+  it.
+- `tests/test_seat_confirmation.py`; a `seat_confirmation` stage in
+  `scripts/check_determinism.py`.
+
+### Changed — a validator that is not the root follows it with nothing to set up, and finney refuses the configurations that failed silently (validator only; not a consensus change)
+- **Followers fetch the root's reveals themselves** (`fugal_subnet/reveal_sync.py`):
+  plain HTTPS from the public bucket, at startup and before every epoch. No
+  `gsutil` timer and no `FUGAL_FRAME_BOOTSTRAP` (both still work). The root
+  sets `FUGAL_ROOT=1`, or is recognised by publishing to the reference bucket.
+- **Followers verify downloaded reveals against the root's on-chain
+  commitment** (`reveal:<epoch>:<sha256>`): the reveal at the committed epoch
+  must match; one newer than the commitment waits for it; every commitment a
+  follower reads is recorded beside its reference directory
+  (`reference-reveals/<netuid>.pointers.json`) and older reveals with a
+  recorded commitment must match it; a reveal that differs is never used and
+  is logged as an ERROR. The root's hotkey is in the release on finney
+  (`config.FINNEY_ROOT_HOTKEY`; a different `FUGAL_ROOT_HOTKEY` is refused at
+  startup); a testnet names it in `FUGAL_ROOT_HOTKEY`. Reveals published
+  before a follower first ran have no recorded commitment and are accepted as
+  before; hash-chained reveals in the v3 reset will cover those too. Not a
+  consensus change: no reveal or digest changes.
+- **Refused at startup on finney (live):** `FUGAL_V2_ACTIVATION_BLOCK` unset
+  or not 9485640; no approved entry for a v2 miner image; no public IPv4 in
+  `FUGAL_VALIDATOR_IP`; a follower with no reference reveals and no way to
+  fetch any. Each of these used to start, look healthy and burn the
+  validator's weight.
+- **`Following root: seat uid N (head …), entries N, fugal vX (root vY),
+  reference lag K epoch(s)`** at startup and every epoch, and an ERROR naming
+  what to check when this validator's champion has differed from the root's
+  for longer than verify-and-resync takes to correct.
+- **Per-UID collection record:** one `Collection:` line per epoch naming the
+  committed miners that ended it without a valid proof and how each query
+  ended (status, seconds), and a `collection` map in the epoch log. It tells
+  "never reached" from "slow" from "refused".
+- The root's "v2 epochs … were not observed and no reference is set" ERROR
+  after an epoch with no proofs is now a WARNING that says it is harmless
+  unless the root was down. A follower without `FUGAL_REVEAL_BUCKET` is told
+  once, at INFO: only the root's reveals are read.
+- VALIDATOR_GUIDE: a "Minimum mainnet environment" box.
+- `FUGAL_ROOT` accepts only `1`, `true`, `yes`, `0`, `false`, `no` (or
+  unset); any other value is refused at startup. `FUGAL_ROOT=off` used to make
+  a validator the root.
+- The reveal sync's time budget also bounds a paged bucket listing, not only
+  the downloads after it.
+- APPROVED_ENTRY_ROTATION: a validator on finney starts only if one of its
+  approved composes is frozen in its own release, so a rotation that keeps
+  only a newer image's entry needs the validator release that ships it.
+
+### Fixed
+- `fugal_subnet.__version__` said 0.3.1 in the 0.3.2 release, so reveals named
+  the previous version (`environment.fugal_version`; not in the consensus
+  digest). A test now holds it equal to `pyproject.toml`.
+
 ## [0.3.2] - 2026-11-12
 
 ### Fixed — proof collection no longer makes miners wait behind axons that never answer (validator only; not a consensus change)
@@ -1648,7 +1741,10 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.2...v0.4.0
+[0.3.2]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/fugal-ai/fugal-subnet/releases/tag/v0.1.0

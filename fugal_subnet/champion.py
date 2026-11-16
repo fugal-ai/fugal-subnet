@@ -23,6 +23,17 @@ champion keeps it with no margin. The bootstrap resamples questions with
 replacement within category, keeping both heads' answers to a question
 together, which is what makes the comparison paired.
 
+FRESH-DATA CONFIRMATION (from config.CONFIRM_ACTIVATION_BLOCK). Passing that
+test once does not take the seat from a settled champion. The epoch a
+challenger first passes is recorded (a pending record in the seat state), and
+it takes the seat only when it passes the same test again on questions drawn
+AFTER that epoch: at least CHAMPION_CONFIRM_QUESTIONS of them, while the
+first pass is still inside the window. The champion holds and is paid meanwhile. The
+first pass is a selection: the test is re-run every epoch for every
+challenger, so with k challengers that have no real edge somebody passes by
+luck about k times as often as one would. The second pass is on data the
+selection never saw, so luck has to strike twice.
+
 DETERMINISM. Two validators must reach the same verdict on every CPU. Each
 NV_i is computed elementwise (exact IEEE operations, no reductions) and then
 quantised to an integer number of NV_UNIT points, so every sum below is an
@@ -406,6 +417,13 @@ def window_accuracy(
 #   HOLD   a champion that is live and eligible keeps the seat with no margin;
 #   TAKE   an eligible challenger takes it only by beating the bar by the
 #          margin (paired_test), and passing the accuracy gates;
+#   CONFIRM  (from the confirmation activation block) against a settled
+#          champion, or its ghost while it has only missed, the first pass
+#          only records the challenger as pending; it takes the seat when it
+#          also passes on the questions drawn since. A seat filled from empty
+#          is open to the plain test for a few epochs first, and a retired
+#          champion's ghost never needs confirming against: it answers no
+#          new questions;
 #   GHOST  a champion that stops being live or eligible leaves a ghost bar for
 #          CHAMPION_GHOST_OFF epochs (it missed) or CHAMPION_GHOST_RETIRE (its
 #          owner serves a different head); while it stands, a challenger must
@@ -427,6 +445,15 @@ class Ghost:
 
 
 @dataclass(frozen=True)
+class Pending:
+    """A challenger that has passed the take test and awaits confirmation."""
+
+    head_hash: str
+    since_epoch: int         # the epoch it first passed; later epochs are fresh
+    bar: str                 # the champion (or its missed ghost) it passed against
+
+
+@dataclass(frozen=True)
 class SeatState:
     champion: str | None = None
     champion_since: int | None = None
@@ -439,12 +466,24 @@ class SeatState:
     # empty.
     high_water: float = 0.0
     high_water_hard: float = 0.0
+    # Fresh-data confirmation (empty and None before its activation block, so
+    # the published seat is byte-identical to the one before the rule).
+    # Challengers that passed the take test and await confirmation, by hash.
+    pending: tuple[Pending, ...] = ()
+    # The first epoch at which taking the seat from this champion needs
+    # confirmation. A champion seated from an empty seat won it against
+    # nobody, so for CHAMPION_CONFIRM_OPEN_EPOCHS it can be taken by the plain
+    # test; a champion that was itself confirmed is settled at once. None on a
+    # champion seated before the rule: settled.
+    confirm_from: int | None = None
 
     def __post_init__(self):
         # Bounded: the payout reads two former champions; HISTORY_KEEP keep
         # the record readable without letting it grow for the life of the
         # subnet.
         object.__setattr__(self, "history", tuple(self.history)[:HISTORY_KEEP])
+        object.__setattr__(
+            self, "pending", tuple(sorted(self.pending, key=lambda p: p.head_hash)))
 
 
 @dataclass(frozen=True)
@@ -488,6 +527,10 @@ class SeatParams:
     min_paired_questions: int = 0
     # Pinned anchor spend per question for V (v2); None = the champion's own.
     anchor_spend: float | None = None
+    # Fresh-data confirmation. 0 questions = the rule is not in force (every
+    # epoch before config.CONFIRM_ACTIVATION_BLOCK): a take is immediate.
+    confirm_questions: int = 0
+    confirm_open_epochs: int = 0
 
 
 @dataclass(frozen=True)
@@ -529,8 +572,12 @@ def _passes_gates(
 
 
 def _seated(state: SeatState, window: Window, winner: Candidate, epoch: int,
-            history: tuple[str, ...], params: SeatParams) -> SeatState:
-    """The state with `winner` newly seated and the high-water marks raised."""
+            history: tuple[str, ...], params: SeatParams,
+            confirm_from: int | None = None) -> SeatState:
+    """The state with `winner` newly seated and the high-water marks raised.
+
+    Every pending record is dropped: each was a pass against the previous
+    holder, and says nothing about this one."""
     acc, n = window_accuracy(window, winner.head_hash, winner.since_epoch, run_only=True)
     acc_h, n_h = window_accuracy(window, winner.head_hash, winner.since_epoch, hard_only=True,
                                  run_only=True)
@@ -543,30 +590,42 @@ def _seated(state: SeatState, window: Window, winner: Candidate, epoch: int,
         history=tuple(x for x in history if x != winner.head_hash),
         ghosts=(),  # the new champion beat every standing bar, or none stood
         high_water=hw, high_water_hard=hw_h,
+        pending=(), confirm_from=confirm_from,
     )
 
 
 def _challenge(
     window: Window, c: Candidate, bar: str, epoch_id: str, params: SeatParams,
-    detail: list[tuple[str, str]], label: str = "",
+    detail: list[tuple[str, str]], label: str = "", *, fresh_after: int | None = None,
 ) -> int | None:
     """The paired test of `c` over `bar`: its mean NV units if it beats the bar
-    by the margin on at least the minimum paired questions, else None."""
+    by the margin on at least the minimum paired questions, else None.
+
+    `fresh_after` runs the confirmation instead: the same test, on the
+    questions of epochs after `fresh_after` only (the epoch `c` first passed
+    in), needing `confirm_questions` of them. Its resampling stream is its
+    own, so it shares no draw with the test that selected `c`.
+    """
+    fresh = fresh_after is not None
+    since = max(int(c.since_epoch), int(fresh_after) + 1) if fresh else c.since_epoch
+    need = params.confirm_questions if fresh else params.min_paired_questions
     pu = pair_units(window, c.head_hash, bar, accuracy_value=params.accuracy_value,
-                    hard_weight=params.hard_weight, since_epoch=c.since_epoch,
+                    hard_weight=params.hard_weight, since_epoch=since,
                     anchor_spend=params.anchor_spend)
     res = paired_test(
         pu.by_category, margin_points=params.margin_points,
         confidence=params.confidence, resamples=params.resamples,
-        seed=pair_seed(epoch_id, bar, c.head_hash),
+        seed=pair_seed(f"{epoch_id}:confirm" if fresh else epoch_id, bar, c.head_hash),
     )
     v = "none" if pu.value_per_correct is None else f"{pu.value_per_correct:.6f}"
+    if fresh:
+        label = "fresh questions,"
     prefix = f"vs {label} " if label else "vs "
     detail.append((c.head_hash, f"{prefix}{bar[:16]}: n={res.n_questions} V={v} "
                                 f"NV={res.mean_points:+.3f} LCB={res.lcb_points:+.3f}"))
-    if res.n_questions < params.min_paired_questions:
-        detail.append((c.head_hash, f"only {res.n_questions} paired questions; "
-                                    f"{params.min_paired_questions} needed"))
+    if res.n_questions < need:
+        detail.append((c.head_hash, f"only {res.n_questions} "
+                                    f"{'fresh' if fresh else 'paired'} questions; {need} needed"))
         return None
     if not res.takes_seat:
         return None
@@ -597,19 +656,27 @@ def seat_step(
     head, the senior seat holders it must ALSO beat by the margin before it can take
     a seat, first or by challenge. None (or a head with no entry) adds no bar,
     which is this function's behaviour before the copy rule.
+
+    With `params.confirm_questions` set (the confirmation rule in force), a
+    challenger that beats a settled champion is recorded as pending, and takes
+    the seat only by passing again on the questions drawn since (module
+    docstring). With it 0 nothing below differs from the rule before it.
     """
     detail: list[tuple[str, str]] = []
+    confirm_on = params.confirm_questions > 0
     ghosts = tuple(g for g in state.ghosts if g.last_epoch >= epoch)
     if state.champion is None and state.ghosts and not ghosts:
         # The last ghost expired with the seat empty: the champion that set
         # the high-water marks is gone for good, so the marks reset and the
         # next eligible head can take the seat. Without this a departed
         # champion's bar could leave the share burning indefinitely.
-        state = dataclasses.replace(state, high_water=0.0, high_water_hard=0.0)
+        state = dataclasses.replace(state, high_water=0.0, high_water_hard=0.0,
+                                    pending=(), confirm_from=None)
         detail.append(("", "last ghost expired with the seat empty; high-water marks reset"))
     champion = state.champion
     since = state.champion_since
     history = state.history
+    confirm_from = state.confirm_from if confirm_on else None
 
     # A champion that went offline (a "missed" ghost) and whose owner then
     # commits a different head is retired: its ghost bar is extended to the
@@ -668,6 +735,10 @@ def seat_step(
     ] if allow_take else []
     if not allow_take:
         detail.append(("", "window not trusted: no first or take decision this epoch"))
+    # A head seated by the plain test (an empty seat, a retired ghost, or a
+    # champion still in its own open period) is open to the plain test for
+    # this many epochs before a challenger needs confirming against it.
+    open_until = epoch + params.confirm_open_epochs if confirm_on else None
 
     def beats_seniors(c: Candidate, already: Sequence[str] = ()) -> bool:
         # The copy rule: a head must beat every senior seat holder in the
@@ -699,7 +770,7 @@ def seat_step(
                 c.first_block if c.first_block is not None else float("inf"),
                 c.seniority, c.head_hash))
             c = ranked[0]
-            new = _seated(state, window, c, epoch, history, params)
+            new = _seated(state, window, c, epoch, history, params, open_until)
             detail.append((c.head_hash, f"took the empty seat (best of {len(eligible)} "
                                         "eligible by measured value)"))
             return SeatDecision(new, c.head_hash, "first", None, tuple(detail))
@@ -707,6 +778,25 @@ def seat_step(
         return SeatDecision(new, None, "empty", None, tuple(detail))
 
     bars = [champion] if champion is not None else sorted(ghost_hashes)
+
+    # CONFIRM. A bar needs confirming against when it is the champion, or its
+    # ghost while it has only missed (a short outage must not reopen the seat
+    # to a single lucky pass), and the champion is settled. A retired ghost
+    # answers no new questions, so there is nothing fresh to pair with it.
+    ghost_reason = {g.head_hash: g.reason for g in ghosts}
+    settled = confirm_on and (confirm_from is None or epoch >= confirm_from)
+    guarded = [b for b in bars
+               if settled and (b == champion or ghost_reason.get(b) == "missed")]
+    # A window that is not trusted decides nothing this epoch, so it does not
+    # judge the pending records either: they pass through as published. Judged
+    # against a lost or refilling window, every record reads as a broken run,
+    # and a restarted root would publish a seat that dropped them all.
+    if not allow_take:
+        pending = {p.head_hash: p for p in (state.pending if confirm_on else ())}
+    else:
+        pending = _live_pending(state.pending if confirm_on else (), epoch, window,
+                                candidates, guarded, params, detail)
+
     qualifying: list[tuple[int, tuple, str]] = []
     for c in challengers:
         if not _passes_gates(state, window, c, params, detail):
@@ -720,8 +810,22 @@ def seat_step(
             worst_mean = mean if worst_mean is None else min(worst_mean, mean)
         # The copy rule is pass/fail; the ranking among qualifiers stays the
         # margin over the champion or its ghost.
-        if worst_mean is not None and beats_seniors(c, bars):
-            qualifying.append((worst_mean, c.seniority, c.head_hash))
+        if worst_mean is None or not beats_seniors(c, bars):
+            continue
+        if guarded:
+            p = pending.get(c.head_hash)
+            if p is None:
+                pending[c.head_hash] = Pending(c.head_hash, epoch, guarded[0])
+                detail.append((c.head_hash, "passed the take test; takes the seat when it "
+                                            f"passes again on {params.confirm_questions} "
+                                            "questions drawn from the next epoch on"))
+                continue
+            if any(_challenge(window, c, b, epoch_id, params, detail,
+                              fresh_after=p.since_epoch) is None for b in guarded):
+                continue
+            detail.append((c.head_hash, "confirmed on questions drawn since epoch "
+                                        f"{p.since_epoch}"))
+        qualifying.append((worst_mean, c.seniority, c.head_hash))
 
     if qualifying:
         # Highest margin over the bar wins; ties go to the most senior.
@@ -729,13 +833,56 @@ def seat_step(
         winner = candidates[qualifying[0][2]]
         if champion is not None:
             history = (champion,) + tuple(x for x in history if x != champion)
-        new = _seated(state, window, winner, epoch, history, params)
+        # A confirmed winner has replicated, so it is settled at once; one that
+        # took an open or retired seat by the plain test gets the open period.
+        new = _seated(state, window, winner, epoch, history, params,
+                      (epoch if guarded else open_until))
         return SeatDecision(new, winner.head_hash, "take", bars[0], tuple(detail))
 
+    kept = tuple(pending[h] for h in sorted(pending))
     if champion is not None:
         new = SeatState(champion, since, history, ghosts,
-                        state.high_water, state.high_water_hard)
+                        state.high_water, state.high_water_hard, kept, confirm_from)
         return SeatDecision(new, champion, "hold", champion, tuple(detail))
 
-    new = SeatState(None, None, history, ghosts, state.high_water, state.high_water_hard)
+    new = SeatState(None, None, history, ghosts, state.high_water, state.high_water_hard,
+                    kept, confirm_from)
     return SeatDecision(new, None, "ghost", bars[0], tuple(detail))
+
+
+def _live_pending(
+    pending: Sequence[Pending], epoch: int, window: Window,
+    candidates: Mapping[str, Candidate], guarded: Sequence[str], params: SeatParams,
+    detail: list[tuple[str, str]],
+) -> dict[str, Pending]:
+    """The pending records that still stand this epoch, by head.
+
+    A record stands while the bar it passed against is still guarded, its
+    head is verified and eligible this epoch with an unbroken run since the
+    pass (the comparison reads the current run only, so a miss leaves no fresh
+    questions to confirm on), and the epoch of the pass is still in the
+    window. That limit is what keeps the second test a second test: once the
+    pass has left the window, every question in the window is "fresh", and
+    testing on them is the first test over again. The head is then recorded
+    anew the next time it passes, and its fresh questions start from there.
+    """
+    out: dict[str, Pending] = {}
+    for p in pending:
+        c = candidates.get(p.head_hash)
+        if p.bar not in guarded:
+            continue
+        if c is None or not c.eligible:
+            detail.append((p.head_hash, "pending confirmation dropped: not verified this epoch"))
+            continue
+        if epoch - p.since_epoch >= window.size:
+            detail.append((p.head_hash, "pending confirmation lapsed: not confirmed within "
+                                        f"the {window.size}-epoch window of epoch "
+                                        f"{p.since_epoch}"))
+            continue
+        run = window.current_run(p.head_hash, c.since_epoch)
+        if not run or run[0] > p.since_epoch:
+            detail.append((p.head_hash, "pending confirmation dropped: its run was broken "
+                                        f"after epoch {p.since_epoch}"))
+            continue
+        out[p.head_hash] = p
+    return out

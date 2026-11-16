@@ -22,6 +22,7 @@ from fugal_subnet.champion import (
     EpochSlice,
     Ghost,
     HeadEpoch,
+    Pending,
     SeatDecision,
     SeatParams,
     SeatState,
@@ -168,7 +169,7 @@ def load_window(path: str, size: int) -> Window:
 
 
 def seat_to_dict(state: SeatState) -> dict:
-    return {
+    out = {
         "champion": state.champion,
         "champion_since": state.champion_since,
         "history": list(state.history),
@@ -177,11 +178,33 @@ def seat_to_dict(state: SeatState) -> dict:
         "high_water": state.high_water,
         "high_water_hard": state.high_water_hard,
     }
+    # The confirmation rule's state, only when there is any: before its
+    # activation block there is none, and the published seat (which is in the
+    # consensus view, v2_sync) stays byte-identical to the one before the rule.
+    if state.pending:
+        out["pending"] = [{"head_hash": p.head_hash, "since_epoch": p.since_epoch, "bar": p.bar}
+                          for p in state.pending]
+    if state.confirm_from is not None:
+        out["confirm_from"] = state.confirm_from
+    return out
+
+
+# A published seat is someone else's file (I2). At most one pending record per
+# registered hotkey can exist; this only bounds what a hand-made reveal can load.
+MAX_PENDING = 4096
 
 
 def seat_from_dict(raw: Mapping | None) -> SeatState:
     if not raw:
         return SeatState()
+    pending = raw.get("pending") or ()
+    if not isinstance(pending, (list, tuple)) or len(pending) > MAX_PENDING:
+        raise ValueError("seat state: `pending` must be a list of at most "
+                         f"{MAX_PENDING} records")
+    confirm_from = raw.get("confirm_from")
+    if confirm_from is not None and (isinstance(confirm_from, bool)
+                                     or not isinstance(confirm_from, int)):
+        raise ValueError("seat state: `confirm_from` must be an epoch index")
     return SeatState(
         champion=raw.get("champion"),
         champion_since=raw.get("champion_since"),
@@ -190,6 +213,9 @@ def seat_from_dict(raw: Mapping | None) -> SeatState:
                      for g in raw.get("ghosts", ())),
         high_water=float(raw.get("high_water", 0.0)),
         high_water_hard=float(raw.get("high_water_hard", 0.0)),
+        pending=tuple(Pending(str(p["head_hash"]), int(p["since_epoch"]), str(p["bar"]))
+                      for p in pending),
+        confirm_from=confirm_from,
     )
 
 
@@ -215,9 +241,19 @@ def anchor_spend_per_question(model: str) -> float:
     return spend
 
 
-def seat_params_from_config() -> SeatParams:
+def seat_params_from_config(boundary_block: int | None = None,
+                            confirm_block: int | None = None) -> SeatParams:
+    """The seat rules for the epoch whose boundary is `boundary_block`.
+
+    The fresh-data confirmation rule and the shorter retired-ghost window are
+    in force from the first epoch whose boundary is at or after
+    `confirm_block` (config.confirm_activation_block). With either argument
+    None they are not, and the result is the rule set from before them.
+    """
     from fugal_subnet import config
 
+    confirm = (confirm_block is not None and boundary_block is not None
+               and int(boundary_block) >= int(confirm_block))
     return SeatParams(
         margin_points=config.CHAMPION_MARGIN,
         confidence=config.CHAMPION_CONFIDENCE,
@@ -226,11 +262,14 @@ def seat_params_from_config() -> SeatParams:
         hard_weight=config.CHAMPION_HARD_WEIGHT,
         hard_gate_min_questions=config.CHAMPION_HARD_GATE_MIN_QUESTIONS,
         ghost_off=config.CHAMPION_GHOST_OFF,
-        ghost_retire=config.CHAMPION_GHOST_RETIRE,
+        ghost_retire=(config.CHAMPION_GHOST_RETIRE_CONFIRM if confirm
+                      else config.CHAMPION_GHOST_RETIRE),
         wilson_confidence=config.WILSON_CONFIDENCE,
         min_accuracy=config.CHAMPION_MIN_ACCURACY,
         min_paired_questions=config.CHAMPION_MIN_PAIRED_QUESTIONS,
         anchor_spend=anchor_spend_per_question(config.CHAMPION_ANCHOR_MODEL),
+        confirm_questions=config.CHAMPION_CONFIRM_QUESTIONS if confirm else 0,
+        confirm_open_epochs=config.CHAMPION_CONFIRM_OPEN_EPOCHS if confirm else 0,
     )
 
 

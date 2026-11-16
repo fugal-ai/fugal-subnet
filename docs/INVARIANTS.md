@@ -2297,6 +2297,22 @@ deployed ahead of the flip, and the dangerous one after it, so the activation
 block is part of the release instructions and the digest is what makes a
 missing value visible.
 
+**After the flip, finney refuses the dangerous failures at startup**
+(`neurons/validator._check_chain_configuration`, once the chain's genesis
+hash is read; live only). Each was a configuration a mainnet validator
+actually ran with, healthy by its own log:
+- `FUGAL_V2_ACTIVATION_BLOCK` unset, or not finney's flip block
+  (`config.FINNEY_V2_ACTIVATION_BLOCK`): every epoch scored by the v1 rules.
+- No approved entry for a v2 miner image (`v2_compose_hashes`: the frozen
+  composes in the checkout that set the activation block; an approved entry's
+  second half is the sha256 of one). Every v2 proof then fails the
+  runtime-image check, the seat stays empty and all weight burns.
+- No public IPv4 in `FUGAL_VALIDATOR_IP`. Miners admit only the validator
+  addresses recorded on chain, so the validator verifies fewer proofs than
+  its peers and its seat can differ from theirs.
+Other chains and mock keep their warnings: a rehearsal legitimately runs
+without some of these. `tests/test_follower_setup.py`.
+
 The v2 scoring constants (`CHAMPION_*`, `PAYOUT_SEAT_SHARES`) are ordinary
 consensus constants from the start: in `CONSENSUS_ENV_VARS`, in the
 fingerprint's `scoring` block, and refused as live overrides on finney like
@@ -2537,7 +2553,8 @@ paired questions, hard weight 2).
   head still displaces the first champion by the margin.
 - **Ghost.** A champion that stops being live or eligible leaves a ghost bar
   for `CHAMPION_GHOST_OFF` epochs (missed) or `CHAMPION_GHOST_RETIRE` (its
-  owner serves a different head). While it stands, a challenger must beat the
+  owner serves a different head; `CHAMPION_GHOST_RETIRE_CONFIRM` from the
+  confirmation activation block, next entry). While it stands, a challenger must beat the
   ghost by the margin, the seat is otherwise empty and its share burns, and a
   champion that only missed resumes its seat if it returns inside the window.
   A missed ghost whose owner then commits a different head is upgraded to the
@@ -2657,6 +2674,112 @@ needs a hash-bound per-call latency in the proof. Until proofs carry it the
 gate is not applied, and the published policy says so.
 
 Enforced by `tests/test_champion.py`.
+
+### I3 — a take is confirmed on fresh questions (from the confirmation activation block)
+
+**The property.** Registering more heads must not buy more chances at the
+seat. The take test above is re-run every epoch for every challenger, so its
+false positives add up over epochs and over challengers: k heads with no real
+edge over the champion pass it by luck about k times as often as one does
+(the best-of-N figures above: one of ten heads with no edge took the seat in
+27% of 30-epoch runs at 99%). A pass is therefore a *selection*, and a
+selection is only evidence on data it did not see.
+
+**The rule** (`champion.seat_step`, `Pending`, `_live_pending`). From the
+first epoch whose boundary is at or after the confirmation activation block:
+
+- **Pass.** A challenger that passes every condition of a take against a
+  settled champion does not take the seat. The epoch is recorded: a *pending*
+  record (head, epoch of the pass, the champion it passed against) in the
+  seat state. The champion holds the seat and is paid.
+- **Confirm.** At a later epoch the challenger takes the seat when it again
+  passes every condition of a take on its whole run, AND passes the same
+  paired test (the same margin, confidence and resample count; a resampling
+  stream of its own, seeded with the epoch id suffixed `:confirm`) on the
+  questions of epochs AFTER the recorded one only, with at least
+  `CHAMPION_CONFIRM_QUESTIONS` (1,500) of them. Those questions were drawn
+  after the pass, so the selection never saw them. There is still one margin.
+- **A record stands** while the champion it passed against holds the seat (or
+  is a ghost that has only missed), its head is verified every epoch since
+  the pass (the comparison reads the current run only, so a miss leaves
+  nothing fresh to confirm on), and the epoch of the pass is still inside the
+  comparison window. Once the pass has left the window every question in the
+  window would count as fresh, and the second test would be the first one
+  over again; the head is recorded anew the next time it passes. A new
+  champion clears every record: each was a pass against the previous holder.
+- **A seat filled from empty is open first.** The first fill, and a take over
+  a retired ghost, beat nobody: the first fill is the best of several noisy
+  measurements. Such a seat is settled from epoch fill +
+  `CHAMPION_CONFIRM_OPEN_EPOCHS` (5) (`SeatState.confirm_from`); in the four
+  epochs between the fill and then, it can be taken by the plain test,
+  exactly as before this rule, and a head that takes it that way gets the
+  same open period from its own epoch. A champion that was itself
+  confirmed is settled at once. Without the open period the rule would also
+  protect a lucky first fill.
+- **A champion that only missed is still confirmed against.** While its ghost
+  stands as "missed" the bar is the same as when it is live, so a short
+  outage does not reopen a settled seat to one lucky pass. A **retired**
+  ghost answers no new questions, so nothing fresh can be paired with it: it
+  is beaten by the plain test.
+
+**What it buys, measured**
+(`scripts/experiments/experiment_seat_confirmation.py`: the shipped
+`seat_step` and `paired_test` with the shipped constants, except 400
+bootstrap resamples; window 48; per-question spread matched to mainnet pairs;
+60 epochs against a settled champion). Share of runs in which a challenger
+with NO edge took the seat, before and with the rule: ten near-copies, 8.3%
+and 0 of 120 runs; ten independently trained heads, 17.5% and 0 of 120; thirty
+near-copies, 22.5% and 2.5% (1 of 40).
+
+**What it costs, measured** (the same script, 120 runs each). A challenger
+with a real edge still takes the seat, in about twice the epochs (every run
+inside 150 epochs at +0.85 and above; 94% at +0.5): +1.5 points over a near-copy champion, epoch
+5 becomes 10; +0.85, median 8 becomes 18; +0.5, median 31 becomes 57 (94% of
+runs inside 150 epochs); an independently trained head +2 points better, 5
+becomes 11. On the mainnet reveals e00026349 to e00026384, the one take in
+them (+0.83 points at its pass) measured +1.06 on its first 1,500 fresh
+questions and confirms at 2,400 (eight epochs after the pass).
+
+**What it does not do.** It does not tell copies from originals, and it does
+not look at who owns a head: it is the same for everybody. Among heads of
+truly equal value, which one fills an EMPTY seat is still the best of their
+measurements. And the withholding and best-of-N residuals above apply to the
+fresh questions as they do to the run.
+
+**The retired ghost's window is shorter from the same block:**
+`CHAMPION_GHOST_RETIRE_CONFIRM` (8) epochs instead of `CHAMPION_GHOST_RETIRE`
+(24). A retired head answers nothing, so a head committed after it retired
+can never be paired with it, and for the whole window the seat can go only to
+a head that already overlapped it; otherwise the miner share burns, for up to
+about 29 hours at 24 epochs. What the window is for is giving the owner's
+replacement head time to finish burn-in (five epochs) and compete for the
+empty seat on equal terms with copies of the retired one; eight epochs is
+that plus slack for one early miss. A ghost created before the block keeps
+the expiry it was given.
+
+**Activation.** `config.confirm_activation_block(genesis)`: finney's block is
+compiled into the release (`FINNEY_CONFIRM_ACTIVATION_BLOCK` = 9,542,160 from
+v0.4.0, epoch e00026506), and `FUGAL_CONFIRM_ACTIVATION_BLOCK` set to anything
+else on finney is refused at startup. Other chains read the variable. The
+v2 flip relied on every operator setting a variable, and a validator that had
+not set it ran the old rules with nothing in its log to say so. Which rule
+set an epoch uses is decided by its boundary block, as for v2
+(`v2_epoch.seat_params_from_config`). Both the compiled block and the
+variable are in the consensus digest (`epoch.confirm_activation_block`), with
+the three constants (`scoring`).
+
+**Determinism and rebuild (I1).** The pending records and `confirm_from` are
+part of the seat, so they are published in every reveal's `v2_state.seat`,
+are in the consensus view two validators are compared on (`v2_sync`), and are
+restored by a rebuild or a re-anchor; a validator rebuilt while a challenger
+waits confirms it at the same epoch as one that never stopped. They are
+published only when there are any, so before the block the seat is
+byte-identical to the one before this rule. Records are kept sorted by head
+hash, and a published seat is validated and bounded when read
+(`v2_epoch.seat_from_dict`).
+
+Enforced by `tests/test_seat_confirmation.py` and the `seat_confirmation`
+stage of `scripts/check_determinism.py`.
 
 ### I3 — seats, not shares: the v2 payout (v2 release; from the activation block)
 
@@ -3031,8 +3154,9 @@ ordered by epoch id and never by filesystem order:
   `explore_benchmarks`).
 
 The validator uses it at startup when it has no local v2 state, or has a
-seat but lost its window, and `FUGAL_FRAME_BOOTSTRAP` names a directory of
-reveals. Per-head v1 evidence is not rebuilt (as before); only the burn-in
+seat but lost its window, and it has reveals to rebuild from: a follower's
+reference reveals (below), or the directory a root's operator names in
+`FUGAL_FRAME_BOOTSTRAP` to rebuild from its own. Per-head v1 evidence is not rebuilt (as before); only the burn-in
 counter is restored, into fresh records.
 
 **A malformed reveal is refused by name.** The replay validates every field it
@@ -3068,8 +3192,39 @@ differing: before this, it never agreed again. Its peers' state is published
 in their reveals only after the hold, so some lag is unavoidable.
 `fugal_subnet/v2_sync.py` and `neurons/validator._v2_sync_step`:
 - **Shape: a star.** One ROOT validator (the subnet owner's) sets no
-  reference; every other validator points `FUGAL_FRAME_BOOTSTRAP` at a
-  directory synced from the root's bucket (`<netuid>/` prefix).
+  reference; every other validator verifies against the root's published
+  reveals (`<netuid>/` prefix of its bucket).
+  **A follower fetches them itself** (`fugal_subnet/reveal_sync.py`): at
+  startup and before every v2 epoch, over plain HTTPS from the public bucket,
+  into a directory beside its state. On finney the bucket is built in and a
+  follower sets nothing; the root is the validator with `FUGAL_ROOT=1`, or
+  the one whose `FUGAL_REVEAL_BUCKET` is the reference bucket. Before this
+  the operator ran a `gsutil rsync` on a timer and pointed
+  `FUGAL_FRAME_BOOTSTRAP` at the result (still honoured as it is); a mainnet
+  validator without either started with an empty seat, burned its weight and
+  logged no error. **Followers verify downloaded reveals against the root's
+  on-chain commitment** (`reveal:<epoch_id>:<sha256>`, which the root's
+  hotkey commits for the newest reveal it publishes): the reveal at the
+  committed epoch must match it; a reveal newer than the commitment is not
+  taken (and removed from disk) until the root commits it; every commitment
+  read is recorded beside the reference directory, and an older reveal with a
+  recorded commitment must match it; without a readable commitment nothing is
+  fetched. The root's hotkey is in the release on finney
+  (`config.FINNEY_ROOT_HOTKEY`, refused if `FUGAL_ROOT_HOTKEY` names another);
+  elsewhere `FUGAL_ROOT_HOTKEY`, unset meaning unverified. **Known limit:** the
+  pallet keeps one commitment per hotkey, so a reveal published before the
+  follower first ran has no recorded commitment and is accepted as before;
+  reveals that each carry the previous reveal's hash would close this
+  (planned with the protocol v3 reset). Operational, not consensus: it
+  decides which files a follower accepts, never how an epoch is scored, and
+  it changes no reveal and no digest. Otherwise the fetch adds no trust (the
+  model is the paragraph above): a file that fails the listing's size or MD5,
+  does not parse, or names another epoch never reaches disk; object names are
+  matched exactly;
+  every request and the sync as a whole are bounded; and in the epoch loop a
+  failed fetch is a log line, never the epoch's failure (I6). At startup, a
+  live follower with no reference reveals at all and no way to fetch any is
+  refused. `tests/test_follower_setup.py`.
 - **Gap.** A v2 epoch a follower did not observe (or scored nothing in), or a
   startup rebuild that ends before the present, opens a gap (`gap_until`,
   persisted). A gap changes NOTHING the validator decides: blocking its takes

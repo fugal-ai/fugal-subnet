@@ -395,12 +395,12 @@ The release:
 11. Every validator: place the v2 pool file (`export_pool.py --protocol 2`,
     §3), upgrade to the release, set `FUGAL_V2_ACTIVATION_BLOCK`,
     `FUGAL_VALIDATOR_IP` (its egress IP, recorded on chain at startup) and add
-    the v2 entry beside the current one, restart, before the block. Every
-    validator except the ROOT (the owner's) also sets `FUGAL_FRAME_BOOTSTRAP`
-    to a directory kept synced from the root's reveal bucket
-    (`gsutil -m rsync -r gs://<root-bucket>/<netuid> <dir>` on a timer): that
-    is how it re-syncs after a missed epoch or a lost proof (VALIDATOR_GUIDE,
-    "A missed epoch heals itself"). The root leaves it unset.
+    the v2 entry beside the current one, restart, before the block. The ROOT
+    (the owner's) sets `FUGAL_ROOT=1`; every other validator fetches the
+    root's reveals itself, which is how it re-syncs after a missed epoch or a
+    lost proof (VALIDATOR_GUIDE, "A missed epoch heals itself"). (At the
+    2026-11-11 flip this was a `gsutil rsync` timer plus
+    `FUGAL_FRAME_BOOTSTRAP`, set by hand on each follower.)
 12. Every miner: re-provision on the v2 image before the block (the v2 miner
     holds its head until the last v1 boundary, then commits it). Once every
     active validator's IP is on chain, turn on the axon allowlist

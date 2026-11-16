@@ -135,6 +135,19 @@ def environment_fingerprint() -> dict:
             # In the digest so a validator that would flip at a different
             # block, or never, is visibly different from its first epoch.
             "v2_activation_block": config.V2_ACTIVATION_BLOCK,
+            # The fresh-data confirmation rule's activation: finney's compiled
+            # block and the variable other chains read. Both, because the
+            # fingerprint is taken without a chain connection. On finney the
+            # variable is refused unless it equals the compiled block, so a
+            # variable that equals it changes nothing and is left out: two
+            # finney validators on the same rule publish the same digest
+            # whether or not they also set it.
+            "confirm_activation_block": {
+                "finney": config.FINNEY_CONFIRM_ACTIVATION_BLOCK,
+                "env": (None if config.CONFIRM_ACTIVATION_BLOCK_ENV
+                        == config.FINNEY_CONFIRM_ACTIVATION_BLOCK
+                        else config.CONFIRM_ACTIVATION_BLOCK_ENV),
+            },
             # The v2 price table is consensus from the flip, and a release/v2
             # validator ships it while still scoring v1 epochs; its hash is here
             # so two validators that would score v2 differently differ visibly
@@ -207,6 +220,9 @@ _SCORING_CONSTANTS = (
     "CHAMPION_HARD_GATE_MIN_QUESTIONS", "CHAMPION_TIME_GATE_FACTOR",
     "CHAMPION_GHOST_OFF", "CHAMPION_GHOST_RETIRE", "CHAMPION_WINDOW_EPOCHS",
     "CHAMPION_MIN_ACCURACY", "CHAMPION_MIN_PAIRED_QUESTIONS", "PAYOUT_SEAT_SHARES",
+    # Fresh-data confirmation (in effect from the confirmation activation block).
+    "CHAMPION_CONFIRM_QUESTIONS", "CHAMPION_CONFIRM_OPEN_EPOCHS",
+    "CHAMPION_GHOST_RETIRE_CONFIRM",
 )
 
 

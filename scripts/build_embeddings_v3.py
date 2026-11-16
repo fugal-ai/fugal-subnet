@@ -51,9 +51,9 @@ def _shard_of(question_id, n):
 
 def _write_npz(path, arrays):
     """An uncompressed .npz with fixed timestamps: the same arrays, the same bytes."""
-    import numpy as np
-
     import io
+
+    import numpy as np
 
     # Each member is serialised first and written whole (writestr), with fixed
     # metadata and no zip64 (members stay under 2 GiB): streaming members made
@@ -169,8 +169,11 @@ def cmd_verify(a):
     import random
 
     os.environ["FUGAL_BACKBONE_THREADS"] = "1"
+    # isort: off
+    # Order is load-bearing: the dispatch pins must precede numpy and torch.
     import fugal_subnet.determinism  # noqa: F401
     import numpy as np
+    # isort: on
 
     from fugal_subnet.backbone import compute_hidden_states
     from fugal_subnet.embeddings_file import Embeddings

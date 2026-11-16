@@ -53,13 +53,21 @@ def _write_npz(path, arrays):
     """An uncompressed .npz with fixed timestamps: the same arrays, the same bytes."""
     import numpy as np
 
+    import io
+
+    # Each member is serialised first and written whole (writestr), with fixed
+    # metadata and no zip64 (members stay under 2 GiB): streaming members made
+    # Python 3.11 and 3.12 write different zip headers around identical arrays.
     tmp = path + ".tmp"
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED, allowZip64=False) as zf:
         for name, arr in arrays.items():
+            buf = io.BytesIO()
+            np.lib.format.write_array(buf, np.ascontiguousarray(arr), allow_pickle=False)
             info = zipfile.ZipInfo(name + ".npy", date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_STORED
-            with zf.open(info, "w", force_zip64=True) as f:
-                np.lib.format.write_array(f, np.ascontiguousarray(arr), allow_pickle=False)
+            info.create_system = 3
+            info.external_attr = 0o600 << 16
+            zf.writestr(info, buf.getvalue())
     os.replace(tmp, path)
 
 

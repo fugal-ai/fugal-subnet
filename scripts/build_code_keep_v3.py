@@ -91,7 +91,7 @@ def main(argv=None) -> int:
             print(f"missing code_contests shards: {missing}", file=sys.stderr)
             return 2
         sources["code_contests"] = cs.codecontests_candidates(
-            _rows_parquet(shard_paths, list(cs.CC_COLUMNS)), stats["code_contests"])
+            cs.iter_parquet_rows(shard_paths, list(cs.CC_COLUMNS)), stats["code_contests"])
     for b, cands in sources.items():
         print(f"{b:20s} {len(cands):5d} candidates  {dict(stats[b])}", flush=True)
 

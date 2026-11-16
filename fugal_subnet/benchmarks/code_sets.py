@@ -79,6 +79,7 @@ STDIO_SUFFIX = ("Write a complete Python 3 program that reads the input from sta
 
 MAX_TEST_CHARS = 2000              # one test's input + expected output, as JSON text
 MIN_TESTS = 5                      # fewer usable tests and a candidate is not offered
+MAX_CANDIDATE_TESTS = 40            # the first usable tests only: calibration examines no more
 ID_HASH_CHARS = 16
 # Problems whose statement allows more than one right answer: exact comparison would fail
 # correct replies (as found in the code-set research, 2026-11-16).
@@ -157,6 +158,7 @@ def leetcode_candidates(rows, stats: Counter | None = None) -> list[dict]:
                 continue
             if _json_native(kw) and _json_native(want, floats=False) and _small(kw, want):
                 tests.append((_canon(kw), _canon(want)))
+        tests = tests[:MAX_CANDIDATE_TESTS]
         if len(tests) < MIN_TESTS:
             _note(stats, "too_few_tests")
             continue
@@ -207,6 +209,7 @@ def _evalplus_candidates(rows, bench: str, stats: Counter | None, *, mbpp: bool)
             continue
         tests = [(_canon(list(i)), _canon(w)) for i, w in zip(inputs, results)
                  if isinstance(i, (list, tuple)) and _json_native(i) and _json_native(w) and _small(i, w)]
+        tests = tests[:MAX_CANDIDATE_TESTS]
         if len(tests) < MIN_TESTS:
             _note(stats, "too_few_tests")
             continue
@@ -261,6 +264,7 @@ def codecontests_candidates(rows, stats: Counter | None = None) -> list[dict]:
         if any(FLOATISH.match(tok) for _, o in tests for tok in o.split()):
             _note(stats, "float_output")
             continue
+        tests = tests[:MAX_CANDIDATE_TESTS]
         if len(tests) < MIN_TESTS:
             _note(stats, "too_few_tests")
             continue
@@ -358,13 +362,18 @@ def humanevalplus_rows():
     return _parquet_rows("evalplus/humanevalplus", r"data/test-.*\.parquet")
 
 
-def codecontests_rows():
+def iter_parquet_rows(paths, columns=None, batch_size: int = 64):
+    """Rows of each file in order, a batch at a time: the code_contests shards hold every
+    language's solutions, and reading a shard whole takes gigabytes."""
     import pyarrow.parquet as pq
-    rows = []
-    for shard in CC_TRAIN_SHARDS:
-        rows.extend(pq.read_table(_hf_file("deepmind/code_contests", shard),
-                                  columns=list(CC_COLUMNS)).to_pylist())
-    return rows
+    for path in paths:
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=batch_size, columns=columns):
+            yield from batch.to_pylist()
+
+
+def codecontests_rows():
+    return iter_parquet_rows([_hf_file("deepmind/code_contests", s) for s in CC_TRAIN_SHARDS],
+                             columns=list(CC_COLUMNS))
 
 
 CANDIDATES = {

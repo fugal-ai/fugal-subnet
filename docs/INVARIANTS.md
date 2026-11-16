@@ -3536,6 +3536,45 @@ per-model estimate on a few hundred pairs is too noisy to gate a payout on
 and a gate that failed closed would empty the seat. It is also where the next
 release's token statistics and menu pruning come from, at no cost to anyone.
 
+### I1/I4 — the v3 pool: what is in it, what is left out, and what pins it (v3)
+
+`loader.load_pool(3)` is the v2 sets (v2's IFEval mapping replaced by v3's), the
+v3 sets (`v3_sets.LOADERS_V3`) and the code sets (`code_sets.LOADERS_CODE`), then
+two explicit exclusion steps from `fugal_subnet/benchmarks/exclusions_v3.json`,
+each counted in the manifest (`exclusion_counts`):
+
+1. **RouterArena.** RouterArena is an evaluation-only set: routers trained on its
+   questions are rejected. Every pool question whose text matches one of its
+   8,400, and the LeetCode problems it takes from LiveCodeBench (by slug), are
+   left out, so the subnet never trains on the exam it will be measured on.
+2. **All-fail.** Questions every graded model failed on random v2 exploration
+   calls, with at least four models and two strong ones failing, are left out:
+   most are wrong answer keys, which no router can learn and the Brier score
+   punishes as noise.
+
+**Code questions are a pure function of pinned inputs.** `code_sets` turns each
+source's rows into candidates without running anything; the pinned keep-list
+`code_keep_v3.json` (built by `scripts/build_code_keep_v3.py`, which runs the
+sources' reference solutions in the grader's own sandbox) names the problems and
+test indices kept. Nothing executes at load time.
+
+**The v3 manifest hashes every field a grader reads** (`loader.content_hash_v3`):
+the id, prompt, gold, checker id, benchmark and the checker parameters
+`build_grader_task` passes on (constraints, code tests, function names,
+tolerances). `exclusions_v3.json` and `code_keep_v3.json` are also pinned by
+sha256 in `check_safety_invariants.py` and recorded in the manifest.
+
+**Categories** (`config.CATEGORY_TARGETS_V3`): knowledge .20, hard .20, math .10,
+instruction .15, everyday .15, easy maths .05, code .15. `tests/test_pool_v3.py`
+holds that the 2,500 questions with the highest share of net value (what a head
+can memorise) carry at most 15% of it.
+
+**Grading identity.** Commitments, reveals and the consensus digest carry
+`fingerprint.grader_hash()`, which names both `graders.py` and `graders_code.py`.
+A miner's harness grades a code question only after `sandbox_selftest()` passed
+(`harness.require_code_sandbox`), checked before any model call; the miner
+refuses to start on a pool with code questions if it fails.
+
 ### I8 — a v3 menu entry is a pinned request (v3)
 
 From v3 a menu entry's id is `<model>@<effort>` when a model is offered at

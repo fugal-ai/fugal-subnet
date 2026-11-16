@@ -35,6 +35,17 @@ GRADER_SHA256 = (
 CODE_GRADER_SHA256 = (
     "92bceddcee0c6fad9eed2b217aa9de3fa9c309b0276fc5180095703e38862a60"
 )
+# The v3 pool's two hand-built data files. Each decides which questions are in
+# the pool (the manifest's hashes cover the result, and this pin makes an edit a
+# reviewed act). Changing either: rebuild pool_manifest_v3.json, update the pin
+# in the same commit, and say why.
+#   exclusions_v3.json  RouterArena overlap, its LeetCode slugs, the all-fail rule
+#   code_keep_v3.json   the calibrated code problems and tests
+#                       (scripts/build_code_keep_v3.py)
+POOL_V3_DATA_SHA256 = {
+    "exclusions_v3.json": "ee346f7f486372351336a6cfb23143e927a29222d47c1d41562b9de5dc1cf26e",
+    "code_keep_v3.json": "CODE_KEEP_PIN",
+}
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole
 # subnet. Pinned for the same reason graders.py is. Changing prices is a
@@ -199,6 +210,18 @@ def check_pinned_code_grader(errors: list[str]) -> None:
             f"match the pin {CODE_GRADER_SHA256[:16]}... — a code grader change is a "
             "consensus break"
         )
+
+
+def check_pool_v3_data_pinned(errors: list[str]) -> None:
+    for name, pin in POOL_V3_DATA_SHA256.items():
+        path = ROOT / "fugal_subnet" / "benchmarks" / name
+        if not path.exists():
+            errors.append(f"fugal_subnet/benchmarks/{name} is missing")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != pin:
+            errors.append(f"fugal_subnet/benchmarks/{name}: hash {actual[:16]}... does not match "
+                          f"the pin {pin[:16]}... (it decides which questions are in the v3 pool)")
 
 
 def check_epoch_id_single_source(errors: list[str]) -> None:
@@ -1107,6 +1130,7 @@ def main(argv: list[str] | None = None) -> None:
     check_deserialize_contract(errors)
     check_pinned_grader(errors)
     check_pinned_code_grader(errors)
+    check_pool_v3_data_pinned(errors)
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)

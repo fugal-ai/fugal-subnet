@@ -25,6 +25,18 @@ as before (the determinism check's v2 digests are unchanged).
   `model@effort` ids, one reasoning setting, the answer budget and pinned
   providers per entry.
 - V pinned in dollars from v3 (`CHAMPION_VALUE_PER_CORRECT_USD`).
+- **The v3 question pool** (`loader.load_pool(3)`, `pool_manifest_v3.json`): the
+  v2 sets, the v3 sets and code questions (LeetCodeDataset train, MBPP+,
+  HumanEval+, CodeContests train; `benchmarks/code_sets.py`), graded by the
+  pinned code grader. Categories: knowledge 20%, hard 20%, math 10%,
+  instruction 15%, everyday 15%, easy maths 5%, code 15%. Left out, each as a
+  counted step: every question RouterArena evaluates on, and questions every
+  model failed (most likely wrong answer keys). Code problems and tests are
+  fixed by a pinned keep-list built by running the sources' reference solutions
+  in the grader's sandbox (`scripts/build_code_keep_v3.py`). The v3 manifest
+  hashes every field a grader reads. The miner refuses to start if the code
+  sandbox self-test fails, and the grading identity in commitments, reveals and
+  the digest names both grader files.
 - `tests/test_head_odds.py`, `test_explore_private.py`, `test_odds_seat.py`,
   `test_v3_epoch.py`, `test_v3_wiring.py`; four new stages in
   `scripts/check_determinism.py`.

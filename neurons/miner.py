@@ -234,6 +234,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     pool = load_pool(protocol)
     if not pool:
         raise click.ClickException("Benchmark pool is empty — nothing to benchmark")
+    # A pool with code questions needs a harness that grades them with the v3
+    # code grader and a working sandbox, or every code answer grades 0 and is
+    # still paid for (fugal_subnet/code_gate.py).
+    from fugal_subnet.code_gate import release_errors
+    code_errors = release_errors(pool)
+    if code_errors:
+        msg = "This image cannot serve the pool's code questions: " + "; ".join(code_errors)
+        if not mock:
+            raise click.ClickException(msg)
+        logger.warning("%s (mock: continuing)", msg)
     logger.info("Benchmark pool: %d questions, pool_hash=%s",
                 len(pool), pool_hash(pool)[:16])
 

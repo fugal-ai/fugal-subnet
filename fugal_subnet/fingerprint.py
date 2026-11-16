@@ -253,6 +253,9 @@ _SCORING_CONSTANTS = (
     # Protocol v3 (in effect from the v3 activation and odds seat blocks).
     "EXPLORE_SHARED_SIZE", "EXPLORE_PRIVATE_SIZE", "EXPLORE_COLDKEY_CAP", "EXPLORE_PRIVATE_Z",
     "EXPLORE_PRIVATE_MIN_TRIALS",
+    # Cost-aware exploration (explore_weights): they set every pair's sampling
+    # probability and weight (v3 review, 2026-11-16: missing from the digest).
+    "EXPLORE_SPEND_CAP_USD", "EXPLORE_COST_FLOOR", "EXPLORE_COST_MAX_HALVES",
     "BRIER_MARGIN", "ODDS_MIN_PAIRS", "ODDS_CONFIRM_PAIRS", "NV_NONINFERIORITY",
     "ODDS_REF_PRIOR", "SINGLE_MODEL_MIN_PAIRS", "CHAMPION_VALUE_PER_CORRECT_USD",
 )

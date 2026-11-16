@@ -195,7 +195,8 @@ class Resync:
 
 
 def resync(reference: Mapping[int, tuple[str, dict]], own: Mapping[int, tuple[str, dict]],
-           k: int, before: int, *, window_size: int, prices, bench_category=None) -> Resync:
+           k: int, before: int, *, window_size: int, prices, bench_category=None,
+           tables=None) -> Resync:
     """The reference's state at k, the window from its reveals up to k and
     this validator's own after k (both within `window_size` of before-1)."""
     from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
@@ -205,6 +206,7 @@ def resync(reference: Mapping[int, tuple[str, dict]], own: Mapping[int, tuple[st
     paths += [own[j][0] for j in sorted(own) if k < j < before and j >= oldest]
     rebuilt = rebuild_v2_from_reveals(paths, window_size=window_size, prices=prices,
                                       bench_category=bench_category,
-                                      snapshot_epoch_id=reference[k][1]["epoch_id"])
+                                      snapshot_epoch_id=reference[k][1]["epoch_id"],
+                                      tables=tables)
     burn_in = carry_burn_in(rebuilt.burn_in, rebuilt.serving, own, k, before)
     return Resync(rebuilt, burn_in, k)

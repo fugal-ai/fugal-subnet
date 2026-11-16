@@ -735,6 +735,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         odds_block = _cfg.odds_seat_block(genesis)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
+    _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL)
     if v3_block is None:
         logger.info("Protocol v3: not scheduled on this chain")
     else:
@@ -1014,9 +1015,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
         rebuilt = rebuild_v2_from_reveals(
             rebuild_dir, window_size=CHAMPION_WINDOW_EPOCHS,
-            # The replayed window is v2 epochs, so it is priced at v2's table.
+            # Each replayed reveal is priced at its own protocol's table (a v3
+            # reveal at v2's left every v3 cell unpriced; v3 review, finding 1).
             prices=epoch_inputs.get(2, epoch_inputs[1])[2],
             bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+            tables=_rebuild_tables(epoch_inputs, config_module),
         )
         if rebuilt.newest_epoch_id is not None:
             v2_window, v2_seat = rebuilt.window, rebuilt.seat
@@ -1100,6 +1103,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     prices=epoch_inputs[protocol_version][2],
                     bench_category=getattr(config_module, f"BENCHMARK_CATEGORY_V{protocol_version}",
                                            None),
+                    tables=_rebuild_tables(epoch_inputs, config_module),
                 )
                 if synced.changed:
                     (scoring_state, v2_window, v2_seat, v2_copy, v2_window_degraded,
@@ -1485,6 +1489,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         single_model_min_pairs=_cfg.SINGLE_MODEL_MIN_PAIRS,
                         category_targets=_cfg.CATEGORY_TARGETS_V3,
                         explore_weights=(_xw.weights(explore_shares) if explore_shares else None),
+                        menu=tuple(pool_models),
                     )
                 v2_result = run_v2_epoch(
                     epoch_index=epoch_index, epoch_id=epoch_id,
@@ -2561,7 +2566,7 @@ def _v2_sync_step(*, epoch_index: int, last_epoch_index: int, first_v2_epoch: in
                   reference_dir: str | None, scoring_state, window, seat, copy_state,
                   window_degraded: bool, gap_until: int | None, anchor_at: int | None,
                   prices, bench_category=None, epoch_dir: str | None = None,
-                  window_epochs: int | None = None) -> _V2Sync:
+                  window_epochs: int | None = None, tables=None) -> _V2Sync:
     """Detect missed v2 epochs; while this validator has a gap, verify against
     the reference and re-anchor on it (fugal_subnet/v2_sync).
 
@@ -2594,14 +2599,38 @@ def _v2_sync_step(*, epoch_index: int, last_epoch_index: int, first_v2_epoch: in
         return _v2_sync_inner(epoch_index=epoch_index, reference_dir=reference_dir,
                               state=state, changed=changed, prices=prices,
                               bench_category=bench_category, epoch_dir=epoch_dir,
-                              window_epochs=window_epochs)
+                              window_epochs=window_epochs, tables=tables)
     except Exception as e:  # noqa: BLE001 - never stops the epoch (I6); state and gap kept
         logger.error("v2 sync against the reference failed (%s); state and gap kept", e)
         return _V2Sync(changed, state)
 
 
+def _check_v3_blocks_aligned(v3_block, odds_block, epoch_interval) -> None:
+    """Refuse a v3 or odds-seat block that is not an epoch boundary, the way
+    the v2 block is refused and the way a v3 miner refuses it
+    (miner.py, validate_activation_block). Accepting it here while miners
+    refuse it would leave validators scoring a flip no v3 miner can start at
+    (v3 review, 2026-11-16)."""
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
+
+    bpe = blocks_per_epoch(epoch_interval)
+    for name, block in (("v3 activation", v3_block), ("odds-seat", odds_block)):
+        try:
+            validate_activation_block(block, bpe)
+        except ValueError as e:
+            raise click.ClickException(f"{name} block: {e}") from e
+
+
+def _rebuild_tables(epoch_inputs, config_module) -> dict:
+    """{protocol: (prices, bench_category)} for every protocol whose inputs this
+    validator loaded (v2 on), so a rebuild or re-anchor prices each replayed
+    reveal at its own protocol's table (v3 review, finding 1)."""
+    return {p: (inputs[2], getattr(config_module, f"BENCHMARK_CATEGORY_V{p}", None))
+            for p, inputs in sorted(epoch_inputs.items()) if p >= 2}
+
+
 def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_category,
-                   epoch_dir, window_epochs) -> _V2Sync:
+                   epoch_dir, window_epochs, tables=None) -> _V2Sync:
     import copy as _copy
 
     from fugal_subnet import copy_rule
@@ -2675,7 +2704,7 @@ def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_
         logger.info("v2 state verified against the reference at e%08d: gap closed", chk.k)
         return _V2Sync(True, state[:5] + (None, None))
     rs = resync(ref, own, chk.k, epoch_index, window_size=window_epochs, prices=prices,
-                bench_category=bench_category)
+                bench_category=bench_category, tables=tables)
     new_copy = copy_rule.from_rebuild(rs.rebuilt) or copy_rule.CopyState()
     scoring = _copy.deepcopy(scoring_state)
     for uid, (h, c) in (rs.burn_in or {}).items():

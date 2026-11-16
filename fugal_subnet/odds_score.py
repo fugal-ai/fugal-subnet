@@ -163,9 +163,30 @@ def loss(p: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 
 def head_odds_on(window: Window, ref: Reference, head: str, epoch: int) -> np.ndarray:
-    """`head`'s odds on `epoch`'s pairs, with R where it has no row (int64)."""
+    """`head`'s odds on `epoch`'s pairs (int64).
+
+    A pair whose model the head has no row for (-1) is scored as certainly
+    wrong, the worst loss there is: a head must give odds for every menu
+    entry. Filling the gap with R's odds let a copy of the champion with its
+    weakest rows removed beat the champion with no skill of its own, because
+    R is fitted on the window's outcomes (v3 review, 2026-11-16). Such a head
+    is also not eligible for the odds seat at all (`missing_rows`); `ref` is
+    kept in the signature for the callers that compare against it."""
+    del ref
     o = window.odds[head][epoch].astype(np.int64)
-    return np.where(o < 0, ref.of(epoch).astype(np.int64), o)
+    y = window.pairs[epoch].y.astype(np.int64)
+    certainly_wrong = np.where(2 * y >= ODDS_SCALE, 0, ODDS_SCALE)
+    return np.where(o < 0, certainly_wrong, o)
+
+
+def missing_rows(window: Window, head: str, since_epoch: int | None = None,
+                 run_only: bool = True) -> int:
+    """How many of the pairs `head` is scored on name a menu entry it gave no
+    odds for. Any is disqualifying for the odds seat: from v3 a head gives odds
+    for every menu entry (v2_epoch._pool_and_odds publishes a head that does
+    not cover the menu with no odds at all)."""
+    return int(sum(int((window.odds[head][e] < 0).sum())
+                   for e in scored_epochs(window, head, since_epoch, run_only)))
 
 
 def scored_epochs(window: Window, head: str, since_epoch: int | None = None,

@@ -73,6 +73,15 @@ def _require(cond: bool, epoch_id: str, what: str) -> None:
         raise ValueError(f"reveal {epoch_id}: {what}")
 
 
+def _reveal_protocol(reveal: Mapping) -> int:
+    """The protocol a reveal's window was built under: the published rules'
+    protocol from v3 on (`v2_state.rules`), else the reveal's protocol_version."""
+    rules = (reveal.get("v2_state") or {}).get("rules") or {}
+    if "protocol" in rules:
+        return int(rules["protocol"])
+    return int(reveal.get("protocol_version", 2))
+
+
 def _load(source: str | os.PathLike | Iterable[str]) -> list[dict]:
     if isinstance(source, (str, os.PathLike)):
         paths = sorted(glob.glob(os.path.join(str(source), "*", "reveal.json")))
@@ -215,6 +224,8 @@ def rebuild_v2_from_reveals(
     prices: Mapping[str, tuple[float, float]],
     bench_category: Mapping[str, str] | None = None,
     snapshot_epoch_id: str | None = None,
+    tables: Mapping[int, tuple[Mapping[str, tuple[float, float]], Mapping[str, str] | None]]
+    | None = None,
 ) -> V2Rebuild:
     """Rebuild the v2 window and decision state from published v2 reveals.
 
@@ -223,6 +234,11 @@ def rebuild_v2_from_reveals(
     window still replays every reveal given (fugal_subnet/v2_sync.py re-anchors
     on a reference validator's state at an epoch, then keeps its own
     observations of the epochs since). Two reveals for one epoch are refused.
+
+    The replayed reveals are priced at THEIR protocol's table: `tables` maps a
+    protocol to (prices, bench_category), and a protocol not in it (or
+    `tables` None) uses `prices` and `bench_category`. A v3 window priced at
+    v2's table left every v3 cell unpriced (v3 review, finding 1).
     """
     reveals = sorted(_load(source), key=lambda r: _epoch_index(r["epoch_id"]))
     ids = [r["epoch_id"] for r in reveals]
@@ -239,14 +255,33 @@ def rebuild_v2_from_reveals(
     else:
         snapshot = newest
     oldest_kept = _epoch_index(newest["epoch_id"]) - int(window_size) + 1
+    # A live validator empties its window when the protocol changes (v2 -> v3,
+    # run_v2_epoch's rules check), so a rebuild replays only the reveals built
+    # under the newest reveal's protocol. A seat-only change (the odds block)
+    # keeps the window, so only the protocol is compared.
+    newest_protocol = _reveal_protocol(newest)
+    if _reveal_protocol(snapshot) != newest_protocol:
+        # A re-anchor whose snapshot predates a protocol change: the live seat
+        # was reset at the change and decided since on the new protocol's
+        # window, which the old snapshot cannot stand for (v3 review, 2026-11-16:
+        # a re-anchored validator took "first" where the live one held). The
+        # caller keeps its state and gap and re-anchors once the reference has
+        # published an epoch after the change (validator._v2_sync_step).
+        raise ValueError(
+            f"the snapshot {snapshot['epoch_id']} is protocol {_reveal_protocol(snapshot)} but "
+            f"{newest['epoch_id']} is protocol {newest_protocol}: wait for a reference epoch "
+            "after the protocol change")
     window = Window.empty(window_size)
     replayed = 0
+    p_prices, p_cat = (tables or {}).get(newest_protocol, (prices, bench_category))
     for r in reveals:
         if _epoch_index(r["epoch_id"]) < oldest_kept:
             continue
+        if _reveal_protocol(r) != newest_protocol:
+            continue
         try:
-            sl, answers = epoch_from_reveal(r, prices, bench_category)
-            pairs, odds = pairs_from_reveal(r, answers, bench_category)
+            sl, answers = epoch_from_reveal(r, p_prices, p_cat)
+            pairs, odds = pairs_from_reveal(r, answers, p_cat)
             window = window.add_epoch(sl, answers, pairs, odds)
         except ValueError as e:
             # Fail closed, by name: a window missing one epoch is a different

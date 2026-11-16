@@ -32,8 +32,14 @@ GRADER_SHA256 = (
 # protocol v3 adds this file beside it. History:
 #   92bceddc...  2026-11-16, first version (docs/decisions/CODE_GRADER_V3.md):
 #                seccomp-filtered child, CPU-time limits, token compare.
+#   8ed4730b...  2026-11-16, v3 review finding 5: setpriority/ioprio_set/
+#                sched_* and fchmod/fchown denied for any target; new threads
+#                get 8 MiB stacks, two malloc arenas and a pinned CPU count
+#                (64+ threads, same on every TD; the main thread's stack is
+#                unchanged); wall backstop max(3x CPU + 2 s, 20 s) per run and
+#                60 s per question. CPU limits and the comparison are unchanged.
 CODE_GRADER_SHA256 = (
-    "92bceddcee0c6fad9eed2b217aa9de3fa9c309b0276fc5180095703e38862a60"
+    "8ed4730b532b026ea4ae41a2777a634e6b907f04d143bf9286740406cb6f9265"
 )
 # The v3 shared system prompt (config.HARNESS_SYSTEM_PROMPT_V3): every v3 model
 # call carries it, so a byte change moves every v3 grade and the token means.
@@ -243,6 +249,33 @@ def check_pinned_code_grader(errors: list[str]) -> None:
         )
 
 
+def check_code_questions_are_graded(errors: list[str], root: Path | None = None) -> None:
+    """A v3 pool manifest that holds code questions (exec_stdio / exec_func)
+    ships only with a harness that grades them with graders_code and a working
+    sandbox (fugal_subnet/code_gate.py; v3 review, 2026-11-16, finding 7).
+    Otherwise every code answer grades 0 and is still paid for."""
+    import sys
+
+    root = root or ROOT
+    manifest = root / "fugal_subnet" / "benchmarks" / "pool_manifest_v3.json"
+    if not manifest.is_file():
+        return
+    text = manifest.read_text(encoding="utf-8")
+    if '"exec_stdio"' not in text and '"exec_func"' not in text:
+        return
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from fugal_subnet import code_gate, graders_code
+
+    ok, why = graders_code.sandbox_selftest()
+    if not ok:
+        errors.append(f"{manifest.relative_to(root)}: code questions, but the code sandbox "
+                      f"self-test fails here: {why}")
+    ok, why = code_gate.harness_grades_code()
+    if not ok:
+        errors.append(f"{manifest.relative_to(root)}: code questions, but {why}")
+
+
 def check_pinned_system_prompt_v3(errors: list[str]) -> None:
     from fugal_subnet import config
 
@@ -257,6 +290,24 @@ def check_pinned_system_prompt_v3(errors: list[str]) -> None:
             f"fugal_subnet/config.py: HARNESS_SYSTEM_PROMPT_V3 hash {actual[:16]}... does "
             f"not match the pin {SYSTEM_PROMPT_V3_SHA256[:16]}... — the shared system "
             "prompt is part of every v3 grade; change the pin deliberately")
+
+
+def check_v3_release_pins(errors: list[str]) -> None:
+    """A release that schedules protocol v3 on finney must pin everything a v3
+    epoch reads that is not in the repository: the embeddings file (its hash, and
+    where the image build and validators fetch it from) and the shared system
+    prompt. Without them a v3 miner cannot route and a validator cannot compute
+    odds, so the flip would stall every node at the activation block."""
+    from fugal_subnet import config
+
+    if config.FINNEY_V3_ACTIVATION_BLOCK is None:
+        return
+    missing = [name for name in ("EMBEDDINGS_SHA256", "EMBEDDINGS_URL",
+                                 "HARNESS_SYSTEM_PROMPT_V3")
+               if not getattr(config, name, None)]
+    if missing:
+        errors.append("fugal_subnet/config.py: FINNEY_V3_ACTIVATION_BLOCK is set but "
+                      + ", ".join(missing) + " is not pinned; the v3 release must pin it")
 
 
 def check_epoch_id_single_source(errors: list[str]) -> None:
@@ -1207,6 +1258,7 @@ def main(argv: list[str] | None = None) -> None:
     check_deserialize_contract(errors)
     check_pinned_grader(errors)
     check_pinned_code_grader(errors)
+    check_code_questions_are_graded(errors)
     check_pinned_system_prompt_v3(errors)
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
@@ -1225,6 +1277,7 @@ def main(argv: list[str] | None = None) -> None:
     check_live_requires_app_identity(errors)
     check_live_composes_are_frozen(errors if args.release else launch_gate)
     check_release_composes_target_v2(errors if args.release else launch_gate)
+    check_v3_release_pins(errors if args.release else launch_gate)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)
     check_documented_flags(errors)

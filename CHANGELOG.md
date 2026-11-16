@@ -4,6 +4,59 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — a follower rebuilt across the v3 flip keeps only v3 epochs (consensus, v3)
+A live validator empties its comparison window when the protocol changes
+(v2 -> v3). A rebuild from reveals replayed every reveal in the last 48
+epochs, so a follower that rebuilt or re-anchored during the first 48 epochs
+after the flip held v2 epochs in its v3 window and decided seats and weights
+differently from its peers. `v2_rebuild` now replays only the reveals built
+under the newest reveal's protocol (`v2_state.rules`, else
+`protocol_version`); the seat-only change at the odds block keeps the
+window, as live. Found by the new in-process rehearsal
+(`scripts/rehearsal_v3.py`: v2 -> v3 -> odds seat, three validators, one
+restarted from disk and one rebuilt from reveals, 37 checks).
+
+### Fixed — v3 review, 2026-11-16 (consensus, v3; nothing here changes v2)
+- **Startup rebuild prices.** A validator rebuilt from reveals after the v3
+  flip priced the v3 epochs at v2's table, so 51 of 53 menu entries were
+  unpriced and every later epoch failed ("an answered question has no
+  cell"). A rebuild or re-anchor now prices the replayed epochs at their own
+  protocol's table and categories.
+- **Re-anchor across the flip.** A re-anchor on a reference epoch from before
+  the flip, with the validator's own epochs after it, carried the old
+  protocol's seat into the new window. It is now refused, state and gap
+  kept, until the reference publishes an epoch after the flip.
+- **A head gives odds for every menu entry.** A model a head had no row for
+  was scored at the reference's odds, so a copy of the champion with its
+  weakest row removed beat the champion with no skill of its own. A missing
+  row now scores as certainly wrong, a head that does not cover the menu is
+  published with no odds, and such a head is not eligible for the odds seat.
+- **First fill on odds needs significant skill**, the test a challenger's
+  odds pass against the reference, not a point estimate ≥ 0.
+- **Code grader** (`graders_code.py`, new pin `8ed4730b…`): priority,
+  scheduling, `fchmod` and `fchown` calls refused; thread capacity and the
+  CPU count a program sees no longer depend on the TD; wider wall backstop
+  (20 s a run, 60 s a question). CPU limits and the comparison are unchanged.
+- **Release gate for code questions** (`fugal_subnet/code_gate.py`): a v3
+  miner refuses to start with code questions in its pool unless its harness
+  grades them with the code grader and the sandbox self-test passes.
+- The validator refuses a v3 or odds-seat block that is not an epoch
+  boundary (the miner already did), and the cost-aware exploration constants
+  are in the consensus digest.
+
+### Added — the v3 image carries the shared system prompt and the embeddings file
+- `config.HARNESS_SYSTEM_PROMPT_V3`: the product's house prompt, with one
+  change so it never fights a graded answer format (a format the request
+  asks for takes precedence). Hash-pinned (`SYSTEM_PROMPT_V3_SHA256` in
+  `check_safety_invariants.py`); the product must send the same text.
+- `python -m fugal_subnet.embeddings_file fetch`: downloads the pinned
+  embeddings file from `config.EMBEDDINGS_URL` and writes it only if its
+  sha256 matches `config.EMBEDDINGS_SHA256`. The image build runs it, so the
+  file's bytes are measured; validators run it once at setup
+  (VALIDATOR_GUIDE, step 3).
+- `check_safety_invariants.py`: a release that schedules v3 on finney must
+  pin the embeddings hash and URL and the system prompt (`--release`).
+
 ### Added — protocol v3, not scheduled: the seat decided on a head's odds (consensus; needs a new miner image, pool, menu and embeddings file before any chain can schedule it)
 Everything below is inert until a release pins the v3 pool, menu and
 embeddings file and compiles in finney's blocks. v2 epochs are scored exactly

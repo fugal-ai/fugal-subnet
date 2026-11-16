@@ -233,6 +233,13 @@ CHAMPION_VALUE_PER_CORRECT_USD = float(os.getenv("FUGAL_CHAMPION_VALUE_PER_CORRE
 # scheduled and no pin refuses to start. Where the file is on disk is
 # FUGAL_EMBEDDINGS_FILE (operational: the bytes are what is checked).
 EMBEDDINGS_SHA256: str | None = None
+# Where the pinned file is published (an HTTPS URL, or file:// in tests). The
+# image build fetches it into the image (so its bytes are measured) and a
+# validator fetches it once at setup: `python -m fugal_subnet.embeddings_file
+# fetch`. The URL is only a location; the pinned hash is what is trusted, and a
+# download with another hash is refused before anything is written in place.
+# None until the v3 release publishes the file.
+EMBEDDINGS_URL: str | None = None
 
 
 def _chain_block(genesis_hash: str | None, finney_value: int | None, env_value: int | None,

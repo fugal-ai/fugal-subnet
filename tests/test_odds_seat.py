@@ -254,17 +254,25 @@ def test_reference_skill_gate():
     assert odds_score.solo_skill(w, ref, "sharp")[1] == 10 * N_PAIRS
 
 
-def test_a_model_the_head_has_no_row_for_is_scored_at_the_reference():
+def test_a_model_the_head_has_no_row_for_is_scored_as_certainly_wrong():
+    """v3 review, 2026-11-16: it was scored at R, which let a copy of the
+    champion with its weakest row removed beat the champion
+    (tests/test_odds_seat_review.py). Now it is the worst loss there is, and
+    the head is not eligible for the odds seat (odds_score.missing_rows)."""
     w = world({"partial": only_strong, "full": sharp(0.05)}, epochs=range(6))
     ref = ref_of(w)
     su = odds_score.skill_units(w, ref, "partial")
     assert su.n_pairs == 6 * N_PAIRS
-    # Zero on the pairs it does not cover, positive on the ones it does.
+    uncovered = 0
     for e in w.pairs:
         covered = np.array([m == "m/strong" for m in w.pairs[e].models])
         o = odds_score.head_odds_on(w, ref, "partial", e)
-        assert np.array_equal(o[~covered], ref.of(e)[~covered].astype(np.int64))
-    assert 0 < su.total < odds_score.skill_units(w, ref, "full").total
+        y = w.pairs[e].y.astype(np.int64)
+        assert np.array_equal(o[~covered], np.where(2 * y[~covered] >= ODDS_SCALE, 0, ODDS_SCALE))
+        uncovered += int((~covered).sum())
+    assert odds_score.missing_rows(w, "partial") == uncovered > 0
+    assert odds_score.missing_rows(w, "full") == 0
+    assert su.total < 0 < odds_score.skill_units(w, ref, "full").total
 
 
 def test_a_head_is_scored_only_on_pairs_from_its_own_run():

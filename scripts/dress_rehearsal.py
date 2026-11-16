@@ -1823,10 +1823,14 @@ def _v3_flip_checks(report, S, rows, v3_idx, odds_idx, killed_at, comparable_rev
     code_rows = [row for r in v3_rows.values()
                  for row in (r["reveals"][0].get("exploration_pool") or [])
                  if str(row.get("benchmark", "")).startswith("code")]
-    ys = {float(row.get("y", -1)) for row in code_rows}
+    # A pooled pair's outcome is the coldkey median in 1/ODDS_SCALE units
+    # (explore_pool.Pair.y): ODDS_SCALE is a pass, 0 a fail.
+    from fugal_subnet.head_odds import ODDS_SCALE
+
+    ys = {int(row.get("y", -1)) for row in code_rows}
     report.check(S, "code questions are graded in the miner's sandbox (some pass, some fail)",
-                 bool(code_rows) and 1.0 in ys and 0.0 in ys,
-                 f"{len(code_rows)} code rows, outcomes {sorted(ys)}")
+                 bool(code_rows) and ODDS_SCALE in ys and 0 in ys,
+                 f"{len(code_rows)} code rows, outcomes {sorted(ys)} (pass = {ODDS_SCALE})")
 
 
 def main() -> int:

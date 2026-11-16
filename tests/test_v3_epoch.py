@@ -325,3 +325,34 @@ def test_reference_from_the_window_is_what_new_answers_are_judged_against():
     exp = odds_score.expected_odds(w.pairs, 20, cells)
     assert 0 < exp[("new-q", "m/strong")] < ODDS_SCALE
     assert exp[("new-q2", "m/unseen")] == ODDS_SCALE // 2      # never measured: the prior
+
+
+def test_a_rebuild_across_the_v3_flip_keeps_only_the_v3_epochs(tmp_path):
+    """A live validator empties its window when the protocol changes (v2 -> v3);
+    a follower rebuilt from reveals inside the first window after the flip must
+    do the same, or its window, seat test and weights differ from every peer's
+    (I1). Reveals carry their protocol in `v2_state.rules` (v3) or
+    `protocol_version` (v2); the seat-only change at the odds block keeps the
+    window, so only the protocol counts."""
+    flip, odds_at = 3, 6
+    window = seat = copy = state_rules = None
+    reveals, last = [], None
+    for e in range(8):
+        pols = {u: POLICIES[u] for u in UIDS}
+        rules = None if e < flip else {"protocol": 3,
+                                       "seat": "odds" if e >= odds_at else "net_value"}
+        p = params(odds=e >= odds_at) if e >= flip else dataclasses.replace(
+            seat_params_from_config(protocol_version=2), min_paired_questions=60)
+        last = run(e, pols, window=window, seat=seat, copy=copy, params=p,
+                   odds_input=odds_input(e) if e >= flip else None, rules=rules,
+                   state_rules=state_rules)
+        window, seat, copy, state_rules = last.window, last.decision.state, last.copy_state, rules
+        rv = json.loads(json.dumps(reveal_of(e, last, pols)))
+        rv["protocol_version"] = 3 if e >= flip else 2
+        reveals.append(rv)
+    assert sorted(last.window.slices) == list(range(flip + 1, 9))
+    write(tmp_path, reveals)
+    rb = rebuild_v2_from_reveals(tmp_path, window_size=48, prices=PRICES, bench_category=CATEGORY)
+    same_window(rb.window, last.window)
+    assert rb.epochs_replayed == 8 - flip
+    assert rb.seat == last.decision.state

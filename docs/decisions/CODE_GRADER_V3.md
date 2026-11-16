@@ -33,10 +33,12 @@ reference solutions run in the context the problems were written for.
 | CPU per test (`exec_stdio`) | 3.0 s measured (rusage) | CPU time, not wall clock, so a busy TD does not fail answers. Rlimit soft = 4 s (SIGXCPU), hard = 5 s (SIGKILL) as the backstop |
 | CPU per run (`exec_func`) | 6.0 s | one process runs every input |
 | CPU per question | 24 s | bounds a hostile question's cost to the miner |
-| Wall-clock backstop | 3 × CPU limit + 2 s | only ends programs that block without CPU; never the deciding limit for a program that computes |
+| Wall-clock backstop | max(3 × CPU limit + 2 s, 20 s) per run; 60 s per question | only ends programs that block without CPU; never the deciding limit for a program that computes |
 | `time.sleep` | refused | sleeping uses no CPU; without this the wall backstop would decide, and that differs between TDs |
 | Address space | 1 GiB | memory bombs fail the same way everywhere |
-| Stack | 64 MiB | deep recursion behaves the same on every TD |
+| Stack | 64 MiB main thread; 8 MiB per new thread | deep recursion behaves the same on every TD; 64+ threads fit the address space (a program that calls `threading.stack_size()` gets what it asks for) |
+| Malloc arenas | 2 (`MALLOC_ARENA_MAX`) | glibc reserves 64 MiB of address space per thread arena, which capped a program at ~20 threads |
+| CPUs the program sees | 4 (`os.cpu_count`, `process_cpu_count`, `sched_getaffinity`) | default pool sizes (`ThreadPoolExecutor()`) do not follow the TD's vCPUs |
 | Output | 1 MiB per run (`RLIMIT_FSIZE` on the stdout file) | huge output dies with SIGXFSZ |
 | Open files | 64 | |
 | Program | 512,000 bytes | as `graders.EXEC_PROGRAM_CAP` |
@@ -115,6 +117,29 @@ on one TD and fail on another. Two things contain that:
 Known residuals, accepted: output that depends on object addresses (`id()`,
 default `object.__hash__` ordering) varies with ASLR; ASLR cannot be turned off
 in a container. Such answers are wrong by any judge's standard.
+
+**Waits that use no CPU (accepted residual, v3 review 2026-11-16).** Only
+`time.sleep` is refused. `select`, `Event.wait`, `Lock.acquire(timeout=…)` and
+other blocking waits use no CPU, so for them the wall clock decides: a reply
+that waits just under the backstop passes on a quiet TD and can fail on a busy
+one. Only a reply that deliberately waits near the backstop is affected; a
+program that computes is ended by its CPU limit long before. The review widened
+the gap: the per-run backstop is max(3 × CPU + 2 s, 20 s), so 20 s for both
+checkers (it was 11 s for `exec_stdio`), and a question's tests together end at
+60 s of wall time.
+
+Grading budget per epoch (the harness grades serially). A miner grades about 50
+code questions an epoch (the code share, 0.15, of the 300-question slice, plus
+its share of the exploration calls).
+- Typical: a test costs ~0.05 s to start Python plus its CPU (median 0.05 s in
+  the calibration), and a question keeps ≤ 16 tests: ~1.6 s a question, ~80 s an
+  epoch, well inside the 2,160 s to the collection point.
+- Worst case, every code reply deliberately waiting: each question ends by
+  60 s plus one last run's 20 s backstop, 80 s; 50 questions are 4,000 s, past
+  the collection point. Before the review it was worse (64 tests × 11 s, ~700 s
+  a question). Replies come from the models through the attested proxy, not
+  from the miner, so a whole slice of waiting replies is not something a miner
+  can arrange; the cap bounds the damage of the few a model might write.
 
 ## What the miner TD image must contain
 

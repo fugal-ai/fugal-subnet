@@ -4,16 +4,19 @@ v3 review, 2026-11-16 (findings 1 and 2):
 - the startup rebuild priced every replayed reveal at v2's table, so v3 cells
   stayed NaN and the next epoch raised "an answered question has no cell";
 - the replay carried v2 epochs into a v3 window, where the live epoch had
-  emptied the window at the flip, so a rebuilt or re-anchored validator
-  decided a different seat.
+  emptied the window at the flip (fixed in 498e7e8; tested there by
+  test_v3_epoch.test_a_rebuild_across_the_v3_flip_keeps_only_the_v3_epochs,
+  and here end to end with the reviewer's scenario: the next epoch's seat,
+  weights and consensus view).
 """
 import dataclasses
 import json
 
 import numpy as np
+import pytest
 
 from fugal_subnet.v2_epoch import seat_params_from_config
-from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals, reveal_protocol, reveal_rules
+from fugal_subnet.v2_rebuild import _reveal_protocol, rebuild_v2_from_reveals
 from fugal_subnet.v2_sync import consensus_view
 from tests.test_v2_epoch import CATEGORY, PRICES, always, oracle, run
 from tests.test_v2_rebuild import reveal_of, write
@@ -68,6 +71,51 @@ def test_the_rebuild_drops_the_epochs_of_the_protocol_before_the_flip(tmp_path):
     assert consensus_view(dict(b.reveal, epoch_id="x")) == consensus_view(dict(a.reveal, epoch_id="x"))
 
 
+def test_a_reanchor_on_a_reference_from_before_the_flip_holds_the_live_state(tmp_path):
+    """The re-anchor path (validator._v2_sync_inner -> v2_sync.resync): the
+    reference's snapshot is a v2 epoch k, and this validator's own reveals
+    after k cross the flip. The live validator reset the seat at the flip and
+    kept the v3 epochs; the re-anchored one must hold the same state."""
+    from fugal_subnet.v2_sync import resync
+
+    flip = 10
+
+    def pols(e):
+        if e < flip:
+            return {5: oracle, 6: always("m/cheap")}
+        return {5: always("m/mid"), 6: always("m/mid")}
+
+    def rules_of(e):
+        return V3 if e >= flip else None
+
+    window, seat, copy, rules, reveals = _live(flip + 4, pols, rules_of)
+    write(tmp_path, reveals)
+    by = {int(rv["epoch_id"][1:]): (str(tmp_path / rv["epoch_id"] / "reveal.json"), rv)
+          for rv in reveals}
+    before = max(by) + 1
+
+    # A reference snapshot from before the flip is refused: the caller keeps
+    # its state and gap, and waits.
+    k = flip                                       # chain epoch e00000010, the last v2 one
+    with pytest.raises(ValueError, match="wait for a reference epoch after the protocol change"):
+        resync({j: by[j] for j in by if j <= k}, {j: by[j] for j in by if j > k}, k, before,
+               window_size=48, prices=PRICES, bench_category=CATEGORY)
+
+    # Once the reference has published a v3 epoch, the re-anchor holds the live state.
+    k = flip + 2
+    rs = resync({j: by[j] for j in by if j <= k}, {j: by[j] for j in by if j > k}, k, before,
+                window_size=48, prices=PRICES, bench_category=CATEGORY)
+    rb = rs.rebuilt
+    assert sorted(rb.window.slices) == sorted(window.slices)
+    e = flip + 4
+    a = run(e, pols(e), window=window, seat=seat, copy=copy, params=_params(3),
+            blocks={5: 9, 6: 1}, rules=V3, state_rules=rules)
+    b = run(e, pols(e), window=rb.window, seat=rb.seat, copy=copy, params=_params(3),
+            blocks={5: 9, 6: 1}, rules=V3, state_rules=rb.extra.get("rules"))
+    assert (b.decision.event, b.decision.champion) == (a.decision.event, a.decision.champion)
+    assert consensus_view(dict(b.reveal, epoch_id="x")) == consensus_view(dict(a.reveal, epoch_id="x"))
+
+
 def test_each_reveal_is_priced_at_its_own_protocols_table(tmp_path):
     def pols(e):   # champion uid 6 seated first; uid 5 becomes better from epoch 6
         return {5: always("m/mid") if e < 6 else oracle, 6: always("m/mid")}
@@ -91,10 +139,9 @@ def test_each_reveal_is_priced_at_its_own_protocols_table(tmp_path):
 
 
 def test_a_reveals_protocol_is_its_rules_else_its_version():
-    assert reveal_protocol({"v2_state": {"rules": {"protocol": 3}}, "protocol_version": 2}) == 3
-    assert reveal_protocol({"protocol_version": 2}) == 2
-    assert reveal_protocol({}) == 2
-    assert reveal_rules({"v2_state": {}}) is None
+    assert _reveal_protocol({"v2_state": {"rules": {"protocol": 3}}, "protocol_version": 2}) == 3
+    assert _reveal_protocol({"protocol_version": 2}) == 2
+    assert _reveal_protocol({}) == 2
 
 
 def test_the_validator_rebuilds_and_reanchors_with_every_protocols_table():

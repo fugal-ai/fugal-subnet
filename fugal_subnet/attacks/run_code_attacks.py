@@ -111,6 +111,31 @@ ATTACKS = [
     ("stdio: new namespaces", BLOCKED,
      _refused("import os\nos.unshare(os.CLONE_NEWUSER)"), True, 1, "BLOCKED",
      "seccomp: unshare/setns -> EPERM"),
+    # v3 review, 2026-11-16 (5a). Each probe sets what is already set, so a
+    # sandbox that let it through still harms nothing. NEVER probe PRIO_USER
+    # or IOPRIO_WHO_USER with a real value: that renices every process of the uid.
+    ("stdio: setpriority (own priority, unchanged)", BLOCKED,
+     _refused("import os\nos.setpriority(os.PRIO_PROCESS, 0, os.getpriority(os.PRIO_PROCESS, 0))"),
+     True, 1, "BLOCKED", "seccomp: setpriority -> EPERM for any target"),
+    ("stdio: ioprio_set (own class, unchanged)", BLOCKED,
+     _refused("import ctypes\nlibc = ctypes.CDLL(None, use_errno=True)\n"
+              "assert libc.syscall(251, 1, 0, 0) == 0"),
+     True, 1, "BLOCKED", "seccomp: ioprio_set -> EPERM for any target"),
+    ("stdio: sched_setaffinity (itself)", BLOCKED,
+     _refused("import os\nos.sched_setaffinity(0, {0})"), True, 1, "BLOCKED",
+     "seccomp: scheduling calls -> EPERM"),
+    ("stdio: fchmod an fd it opened (mode unchanged)", BLOCKED,
+     _refused("import os\nos.fchmod(os.open('.', os.O_RDONLY), os.stat('.').st_mode & 0o7777)"),
+     True, 1, "BLOCKED", "seccomp: fchmod -> EPERM"),
+    ("stdio: fchown an fd it opened (owner unchanged)", BLOCKED,
+     _refused("import os\nos.fchown(os.open('.', os.O_RDONLY), -1, -1)"), True, 1, "BLOCKED",
+     "seccomp: fchown -> EPERM"),
+    # 5b: a correct reply's grade must not follow the TD's hardware.
+    ("stdio: 64 threads and a fixed CPU count (control)", _stdio([("", "64 4\n")]),
+     _py("import os, threading\nev = threading.Event(); ts = []\nfor i in range(64):\n"
+         "    t = threading.Thread(target=ev.wait, daemon=True); t.start(); ts.append(t)\n"
+         "ev.set()\nprint(len(ts), os.cpu_count())"),
+     True, 1, "CONTROL", "8 MiB thread stacks, 2 malloc arenas, os.cpu_count() pinned to 4"),
     ("stdio: site-packages", _stdio([("", "no\n")]),
      _py("try:\n    import numpy\n    print('yes')\nexcept ImportError:\n    print('no')"),
      True, 1, "BLOCKED", "-S: stdlib only, whatever the image carries"),

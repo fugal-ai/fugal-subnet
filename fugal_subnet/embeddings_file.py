@@ -58,3 +58,77 @@ class Embeddings:
             raise ValueError(f"the embeddings file has no row for {len(missing)} question(s), "
                              f"e.g. {missing[0]}")
         return self.hidden[[self.row[q] for q in question_ids]]
+
+
+DEFAULT_PATH = "data/embeddings/pool_v3.npz"
+
+
+def fetch(url: str, expected_sha256: str, dest: str, *, timeout: float = 600.0) -> str:
+    """Download the pinned embeddings file to `dest` and return its path.
+
+    The pinned hash is the only thing trusted: the bytes are streamed to a
+    temporary file beside `dest`, hashed, and moved into place only when the
+    hash matches, so a wrong or truncated download never replaces a good file.
+    A `dest` that already has the pinned hash is kept without a download.
+    """
+    import hashlib
+    import os
+    import tempfile
+    from urllib.request import urlopen
+
+    if not expected_sha256:
+        raise ValueError("no pinned embeddings hash: nothing to fetch against")
+
+    def sha_of(path: str) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+        return h.hexdigest()
+
+    if os.path.exists(dest) and sha_of(dest) == expected_sha256:
+        return dest
+    os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".embeddings-", dir=os.path.dirname(os.path.abspath(dest)))
+    try:
+        h = hashlib.sha256()
+        with os.fdopen(fd, "wb") as out, urlopen(url, timeout=timeout) as resp:  # noqa: S310
+            for block in iter(lambda: resp.read(1 << 20), b""):
+                h.update(block)
+                out.write(block)
+        if h.hexdigest() != expected_sha256:
+            raise ValueError(f"downloaded embeddings have sha256 {h.hexdigest()}, the pinned "
+                             f"one is {expected_sha256}; nothing was written to {dest}")
+        os.replace(tmp, dest)
+        tmp = ""
+        return dest
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def main(argv=None) -> int:
+    """`python -m fugal_subnet.embeddings_file fetch [--dest PATH]`: fetch the
+    file pinned in config (EMBEDDINGS_URL, EMBEDDINGS_SHA256). With no pin yet
+    (before the v3 release) it says so and exits 0, so an image built between
+    releases still builds; `check_safety_invariants --release` requires both."""
+    import argparse
+    import os
+
+    from fugal_subnet import config
+
+    ap = argparse.ArgumentParser(prog="python -m fugal_subnet.embeddings_file")
+    ap.add_argument("command", choices=["fetch"])
+    ap.add_argument("--dest", default=os.getenv("FUGAL_EMBEDDINGS_FILE", DEFAULT_PATH))
+    args = ap.parse_args(argv)
+    if not (config.EMBEDDINGS_URL and config.EMBEDDINGS_SHA256):
+        print("embeddings: no EMBEDDINGS_URL/EMBEDDINGS_SHA256 pinned in this release; "
+              "nothing to fetch")
+        return 0
+    path = fetch(config.EMBEDDINGS_URL, config.EMBEDDINGS_SHA256, args.dest)
+    print(f"embeddings: {path} matches the pinned sha256 {config.EMBEDDINGS_SHA256[:16]}...")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

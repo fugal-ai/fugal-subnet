@@ -3356,7 +3356,14 @@ visible, to miners and across validators, before it decides anything.
   seat, which is then filled by the best measured skill. What a state was
   built under is published (`v2_state.rules`) and kept with the local state,
   so a validator that was down across either block, or rebuilt from a reveal,
-  recognises a stale state instead of carrying it.
+  recognises a stale state instead of carrying it. A rebuild does what the
+  live epoch did (v3 review, 2026-11-16): it replays only the reveals of the
+  newest reveal's protocol, prices them at THAT protocol's table and
+  categories (`rebuild_v2_from_reveals(tables=)`; a v3 window priced at v2's
+  table left every v3 cell unpriced and the next epoch failed), and a
+  re-anchor whose reference snapshot predates the protocol change is refused,
+  state and gap kept, until the reference publishes an epoch after it
+  (`tests/test_v3_rebuild_flip.py`).
 - **Nothing is shipped inert by accident.** A live validator with v3
   scheduled loads the v3 pool, the v3 menu and the embeddings file at
   startup and refuses to start without them, as for v2. Until a release pins
@@ -3519,7 +3526,12 @@ zero skill by construction (`test_reference_skill_gate`).
   a head whose skill is near zero would otherwise lose and regain the seat on
   noise, and an epoch without a champion burns the miner share.
 - **First.** An empty seat goes to the highest measured skill among heads
-  with at least `ODDS_MIN_PAIRS` pairs and skill not below zero.
+  with at least `ODDS_MIN_PAIRS` pairs, odds for every menu entry, and skill
+  over R that is significantly positive: the one-sided test with no margin
+  that a challenger's odds pass against R, at `CHAMPION_CONFIDENCE`. Until
+  the v3 review (2026-11-16) a point estimate of skill ≥ 0 was enough, so a
+  head with no skill could fill the seat on noise and then hold it until R
+  beat it significantly (`test_an_empty_seat_is_filled_on_odds_only_by_significant_skill`).
 - **Senior bars** (the copy rule) use the same test.
 
 **Fresh pairs only.** A head is scored on the pairs of epochs in its current
@@ -3528,8 +3540,17 @@ existed, so it cannot have been fitted to their outcomes; earlier pairs are
 published history and are never read for it
 (`test_a_head_is_scored_only_on_pairs_from_its_own_run`).
 
-**A model a head has no row for** is scored at R: zero skill there, no
-penalty.
+**A head gives odds for every menu entry.** A head whose rows do not cover
+the menu is published with no odds at all (every pair -1,
+`v2_epoch._pool_and_odds`), a pair whose model a head has no row for is
+scored as certainly wrong (`odds_score.head_odds_on`), and a head with any
+such pair is not eligible for the odds seat: it cannot take, confirm, fill
+or hold it (`champion._no_full_menu`, stated in its reveal detail). Until the
+v3 review (2026-11-16) a missing row was scored at R's odds. R is fitted on
+the window's outcomes, so a copy of the champion with its weakest row
+removed beat the champion with no skill of its own
+(`test_a_copy_of_the_champion_with_a_row_removed_does_not_take_the_seat`).
+R stays what heads are compared against, never what fills a head's gaps.
 
 **V is pinned in dollars from v3** (`CHAMPION_VALUE_PER_CORRECT_USD`, 0.49:
 what the v2 rule gave on the day it was pinned), so the menu can change, the
@@ -3543,9 +3564,11 @@ published for every head from the v3 block, before they decide.
 
 **Accepted residual: published odds.** Every scored head's odds on every
 pooled pair are published, so a head can be fitted to another head's
-published odds without its bytes. Such a copy has no edge over the head it
-copies, so it does not take the seat from it (the margin, and confirmation);
-the copy rule's ownership is by exact hash, as before.
+published odds without its bytes. A faithful copy has no edge over the head
+it copies, so it does not take the seat from it (the margin, and
+confirmation); a copy that drops rows is not eligible at all (above); the
+copy rule's ownership is by exact hash, as before. A copy that ALTERS rows
+gains only where its own odds are better, which is real skill.
 
 `tests/test_odds_seat.py`, `tests/test_v3_epoch.py`.
 

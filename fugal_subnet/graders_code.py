@@ -21,8 +21,12 @@
 # not from Python-level tricks:
 #   - a seccomp filter installed in the child before the candidate's code runs:
 #     no sockets, no fork/exec (threads are allowed), no file creation,
-#     deletion, rename, chmod or open-for-write, no ptrace, no signals to any
-#     other process, no namespaces, no io_uring, no bpf;
+#     deletion, rename, chmod/chown (by path or fd) or open-for-write, no
+#     ptrace, no signals to any other process, no priority or scheduling
+#     changes at all, no namespaces, no io_uring, no bpf;
+#   - the same machine on every TD: new threads get THREAD_STACK_BYTES, and
+#     the program sees CHILD_CPU_COUNT CPUs, so default pool sizes and thread
+#     capacity do not follow the TD's hardware;
 #   - rlimits: CPU seconds, address space, output file size, open files, stack;
 #   - its own session, killed as a group; env cleared except the pins below;
 #     -S (stdlib only, so the image's site-packages cannot change a grade);
@@ -34,8 +38,10 @@
 # time and its stdout; the expected outputs never leave the parent.
 #
 # DETERMINISM: the limits are CPU time (rusage), not wall clock. A wall-clock
-# backstop (WALL_FACTOR x the CPU limit + WALL_EXTRA_SECS) only ends programs
-# that block without using CPU. The pool keeps only tests whose reference
+# backstop (max(WALL_FACTOR x the CPU limit + WALL_EXTRA_SECS, WALL_MIN_SECS)
+# per run, QUESTION_WALL_SECS per question) only ends programs that block
+# without using CPU; a reply that deliberately waits close to it is the one
+# accepted residual where the wall clock decides a grade. The pool keeps only tests whose reference
 # solution needs <= 25% of the CPU limit (scripts/calibrate_code_tests.py), so
 # an efficient answer passes with a wide margin on any TD; answers near a limit
 # can differ between TDs, and shared grades (the median across coldkeys) absorb
@@ -67,12 +73,16 @@ from fugal_subnet.graders import extract_code  # same extraction as exec_io
 STDIO_CPU_SECS = 3.0            # CPU per test (exec_stdio)
 FUNC_CPU_SECS = 6.0             # CPU for the one run of all inputs (exec_func)
 QUESTION_CPU_SECS = 24.0        # CPU budget for all tests of one question
-WALL_FACTOR = 3.0               # wall backstop = factor x CPU limit + extra
+WALL_FACTOR = 3.0               # wall backstop = max(factor x CPU limit + extra, WALL_MIN_SECS)
 WALL_EXTRA_SECS = 2.0
+WALL_MIN_SECS = 20.0            # waits that use no CPU (select, Event.wait) end here
+QUESTION_WALL_SECS = 60.0       # wall time for all tests of one question; more grades 0
 PROGRAM_CAP = 512_000           # bytes of assembled program (graders.EXEC_PROGRAM_CAP)
 OUTPUT_CAP = 1 << 20            # bytes of stdout per run; more grades 0
 AS_BYTES = 1 << 30              # address space
-STACK_BYTES = 64 << 20          # deep recursion behaves the same on every TD
+STACK_BYTES = 64 << 20          # main thread: deep recursion behaves the same on every TD
+THREAD_STACK_BYTES = 8 << 20    # each new thread (RUNNER sets it; >= 64 threads fit AS_BYTES)
+CHILD_CPU_COUNT = 4             # what os.cpu_count() and friends report to the program
 NOFILE = 64
 MAX_TESTS = 64                  # a task with more tests grades 0 (pool caps it lower)
 FLOAT_TOKEN = re.compile(rb"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
@@ -87,6 +97,10 @@ CHILD_ENV = {
     "PYTHONIOENCODING": "utf-8",
     "PYTHONDONTWRITEBYTECODE": "1",
     "LC_ALL": "C.UTF-8",
+    # glibc gives each new thread its own malloc arena, reserving 64 MiB of
+    # address space each: with AS_BYTES that, not the stack, capped a program
+    # at ~20 threads. Two arenas let >100 start (v3 review, 2026-11-16).
+    "MALLOC_ARENA_MAX": "2",
 }
 
 # LeetCodeDataset's own prompt prelude, so reference solutions and model
@@ -120,7 +134,11 @@ def _fugal_sandbox():
         200, 424, 434, 438,                      # tkill pidfd_send_signal pidfd_open pidfd_getfd
         85, 87, 263, 82, 264, 316, 83, 258, 84,  # creat unlink unlinkat rename renameat renameat2 mkdir mkdirat rmdir
         88, 266, 86, 265, 90, 268, 452,          # symlink symlinkat link linkat chmod fchmodat fchmodat2
+        91, 93,                                  # fchmod fchown (on an fd it opened read-only)
         92, 94, 260, 76, 132, 235, 261, 280,     # chown lchown fchownat truncate utime utimes futimesat utimensat
+        141, 251,                                # setpriority ioprio_set: who=0 under PRIO_USER /
+                                                 # IOPRIO_WHO_USER is every process of the uid
+        144, 142, 203, 314,                      # sched_setscheduler setparam setaffinity setattr
         133, 259, 165, 166, 155, 161,            # mknod mknodat mount umount2 pivot_root chroot
         188, 189, 190, 197, 198, 199,            # setxattr lsetxattr fsetxattr removexattr lremovexattr fremovexattr
         303, 304, 428, 429, 430, 431, 432, 433, 442,   # handles, new mount API
@@ -140,12 +158,12 @@ def _fugal_sandbox():
     f += [(JEQ, 0, 4, 56), (LD, 0, 0, arg(0)), (JSET, 1, 0, CLONE_THREAD),
           (RET, 0, 0, EPERM), (RET, 0, 0, ALLOW), (LD, 0, 0, 0)]
     # Calls that name a process may name only this one (its pid, or 0 = self):
-    # kill, tgkill, rt_sigqueueinfo, rt_tgsigqueueinfo (signals), prlimit64,
-    # sched_setaffinity/setscheduler/setparam/setattr, setpriority, ioprio_set
-    # (so it cannot starve or re-limit the grader). kill(0) is its own group,
-    # which holds only itself.
-    for nr, a in ((62, 0), (234, 0), (129, 0), (297, 0), (302, 0), (203, 0),
-                  (144, 0), (142, 0), (314, 0), (141, 1), (251, 1)):
+    # kill, tgkill, rt_sigqueueinfo, rt_tgsigqueueinfo (signals), prlimit64
+    # (so it cannot re-limit the grader). kill(0) is its own group, which
+    # holds only itself. The priority and scheduling calls are denied outright
+    # (above): with which=PRIO_USER, who=0 names every process of the uid, and
+    # one probe reniced a whole host this way (v3 review, 2026-11-16).
+    for nr, a in ((62, 0), (234, 0), (129, 0), (297, 0), (302, 0)):
         f += [(JEQ, 0, 5, nr), (LD, 0, 0, arg(a)), (JEQ, 2, 0, me), (JEQ, 1, 0, 0),
               (RET, 0, 0, EPERM), (RET, 0, 0, ALLOW), (LD, 0, 0, 0)]
     deny += [256, 279, 312]                      # migrate_pages move_pages kcmp
@@ -187,6 +205,27 @@ def _fugal_sandbox():
 
 _fugal_sandbox()
 del _fugal_sandbox
+
+def _fugal_same_on_every_td():
+    # Threads: the main thread keeps RLIMIT_STACK (STACK_BYTES, deep recursion);
+    # a new thread gets 8 MiB, the usual Linux default, so 64+ threads fit in
+    # AS_BYTES. Without it every thread reserved RLIMIT_STACK and only 8 could
+    # start, so ThreadPoolExecutor() graded by the TD's vCPU count. A program
+    # that sets threading.stack_size() itself still gets what it asks for.
+    # CPUs: the count a program sees is fixed, so default pool sizes do not
+    # follow the TD's hardware (v3 review, 2026-11-16).
+    import os, threading
+    threading.stack_size(8 << 20)
+    def _cpus(*_a, **_k):
+        return 4
+    os.cpu_count = _cpus
+    if hasattr(os, "process_cpu_count"):
+        os.process_cpu_count = _cpus
+    if hasattr(os, "sched_getaffinity"):
+        os.sched_getaffinity = lambda *_a, **_k: {0, 1, 2, 3}
+
+_fugal_same_on_every_td()
+del _fugal_same_on_every_td
 _path = sys.argv[1]
 with open(_path, "rb") as _f:
     _src = _f.read()
@@ -205,6 +244,7 @@ class RunResult:
     cpu_secs: float
     stdout: bytes
     output_overflow: bool
+    wall_secs: float = 0.0
 
     @property
     def clean(self) -> bool:
@@ -267,7 +307,8 @@ def _run_once(prog_path: str, stdin_bytes: bytes, workdir: str, cpu_secs: float)
             stdin=fin, stdout=fout, stderr=subprocess.DEVNULL, cwd=workdir,
             env=dict(CHILD_ENV), close_fds=True, start_new_session=True,
             preexec_fn=_preexec(cpu_secs))
-    deadline = time.monotonic() + cpu_secs * WALL_FACTOR + WALL_EXTRA_SECS
+    started = time.monotonic()
+    deadline = started + max(cpu_secs * WALL_FACTOR + WALL_EXTRA_SECS, WALL_MIN_SECS)
     status, ru, killed = None, None, False
     while True:
         pid, st, r = os.wait4(p.pid, os.WNOHANG)
@@ -293,6 +334,7 @@ def _run_once(prog_path: str, stdin_bytes: bytes, workdir: str, cpu_secs: float)
     with open(out_path, "rb") as f:
         out = f.read(OUTPUT_CAP + 1)
     return RunResult(exit_code=None if killed else p.returncode, cpu_secs=cpu,
+                     wall_secs=time.monotonic() - started,
                      stdout=out, output_overflow=size > OUTPUT_CAP)
 
 
@@ -312,13 +354,18 @@ def run_program(program: str, stdins: list, cpu_secs: float = STDIO_CPU_SECS,
         with open(prog_path, "wb") as f:
             f.write(data)
         results, spent = [], 0.0
+        started = time.monotonic()
         for s in stdins:
             b = s if isinstance(s, bytes) else str(s).encode("utf-8")
             r = _run_once(prog_path, b, workdir, cpu_secs)
             results.append(r)
             spent += r.cpu_secs
+            # A question's tests end at QUESTION_WALL_SECS of wall time: a
+            # reply that waits without using CPU before each answer could
+            # otherwise hold the grader for MAX_TESTS x WALL_MIN_SECS.
             if stop_on_failure and (not r.clean or r.cpu_secs > cpu_secs
-                                    or spent > QUESTION_CPU_SECS):
+                                    or spent > QUESTION_CPU_SECS
+                                    or time.monotonic() - started > QUESTION_WALL_SECS):
                 break
         return results
     finally:
@@ -385,7 +432,7 @@ def exec_stdio(task, reply, allow=False):
     stdins = [t["input"] for t in tests]
     wants = [str(t["output"]).encode("utf-8") for t in tests]
     results = run_program(extract_code(reply), stdins, STDIO_CPU_SECS, stop_on_failure=True)
-    if len(results) != len(tests):
+    if len(results) != len(tests) or sum(r.wall_secs for r in results) > QUESTION_WALL_SECS:
         return 0
     spent = 0.0
     for r, want in zip(results, wants):

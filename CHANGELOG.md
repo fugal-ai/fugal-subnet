@@ -4,6 +4,106 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — protocol v3, not scheduled: the seat decided on a head's odds (consensus; needs a new miner image, pool, menu and embeddings file before any chain can schedule it)
+Everything below is inert until a release pins the v3 pool, menu and
+embeddings file and compiles in finney's blocks. v2 epochs are scored exactly
+as before (the determinism check's v2 digests are unchanged).
+- **Exact odds** (`head_odds.py`): a head's chance per model, as an integer in
+  0..10,000 identical on every host: exact products, `math.fsum`, and a
+  pinned logit threshold table instead of an exponential.
+- **Every miner measures the models** (`epoch_plan.exploration_plan_v3`,
+  `slicer.select_private_explore`): 8 shared exploration pairs and 24 drawn
+  for each miner's hotkey, pooled per epoch (`explore_pool.py`) with one vote
+  per operator, a cap per operator and a plausibility check.
+- **The seat on odds** (`odds_score.py`, `champion._challenge_odds`): paired
+  Brier test with a margin, skill over a per-model, per-benchmark reference,
+  and net value kept as a guard; odds computed and published for every head
+  from the v3 block, deciding the seat from the odds seat block.
+- **Published per epoch:** `exploration_pool`, `head_odds`, `odds_shadow`,
+  `single_model_table`; `v2_state.odds_digest` and `v2_state.rules`.
+- **Menu entries as pinned requests** (`routing_protocol.request_for`):
+  `model@effort` ids, one reasoning setting, the answer budget and pinned
+  providers per entry.
+- V pinned in dollars from v3 (`CHAMPION_VALUE_PER_CORRECT_USD`).
+- `tests/test_head_odds.py`, `test_explore_private.py`, `test_odds_seat.py`,
+  `test_v3_epoch.py`, `test_v3_wiring.py`; four new stages in
+  `scripts/check_determinism.py`.
+
+### Fixed — failed model calls in the miner harness (next miner image)
+Reported by a miner with logs and a reproduction.
+- The metering proxy's accept queue was 5 while 24 calls connect at once: the
+  first burst of an epoch could reset connections. It is 128, and the harness
+  reconnects once when not a byte of a reply arrived.
+- A 200 with a body that is not JSON, or that carries an error and no
+  `choices`, is retried within the same attempts and deadline as a 429 or 5xx,
+  and is recorded as a FAILED call when they run out. It used to be graded as
+  a wrong answer, which also voted in the shared grade other miners are
+  graded on. A content-policy or forbidden error fails at once.
+- `tests/test_proxy_error_bodies.py`.
+
+### Added — a take is confirmed on fresh questions (consensus, validators only; from an activation block compiled into the release)
+The take test runs every epoch for every challenger, so heads with no real
+edge over the champion pass it by luck now and then, and more heads means more
+lucky passes. From the confirmation activation block a challenger that beats a
+settled champion is recorded as pending, the champion keeps the seat and is
+paid, and the challenger takes the seat when it passes the same test again on
+at least 1,500 questions drawn after its first pass (INVARIANTS I3, "a take is
+confirmed on fresh questions"). No miner image changes.
+- `champion.py`: `Pending`, `SeatState.pending` / `confirm_from`,
+  `seat_step` and `_live_pending`; the fresh test is the same `paired_test`
+  on epochs after the pass, with its own resampling stream. A seat filled
+  from empty can be taken by the plain test for its first 5 epochs. A
+  champion that only missed is still confirmed against; a retired ghost is
+  not (it answers no new questions).
+- From the same block a retired champion's ghost bars for 8 epochs
+  (`CHAMPION_GHOST_RETIRE_CONFIRM`) instead of 24: a head committed after the
+  retirement can never be paired with the ghost, so the old window could
+  leave the seat empty and burning for about 29 hours.
+- `config.confirm_activation_block`: finney's block is in the release
+  (`FINNEY_CONFIRM_ACTIVATION_BLOCK`, not yet scheduled), and the variable
+  cannot move it there; other chains read `FUGAL_CONFIRM_ACTIVATION_BLOCK`.
+  Before the block nothing changes: the same weights and a byte-identical
+  published seat. The consensus digest changes with the release (three new
+  constants and the block).
+- Measured with the shipped rule
+  (`scripts/experiments/experiment_seat_confirmation.py`): ten challengers
+  with no edge took a settled champion's seat in 8% to 18% of 60-epoch runs
+  before and in none of 120 with the rule (thirty near-copies: 22.5% and
+  2.5%). Every challenger with a real edge still takes the seat, in about
+  twice the epochs (+1.5 points: epoch 5 becomes 10; +0.85: median 8
+  becomes 18).
+- `tests/test_seat_confirmation.py`; a `seat_confirmation` stage in
+  `scripts/check_determinism.py`.
+
+### Changed — a validator that is not the root follows it with nothing to set up, and finney refuses the configurations that failed silently (validator only; not a consensus change)
+- **Followers fetch the root's reveals themselves** (`fugal_subnet/reveal_sync.py`):
+  plain HTTPS from the public bucket, at startup and before every epoch. No
+  `gsutil` timer and no `FUGAL_FRAME_BOOTSTRAP` (both still work). The root
+  sets `FUGAL_ROOT=1`, or is recognised by publishing to the reference bucket.
+- **Refused at startup on finney (live):** `FUGAL_V2_ACTIVATION_BLOCK` unset
+  or not 9485640; no approved entry for a v2 miner image; no public IPv4 in
+  `FUGAL_VALIDATOR_IP`; a follower with no reference reveals and no way to
+  fetch any. Each of these used to start, look healthy and burn the
+  validator's weight.
+- **`Following root: seat uid N (head …), entries N, fugal vX (root vY),
+  reference lag K epoch(s)`** at startup and every epoch, and an ERROR naming
+  what to check when this validator's champion has differed from the root's
+  for longer than verify-and-resync takes to correct.
+- **Per-UID collection record:** one `Collection:` line per epoch naming the
+  committed miners that ended it without a valid proof and how each query
+  ended (status, seconds), and a `collection` map in the epoch log. It tells
+  "never reached" from "slow" from "refused".
+- The root's "v2 epochs … were not observed and no reference is set" ERROR
+  after an epoch with no proofs is now a WARNING that says it is harmless
+  unless the root was down. A follower without `FUGAL_REVEAL_BUCKET` is told
+  once, at INFO: only the root's reveals are read.
+- VALIDATOR_GUIDE: a "Minimum mainnet environment" box.
+
+### Fixed
+- `fugal_subnet.__version__` said 0.3.1 in the 0.3.2 release, so reveals named
+  the previous version (`environment.fugal_version`; not in the consensus
+  digest). A test now holds it equal to `pyproject.toml`.
+
 ## [0.3.2] - 2026-11-12
 
 ### Fixed — proof collection no longer makes miners wait behind axons that never answer (validator only; not a consensus change)

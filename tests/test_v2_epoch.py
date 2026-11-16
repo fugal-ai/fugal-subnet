@@ -80,7 +80,8 @@ def C(uid, head, block, coldkey=None):
 
 
 def run(epoch, policies, *, window=None, seat=None, copy=None, commits=None, burn_in=0,
-        blocks=None, records=None, heads=None, coldkeys=None, failed=None):
+        blocks=None, records=None, heads=None, coldkeys=None, failed=None, params=None,
+        odds_input=None, rules=None, state_rules=None):
     """One v2 epoch. Epoch e is chain epoch e + 1, so every head's first-commit
     epoch (>= 1) is at or before it. By default UID u serves head H(u) from
     hotkey hk{u} under coldkey ck{u}, committed at block `blocks[u]` (= u).
@@ -100,8 +101,10 @@ def run(epoch, policies, *, window=None, seat=None, copy=None, commits=None, bur
         head_hashes=heads, coldkey_of=coldkeys, hotkey_of={u: f"hk{u}" for u in uids},
         records=records if records is not None else {u: burned(heads[u]) for u in uids},
         commitments=commits, window=window or Window.empty(48), seat=seat or SeatState(),
-        copy_state=copy or CopyState(), burn_uid=0, params=seat_params_from_config(),
+        copy_state=copy or CopyState(), burn_uid=0,
+        params=params or seat_params_from_config(),
         shares=(0.85, 0.10, 0.05), burn_in_questions=burn_in, bench_category=CATEGORY,
+        odds_input=odds_input, rules=rules, state_rules=state_rules,
     )
 
 
@@ -419,7 +422,8 @@ def test_the_validator_reads_the_v2_category_map_and_the_copy_rule():
     src = pathlib.Path(__file__).resolve().parents[1].joinpath("neurons", "validator.py").read_text()
     call = src[src.index("v2_result = run_v2_epoch("):]
     call = call[:call.index("uids, weights = v2_result.uids")]
-    assert 'getattr(config_module, "BENCHMARK_CATEGORY_V2", None)' in call
+    # The category map of the epoch's own protocol (v2's for a v2 epoch).
+    assert 'f"BENCHMARK_CATEGORY_V{protocol_version}", None)' in call
     assert "commitments=snapshot" in call and "copy_state=v2_copy" in call
     assert "exact_copies" not in call
     assert "allow_take=not v2_window_degraded" in call

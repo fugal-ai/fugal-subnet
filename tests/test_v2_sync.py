@@ -304,7 +304,9 @@ def test_the_gap_is_durable_and_a_local_outage_opens_one():
     import pathlib
 
     src = pathlib.Path(__file__).resolve().parents[1].joinpath("neurons", "validator.py").read_text()
-    assert src.count('"gap_until": v2_gap_until, "anchor_at": v2_anchor_at}') == 3
+    # Every save carries the gap, the anchor and what the state was built under.
+    assert src.count('"gap_until": v2_gap_until, "anchor_at": v2_anchor_at,\n') == 3
+    assert src.count('"rules": v2_rules}') == 3
     assert 'v2_anchor_at = v2_raw.get("anchor_at")' in src
     assert 'v2_gap_until = v2_raw.get("gap_until")' in src
     skip = src[src.index('logger.warning("No valid proofs received, skipping epoch")'):]

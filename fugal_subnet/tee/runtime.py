@@ -67,6 +67,19 @@ OPENROUTER_402_TOO_LARGE = "weight_exceeds_budget"
 PROXY_MAX_ATTEMPTS = 3
 PROXY_RETRY_BUDGET_S = 300.0   # no new attempt after this; the call itself ends by PROXY_CALL_DEADLINE_S
 PROXY_MAX_WAIT_S = 20.0
+# A 200 is not always an answer. OpenRouter also reports a provider's failure
+# inside a 200 body ({"error": {"code": 429 | 502 | 403, ...}}, no `choices`),
+# and a reply can arrive cut short or not as JSON at all. Relayed as they were,
+# those were recorded with zero tokens and graded as a wrong answer that
+# completed, and a wrong answer votes in the grade every miner shares for that
+# (question, model) cell. They go through the same retry loop as a 429/5xx
+# status instead, inside the same attempts and the same deadline, and a call
+# that still has no answer at the end fails: 502 to the harness, `failed` in the
+# proof, no vote. An error no retry can change fails at once: an operator status
+# (PROXY_OPERATOR_STATUS) as the body's error code, or an error code or type
+# that names a refusal, matched against these after lower-casing and reading
+# "-" and " " as "_".
+PROXY_REFUSAL_MARKERS = ("content_policy", "content_filter", "moderation", "forbidden")
 
 
 def _retry_wait(attempt: int, retry_after: str | None) -> float:
@@ -102,10 +115,9 @@ def _log_cap_overrun(model_id: str, completion_tokens) -> None:
                        model_id, n, HARNESS_MAX_TOKENS, n - HARNESS_MAX_TOKENS)
 
 
-def _402_reason(err) -> str:
-    """metadata.reason from an OpenRouter 402 body, or "" when there is none."""
+def _metadata_reason(body) -> str:
+    """error.metadata.reason of a decoded OpenRouter error body, or "" when there is none."""
     try:
-        body = json.loads(err.read() or b"{}")
         meta = (body.get("error") or {}).get("metadata") or {}
         reason = meta.get("reason", "")
         return reason if isinstance(reason, str) else ""
@@ -113,8 +125,82 @@ def _402_reason(err) -> str:
         return ""
 
 
+def _402_reason(err) -> str:
+    """metadata.reason from an OpenRouter 402 body, or "" when there is none."""
+    try:
+        return _metadata_reason(json.loads(err.read() or b"{}"))
+    except Exception:
+        return ""
+
+
+def reply_has_choices(data) -> bool:
+    """True when a decoded reply is a chat completion with at least one choice.
+
+    The one definition of "the model answered", used by the proxy and by the
+    harness: only such a reply is relayed, and only such a reply is graded. The
+    choice may still hold no text (`content: null`, the whole budget spent on
+    reasoning); that is a completed reply, billed and graded as a wrong answer.
+    """
+    if not isinstance(data, dict):
+        return False
+    choices = data.get("choices")
+    return isinstance(choices, list) and bool(choices) and isinstance(choices[0], dict)
+
+
+def _reports_tokens(data: dict) -> bool:
+    """True when a reply body reports tokens used: a completion ran and is billed."""
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return False
+    return any(
+        isinstance(n, int) and not isinstance(n, bool) and n > 0
+        for n in (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+    )
+
+
+def _body_error_code(data: dict) -> int | None:
+    """The integer `error.code` of a reply body ("429" counts), or None."""
+    err = data.get("error")
+    code = err.get("code") if isinstance(err, dict) else None
+    if isinstance(code, str) and code.isdigit() and len(code) == 3:
+        code = int(code)
+    return code if isinstance(code, int) and not isinstance(code, bool) else None
+
+
+def _body_refusal(data: dict) -> str | None:
+    """Why a 200 body with no `choices` is not retried, or None when a retry can help.
+
+    The text returned is written here and goes to the log. Nothing the upstream
+    sent is echoed into it: an error message is free text from a third party,
+    and some providers quote part of the key they were called with.
+    """
+    err = data.get("error")
+    if not isinstance(err, dict):
+        return None
+    code = _body_error_code(data)
+    if code == 402 and _metadata_reason(data) == OPENROUTER_402_TRANSIENT:
+        return None
+    if code == 403:
+        # Inside a body a 403 is a moderation refusal as often as it is the key.
+        return "forbidden: the provider refused the request, or the key's spend limit is reached"
+    if code in PROXY_OPERATOR_STATUS:
+        return (f"{PROXY_OPERATOR_STATUS[code]}. OPERATOR ACTION REQUIRED "
+                "(OpenRouter key or balance)")
+    named = "|".join(
+        v.lower().replace("-", "_").replace(" ", "_")
+        for v in (err.get("code"), err.get("type")) if isinstance(v, str)
+    )
+    if any(marker in named for marker in PROXY_REFUSAL_MARKERS):
+        return "a content-policy or moderation refusal"
+    return None
+
+
 class UpstreamDeadline(TimeoutError):
     """The upstream call ran past PROXY_CALL_DEADLINE_S of wall-clock time."""
+
+
+class UpstreamNoAnswer(RuntimeError):
+    """The upstream replied, but with no answer, and no retry is left or allowed."""
 
 
 def _post_with_deadline(req, deadline: float) -> bytes:
@@ -215,11 +301,18 @@ def _post_with_deadline(req, deadline: float) -> bytes:
                 pass
 
 
-def _fetch_upstream(req, model_id: str) -> bytes:
-    """POST to the upstream with the retry policy above. Returns the body or raises.
+def _fetch_upstream(req, model_id: str, meter_unanswered=None) -> bytes:
+    """POST to the upstream with the retry policy above. Returns the body of a
+    reply that carries `choices`, or raises.
 
     PROXY_CALL_DEADLINE_S is wall-clock time for the whole call, retries included.
+
+    `meter_unanswered(body, data)` is called for a 200 body that has no answer
+    but reports tokens used, before the retry is decided. The provider billed
+    that completion, so it is metered like any other: every upstream completion
+    is recorded once, whether or not an answer came of it.
     """
+    import http.client
     from urllib.error import HTTPError
     started = time.time()
     deadline = time.monotonic() + PROXY_CALL_DEADLINE_S
@@ -227,7 +320,12 @@ def _fetch_upstream(req, model_id: str) -> bytes:
     while True:
         attempt += 1
         try:
-            return _post_with_deadline(req, deadline)
+            body = _post_with_deadline(req, deadline)
+        except http.client.IncompleteRead:
+            # The connection closed inside the body. Over chunked encoding, which
+            # is how OpenRouter sends a reply it kept alive, this is what a
+            # truncated reply looks like; it never reaches the JSON check below.
+            problem = "a reply that ended early"
         except UpstreamDeadline:
             logger.warning(
                 "Upstream call for %s hit the %.0f s wall-clock deadline; connection closed, "
@@ -274,10 +372,56 @@ def _fetch_upstream(req, model_id: str) -> bytes:
                     model_id, attempt,
                 )
             raise
+        else:
+            try:
+                data = json.loads(body)
+            except (ValueError, RecursionError):
+                data = None
+            if reply_has_choices(data):
+                return body
+            if not isinstance(data, dict):
+                problem = "a 200 reply that is not a JSON object"
+            else:
+                if meter_unanswered is not None and _reports_tokens(data):
+                    meter_unanswered(body, data)
+                code = _body_error_code(data)
+                problem = ("a 200 reply with no choices"
+                           + (f" (error code {code})" if code is not None else ""))
+                refusal = _body_refusal(data)
+                if refusal:
+                    logger.error("Upstream sent %s for %s: %s; not retried; the call is "
+                                 "recorded as failed", problem, model_id, refusal)
+                    raise UpstreamNoAnswer(f"{problem}, not retried")
+        # No answer, for a reason the next try may not meet again.
+        if attempt < PROXY_MAX_ATTEMPTS and time.time() - started < PROXY_RETRY_BUDGET_S:
+            wait = _retry_wait(attempt, None)
+            logger.warning("Upstream sent %s for %s; retry %d/%d in %.1fs",
+                           problem, model_id, attempt, PROXY_MAX_ATTEMPTS - 1, wait)
+            time.sleep(wait)
+            continue
+        logger.error("Upstream sent %s for %s on attempt %d and no retry is left; the call "
+                     "is recorded as failed", problem, model_id, attempt)
+        raise UpstreamNoAnswer(f"{problem} after {attempt} attempts")
 
 
 class UnpricedModel(RuntimeError):
     """Raised when a routed model has no entry in the pinned price table."""
+
+
+class _ProxyServer(ThreadingHTTPServer):
+    """The proxy's listener, with an accept queue sized for the harness.
+
+    socketserver's default backlog is 5. The harness opens HARNESS_CONCURRENCY
+    (24) connections in the same instant at the start of an epoch, and one that
+    does not fit is reset before the proxy has seen it: a failed call, scored as
+    a wrong answer, for a question whose model was never asked. 128 holds
+    several such bursts and is within the kernel's cap (net.core.somaxconn) on
+    every distribution.
+    Threaded: a single-threaded server would serialise the calls again behind
+    its accept loop.
+    """
+
+    request_queue_size = 128
 
 
 @dataclass
@@ -363,10 +507,8 @@ class MeteringProxy:
                     method="POST",
                 )
 
-                try:
-                    resp_body = _fetch_upstream(req, model_id)
-                    resp_data = json.loads(resp_body)
-
+                def meter(resp_body: bytes, resp_data: dict) -> None:
+                    """Record one upstream completion under this request's id."""
                     usage = resp_data.get("usage", {})
                     prompt_tokens = usage.get("prompt_tokens", 0)
                     completion_tokens = usage.get("completion_tokens", 0)
@@ -393,6 +535,13 @@ class MeteringProxy:
                             request_id=request_id,
                         ))
 
+                try:
+                    # Only a reply with `choices` comes back from here. A 200
+                    # that carried none was retried, and metered on the way if
+                    # it reported tokens; a call left without an answer raises.
+                    resp_body = _fetch_upstream(req, model_id, meter_unanswered=meter)
+                    meter(resp_body, json.loads(resp_body))
+
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
@@ -415,15 +564,14 @@ class MeteringProxy:
         # start of every epoch, forever, benchmarking nothing. Binding 0 and
         # recording what the kernel gave us costs nothing and removes a whole
         # class of "my second miner earns zero" reports.
-        # Threaded: the harness keeps several model calls in flight
-        # (config.HARNESS_CONCURRENCY), and a single-threaded server would
-        # serialise them again behind its accept loop.
+        # Threaded, with an accept queue for the harness's opening burst
+        # (config.HARNESS_CONCURRENCY calls in flight): see _ProxyServer.
         try:
-            self._server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+            self._server = _ProxyServer(("127.0.0.1", self.port), Handler)
         except OSError as e:
             if e.errno != errno.EADDRINUSE:
                 raise
-            self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            self._server = _ProxyServer(("127.0.0.1", 0), Handler)
             actual = self._server.server_address[1]
             logger.warning(
                 "MeteringProxy port %d is in use (another miner on this host?); "

@@ -11,6 +11,11 @@ MANIFEST_PATH = ROOT / "routing_data" / "benchmark_tokens_v1.json"
 PRICES_PATH = ROOT / "routing_data" / "models.json"
 PRICES_PATH_V2 = ROOT / "routing_data" / "models_v2.json"
 MANIFEST_PATH_V2 = ROOT / "routing_data" / "benchmark_tokens_protocol_v2.json"
+# Protocol v3's menu and token manifest. Not shipped until the v3 release pins
+# them: every v3 accessor below fails by name while they are absent, and a
+# validator with a v3 block scheduled refuses to start without them.
+PRICES_PATH_V3 = ROOT / "routing_data" / "models_v3.json"
+MANIFEST_PATH_V3 = ROOT / "routing_data" / "benchmark_tokens_protocol_v3.json"
 BENCHMARK_LAMBDA = 1.0  # Consensus constant; never a miner environment setting.
 
 
@@ -58,6 +63,8 @@ def prices_path(version: int) -> Path:
         return PRICES_PATH
     if version == 2:
         return PRICES_PATH_V2
+    if version == 3:
+        return PRICES_PATH_V3
     raise ValueError(f"unknown protocol version {version!r}")
 
 
@@ -95,6 +102,8 @@ def manifest_path(version: int) -> Path:
         return MANIFEST_PATH
     if version == 2:
         return MANIFEST_PATH_V2
+    if version == 3:
+        return MANIFEST_PATH_V3
     raise ValueError(f"unknown protocol version {version!r}")
 
 
@@ -117,3 +126,103 @@ def benchmark_costs_for(head, version: int, require_reviewed: bool = False):
     manifest = json.loads(manifest_path(version).read_text())
     contract.check_manifest(head.success, manifest, deployable=require_reviewed)
     return contract.estimated_cost(head.success, price_table(version))
+
+
+# --- Protocol v3: a menu entry is a way of calling a model -------------------
+#
+# From v3 an entry's id is `<model>@<effort>` when a model is offered at more
+# than one reasoning effort (`openai/gpt-6.1-sol@high`), and the plain model id
+# when it is offered at one. The id is what a head has a row for, what the
+# price table and the token manifest are keyed on, and what every reveal
+# names. What goes on the wire is the entry's REQUEST: the provider's model
+# id, the reasoning setting, the answer budget and the providers it may be
+# served by. The request is part of the pinned table, so the subnet's harness
+# and anything that serves the winning head send the same bytes for an entry.
+
+REQUEST_FIELDS = ("model", "reasoning", "max_tokens", "provider")
+
+
+def identity_v3():
+    """The v3 evidence namespace: the v3 menu and token manifest."""
+    return contract.digest({"protocol": "fugal-success-v3", "contract": contract.CONTRACT,
+                            "profile": contract.PROFILE_ID, "lambda": BENCHMARK_LAMBDA,
+                            "tokens": contract.file_hash(MANIFEST_PATH_V3),
+                            "prices": contract.file_hash(PRICES_PATH_V3)})
+
+
+def identity_for(version: int):
+    return {1: identity, 2: identity_v2, 3: identity_v3}[int(version)]()
+
+
+def api_model_of(entry_id: str) -> str:
+    """The provider's model id of a menu entry id: the part before `@`."""
+    return str(entry_id).split("@", 1)[0]
+
+
+def request_for(version: int, entry_id: str, default_max_tokens: int) -> dict:
+    """The request fields the harness sends for this menu entry.
+
+    v2: the model id as it is, the pinned `reasoning` if any, the harness's
+    answer budget. v3: the entry's own `model` (default: the id before `@`),
+    `reasoning`, `max_tokens` (default: the harness's budget) and `provider`
+    (an OpenRouter provider preference: the pinned order, no fallbacks).
+    """
+    if version == 1:
+        return {"model": entry_id, "max_tokens": int(default_max_tokens)}
+    for r in _table(version):
+        if r["id"] != entry_id:
+            continue
+        out = {"model": str(r.get("model") or api_model_of(entry_id)) if version >= 3 else entry_id,
+               "max_tokens": int(r.get("max_tokens") or default_max_tokens) if version >= 3
+               else int(default_max_tokens)}
+        if r.get("reasoning"):
+            out["reasoning"] = dict(r["reasoning"])
+        if version >= 3 and r.get("provider"):
+            out["provider"] = dict(r["provider"])
+        return out
+    raise KeyError(f"{entry_id!r} is not in the v{version} model list")
+
+
+def validate_menu_v3(rows: list) -> None:
+    """Refuse a v3 menu that a harness could not call or a head could not name.
+
+    Every row: a unique id of at most 256 characters; an id with `@` whose
+    part before it is the row's `model` (or the row has no `model`);
+    non-negative prices; at most one of `effort` / `max_tokens` / `enabled`
+    in `reasoning` (OpenRouter's unified parameter takes one); a positive
+    `max_tokens` if given; and a `provider` that pins an order and forbids
+    fallbacks, so two runs of an entry cannot be served by different hardware.
+    """
+    seen: set[str] = set()
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("the v3 menu must be a non-empty list of entries")
+    for r in rows:
+        eid = r.get("id") if isinstance(r, dict) else None
+        if not isinstance(eid, str) or not eid.strip() or len(eid) > 256 or eid in seen:
+            raise ValueError(f"menu entry id {eid!r} is missing, too long or repeated")
+        seen.add(eid)
+        if eid.count("@") > 1 or eid.startswith("@") or eid.endswith("@"):
+            raise ValueError(f"{eid}: at most one '@', with a model before it and an effort after")
+        if "model" in r and r["model"] != api_model_of(eid):
+            raise ValueError(f"{eid}: `model` {r['model']!r} is not the id before '@'")
+        for key in ("in", "out"):
+            v = r.get(key)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not v >= 0:
+                raise ValueError(f"{eid}: `{key}` must be a non-negative price per million tokens")
+        reasoning = r.get("reasoning")
+        if reasoning is not None:
+            if not isinstance(reasoning, dict) or len(
+                    [k for k in ("effort", "max_tokens", "enabled") if k in reasoning]) != 1:
+                raise ValueError(f"{eid}: `reasoning` must set exactly one of effort, "
+                                 "max_tokens, enabled")
+        mt = r.get("max_tokens")
+        if mt is not None and (isinstance(mt, bool) or not isinstance(mt, int) or mt < 1):
+            raise ValueError(f"{eid}: `max_tokens` must be a positive integer")
+        provider = r.get("provider")
+        if provider is not None:
+            order = provider.get("order") if isinstance(provider, dict) else None
+            if (not isinstance(order, list) or not order
+                    or not all(isinstance(x, str) and x for x in order)
+                    or provider.get("allow_fallbacks") is not False):
+                raise ValueError(f"{eid}: `provider` must pin an `order` and set "
+                                 "`allow_fallbacks` to false")

@@ -19,6 +19,9 @@ def test_both_tables_ship_and_the_version_selects_one():
     assert not set(v1) & set(v2)                          # a one-time list replacement
     assert set(rp.price_table(2)) == set(v2)
     with pytest.raises(ValueError):
+        rp.price_table(4)
+    # v3 is a known version whose table ships with the release that pins it.
+    with pytest.raises(FileNotFoundError):
         rp.price_table(3)
 
 

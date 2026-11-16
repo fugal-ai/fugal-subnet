@@ -186,13 +186,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
             "--head-path is required unless --await-provisioning is set"
         )
     from fugal_subnet.config import V2_ACTIVATION_BLOCK as _V2_BLOCK
+    from fugal_subnet.config import V3_ACTIVATION_BLOCK_ENV as _V3_BLOCK
     from fugal_subnet.head_eval import load_head_from_npz
     from fugal_subnet.routing_protocol import benchmark_costs_for
     # Validate the head against the protocol this image serves: a v2 head checks
     # against the v2 token manifest. v1's check refused every genuine v2 head at
-    # startup (found by the v2 flip rehearsal).
-    benchmark_costs_for(load_head_from_npz(head_data), 2 if _V2_BLOCK is not None else 1,
-                        require_reviewed=not mock)
+    # startup (found by the v2 flip rehearsal). A v3 head is also held to the
+    # parameter bound validators refuse a proof for (head_odds.check_head_bounds):
+    # better refused here than after an epoch's inference bill.
+    _head = load_head_from_npz(head_data)
+    _image_protocol = 3 if _V3_BLOCK is not None else 2 if _V2_BLOCK is not None else 1
+    benchmark_costs_for(_head, _image_protocol, require_reviewed=not mock)
+    if _image_protocol >= 3:
+        from fugal_subnet.head_odds import check_head_bounds
+        try:
+            check_head_bounds(_head.W, _head.b)
+        except ValueError as e:
+            raise click.ClickException(f"this head would be refused by validators: {e}") from e
     weights_hash = hashlib.sha256(head_data).hexdigest()
 
     # The pool is consensus state: the slice is drawn from it, so the miner and
@@ -211,11 +221,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # image serves v2 only (v1 TDs keep running the v1 image until the flip), so
     # the miner needs no dual mode, only the hold below. Unset means v1.
     from fugal_subnet.benchmarks.loader import load_pool, pool_hash
-    from fugal_subnet.config import V2_ACTIVATION_BLOCK
-    protocol = 2 if V2_ACTIVATION_BLOCK is not None else 1
+
+    # A protocol v3 image sets FUGAL_V3_ACTIVATION_BLOCK the same way and
+    # serves v3 only, from that block.
+    from fugal_subnet.config import V2_ACTIVATION_BLOCK, V3_ACTIVATION_BLOCK_ENV
+    protocol = (3 if V3_ACTIVATION_BLOCK_ENV is not None
+                else 2 if V2_ACTIVATION_BLOCK is not None else 1)
+    flip_block = V3_ACTIVATION_BLOCK_ENV if protocol == 3 else V2_ACTIVATION_BLOCK
     if benchmark_pool:
-        os.environ["FUGAL_BENCHMARK_POOL_V2" if protocol == 2 else "FUGAL_BENCHMARK_POOL"] = \
-            os.path.abspath(benchmark_pool)
+        os.environ[f"FUGAL_BENCHMARK_POOL_V{protocol}" if protocol >= 2
+                   else "FUGAL_BENCHMARK_POOL"] = os.path.abspath(benchmark_pool)
     pool = load_pool(protocol)
     if not pool:
         raise click.ClickException("Benchmark pool is empty — nothing to benchmark")
@@ -226,9 +241,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # sorted list, never from the miner's own head, so the samples the reference
     # frame is built from cannot be steered.
     from fugal_subnet.routing_protocol import models_for_protocol, price_table
-    if protocol == 2:
-        prices = price_table(2)
-        pool_models = models_for_protocol(2)
+    if protocol >= 2:
+        prices = price_table(protocol)
+        pool_models = models_for_protocol(protocol)
     else:
         # FUGAL_MODEL_PRICES is a consensus override (refused on finney); the
         # default is the copy the protocol identity hashes, as on the validator.
@@ -246,10 +261,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # lost while the pool embeds.
     _assert_registered(network, netuid, coldkey, hotkey, wallet_path)
 
-    # Once, at startup — not per epoch. See _compute_hidden_states.
-    logger.info("Computing backbone embeddings for %d questions...", len(pool))
-    hidden_states = _compute_hidden_states(pool)
-    logger.info("Embeddings ready: %s (backbone released)", hidden_states.shape)
+    if protocol >= 3:
+        # v3: the pool's embeddings ship with the image as one pinned file, the
+        # same bytes every validator computes odds from. Nothing is embedded
+        # at boot, and a file that is not the pinned one is refused.
+        hidden_states = _load_pinned_embeddings(pool, mock=mock)
+        logger.info("Embeddings loaded from the pinned file: %s", hidden_states.shape)
+    else:
+        # Once, at startup — not per epoch. See _compute_hidden_states.
+        logger.info("Computing backbone embeddings for %d questions...", len(pool))
+        hidden_states = _compute_hidden_states(pool)
+        logger.info("Embeddings ready: %s (backbone released)", hidden_states.shape)
 
     wallet = bt.Wallet(name=coldkey, hotkey=hotkey, path=wallet_path)
     # A fresh connection: the embedding above can take hours, longer than an
@@ -345,21 +367,22 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
 
     blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
     committed = False
-    if protocol == 2:
-        # Hold until the flip. One hotkey holds ONE on-chain commitment, and the
+    if protocol >= 2:
+        # Hold until the flip (the v2 block for a v2 image, the v3 block for a v3 one). One hotkey holds ONE on-chain commitment, and the
         # v1 TD serving this hotkey until the flip is scored against it: a v2
         # commit during the notice window would make every v1 proof from this
         # hotkey fail. So: embed (done above), commit in the epoch BEFORE the
         # activation block so the commitment is on chain at the flip boundary,
         # and register the axon only from the activation block.
         from fugal_subnet.benchmarks.slicer import validate_activation_block
-        validate_activation_block(V2_ACTIVATION_BLOCK, blocks_per_epoch)
-        commit_at, commit_deadline = _v2_commit_window(V2_ACTIVATION_BLOCK, blocks_per_epoch)
-        _wait_for_block(subtensor, commit_at, "commit the v2 head (after the last v1 boundary)")
+        validate_activation_block(flip_block, blocks_per_epoch)
+        commit_at, commit_deadline = _v2_commit_window(flip_block, blocks_per_epoch)
+        _wait_for_block(subtensor, commit_at,
+                        f"commit the v{protocol} head (after the last boundary before the flip)")
         committed = _commit_before_deadline(
             subtensor, wallet, netuid, weights_hash, deadline=commit_deadline,
         )
-        _wait_for_block(subtensor, V2_ACTIVATION_BLOCK, "serve the axon (the v2 flip)")
+        _wait_for_block(subtensor, flip_block, f"serve the axon (the v{protocol} flip)")
 
     external_ip = os.getenv("FUGAL_AXON_IP")   # routable: checked at startup
     # Fail before serving if something else already holds the port. bt.Axon
@@ -1027,6 +1050,24 @@ def _embedding_cache_path(pool) -> str:
     ]).encode("utf-8")).hexdigest()[:32]
     root = os.getenv("FUGAL_EMBEDDING_CACHE", os.path.join("data", "embeddings"))
     return os.path.join(root, f"hidden-{key}.npz")
+
+
+def _load_pinned_embeddings(pool, mock: bool = False):
+    """The pool's embeddings from the pinned file (protocol v3), one row per
+    pool question in pool order. Live refuses a file that is not pinned or
+    does not match the pin; mock may load an unpinned one for a rehearsal."""
+    from fugal_subnet.config import EMBEDDINGS_SHA256
+    from fugal_subnet.embeddings_file import Embeddings
+
+    if not EMBEDDINGS_SHA256 and not mock:
+        raise click.ClickException(
+            "config.EMBEDDINGS_SHA256 is not pinned: a v3 miner routes only from the pinned "
+            "embeddings file")
+    path = os.getenv("FUGAL_EMBEDDINGS_FILE", os.path.join("data", "embeddings", "pool_v3.npz"))
+    try:
+        return Embeddings.load(path, EMBEDDINGS_SHA256).aligned([q["question_id"] for q in pool])
+    except (OSError, ValueError, KeyError) as e:
+        raise click.ClickException(f"embeddings file {path}: {e}") from e
 
 
 def _compute_hidden_states(pool):

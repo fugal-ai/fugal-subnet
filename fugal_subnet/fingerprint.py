@@ -135,6 +135,24 @@ def environment_fingerprint() -> dict:
             # In the digest so a validator that would flip at a different
             # block, or never, is visibly different from its first epoch.
             "v2_activation_block": config.V2_ACTIVATION_BLOCK,
+            # The fresh-data confirmation rule's activation: finney's compiled
+            # block and the variable other chains read. Both, because the
+            # fingerprint is taken without a chain connection; on finney the
+            # variable is refused unless it equals the compiled block.
+            "confirm_activation_block": {
+                "finney": config.FINNEY_CONFIRM_ACTIVATION_BLOCK,
+                "env": config.CONFIRM_ACTIVATION_BLOCK_ENV,
+            },
+            # Protocol v3 and the odds seat, the same two ways.
+            "v3_activation_block": {
+                "finney": config.FINNEY_V3_ACTIVATION_BLOCK,
+                "env": config.V3_ACTIVATION_BLOCK_ENV,
+            },
+            "embeddings_v3": config.EMBEDDINGS_SHA256,
+            "odds_seat_block": {
+                "finney": config.FINNEY_ODDS_SEAT_BLOCK,
+                "env": config.ODDS_SEAT_BLOCK_ENV,
+            },
             # The v2 price table is consensus from the flip, and a release/v2
             # validator ships it while still scoring v1 epochs; its hash is here
             # so two validators that would score v2 differently differ visibly
@@ -174,9 +192,19 @@ def environment_fingerprint() -> dict:
             # built from. In the digest so a validator pricing it differently
             # is visibly different.
             "CHAMPION_ANCHOR_SPEND_PER_Q": _anchor_spend_or_error(config.CHAMPION_ANCHOR_MODEL),
+            # v3's exact odds: the bound on a head's parameters and the pinned
+            # logit threshold table (fugal_subnet/head_odds.py).
+            "HEAD_MAX_ABS_PARAM": _head_odds_constant("HEAD_MAX_ABS_PARAM"),
+            "ODDS_THRESHOLDS_SHA256": _head_odds_constant("THRESHOLDS_SHA256"),
         },
         "approved_entries": sorted(config.TEE_APPROVED_MEASUREMENTS),
     }
+
+
+def _head_odds_constant(name: str):
+    from fugal_subnet import head_odds
+
+    return getattr(head_odds, name)
 
 
 def _anchor_spend_or_error(model: str):
@@ -207,6 +235,14 @@ _SCORING_CONSTANTS = (
     "CHAMPION_HARD_GATE_MIN_QUESTIONS", "CHAMPION_TIME_GATE_FACTOR",
     "CHAMPION_GHOST_OFF", "CHAMPION_GHOST_RETIRE", "CHAMPION_WINDOW_EPOCHS",
     "CHAMPION_MIN_ACCURACY", "CHAMPION_MIN_PAIRED_QUESTIONS", "PAYOUT_SEAT_SHARES",
+    # Fresh-data confirmation (in effect from the confirmation activation block).
+    "CHAMPION_CONFIRM_QUESTIONS", "CHAMPION_CONFIRM_OPEN_EPOCHS",
+    "CHAMPION_GHOST_RETIRE_CONFIRM",
+    # Protocol v3 (in effect from the v3 activation and odds seat blocks).
+    "EXPLORE_SHARED_SIZE", "EXPLORE_PRIVATE_SIZE", "EXPLORE_COLDKEY_CAP", "EXPLORE_PRIVATE_Z",
+    "EXPLORE_PRIVATE_MIN_TRIALS",
+    "BRIER_MARGIN", "ODDS_MIN_PAIRS", "ODDS_CONFIRM_PAIRS", "NV_NONINFERIORITY",
+    "ODDS_REF_PRIOR", "SINGLE_MODEL_MIN_PAIRS", "CHAMPION_VALUE_PER_CORRECT_USD",
 )
 
 

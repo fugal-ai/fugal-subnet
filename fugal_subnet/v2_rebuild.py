@@ -150,6 +150,56 @@ def epoch_from_reveal(
     return sl, answers
 
 
+def pairs_from_reveal(reveal: Mapping, answered: Mapping[str, HeadEpoch],
+                      bench_category: Mapping[str, str] | None = None):
+    """(EpochPairs, {head hash: odds}) of a v3 reveal, or (None, {}) for one
+    without an exploration pool. The odds are read as published, so a rebuild
+    needs neither the heads nor the embeddings file; `odds_digest` in the
+    reveal's `v2_state` is the publishing validator's commitment to them.
+    """
+    from fugal_subnet.champion import EpochPairs
+    from fugal_subnet.head_odds import ODDS_SCALE
+    from fugal_subnet.v2_epoch import category_of, odds_from_b64
+
+    eid = str(reveal.get("epoch_id", "?"))
+    rows = reveal.get("exploration_pool")
+    if rows is None:
+        return None, {}
+    _require(isinstance(rows, list) and all(isinstance(r, Mapping) for r in rows),
+             eid, "`exploration_pool` must be a list of pairs")
+    try:
+        qids = tuple(str(r["question_id"]) for r in rows)
+        models = tuple(str(r["model"]) for r in rows)
+        benches = tuple(str(r.get("benchmark", "")) for r in rows)
+        ints = {k: [r[k] for r in rows] for k in ("y", "prompt_tokens", "completion_tokens")}
+    except (KeyError, TypeError) as e:
+        raise ValueError(f"reveal {eid}: an exploration_pool pair is malformed ({e})") from None
+    for k, vals in ints.items():
+        _require(all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in vals),
+                 eid, f"exploration_pool `{k}` must be non-negative integers")
+    _require(all(v <= ODDS_SCALE for v in ints["y"]), eid, "exploration_pool `y` above the scale")
+    _require(list(zip(qids, models)) == sorted(set(zip(qids, models))),
+             eid, "exploration_pool must be sorted with no repeated pair")
+    pairs = EpochPairs(
+        question_ids=qids, models=models, benchmarks=benches,
+        categories=tuple(category_of({"benchmark": b}, bench_category) for b in benches),
+        y=np.array(ints["y"], dtype=np.int32),
+        prompt_tokens=np.array(ints["prompt_tokens"], dtype=np.int32),
+        completion_tokens=np.array(ints["completion_tokens"], dtype=np.int32),
+    )
+    published = reveal.get("head_odds") or {}
+    _require(isinstance(published, Mapping), eid, "`head_odds` must be a map")
+    odds = {}
+    for h in sorted(published):
+        if h not in answered:
+            continue
+        try:
+            odds[h] = odds_from_b64(str(published[h]), len(qids))
+        except ValueError as e:
+            raise ValueError(f"reveal {eid}: head_odds[{h[:12]}]: {e}") from None
+    return pairs, odds
+
+
 def rebuild_v2_from_reveals(
     source: str | os.PathLike | Iterable[str],
     *,
@@ -188,7 +238,8 @@ def rebuild_v2_from_reveals(
             continue
         try:
             sl, answers = epoch_from_reveal(r, prices, bench_category)
-            window = window.add_epoch(sl, answers)
+            pairs, odds = pairs_from_reveal(r, answers, bench_category)
+            window = window.add_epoch(sl, answers, pairs, odds)
         except ValueError as e:
             # Fail closed, by name: a window missing one epoch is a different
             # window from every peer's (I1), so the operator fixes the file.

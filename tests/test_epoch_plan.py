@@ -53,9 +53,9 @@ def test_v2_plan_is_independent_of_pool_order_and_model_list_order_is_the_caller
 
 def test_an_unknown_version_is_refused():
     with pytest.raises(ValueError):
-        epoch_plan.scored_slice(3, _n(0), V2_POOL, 300)
+        epoch_plan.scored_slice(4, _n(0), V2_POOL, 300)
     with pytest.raises(ValueError):
-        epoch_plan.exploration_plan(3, _n(0), V2_POOL, set(), MODELS, 15)
+        epoch_plan.exploration_plan(4, _n(0), V2_POOL, set(), MODELS, 15)
 
 
 def test_v2_hard_category_follows_pool_size():

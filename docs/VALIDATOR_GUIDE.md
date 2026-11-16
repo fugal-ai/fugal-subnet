@@ -113,6 +113,46 @@ validator that scored the whole field zero while looking healthy):
 4. The token manifest shipped in the checkout is `reviewed`, not `candidate`
    (`docs/SUCCESS_CONTRACT.md`).
 
+### Minimum mainnet environment (finney, netuid 70)
+
+> Everything a finney validator must set, in `/etc/fugal/validator.env`. The
+> shipped example (`deploy/env/validator.env.example`) is pointed at the TEST
+> network on purpose, so copying it unchanged runs against testnet with no
+> error.
+>
+> ```
+> FUGAL_NETWORK=finney
+> FUGAL_NETUID=70
+> FUGAL_EPOCH_INTERVAL=4320
+> FUGAL_V2_ACTIVATION_BLOCK=9485640
+> FUGAL_TEE_MEASUREMENTS=<the current approved entry or entries>
+> FUGAL_VALIDATOR_IP=<this host's public egress IPv4>
+> FUGAL_ARCHIVE_ENDPOINTS=<an archive-capable subtensor endpoint>
+> FUGAL_STATE_PATH=/var/lib/fugal/validator_state.json
+> FUGAL_EPOCH_DIR=/var/lib/fugal/epochs
+> FUGAL_EPOCH_LOG_DIR=/var/lib/fugal
+> ```
+>
+> - **`FUGAL_TEE_MEASUREMENTS`**: from the signed image release,
+>   `python scripts/fetch_approved_entries.py --tag <image tag> --network finney`.
+>   It prints the line to paste. Image tags signed before 2026-11-05 (`03b`,
+>   `03c`) carry no entry in what was signed and are refused by the script;
+>   they are the retired v1 image and are not needed.
+> - **`FUGAL_VALIDATOR_IP`**: `curl -s https://ifconfig.me` from this host.
+> - **Nothing to set to follow the root.** A validator that is not the root
+>   fetches the root's published reveals itself. Only the root sets
+>   `FUGAL_ROOT=1`.
+> - On finney the validator **refuses to start**, saying which, if
+>   `FUGAL_V2_ACTIVATION_BLOCK` is unset or different, if no approved entry is
+>   a v2 miner image, or if `FUGAL_VALIDATOR_IP` is not a public IPv4 address.
+>   Each of these used to start, look healthy, and burn the validator's weight.
+> - **What a healthy start logs**, in this order: `Approved entries: N`,
+>   `Protocol v2 activation: boundary block 9485640`, `Consensus environment
+>   digest: <16 hex>` (the same on every validator of one release),
+>   `v2 role: follower of the reveals in …` (or `ROOT`), `validator IP <ip>
+>   published on chain` (or `already on chain`), and then every epoch
+>   `Following root: seat uid N (head …) …`.
+
 ### Test run (mock mode, test chain only)
 
 `--mock` accepts unattested proofs and is **refused on finney**. To exercise
@@ -238,16 +278,18 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_NETWORK` | `test` | Network: `finney`, `test`, `local` |
 | `FUGAL_NETUID` | `1` | Subnet netuid |
 | `FUGAL_EPOCH_INTERVAL` | `3600` | Seconds between epochs. **Mainnet: 4320** (tempo 360 × 12 s); must equal tempo × 12 on every neuron |
-| `FUGAL_V2_ACTIVATION_BLOCK` | unset | The epoch boundary block at which protocol v2 activates. A consensus input: identical on every validator, recorded in the consensus digest; refused at startup if it is not an epoch boundary. Unset means v1 forever. See "Protocol v2: flip procedure" |
+| `FUGAL_V2_ACTIVATION_BLOCK` | unset | The epoch boundary block at which protocol v2 activates. A consensus input: identical on every validator, recorded in the consensus digest; refused at startup if it is not an epoch boundary. **Finney: 9485640**; a live finney validator with any other value, or none, is refused at startup. Elsewhere, unset means v1 forever. See "Protocol v2: flip procedure" |
 | `FUGAL_TEE_MEASUREMENTS` | — | Comma-separated approved entries, each `<base_measurement>:<compose_hash>`. Required for `--live`, which refuses a bare base: one would accept any application on that image, and the application fixes the model upstream (see `deploy/dstack/README.md`) |
 | `FUGAL_PCCS_URL` | `https://pccs.phala.network` | Where DCAP collateral is fetched. Not a trust root; point at a local caching proxy to remove the third party from the epoch path |
 | `FUGAL_COLLATERAL_TIMEOUT` | `10` | Seconds one collateral fetch may take before the proof is recorded `unverifiable` |
 | `FUGAL_COLLATERAL_EPOCH_BUDGET` | `600` | Seconds the whole verification phase may spend fetching collateral (I6) |
 | `FUGAL_BENCHMARK_POOL` | — | Leave unset. A materialised pool file is accepted only if it matches the pinned manifest and the size floor; a non-pinned pool must declare `FUGAL_POOL_UNPINNED=1` and is for local rehearsals only |
-| `FUGAL_VALIDATOR_IP` | — | This host's public egress IPv4: the address miners SEE your queries come from (`curl -s https://ifconfig.me` from this host; behind NAT, the NAT's address, and it must be a single stable one). Recorded on chain at startup (only when it changed) so miners can admit validators, and only validators, at their firewall (`scripts/axon_firewall.py`). Nothing listens on it. Unset: miners that firewall their axon cannot be reached by this validator |
-| `FUGAL_REVEAL_BUCKET` | — | Public-read GCS bucket each epoch's `reveal.json` is published to, after the weight commit-reveal window, with its sha256 committed on chain by this hotkey (`reveal:<epoch_id>:<sha256>`). Unset: reveals stay on local disk |
+| `FUGAL_VALIDATOR_IP` | — | This host's public egress IPv4: the address miners SEE your queries come from (`curl -s https://ifconfig.me` from this host; behind NAT, the NAT's address, and it must be a single stable one). Recorded on chain at startup (only when it changed) so miners can admit validators, and only validators, at their firewall (`scripts/axon_firewall.py`). Nothing listens on it. Unset: miners that firewall their axon cannot be reached by this validator, so **a live finney validator without a public IPv4 here is refused at startup** |
+| `FUGAL_REVEAL_BUCKET` | — | Public-read GCS bucket each epoch's `reveal.json` is published to, after the weight commit-reveal window, with its sha256 committed on chain by this hotkey (`reveal:<epoch_id>:<sha256>`). Unset: reveals stay on local disk. The ROOT must set it (the other validators read its reveals); for any other validator it is optional |
+| `FUGAL_ROOT` | unset | `1` on the ROOT validator only (the subnet owner's): it follows nobody. Unset, a validator is the root only if its `FUGAL_REVEAL_BUCKET` is the reference bucket. `0` makes even that validator a follower, for a root that is recovering lost state (see "The root") |
+| `FUGAL_REFERENCE_BUCKET` | finney: `fugal-reveals` | The root's public reveal bucket a follower fetches from. Built in on finney; set it on a testnet that has a root |
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
-| `FUGAL_FRAME_BOOTSTRAP` | — | Directory of a reference validator's published reveals, kept in sync with its bucket (`gsutil -m rsync -r gs://<reference-bucket>/<netuid> <dir>` every few minutes: reveals are published under the netuid). Rebuilds the reference frame when there is no local state (otherwise the shipped `data/reference_frame.json` is required in `--live`), and from the flip it is the v2 reference: after a missed epoch the validator re-anchors on it automatically (verify-and-resync, INVARIANTS I1). Unset on the ROOT validator only: every other validator sets it |
+| `FUGAL_FRAME_BOOTSTRAP` | — | **Not needed on a follower any more**: it fetches the root's reveals itself. Still honoured: a directory of a reference validator's reveals that the operator keeps in sync, used as the v2 reference in place of the built-in fetch. On a root, a directory of its own (or a peer's) published reveals to rebuild lost state from at startup |
 | `FUGAL_POOL_FILE` | `data/benchmarks/pool.json.gz` | Where the materialised pool built by `scripts/export_pool.py` is looked for; verified against the manifest on load |
 | `FUGAL_POOL_FILE_V2` | `data/benchmarks/pool_v2.json.gz` | The same for the protocol v2 pool (`scripts/export_pool.py --protocol 2`). Place it before setting `FUGAL_V2_ACTIVATION_BLOCK`: with the block set the validator loads the v2 pool at startup, and in `--live` refuses to start if it cannot |
 | `FUGAL_ARCHIVE_ENDPOINTS` | — | Comma-separated archive-capable subtensor endpoints. **Set it on mainnet**: the validator pins reads to the boundary and collection blocks, and a non-archive node refuses blocks older than ~300 |
@@ -294,6 +336,9 @@ warm-up runs `FUGAL_EXPLORE_FRACTION=0.5` on every neuron.
 | `FUGAL_CHAMPION_HARD_GATE_MIN_QUESTIONS` | `100` | Hard questions in the window before the hard-accuracy gate applies |
 | `FUGAL_CHAMPION_TIME_GATE_FACTOR` | `2` | Per-call time gate (not applied at launch) |
 | `FUGAL_CHAMPION_GHOST_OFF` / `_RETIRE` | `3` / `24` | Epochs a missed / retired champion's ghost bar stands |
+| `FUGAL_CHAMPION_CONFIRM_QUESTIONS` | `1500` | Fresh questions (drawn after its first pass) a challenger must pass the take test on again before it takes a settled champion's seat. From the confirmation activation block |
+| `FUGAL_CHAMPION_CONFIRM_OPEN_EPOCHS` | `5` | Epochs after a seat is filled from empty during which it can still be taken by the plain test |
+| `FUGAL_CHAMPION_GHOST_RETIRE_CONFIRM` | `8` | Epochs a retired champion's ghost bar stands from the confirmation activation block (instead of 24) |
 | `FUGAL_PAYOUT_SEAT_SHARES` | `0.85,0.10,0.05` | The miner share across the champion and the two before it |
 | dedup, exploration-integrity and head-bound constants | see `config.py` | `FUGAL_DEDUP_*`, `FUGAL_EXPLORE_*`, `FUGAL_HEAD_*`, `FUGAL_POOL_MIN_SIZE`, `FUGAL_MODEL_PRICES` |
 
@@ -371,6 +416,14 @@ Structured JSONL logs are written to `results/epoch_logs/`. Each entry includes:
 - Epoch ID, block hash and protocol version
 - Number of miners queried; valid, invalid and `unverifiable` proofs; per-UID
   failed-call counts
+- `collection`: for every UID with a head committed at the boundary (and any
+  UID that answered), how the query to its axon ended (the status and the
+  seconds it took) and what became of its proof (`valid`, `invalid`,
+  `unverifiable`, `absent`). The console says the same in one line per epoch:
+  `Collection: 256 queried; 14 valid, 0 invalid, 0 unverifiable, 242 absent.
+  Committed miners without a valid proof (2): uid 128 (absent; query 408
+  Timeout after 120.0s), …`. This is what answers a miner who asks whether
+  it was never reached, was slow, or was refused
 - The seat event (`first`, `hold`, `take`, `ghost`, `empty`), the champion,
   the former champions, and the comparison detail per head (which gate
   failed, or the NV and its lower bound against the champion)
@@ -470,21 +523,31 @@ beside the state file). Keep both on durable disk. A validator that has seat
 state but has lost the window logs `v2 seat state present but its comparison
 window is missing`. It keeps holding the seat (hold, resume and ghosts go on)
 but makes no `first` or `take` decision until the window is rebuilt from
-published reveals (`FUGAL_FRAME_BOOTSTRAP`) or has refilled for
+the reference reveals (a restart does it) or has refilled for
 `CHAMPION_WINDOW_EPOCHS` (48) epochs.
 
-**A missed epoch heals itself, given a reference.** The validators form a
-star around one ROOT validator (the subnet owner's), whose public reveal bucket
-is announced with the release:
-- **On the root:** leave `FUGAL_FRAME_BOOTSTRAP` unset. It references nobody.
-- **On every other validator:** point `FUGAL_FRAME_BOOTSTRAP` at a directory
-  kept synced from the root's bucket, a systemd timer running `gsutil -m rsync
-  -r gs://<root-bucket>/<netuid> <dir>` every few minutes (reveals are
-  published under the netuid).
+**A missed epoch heals itself.** The validators form a star around one ROOT
+validator (the subnet owner's), whose reveals are public:
+- **On the root:** set `FUGAL_ROOT=1`. It references nobody.
+- **On every other validator: nothing.** It fetches the root's reveals itself,
+  at startup and before every epoch, over HTTPS from the public bucket
+  (finney: `gs://fugal-reveals/70`), into `reference-reveals/<netuid>/` beside
+  its state file. It needs outbound HTTPS to `storage.googleapis.com` and no
+  credentials. The startup log says `v2 role: follower of the reveals in …`,
+  and every epoch `Root reveals from gs://…: N fetched, …` and `Following
+  root: seat uid N (head …) at e…, entries N, fugal vX (root vY), reference
+  lag K epoch(s); own seat …`. The lag is normally the commit-reveal hold.
+  If this validator's champion has differed from the root's for longer than
+  the re-sync below takes, it logs an ERROR that says what to check: the
+  approved entries, `FUGAL_VALIDATOR_IP`, and the release version.
+  A validator with no reference reveals and no way to fetch any refuses to
+  start. (Before this release a follower ran a `gsutil rsync` timer and set
+  `FUGAL_FRAME_BOOTSTRAP`; that still works and takes precedence, and both
+  can be removed.)
 
-After a v2 epoch a follower did not observe (it was down, or it scored
-nothing), it logs `v2 epochs ... were not observed` and keeps working as
-usual; once the root has published past the gap (the commit-reveal hold) it
+After a v2 epoch a follower did not run (it was down, or it scored
+nothing), it logs `v2 epochs ... were not run by this validator` and keeps
+working as usual; once the root has published past the gap (the commit-reveal hold) it
 logs `re-anchored on it`, and once a later epoch matches, `gap closed`.
 Nothing to do by hand. A follower that observed every epoch but still
 differs from the root (it did not receive one miner's proof that the root
@@ -496,16 +559,49 @@ on it.
 **The root.** Its outages count for the whole network: an epoch the root
 missed is followed by everyone (a champion that was not seen leaves a ghost
 and resumes when seen; a challenger's burn-in run restarts). Keep it up and
-monitored. A root that lost its state files (a dead disk) rebuilds from a
-follower:
+monitored.
+
+**If the root misses epochs.** After an epoch in which it verified no proof,
+the root logs a WARNING, `Root: no verified proof in the v2 epoch(s) through
+e…`. If no miner served that epoch there is nothing to do: the seat state is
+unchanged. It matters only when the root was down while followers scored.
+Then the followers re-anchor on the root as it publishes, and converge on it.
+
+A root that lost its state files (a dead disk) rebuilds from a follower:
 1. Stop the root. Move its state files aside: `$FUGAL_STATE_PATH` and every
    `$FUGAL_STATE_PATH.*` next to it (`.v2window.npz` among them).
-2. Sync a follower's public reveals to a directory, as followers do from the
-   root, and set `FUGAL_FRAME_BOOTSTRAP` to it.
-3. Start the root. It rebuilds from the follower's reveals, re-anchors, and
-   logs `gap closed` after the hold.
-4. Unset `FUGAL_FRAME_BOOTSTRAP` and restart it.
+2. Copy a follower's reveals (its `$FUGAL_EPOCH_DIR`, or its bucket) to a
+   directory on the root. Set `FUGAL_FRAME_BOOTSTRAP` to that directory and
+   `FUGAL_ROOT=0`, so that for now it follows them.
+3. Start the root. It rebuilds from the follower's reveals, re-anchors as the
+   directory is refreshed, and logs `gap closed` after the hold.
+4. Set `FUGAL_ROOT=1` again, unset `FUGAL_FRAME_BOOTSTRAP`, and restart it.
 Followers need nothing.
+
+### The seat-confirmation rule (after the flip)
+
+From the confirmation activation block, a challenger that beats a settled
+champion on the paired test is first recorded as *pending* and takes the seat
+only when it passes the same test again on at least 1,500 questions drawn
+after that first pass (INVARIANTS I3, "a take is confirmed on fresh
+questions"). The champion is paid meanwhile. From the same block a retired
+champion's ghost bars for 8 epochs instead of 24.
+
+- **Nothing to set.** Finney's block is part of the release; the startup log
+  says `Fresh-data confirmation of a seat take: from the first epoch whose
+  boundary is at or after block N` (or `not scheduled on this chain`).
+  Setting `FUGAL_CONFIRM_ACTIVATION_BLOCK` on finney to anything else is
+  refused. Testnets set it.
+- **Upgrade before the block.** Until it, the release scores exactly as the
+  one before: the same weights and the same published seat. The consensus
+  digest changes with the release (three new constants and the block are in
+  it), so compare digests among validators on the same release.
+- **In the log**, a waiting challenger shows as `v2 <head>: passed the take
+  test; takes the seat when it passes again on 1500 questions drawn from the
+  next epoch on`, then per epoch `vs fresh questions, <champion>: n=… NV=…
+  LCB=…`, and finally `confirmed on questions drawn since epoch N` with the
+  seat event `take`. The reveal's `v2_state.seat.pending` lists who is
+  waiting and since when.
 
 ### At the flip
 
@@ -566,6 +662,22 @@ check your stake first: in `--live` miners answer only hotkeys with at least
 `FUGAL_MIN_VALIDATOR_STAKE` (default 50) stake on the subnet as the chain
 reports it, a permit alone does not qualify, and a refused query looks exactly
 like an absent miner from your side. The startup log says so when it applies.
+
+**Refused at startup on finney** — the message names the cause:
+`FUGAL_V2_ACTIVATION_BLOCK is … on finney` (set it to 9485640);
+`FUGAL_TEE_MEASUREMENTS approves no protocol v2 miner image` (add the current
+entry with `scripts/fetch_approved_entries.py`); `FUGAL_VALIDATOR_IP is …, not
+a public IPv4 address`; `Could not fetch the root validator's reveals` (allow
+outbound HTTPS to `storage.googleapis.com`, or set `FUGAL_ROOT=1` if this is
+the root). See "Minimum mainnet environment".
+
+**"This validator's champion has differed from the root's"** — it verifies a
+different set of proofs from the root. In order of likelihood: an approved
+entry is missing (compare `Approved entries: N` with the root's), miners'
+firewalls do not admit this host (`FUGAL_VALIDATOR_IP` must be the address
+they see, and on chain), or the release differs (the `Following root` line
+shows both versions). The `Collection:` line shows which committed miners
+this validator did not get a valid proof from, and how each query ended.
 
 **Weight-setting failed** — Check that your validator has enough stake.
 

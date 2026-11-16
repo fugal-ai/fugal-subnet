@@ -274,6 +274,236 @@ def _check_live_configuration(live: bool, approved, activation_block, epoch_inte
                     f"protocol v{version} token manifest is not deployable: {e}") from e
 
 
+def v2_compose_hashes(activation_block: int, root: str | None = None) -> set[str] | None:
+    """Compose hashes of the frozen miner composes in this checkout that are
+    built for `activation_block` (they set FUGAL_V2_ACTIVATION_BLOCK to it).
+
+    An approved entry is `<base>:<compose hash>`, and the compose hash is
+    sha256 of a frozen app-compose.json's raw bytes (deploy/dstack/). None when
+    the checkout carries no frozen composes at all (an installed wheel): there
+    is then nothing to compare against, and the caller says so.
+    """
+    import glob
+    import hashlib
+    import re
+
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    paths = sorted(glob.glob(os.path.join(root, "deploy", "dstack", "app-compose.frozen-*.json")))
+    if not paths:
+        return None
+    wanted = re.compile(rf"FUGAL_V2_ACTIVATION_BLOCK=[\"']?{int(activation_block)}\b")
+    out: set[str] = set()
+    for path in paths:
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            compose = str(json.loads(raw).get("docker_compose_file", ""))
+        except (OSError, ValueError, AttributeError):
+            continue
+        if wanted.search(compose):
+            out.add(hashlib.sha256(raw).hexdigest())
+    return out
+
+
+def _check_chain_configuration(genesis: str | None, live: bool, approved, activation_block,
+                               validator_ip: str) -> int | None:
+    """Refuse, once the chain is known, what would make a FINNEY validator
+    score differently from its peers while looking healthy. Returns the
+    fresh-data confirmation rule's activation block for this chain.
+
+    Each of these was got wrong on mainnet by an operator following the guide,
+    and each failed silently:
+
+    - FUGAL_V2_ACTIVATION_BLOCK unset or not finney's flip block: every epoch
+      is scored by the v1 rules.
+    - No approved entry for a v2 miner image: every v2 proof fails the
+      runtime-image check, the seat stays empty and all weight burns.
+    - FUGAL_VALIDATOR_IP unset: miners that admit only validators at their
+      firewall drop this validator's queries, so it verifies fewer proofs than
+      its peers and its seat can differ from theirs.
+
+    Mock, and every chain but finney, keep the warnings they had: a rehearsal
+    legitimately runs without some of these.
+    """
+    from fugal_subnet import config
+    from fugal_subnet.axon_allowlist import _routable_v4
+    from fugal_subnet.tee.verify import parse_approved
+
+    try:
+        confirm_block = config.confirm_activation_block(genesis)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    if confirm_block is None:
+        logger.info("Fresh-data confirmation of a seat take: not scheduled on this chain")
+    else:
+        logger.info("Fresh-data confirmation of a seat take: from the first epoch whose "
+                    "boundary is at or after block %d", confirm_block)
+    finney = genesis is not None and str(genesis).lower() == config.FINNEY_GENESIS_HASH.lower()
+    if not (finney and live):
+        return confirm_block
+
+    if activation_block != config.FINNEY_V2_ACTIVATION_BLOCK:
+        raise click.ClickException(
+            f"FUGAL_V2_ACTIVATION_BLOCK is {activation_block if activation_block is not None else 'unset'}"
+            f" on finney, where protocol v2 activated at block {config.FINNEY_V2_ACTIVATION_BLOCK}. "
+            f"Set FUGAL_V2_ACTIVATION_BLOCK={config.FINNEY_V2_ACTIVATION_BLOCK}: with any other "
+            "value this validator scores epochs by different rules from every peer."
+        )
+    v2_hashes = v2_compose_hashes(activation_block)
+    if v2_hashes is None:
+        logger.warning("This checkout has no deploy/dstack/app-compose.frozen-*.json, so the "
+                       "approved entries could not be checked for a protocol v2 miner image.")
+    else:
+        apps = {app for apps in parse_approved(approved, require_app=True).values() for app in apps}
+        if not apps & v2_hashes:
+            raise click.ClickException(
+                "FUGAL_TEE_MEASUREMENTS approves no protocol v2 miner image. None of its "
+                f"{len(apps)} compose hash(es) is a frozen compose in this checkout built for "
+                f"block {activation_block} ({', '.join(sorted(h[:12] + '…' for h in v2_hashes)) or 'none found'}). "
+                "Every v2 proof would fail the runtime-image check, the seat would stay empty "
+                "and this validator would burn all of its weight. Add the current entry: "
+                "`scripts/fetch_approved_entries.py --tag <image tag> --network finney` "
+                "(docs/APPROVED_ENTRY_ROTATION.md)."
+            )
+    if not validator_ip or not _routable_v4(validator_ip):
+        raise click.ClickException(
+            f"FUGAL_VALIDATOR_IP is {validator_ip or 'unset'}, not a public IPv4 address. Miners "
+            "admit only the validator IPs recorded on chain at their firewall, so without it "
+            "they drop this validator's queries: it verifies fewer proofs than its peers and "
+            "its seat can differ from theirs. Set it to this host's public egress address "
+            "(`curl -s https://ifconfig.me`)."
+        )
+    return confirm_block
+
+
+def _sync_reference(role, netuid: int, *, since: int, budget_s: float, required: bool):
+    """Fetch the root's reveals for a follower that syncs them itself; a no-op
+    for a root or an operator-managed directory. Returns the SyncResult or None.
+
+    `required` (startup): a follower that has no reference reveals at all and
+    cannot fetch any is refused, because it would start with an empty seat and
+    burn its weight, the failure this exists to remove. In the epoch loop it
+    is never required: a failed fetch is logged and the epoch runs on what is
+    already on disk (I6).
+    """
+    from fugal_subnet import reveal_sync
+
+    if role is None or role.root or not role.bucket:
+        return None
+    result = reveal_sync.sync(role.bucket, netuid, role.reference_dir, since=since,
+                              budget_s=budget_s)
+    (logger.info if result.ok else logger.warning)(
+        "Root reveals from gs://%s/%d: %s", role.bucket, netuid, result.summary())
+    if required and result.newest is None:
+        raise click.ClickException(
+            f"Could not fetch the root validator's reveals from gs://{role.bucket}/{netuid} "
+            f"({result.summary()}) and {role.reference_dir} holds none. A validator that is "
+            "not the root starts from them; without them it would start with an empty seat "
+            "and burn its weight. Check outbound HTTPS to storage.googleapis.com, or set "
+            "FUGAL_ROOT=1 if this validator is the root."
+        )
+    return result
+
+
+def _log_following(role, epoch_index: int, n_entries: int, own_seat, epoch_dir: str | None = None,
+                   differ_limit: int | None = None) -> dict | None:
+    """One line saying whose state this follower tracks and how far behind
+    the reference is; an ERROR once its own seat has differed from the root's
+    for longer than verify-and-resync takes to correct it."""
+    import fugal_subnet
+    from fugal_subnet import reveal_sync
+    from fugal_subnet.commit_reveal import EPOCH_DIR
+    from fugal_subnet.v2_sync import DRIFT_CHECKS
+
+    if role is None or role.root:
+        return None
+    limit = differ_limit or DRIFT_CHECKS + 2
+    st = reveal_sync.reference_status(role.reference_dir, epoch_dir or EPOCH_DIR, epoch_index,
+                                      differ_limit=limit)
+    if st["k"] is None:
+        logger.error("Following root: NO reference reveal before e%08d in %s. This validator "
+                     "cannot verify its seat against the root's.", epoch_index,
+                     role.reference_dir)
+        return st
+    logger.info(
+        "Following root: seat uid %s (head %s) at e%08d, entries %d, fugal v%s (root v%s), "
+        "reference lag %d epoch(s); own seat %s",
+        st["uid"] if st["uid"] is not None else "none", (st["champion"] or "none")[:12],
+        st["k"], n_entries, fugal_subnet.__version__, st["version"] or "?", st["lag"],
+        (getattr(own_seat, "champion", None) or "none")[:12],
+    )
+    if st["seat_differs"] >= limit:
+        logger.error(
+            "This validator's champion has differed from the root's on the newest %d reference "
+            "epochs (root %s, own %s at e%08d), longer than verify-and-resync takes to correct. "
+            "Check: the approved entries (FUGAL_TEE_MEASUREMENTS), FUGAL_VALIDATOR_IP on chain, "
+            "and that this is the root's release (v%s here, v%s there).",
+            st["seat_differs"], (st["champion"] or "none")[:12],
+            (st["own_champion"] or "none")[:12], st["k"], fugal_subnet.__version__,
+            st["version"] or "?",
+        )
+    return st
+
+
+from fugal_subnet.embeddings_file import Embeddings  # noqa: E402
+
+
+def _v3_explore_answers(verified_proofs: dict, coldkey_of: dict, shared: dict) -> list:
+    """Every verified proof's exploration results as pool answers. An answer
+    is private unless its (question, model) is in the epoch's shared set."""
+    from fugal_subnet.explore_pool import ExploreAnswer
+
+    return [
+        ExploreAnswer(
+            question_id=r.question_id, model=r.routed_model, coldkey=coldkey_of[uid],
+            correct=bool(r.correct), failed=bool(r.failed),
+            private=shared.get(r.question_id) != r.routed_model,
+            prompt_tokens=int(r.prompt_tokens), completion_tokens=int(r.completion_tokens),
+        )
+        for uid in sorted(verified_proofs)
+        for r in verified_proofs[uid].exploration_results
+    ]
+
+
+def _v3_heads(verified_heads: dict) -> dict:
+    """{uid: (W, b, model ids)} for odds. A head that cannot be loaded here was
+    already refused by verify_proof; one that is missing is simply not scored
+    on odds (never an epoch failure, I6)."""
+    from fugal_subnet.head_eval import load_head_from_npz
+
+    out = {}
+    for uid, head_bytes in sorted(verified_heads.items()):
+        try:
+            head = load_head_from_npz(head_bytes)
+            out[uid] = (head.W, head.b, list(head.models))
+        except Exception as e:  # noqa: BLE001 - one miner, not the epoch
+            logger.warning("UID %d: head not usable for odds (%s)", uid, e)
+    return out
+
+
+def _head_within_bounds(head_bytes: bytes) -> str | None:
+    """None, or why a v3 head is refused: a weight or bias outside the bound
+    exact odds are computed under (head_odds.HEAD_MAX_ABS_PARAM)."""
+    from fugal_subnet.head_eval import load_head_from_npz
+    from fugal_subnet.head_odds import check_head_bounds
+
+    try:
+        head = load_head_from_npz(head_bytes)
+        check_head_bounds(head.W, head.b)
+    except Exception as e:  # noqa: BLE001 - miner input: a verdict, never a raise
+        return str(e)
+    return None
+
+
+def _rules_tag(protocol_version: int, on_odds: bool) -> dict | None:
+    """What a v2/v3 seat state was built under. Published in v3 reveals
+    (`v2_state.rules`) and kept with the local state, so a state built under
+    other rules is recognised and reset instead of carried over."""
+    if protocol_version < 3:
+        return None
+    return {"protocol": int(protocol_version), "seat": "odds" if on_odds else "net_value"}
+
+
 def _epoch_to_run(current_block: int, blocks_per_epoch: int, last_epoch_index: int,
                   once: bool) -> int | None:
     """The epoch to run at `current_block`, or None to wait for the next one.
@@ -290,7 +520,8 @@ def _epoch_to_run(current_block: int, blocks_per_epoch: int, last_epoch_index: i
 
 
 def _epoch_boundary(subtensor, epoch_index: int, blocks_per_epoch: int,
-                    activation_block: int | None) -> tuple[int, str, str, int]:
+                    activation_block: int | None,
+                    v3_activation_block: int | None = None) -> tuple[int, str, str, int]:
     """(boundary block, its hash, epoch id, protocol version) of an epoch.
 
     All four come from the boundary block, never the current one, so every
@@ -301,7 +532,8 @@ def _epoch_boundary(subtensor, epoch_index: int, blocks_per_epoch: int,
     boundary_block = epoch_index * blocks_per_epoch
     return (boundary_block, subtensor.get_block_hash(boundary_block),
             epoch_id_for_block(epoch_index),
-            protocol_version_for_boundary(boundary_block, activation_block))
+            protocol_version_for_boundary(boundary_block, activation_block,
+                                          v3_activation_block))
 
 
 class _SlicePlan(NamedTuple):
@@ -470,6 +702,21 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         assert_consensus_overrides_allowed(genesis)
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
+    from fugal_subnet.config import VALIDATOR_IP
+    confirm_block = _check_chain_configuration(
+        genesis, live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, VALIDATOR_IP)
+    on_finney = genesis is not None and str(genesis).lower() == _cfg.FINNEY_GENESIS_HASH.lower()
+    try:
+        v3_block = _cfg.v3_activation_block(genesis)
+        odds_block = _cfg.odds_seat_block(genesis)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    if v3_block is None:
+        logger.info("Protocol v3: not scheduled on this chain")
+    else:
+        logger.info("Protocol v3: from the first epoch whose boundary is at or after block %d; "
+                    "the seat is decided on odds %s", v3_block,
+                    f"from block {odds_block}" if odds_block is not None else "at no scheduled block")
     metagraph = subtensor.metagraph(netuid)
     # Not bt.Dendrite: its default pool of 100 connections lets axons that
     # never answer starve the rest of the field at collection (fugal_subnet/collect).
@@ -493,13 +740,28 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     from fugal_subnet.reveal_publisher import GcsUploader, delay_epochs_for
     reveal_uploader = GcsUploader(REVEAL_BUCKET) if REVEAL_BUCKET else None
     reveal_delay = REVEAL_DELAY_EPOCHS or delay_epochs_for(subtensor, netuid)
-    if reveal_uploader is None:
+    # Root or follower in the v2 star (fugal_subnet/reveal_sync.resolve_role).
+    from fugal_subnet import reveal_sync
+    role = reveal_sync.resolve_role(
+        finney=on_finney, root_flag=_cfg.ROOT_VALIDATOR, own_bucket=REVEAL_BUCKET,
+        reference_bucket=_cfg.REFERENCE_BUCKET,
+        explicit_dir=os.getenv("FUGAL_FRAME_BOOTSTRAP") or None,
+        state_path=STATE_PATH, netuid=netuid,
+    )
+    if role is not None:
+        logger.info("v2 role: %s", role.describe())
+    if reveal_uploader is not None:
+        logger.info("Reveals publish to gs://%s after %d epoch(s)", REVEAL_BUCKET, reveal_delay)
+    elif role is not None and not role.root:
+        # Only the root's reveals are read by anyone (followers verify against
+        # them), so a follower without a bucket is missing nothing.
+        logger.info("FUGAL_REVEAL_BUCKET is unset: this validator's reveals stay on local "
+                    "disk. Only the root's are read by other validators.")
+    else:
         (logger.warning if live else logger.info)(
             "FUGAL_REVEAL_BUCKET is unset: epoch reveals stay on local disk and are "
             "not published. Set it to a public-read GCS bucket (docs/VALIDATOR_GUIDE.md)."
         )
-    else:
-        logger.info("Reveals publish to gs://%s after %d epoch(s)", REVEAL_BUCKET, reveal_delay)
     own_permit = False
     try:
         own_permit = bool(metagraph.validator_permit[my_uid])
@@ -518,7 +780,6 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # Publish this host's egress IP so miners can admit only validators at
     # their firewall (fugal_subnet/axon_allowlist.py). Never stops startup.
     from fugal_subnet.axon_allowlist import publish_validator_ip
-    from fugal_subnet.config import VALIDATOR_IP
     ip_ok, ip_note = publish_validator_ip(subtensor, wallet, netuid, metagraph, my_uid,
                                           VALIDATOR_IP)
     (logger.info if ip_ok or not live else logger.warning)(ip_note)
@@ -579,6 +840,42 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
             logger.info("Protocol v2 inputs: pool %d questions (pool_hash=%s), %d models",
                         len(pool_v2), pool_hash(pool_v2)[:16], len(models_v2))
+    # Protocol v3 inputs, loaded only when v3 is scheduled: its pool, its menu,
+    # and the pinned embeddings file every head's odds are computed from. A
+    # live validator that cannot load them refuses to start now, not at the
+    # activation block.
+    v3_embeddings = v3_index = None
+    if v3_block is not None:
+        from fugal_subnet import epoch_plan
+        from fugal_subnet.benchmarks.loader import load_pool
+        from fugal_subnet.routing_protocol import models_for_protocol, price_table
+        try:
+            pool_v3 = load_pool(3, strict=live)
+            prices_v3 = price_table(3)
+            models_v3 = models_for_protocol(3)
+            if live and not getattr(_cfg, "EMBEDDINGS_SHA256", None):
+                raise ValueError("config.EMBEDDINGS_SHA256 is not pinned, so the embeddings "
+                                 "file could not be checked")
+            v3_embeddings = Embeddings.load(
+                os.getenv("FUGAL_EMBEDDINGS_FILE", "data/embeddings/pool_v3.npz"),
+                getattr(_cfg, "EMBEDDINGS_SHA256", None))
+            missing = v3_embeddings.covers([q["question_id"] for q in pool_v3])
+            if missing:
+                raise ValueError(f"the embeddings file has no row for {len(missing)} pool "
+                                 f"question(s), e.g. {missing[0]}")
+            v3_index = epoch_plan.pool_index_v3(pool_v3)
+        except Exception as e:  # noqa: BLE001 - any failure here is a startup refusal
+            if live:
+                raise click.ClickException(f"protocol v3 inputs could not be loaded: {e}") from e
+            logger.warning("protocol v3 inputs could not be loaded (mock): %s", e)
+        else:
+            epoch_inputs[3] = (
+                pool_v3, {q["question_id"]: q for q in pool_v3}, prices_v3,
+                models_v3, {m: i for i, m in enumerate(models_v3)},
+            )
+            logger.info("Protocol v3 inputs: pool %d questions (pool_hash=%s), %d menu "
+                        "entries, embeddings for %d questions", len(pool_v3),
+                        pool_hash(pool_v3)[:16], len(models_v3), len(v3_embeddings.row))
 
 
     state = load_state(MinerRecord)
@@ -610,11 +907,29 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # or after it can verify the re-anchor.
     v2_anchor_at = v2_raw.get("anchor_at")
     v2_anchor_at = int(v2_anchor_at) if v2_anchor_at is not None else None
+    # What the seat and window were built under (None: protocol v2).
+    v2_rules = v2_raw.get("rules")
     if v2_window_degraded:
         logger.error(
             "v2 seat state present but its comparison window is missing: no first or "
-            "take decisions until it is rebuilt (FUGAL_FRAME_BOOTSTRAP) or refills."
+            "take decisions until it is rebuilt from the reference reveals or refills."
         )
+    # Where state is rebuilt from when this validator has none: a follower's
+    # reference reveals (fetched here, now, when it syncs them itself), or the
+    # directory a root's operator named for a rebuild from its own reveals.
+    blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
+    fresh_start = not state["frame"] or (not v2_raw and not v2_window.slices)
+    if role is not None and not role.root:
+        now_epoch = epoch_index_for_block(subtensor.get_current_block(), blocks_per_epoch)
+        # Everything on a first start (the frame is rebuilt from the whole
+        # history); afterwards only what the comparison window reads.
+        _sync_reference(role, netuid, required=live and fresh_start,
+                        since=0 if fresh_start else now_epoch - CHAMPION_WINDOW_EPOCHS - 2,
+                        budget_s=1800.0 if fresh_start else 120.0)
+        rebuild_dir = role.reference_dir
+    else:
+        rebuild_dir = os.getenv("FUGAL_FRAME_BOOTSTRAP") or None
+    reference_dir = role.reference_dir if role is not None and not role.root else None
     scoring_state = ScoringState(records=state["records"])
     prev_uids: list[int] = state["prev_uids"]
     prev_weights: list[float] = state["prev_weights"]
@@ -626,7 +941,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # well-defined at epoch 1 with zero samples.
     if state["frame"]:
         frame = ReferenceFrame.from_dict(state["frame"])
-    elif os.getenv("FUGAL_FRAME_BOOTSTRAP"):
+    elif rebuild_dir:
         # No local state. Rebuild from published reveals rather than starting
         # from the neutral prior, because a fresh frame is not a smaller version
         # of an established one — it is a DIFFERENT one. acc_best is the
@@ -634,7 +949,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         # scores the whole field differently from its peers: 0.500 against 0.832
         # on measured data. Without this a lost disk, or simply a second
         # validator joining, diverges the subnet.
-        frame = rebuild_from_reveals(os.environ["FUGAL_FRAME_BOOTSTRAP"])
+        frame = rebuild_from_reveals(rebuild_dir)
     else:
         # Live requires the shipped frame: every validator must value the
         # frontier from the same evidence, and "start cold" is a different
@@ -646,8 +961,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         logger.warning(
             "Starting from the bootstrap frame with no accumulated history. If "
             "other validators have history, this one will score the field "
-            "differently until it catches up. Set FUGAL_FRAME_BOOTSTRAP to a "
-            "directory of published reveals to rebuild instead."
+            "differently until it catches up. A root that lost its state sets "
+            "FUGAL_FRAME_BOOTSTRAP to a directory of its published reveals to rebuild instead."
         )
 
     # Protocol v2 state, rebuilt the same way when this validator has none of
@@ -663,18 +978,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # lacks those epochs and the seat is as of the newest reveal. That opens a
     # sync gap (below: `behind`), and verify-and-resync re-anchors on the
     # reference once it has published past it (fugal_subnet/v2_sync.py).
-    if ((not v2_raw or v2_window_degraded) and not v2_window.slices
-            and os.getenv("FUGAL_FRAME_BOOTSTRAP")):
+    if (not v2_raw or v2_window_degraded) and not v2_window.slices and rebuild_dir:
         from fugal_subnet.evidence import Evidence
         from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
         rebuilt = rebuild_v2_from_reveals(
-            os.environ["FUGAL_FRAME_BOOTSTRAP"], window_size=CHAMPION_WINDOW_EPOCHS,
+            rebuild_dir, window_size=CHAMPION_WINDOW_EPOCHS,
             # The replayed window is v2 epochs, so it is priced at v2's table.
             prices=epoch_inputs.get(2, epoch_inputs[1])[2],
             bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
         )
         if rebuilt.newest_epoch_id is not None:
             v2_window, v2_seat = rebuilt.window, rebuilt.seat
+            v2_rules = rebuilt.extra.get("rules")
             v2_copy = copy_rule.from_rebuild(rebuilt) or copy_rule.CopyState()
             for h, uid in sorted(rebuilt.serving.items()):
                 if uid in scoring_state.records or h not in rebuilt.burn_in:
@@ -688,7 +1003,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 rec.evidence = Evidence(weights_hash=h, burn_in_n=rebuilt.burn_in[h])
                 scoring_state.records[uid] = rec
             resume_epoch = epoch_index_for_block(
-                subtensor.get_current_block(), blocks_per_epoch_fn(EPOCH_INTERVAL),
+                subtensor.get_current_block(), blocks_per_epoch,
             )
             behind = resume_epoch - 1 - int(rebuilt.newest_epoch_id.lstrip("e"))
             v2_window_degraded = False
@@ -705,7 +1020,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 logger.info("v2 state rebuilt exactly from reveals up to %s",
                             rebuilt.newest_epoch_id)
 
-    blocks_per_epoch = blocks_per_epoch_fn(EPOCH_INTERVAL)
+    _log_following(role, epoch_index_for_block(subtensor.get_current_block(), blocks_per_epoch),
+                   len(approved_measurements), v2_seat)
 
     epoch_failed = False
     while True:
@@ -723,7 +1039,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # of this epoch derives the same nonce and scores it under the same
             # rules (v1 or v2).
             boundary_block, block_hash, epoch_id, protocol_version = _epoch_boundary(
-                subtensor, epoch_index, blocks_per_epoch, V2_ACTIVATION_BLOCK,
+                subtensor, epoch_index, blocks_per_epoch, V2_ACTIVATION_BLOCK, v3_block,
             )
 
             timer = EpochTimer()
@@ -738,25 +1054,34 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # at once: a re-anchor is a state correction, not an epoch, and a
             # retry recomputes the same one.
             if protocol_version >= 2:
+                # A follower that fetches the root's reveals itself brings
+                # them up to date first. Never the epoch's failure (I6).
+                _sync_reference(role, netuid, required=False, budget_s=120.0,
+                                since=epoch_index - CHAMPION_WINDOW_EPOCHS - 2)
                 synced = _v2_sync_step(
                     epoch_index=epoch_index, last_epoch_index=last_epoch_index,
                     first_v2_epoch=V2_ACTIVATION_BLOCK // blocks_per_epoch,
-                    reference_dir=os.getenv("FUGAL_FRAME_BOOTSTRAP") or None,
+                    reference_dir=reference_dir,
                     scoring_state=scoring_state, window=v2_window, seat=v2_seat,
                     copy_state=v2_copy, window_degraded=v2_window_degraded,
-                    gap_until=v2_gap_until, anchor_at=v2_anchor_at, prices=epoch_inputs[2][2],
-                    bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+                    gap_until=v2_gap_until, anchor_at=v2_anchor_at,
+                    prices=epoch_inputs[protocol_version][2],
+                    bench_category=getattr(config_module, f"BENCHMARK_CATEGORY_V{protocol_version}",
+                                           None),
                 )
                 if synced.changed:
                     (scoring_state, v2_window, v2_seat, v2_copy, v2_window_degraded,
                      v2_gap_until, v2_anchor_at) = synced.state
+                    v2_rules = synced.rules if synced.reanchored else v2_rules
                     save_state(scoring_state.records, prev_uids, prev_weights,
                                last_epoch_index, frame,
                                v2={"seat": seat_to_dict(v2_seat),
                                    copy_rule.REVEAL_KEY: v2_copy.to_reveal(),
                                    "window_degraded": v2_window_degraded,
-                                   "gap_until": v2_gap_until, "anchor_at": v2_anchor_at},
+                                   "gap_until": v2_gap_until, "anchor_at": v2_anchor_at,
+                               "rules": v2_rules},
                                v2_window=v2_window)
+                _log_following(role, epoch_index, len(approved_measurements), v2_seat)
 
             # --- COMMITMENTS, pinned to the boundary block ---
             # Read NOW, while the boundary block is seconds old, not after the
@@ -849,6 +1174,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # could not check is not a proof it rejected, and the difference is
             # the difference between an outage and an accusation.
             n_unverifiable = 0
+            outcomes: dict[int, str] = {}
 
             # One ceiling for the whole phase. Every fetch is already bounded
             # individually; this bounds their SUM, which is the quantity I6
@@ -884,11 +1210,28 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             )
             for uid in order:
                 hotkey_ss58 = metagraph.hotkeys[uid] if uid < len(metagraph.hotkeys) else ""
+                uid_checks = checks
+                if protocol_version >= 3 and hotkey_ss58 and _offers_proof(responses[uid]):
+                    # v3: this miner's own exploration set (the shared pairs and
+                    # the ones drawn for its hotkey), and the gold for them.
+                    from fugal_subnet import epoch_plan as _plan
+                    mine = _plan.exploration_plan(3, nonce, benchmark_pool, expected_question_ids,
+                                                  pool_models, 0, hotkey=hotkey_ss58,
+                                                  index=v3_index)
+                    uid_checks = checks._replace(
+                        explore_map=mine,
+                        slice_gold={**slice_gold,
+                                    **{q: gold_answers[q] for q in mine if q in gold_answers}})
                 checked = _check_response(
                     uid, responses[uid], hotkey_ss58,
                     chain_commitments.get(hotkey_ss58, ("", 0)),
-                    registration_block_of(metagraph, uid), checks,
+                    registration_block_of(metagraph, uid), uid_checks,
                 )
+                if (checked.status == "valid" and protocol_version >= 3
+                        and (why_not := _head_within_bounds(checked.head_bytes))):
+                    logger.warning("UID %d proof rejected: %s", uid, why_not)
+                    checked = _Checked("invalid", checked.seniority)
+                outcomes[uid] = checked.status
                 if checked.seniority is not None:
                     commit_blocks[uid] = checked.seniority
                 if checked.status == "invalid":
@@ -905,6 +1248,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # Diagnostics only: keep the verified heads on private disk. Feeds
             # no score, hash, reveal or fingerprint, and can't fail the epoch.
             _archive_heads(epoch_id, verified_heads, head_hashes, metagraph)
+            # Diagnostics only: who was reached, how long it took, and what
+            # became of each proof (the epoch log keeps it per UID).
+            collection, collection_line = _collection_report(
+                responses, list(metagraph.hotkeys), chain_commitments, outcomes)
+            logger.info(collection_line)
 
             if not verified_proofs:
                 logger.warning("No valid proofs received, skipping epoch")
@@ -915,6 +1263,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     n_heads_invalid=n_invalid,
                     n_heads_unverifiable=n_unverifiable,
                     commit_hash=commitment.commit_hash,
+                    collection=collection,
                     anomalies=(
                         ["no_valid_proofs"]
                         + (["collateral_unavailable"] if n_unverifiable else [])
@@ -948,7 +1297,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                            last_epoch_index, frame,
                            v2={"seat": seat_to_dict(v2_seat), copy_rule.REVEAL_KEY: v2_copy.to_reveal(),
                                "window_degraded": v2_window_degraded,
-                           "gap_until": v2_gap_until, "anchor_at": v2_anchor_at},
+                           "gap_until": v2_gap_until, "anchor_at": v2_anchor_at,
+                               "rules": v2_rules},
                            v2_window=v2_window)
                 if once:
                     break
@@ -1080,6 +1430,27 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # The boundary snapshot for the copy rule: every committed
                 # hotkey with its owning coldkey, read pinned at the boundary.
                 snapshot = _copy_rule_snapshot(metagraph.hotkeys, coldkeys, chain_commitments)
+                on_odds = (protocol_version >= 3 and odds_block is not None
+                           and boundary_block >= odds_block)
+                epoch_rules = _rules_tag(protocol_version, on_odds)
+                v3_odds = None
+                if protocol_version >= 3:
+                    from fugal_subnet.v2_epoch import OddsInput
+                    v3_odds = OddsInput(
+                        nonce=nonce,
+                        answers=_v3_explore_answers(verified_proofs, coldkey_of, explore_map),
+                        benchmark_of={q: str(g.get("benchmark", ""))
+                                      for q, g in gold_answers.items()},
+                        heads=_v3_heads(verified_heads), hidden_of=v3_embeddings.of,
+                        flagged=frozenset(coldkey_of[uid] for uid in suspicious),
+                        coldkey_cap=_cfg.EXPLORE_COLDKEY_CAP,
+                        implausible_z=_cfg.EXPLORE_PRIVATE_Z,
+                        implausible_min_samples=_cfg.EXPLORE_DISAGREE_MIN_SAMPLES,
+                        implausible_min_trials=_cfg.EXPLORE_PRIVATE_MIN_TRIALS,
+                        ref_prior=_cfg.ODDS_REF_PRIOR,
+                        single_model_min_pairs=_cfg.SINGLE_MODEL_MIN_PAIRS,
+                        category_targets=_cfg.CATEGORY_TARGETS_V3,
+                    )
                 v2_result = run_v2_epoch(
                     epoch_index=epoch_index, epoch_id=epoch_id,
                     boundary_block=boundary_block, blocks_per_epoch=blocks_per_epoch,
@@ -1093,9 +1464,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     # holder (the copy rule, copy_rule.py).
                     records=epoch_state.records, commitments=snapshot,
                     window=v2_window, seat=v2_seat, copy_state=v2_copy, burn_uid=burn_uid,
-                    params=seat_params_from_config(), shares=PAYOUT_SEAT_SHARES,
+                    params=seat_params_from_config(
+                        boundary_block, confirm_block, protocol_version=protocol_version,
+                        odds_seat_block=odds_block),
+                    shares=PAYOUT_SEAT_SHARES,
                     burn_in_questions=V2_BURN_IN_QUESTIONS,
-                    bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
+                    bench_category=getattr(config_module,
+                                           f"BENCHMARK_CATEGORY_V{protocol_version}", None),
+                    odds_input=v3_odds, rules=epoch_rules, state_rules=v2_rules,
                     allow_take=not v2_window_degraded,
                     # Every head committed at or before the flip ties at the
                     # activation block, ordered by a digest salted with the
@@ -1108,9 +1484,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 if v2_window_degraded:
                     logger.error(
                         "v2 comparison window was lost and has not been rebuilt: holding "
-                        "the seat but making NO first or take decision this epoch. Set "
-                        "FUGAL_FRAME_BOOTSTRAP to a directory of reveals and restart to "
-                        "rebuild it (it also refills itself after %d epochs).",
+                        "the seat but making NO first or take decision this epoch. Restart "
+                        "to rebuild it from the reference reveals (a root: set "
+                        "FUGAL_FRAME_BOOTSTRAP to a directory of its own); it also refills "
+                        "itself after %d epochs.",
                         CHAMPION_WINDOW_EPOCHS,
                     )
                 uids, weights = v2_result.uids, v2_result.weights
@@ -1255,7 +1632,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 commit_hash=commitment.commit_hash,
                 reveal_verified=reveal_ok,
                 scores=epoch_score_dicts, n_failed=epoch_n_failed,
-                weights=epoch_weight_map,
+                weights=epoch_weight_map, collection=collection,
                 dedup_disqualified=list(dupes),
                 weight_capped=weight_capped,
                 set_weights_success=success,
@@ -1269,18 +1646,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
 
             next_v2 = _next_v2_state(v2_result, v2_window, v2_seat, v2_copy,
                                      v2_window_degraded, CHAMPION_WINDOW_EPOCHS)
+            next_rules = epoch_rules if v2_result is not None else v2_rules
 
             # COMMIT. The epoch is complete; only now does it become the state
             # the next epoch (or a retry of this one) starts from.
             scoring_state, frame = epoch_state, epoch_frame
             prev_uids, prev_weights = next_prev_uids, next_prev_weights
             last_epoch_index = epoch_index
-            v2_window, v2_seat, v2_copy, v2_window_degraded = next_v2
+            v2_window, v2_seat, v2_copy, v2_window_degraded, v2_rules = (*next_v2, next_rules)
             save_state(scoring_state.records, prev_uids, prev_weights,
                        last_epoch_index, frame,
                        v2={"seat": seat_to_dict(v2_seat), copy_rule.REVEAL_KEY: v2_copy.to_reveal(),
                            "window_degraded": v2_window_degraded,
-                           "gap_until": v2_gap_until, "anchor_at": v2_anchor_at},
+                           "gap_until": v2_gap_until, "anchor_at": v2_anchor_at,
+                               "rules": v2_rules},
                        v2_window=v2_window)
 
         except KeyboardInterrupt:
@@ -1554,6 +1933,77 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
     for w in result.warnings or ():
         logger.info("UID %d proof warning: %s", uid, w)
     return _Checked("valid", seniority, proof, head_bytes)
+
+
+def _offers_proof(resp) -> bool:
+    """Did this axon answer with a proof at all (what `_check_response` reads first)?"""
+    return resp is not None and bool(getattr(resp, "proof_hash", ""))
+
+
+def _query_outcome(resp) -> tuple[str, float | None]:
+    """How the query to one axon ended, as the dendrite recorded it:
+    (status, seconds). The status message is text the far end chose, so it is
+    cut to printable ASCII and a short length before it reaches a log (I2)."""
+    d = getattr(resp, "dendrite", None)
+    code = getattr(d, "status_code", None)
+    try:
+        seconds = round(float(getattr(d, "process_time", None)), 2)
+    except (TypeError, ValueError):
+        seconds = None
+    if code is None:
+        return "no reply", seconds
+    status = str(code)[:8]
+    if status != "200":
+        msg = str(getattr(d, "status_message", "") or "")
+        msg = "".join(ch if 32 <= ord(ch) < 127 else "?" for ch in msg)[:80]
+        if msg:
+            status = f"{status} {msg}"
+    return status, seconds
+
+
+# How many UIDs the one-line collection summary names; the epoch log has all.
+_COLLECTION_LINE_UIDS = 40
+
+
+def _collection_report(responses, hotkeys: list, chain_commitments: dict,
+                       outcomes: dict) -> tuple[dict, str]:
+    """({uid: what happened} for the epoch log, the one-line summary).
+
+    Covers every UID whose hotkey had a head committed at the boundary (a
+    miner that meant to be scored) and every UID that answered anything. The
+    summary names the committed miners that ended the epoch without a valid
+    proof, each with how its query ended, because that is the question a
+    miner asks: was I never reached, was I slow, or was my proof refused?
+    Never raises: it is a log.
+    """
+    report: dict[str, dict] = {}
+    counts = {"valid": 0, "invalid": 0, "unverifiable": 0, "absent": 0}
+    missing: list[str] = []
+    try:
+        for uid, resp in enumerate(responses):
+            result = outcomes.get(uid, "absent")
+            counts[result] = counts.get(result, 0) + 1
+            hotkey = hotkeys[uid] if uid < len(hotkeys) else ""
+            committed = bool(hotkey) and hotkey in chain_commitments
+            status, seconds = _query_outcome(resp)
+            if not committed and status == "no reply" and result == "absent":
+                continue
+            report[str(uid)] = {"query": status, "seconds": seconds, "result": result,
+                                "committed": committed}
+            if committed and result != "valid":
+                took = f" after {seconds:.1f}s" if seconds is not None else ""
+                missing.append(f"{uid} ({result}; query {status}{took})")
+    except Exception as e:  # noqa: BLE001 - diagnostics must not cost the epoch
+        logger.debug("collection report failed: %s", e)
+    line = (f"Collection: {len(responses)} queried; {counts['valid']} valid, "
+            f"{counts['invalid']} invalid, {counts['unverifiable']} unverifiable, "
+            f"{counts['absent']} absent")
+    if missing:
+        shown = missing[:_COLLECTION_LINE_UIDS]
+        more = f", and {len(missing) - len(shown)} more" if len(missing) > len(shown) else ""
+        line += (f". Committed miners without a valid proof ({len(missing)}): "
+                 f"uid {', uid '.join(shown)}{more}")
+    return report, line
 
 
 def _get_bundle_for_uid(uid, resp):
@@ -2065,6 +2515,11 @@ class _V2Sync(NamedTuple):
     changed: bool
     # (scoring_state, window, seat, copy_state, window_degraded, gap_until, anchor_at)
     state: tuple
+    # After a re-anchor: what the adopted state was built under (the reference
+    # reveal's `v2_state.rules`; None for a v2 state). `reanchored` says whether
+    # `rules` is to be taken; otherwise the validator keeps its own.
+    rules: dict | None = None
+    reanchored: bool = False
 
 
 def _v2_sync_step(*, epoch_index: int, last_epoch_index: int, first_v2_epoch: int,
@@ -2094,10 +2549,11 @@ def _v2_sync_step(*, epoch_index: int, last_epoch_index: int, first_v2_epoch: in
     if last_epoch_index >= 0 and epoch_index > last_epoch_index + 1 \
             and epoch_index - 1 >= first_v2_epoch:
         gap_until = max(-1 if gap_until is None else gap_until, epoch_index - 1)
-        logger.error("v2 epochs %d..%d were not observed by this validator: its state is "
-                     "unverified until it matches the reference again (decisions go on as "
-                     "usual; its reveals are marked v2_sync.unverified)",
-                     max(last_epoch_index + 1, first_v2_epoch), epoch_index - 1)
+        (logger.error if reference_dir else logger.warning)(
+            "v2 epochs %d..%d were not run by this validator%s",
+            max(last_epoch_index + 1, first_v2_epoch), epoch_index - 1,
+            (": its state is unverified until it matches the reference again (decisions go "
+             "on as usual; its reveals are marked v2_sync.unverified)") if reference_dir else "")
         state, changed = state[:5] + (gap_until, anchor_at), True
     try:
         return _v2_sync_inner(epoch_index=epoch_index, reference_dir=reference_dir,
@@ -2136,10 +2592,16 @@ def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_
         # star). It has nothing to verify against, so it never marks itself
         # unverified, which would only stop its followers from verifying.
         if gap_until is not None:
-            logger.error("v2 epochs through e%08d were not observed and no reference is set: "
-                         "this validator's state may now differ from its peers'. A root "
-                         "validator recovers by restarting from a rebuild "
-                         "(docs/VALIDATOR_GUIDE.md).", gap_until)
+            # Not an error for a root, and worded so it is not read as one: an
+            # epoch in which no miner had a valid proof leaves the seat state
+            # exactly as it was, and the root is what the others verify
+            # against. It matters only if the root was DOWN while its
+            # followers scored epochs.
+            logger.warning("Root: no verified proof in the v2 epoch(s) through e%08d. Nothing "
+                           "to do if no miner served then: the seat state is unchanged, and a "
+                           "root has no reference to verify against. If this validator was "
+                           "down while others scored those epochs, see docs/VALIDATOR_GUIDE.md, "
+                           "\"If the root misses epochs\".", gap_until)
             return _V2Sync(True, state[:5] + (None, None))
         return _V2Sync(changed, state)
     since = epoch_index - window_epochs - 1
@@ -2164,7 +2626,8 @@ def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_
         state = state[:5] + (gap_until, anchor_at)
     if chk.status == "no_reference":
         logger.error("v2 gap open (through e%08d) but %s holds no reference reveal before "
-                     "e%08d: is it synced from gs://<reference-bucket>/<netuid>?",
+                     "e%08d: the root's reveals have not been fetched (see the 'Root reveals' "
+                     "line above, or the operator's own sync of that directory).",
                      gap_until, reference_dir, epoch_index)
         return _V2Sync(changed, state)
     if anchor_at is not None and chk.k < anchor_at:
@@ -2194,7 +2657,8 @@ def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_
                    epoch_index, "" if rs.complete else
                    " (an epoch since was not observed: the next check re-anchors again)")
     return _V2Sync(True, (scoring, rs.rebuilt.window, rs.rebuilt.seat, new_copy, False,
-                          gap_until, epoch_index))
+                          gap_until, epoch_index),
+                   rules=rs.rebuilt.extra.get("rules"), reanchored=True)
 
 
 def _next_v2_state(v2_result, window, seat, copy_state, degraded: bool, window_epochs: int):

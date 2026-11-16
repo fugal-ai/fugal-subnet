@@ -14,9 +14,21 @@ never read from config here, so both sides pass the same versioned list
 """
 from __future__ import annotations
 
-from fugal_subnet.benchmarks.slicer import select_explore_set_v2, select_slice, select_slice_v2
+from fugal_subnet import config
+from fugal_subnet.benchmarks.slicer import (
+    PoolIndex,
+    select_explore_set_v2,
+    select_private_explore,
+    select_slice,
+    select_slice_v2,
+)
 from fugal_subnet.config import BENCHMARK_CATEGORY_V2, BENCHMARK_WEIGHT_V2, CATEGORY_TARGETS_V2
-from fugal_subnet.exploration import assign_explore_models, expected_exploration, explore_nonce
+from fugal_subnet.exploration import (
+    assign_explore_models,
+    expected_exploration,
+    explore_nonce,
+    private_nonce,
+)
 
 
 def scored_slice(version: int, nonce: bytes, pool: list[dict], size: int) -> list[dict]:
@@ -26,13 +38,27 @@ def scored_slice(version: int, nonce: bytes, pool: list[dict], size: int) -> lis
     if version == 2:
         return select_slice_v2(nonce, pool, size, CATEGORY_TARGETS_V2, BENCHMARK_CATEGORY_V2,
                                bench_weight=BENCHMARK_WEIGHT_V2)
+    if version == 3:
+        return select_slice_v2(nonce, pool, size, config.CATEGORY_TARGETS_V3,
+                               config.BENCHMARK_CATEGORY_V3,
+                               bench_weight=config.BENCHMARK_WEIGHT_V3)
     raise ValueError(f"unknown protocol version {version!r}")
 
 
 def exploration_plan(version: int, nonce: bytes, pool: list[dict], scored_ids: set[str],
-                     models: list[str], size: int) -> dict[str, str]:
+                     models: list[str], size: int, hotkey: str | None = None,
+                     index: PoolIndex | None = None) -> dict[str, str]:
     """{question_id: required_model}: the epoch's exploration set (disjoint from the scored
-    slice) and the model each question must be sent to."""
+    slice) and the model each question must be sent to.
+
+    v1 and v2: one set for every miner; `hotkey` is not read. v3: the shared set (every
+    miner answers it) plus, when `hotkey` is given, that miner's private set. The miner
+    passes its own hotkey; the validator calls this once per miner it verifies, so the
+    proof check stays an exact match of what was assigned.
+    """
+    if version == 3:
+        shared, private = exploration_plan_v3(nonce, pool, scored_ids, models, hotkey, index)
+        return {**shared, **private}
     if size <= 0:
         return {}
     if version == 1:
@@ -43,3 +69,39 @@ def exploration_plan(version: int, nonce: bytes, pool: list[dict], scored_ids: s
                                        bench_weight=BENCHMARK_WEIGHT_V2)
         return assign_explore_models(nonce, chosen, models)
     raise ValueError(f"unknown protocol version {version!r}")
+
+
+def pool_index_v3(pool: list[dict]) -> PoolIndex:
+    """The v3 pool indexed for private draws. Build it once per pool: it is what makes a
+    per-miner plan cost a few dozen HMACs instead of one per question."""
+    return PoolIndex(pool, config.BENCHMARK_CATEGORY_V3, config.BENCHMARK_WEIGHT_V3)
+
+
+def exploration_plan_v3(nonce: bytes, pool: list[dict], scored_ids: set[str], models: list[str],
+                        hotkey: str | None, index: PoolIndex | None = None,
+                        ) -> tuple[dict[str, str], dict[str, str]]:
+    """(shared, private) exploration for one miner in a v3 epoch.
+
+    - **Shared**: `EXPLORE_SHARED_SIZE` questions and their models, chosen as v2 chooses
+      its whole set, the same for every miner. Miners answering the same pairs is what
+      the cross-miner agreement check reads.
+    - **Private**: `EXPLORE_PRIVATE_SIZE` questions drawn for this hotkey
+      (slicer.select_private_explore), disjoint from the scored slice and the shared set,
+      each sent to a model by round-robin over a model list permuted with the same
+      per-miner nonce. Empty when `hotkey` is None (the shared half alone).
+    """
+    shared: dict[str, str] = {}
+    if config.EXPLORE_SHARED_SIZE > 0:
+        chosen = select_explore_set_v2(explore_nonce(nonce), pool, scored_ids,
+                                       config.EXPLORE_SHARED_SIZE, config.CATEGORY_TARGETS_V3,
+                                       config.BENCHMARK_CATEGORY_V3,
+                                       bench_weight=config.BENCHMARK_WEIGHT_V3)
+        shared = assign_explore_models(nonce, chosen, models)
+    private: dict[str, str] = {}
+    if hotkey and config.EXPLORE_PRIVATE_SIZE > 0:
+        mine = private_nonce(nonce, hotkey)
+        chosen = select_private_explore(mine, index or pool_index_v3(pool),
+                                        set(scored_ids) | set(shared),
+                                        config.EXPLORE_PRIVATE_SIZE, config.CATEGORY_TARGETS_V3)
+        private = assign_explore_models(mine, chosen, models)
+    return shared, private

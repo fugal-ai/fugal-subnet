@@ -208,6 +208,25 @@ def pairs_from_reveal(reveal: Mapping, answered: Mapping[str, HeadEpoch],
     return pairs, odds
 
 
+def reveal_rules(reveal: Mapping) -> dict | None:
+    """The rules a reveal's epoch was scored under (`v2_state.rules`), or None
+    for a reveal from before rules were published (protocol v2)."""
+    rules = (reveal.get("v2_state") or {}).get("rules")
+    return dict(rules) if isinstance(rules, Mapping) else None
+
+
+def reveal_protocol(reveal: Mapping) -> int:
+    """The protocol a reveal's epoch ran under: its published rules' protocol,
+    else its `protocol_version`, else 2 (the v2 reveals carried no rules)."""
+    rules = reveal_rules(reveal) or {}
+    p = rules.get("protocol", reveal.get("protocol_version", 2))
+    try:
+        return int(p)
+    except (TypeError, ValueError):
+        raise ValueError(f"reveal {reveal.get('epoch_id', '?')}: protocol {p!r} is not "
+                         "an integer") from None
+
+
 def rebuild_v2_from_reveals(
     source: str | os.PathLike | Iterable[str],
     *,
@@ -215,6 +234,8 @@ def rebuild_v2_from_reveals(
     prices: Mapping[str, tuple[float, float]],
     bench_category: Mapping[str, str] | None = None,
     snapshot_epoch_id: str | None = None,
+    tables: Mapping[int, tuple[Mapping[str, tuple[float, float]], Mapping[str, str] | None]]
+    | None = None,
 ) -> V2Rebuild:
     """Rebuild the v2 window and decision state from published v2 reveals.
 
@@ -223,6 +244,14 @@ def rebuild_v2_from_reveals(
     window still replays every reveal given (fugal_subnet/v2_sync.py re-anchors
     on a reference validator's state at an epoch, then keeps its own
     observations of the epochs since). Two reveals for one epoch are refused.
+
+    Each reveal is priced at ITS protocol's table: `tables` maps a protocol to
+    (prices, bench_category), and a reveal whose protocol is not in it (or
+    when `tables` is None) uses `prices` and `bench_category`. Across a
+    protocol change the replay does what the live epoch did
+    (v2_epoch.run_v2_epoch): an epoch whose published rules name a different
+    protocol from the epoch before it starts from an empty window, so the
+    epochs of the old protocol are not carried into the new one.
     """
     reveals = sorted(_load(source), key=lambda r: _epoch_index(r["epoch_id"]))
     ids = [r["epoch_id"] for r in reveals]
@@ -241,12 +270,24 @@ def rebuild_v2_from_reveals(
     oldest_kept = _epoch_index(newest["epoch_id"]) - int(window_size) + 1
     window = Window.empty(window_size)
     replayed = 0
+    prev_rules: dict | None = None
+    first = True
     for r in reveals:
         if _epoch_index(r["epoch_id"]) < oldest_kept:
             continue
         try:
-            sl, answers = epoch_from_reveal(r, prices, bench_category)
-            pairs, odds = pairs_from_reveal(r, answers, bench_category)
+            rules = reveal_rules(r)
+            # The live reset (run_v2_epoch): rules that differ from the state's
+            # and name a different protocol start an empty window. The first
+            # epoch replayed has no earlier state here; the window is empty.
+            if (not first and rules is not None and rules != (prev_rules or {})
+                    and (prev_rules or {}).get("protocol") != rules.get("protocol")):
+                window = Window.empty(window_size)
+                replayed = 0
+            prev_rules, first = rules, False
+            p_prices, p_cat = (tables or {}).get(reveal_protocol(r), (prices, bench_category))
+            sl, answers = epoch_from_reveal(r, p_prices, p_cat)
+            pairs, odds = pairs_from_reveal(r, answers, p_cat)
             window = window.add_epoch(sl, answers, pairs, odds)
         except ValueError as e:
             # Fail closed, by name: a window missing one epoch is a different

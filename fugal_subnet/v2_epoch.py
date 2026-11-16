@@ -398,6 +398,10 @@ class OddsInput:
     # {entry: inverse-probability weight} of the epoch's cost-aware exploration
     # (explore_weights.weights of epoch_plan.explore_shares); None weighs one.
     explore_weights: Mapping[str, int] | None = None
+    # The protocol's menu. A head whose rows do not cover every entry makes no
+    # prediction at all (every pair -1), so it is not eligible for the odds
+    # seat (champion._no_full_menu). None checks only the pairs drawn.
+    menu: tuple[str, ...] | None = None
 
 
 def odds_b64(odds: np.ndarray) -> str:
@@ -467,6 +471,12 @@ def _pool_and_odds(window: Window, oi: OddsInput, serving: Mapping[str, int],
         if h not in answered or uid not in oi.heads:
             continue
         W, b, models = oi.heads[uid]
+        if oi.menu is not None and not set(oi.menu) <= set(models):
+            # From v3 a head gives odds for every menu entry. One that leaves
+            # an entry out is published with no odds anywhere (-1), which the
+            # reveal shows and a rebuild reads the same way.
+            odds[h] = np.full(len(pairs.models), -1, dtype=np.int16)
+            continue
         odds[h] = head_odds.head_odds(W, b, list(models), hidden, list(pairs.models))
     return pairs, odds, implausible, pooled
 

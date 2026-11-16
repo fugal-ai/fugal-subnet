@@ -707,6 +707,21 @@ def _challenge(
     return res.mean_units
 
 
+def _no_full_menu(window: Window, head: str, since: int | None, detail: list,
+                  run_only: bool = True) -> bool:
+    """True, with the reason in `detail`, when `head` gave no odds for some menu
+    entry it is scored on: such a head is not eligible for the odds seat (v3
+    review, 2026-11-16: a copy of the champion with its weakest rows removed
+    beat it when the gaps were filled with the reference's odds)."""
+    from fugal_subnet import odds_score
+
+    k = odds_score.missing_rows(window, head, since, run_only)
+    if k:
+        detail.append((head, f"not eligible for the odds seat: no odds for every menu entry "
+                             f"({k} pairs without a row)"))
+    return bool(k)
+
+
 def _challenge_odds(window: Window, c: Candidate, bar: str, epoch_id: str, params: SeatParams,
                     detail: list[tuple[str, str]], label: str, since: int, fresh: bool,
                     ref) -> int | None:
@@ -729,6 +744,8 @@ def _challenge_odds(window: Window, c: Candidate, bar: str, epoch_id: str, param
     o = params.odds
     tag = f"{epoch_id}:odds:confirm" if fresh else f"{epoch_id}:odds"
     prefix = "vs fresh pairs, " if fresh else (f"vs {label} " if label else "vs ")
+    if _no_full_menu(window, c.head_hash, since, detail):
+        return None
     bu = odds_score.brier_units(window, ref, c.head_hash, bar, since)
     res = paired_test(bu.by_category, margin_points=o.margin_points,
                       confidence=params.confidence, resamples=params.resamples,
@@ -846,6 +863,8 @@ def seat_step(
             detail.append((h, f"champion accuracy {acc:.4f} below the floor "
                               f"{params.min_accuracy:.4f}"))
             return False
+        if ref is not None and _no_full_menu(window, h, None, detail, run_only=False):
+            return False
         if ref is not None:
             # A seated head loses the seat when the reference's odds beat its
             # own on the window's pairs, by the test a challenger would have
@@ -926,19 +945,32 @@ def seat_step(
         value = {}
         if ref is not None:
             # On odds an empty seat goes to the best measured skill over the
-            # reference, among heads with enough pairs and skill not below
-            # zero (the rule a seated head is held to).
+            # reference, among heads with enough pairs, odds for every menu
+            # entry, and skill over the reference that is SIGNIFICANTLY
+            # positive: the same one-sided test, at the same confidence and
+            # with no margin, that a challenger's odds must pass against R.
+            # A point estimate >= 0 let a head with no skill fill the seat on
+            # noise and then hold it until R beat it significantly (v3 review,
+            # 2026-11-16).
             kept = []
             for c in eligible:
                 skill, n = odds_score.solo_skill(window, ref, c.head_hash, c.since_epoch)
                 if n < params.odds.min_pairs:
                     detail.append((c.head_hash, f"only {n} pairs; {params.odds.min_pairs} needed"))
-                elif skill < 0:
+                    continue
+                if _no_full_menu(window, c.head_hash, c.since_epoch, detail):
+                    continue
+                su = odds_score.skill_units(window, ref, c.head_hash, c.since_epoch)
+                test = paired_test(su.by_category, margin_points=0.0,
+                                   confidence=params.confidence, resamples=params.resamples,
+                                   seed=pair_seed(f"{epoch_id}:first", "reference", c.head_hash))
+                if not test.takes_seat:
                     detail.append((c.head_hash, "its odds do not beat the reference "
-                                                f"({odds_score.points(skill):+.3f} Brier points)"))
-                else:
-                    value[c.head_hash] = skill
-                    kept.append(c)
+                                                f"({odds_score.points(skill):+.3f} Brier points, "
+                                                f"lower bound {test.lcb_points:+.3f})"))
+                    continue
+                value[c.head_hash] = skill
+                kept.append(c)
             eligible = kept
         else:
             value = {c.head_hash: solo_value(window, c.head_hash, params, c.since_epoch)

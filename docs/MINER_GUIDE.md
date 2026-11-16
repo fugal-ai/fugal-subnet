@@ -875,14 +875,16 @@ account.
 **A low balance also throttles concurrent calls.** OpenRouter keeps an
 in-flight spending budget for prepaid accounts below a balance threshold and for
 newer accounts: every running request holds its input plus `max_tokens` at the
-endpoint's prices until it settles. From protocol v2 the harness keeps
-`HARNESS_CONCURRENCY` = 24 calls in flight at 16,384 tokens each. Computed from
-the pinned v2 prices (not measured on a live key), 24 calls hold about $2.75
-for a head that spreads evenly over the model list and about $20 for one that
-sends everything to the most expensive model; claude-fable-5.1 alone holds
-$0.82 per call. OpenRouter does not publish the fraction of the balance that
-makes up the budget, or the threshold above which it stops applying. Keep a
-balance of at least ~$25 if your head uses the expensive models. When the
+endpoint's prices until it settles. From protocol v3 the harness keeps
+`HARNESS_CONCURRENCY` = 40 calls in flight, each with its menu entry's own
+answer budget (up to 128k tokens; v2 kept 24 at 16,384). Computed from the
+pinned v3 prices and budgets (not measured on a live key), a call holds about
+$1.07 on average over the menu, so 40 calls hold about $43 for a head that
+spreads evenly, and up to about $205 for one that sends everything to Claude
+Fable 5.2 ($5.14 per call). The hold is released when the call settles; it is
+not spent. OpenRouter does not publish the fraction of the balance that makes
+up the budget, or the threshold above which it stops applying. Keep a balance
+of at least ~$50, and more if your head leans on the most expensive entries. When the
 budget is full, OpenRouter refuses with a temporary 402
 (`in_flight_budget_exhausted`). The v2 image retries that 402 like a 429 and
 logs `OpenRouter in-flight budget full`. If it is still full after the retries,

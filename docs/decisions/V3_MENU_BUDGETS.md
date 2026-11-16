@@ -48,13 +48,13 @@ boundary, and the proof must be built and attested before then. 1,800 s
 leaves ~6 min.
 
 **Throughput.** A miner makes 300 scored calls (the router's choices) and 32
-exploration calls (drawn), `HARNESS_CONCURRENCY` (24) at a time. Its epoch
+exploration calls (drawn), `HARNESS_CONCURRENCY` (40 from v3; 24 in v2) at a time. Its epoch
 takes about max(longest call, total call seconds / concurrency):
 
-| Case | Total call seconds | At 24 in flight | Fits 2,160 s? |
-|---|---|---|---|
-| Expected: scored mean 60 s; exploration 8 calls at 1,800 s, 24 at 120 s | 18,000 + 14,400 + 2,880 = 35,280 | 1,470 s | yes |
-| Worst exploration: scored mean 60 s; all 32 exploration calls at 1,800 s | 18,000 + 57,600 = 75,600 | 3,150 s | **no** |
+| Case | Total call seconds | At 24 in flight | At 40 (v3) | Fits 2,160 s at 40? |
+|---|---|---|---|---|
+| Expected: scored mean 60 s; exploration 8 calls at 1,800 s, 24 at 120 s | 18,000 + 14,400 + 2,880 = 35,280 | 1,470 s | 882 s | yes |
+| Worst exploration: scored mean 60 s; all 32 exploration calls at 1,800 s | 18,000 + 57,600 = 75,600 | 3,150 s | 1,890 s | yes |
 
 The worst case needs 75,600 / 2,000 ≈ **38 in flight** (2,000 s leaves time to
 build the proof). Scored calls are the router's own choice: a router that
@@ -113,11 +113,10 @@ the steepest exponent. Revisit the cap and floor with the measured means.
 
 ## Open questions
 
-- The worst-case exploration epoch needs ~38 calls in flight; the default is
-  24 (raised from 8 for v2, bounded by OpenRouter's in-flight budget). Either
-  raise `HARNESS_CONCURRENCY` for v3 miners, shorten the high-effort deadline,
-  or let the harness ship the proof at a fixed cutoff with unfinished calls
-  marked failed (bounded by `EXPLORE_FAIL_MARGIN` today).
+- Settled 2026-11-16: `HARNESS_CONCURRENCY` is 40 from v3, which fits the
+  worst-case exploration epoch (1,890 s < 2,160 s). Shortening deadlines or
+  shipping at a cutoff was rejected: both would drop exactly the slow, long
+  answers the router must learn the true odds of.
 - A later collection point (`EPOCH_COLLECT_FRACTION` 0.75 = 54 min) would
   allow 45-minute deadlines, at the cost of the validators' post-collection
   budget (collateral fetches, scoring, weights, reveal).

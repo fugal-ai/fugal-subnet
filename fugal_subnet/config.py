@@ -92,7 +92,17 @@ HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "",
 # 24 it is 14 min (18 min). The floor is one call at PROXY_CALL_DEADLINE_S.
 # More in flight also holds more of an OpenRouter in-flight budget; see
 # runtime.OPENROUTER_402_TRANSIENT and docs/MINER_GUIDE.md.
-HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "24")))
+# Raised to 40 for protocol v3 (2026-11-16). v3 answer budgets are each entry's
+# real limit (up to 128k) and high-effort calls may run 30 min, so the worst
+# exploration epoch (all 32 drawn calls at the 1,800 s deadline plus a 300-call
+# slice at 60 s) is 75,600 call-seconds: 3,150 s at 24 in flight, past the
+# 2,160 s collection point; 1,890 s at 40. Calls wait on the network, not the
+# CPU, so 40 threads cost the TD little. Each running call holds input +
+# max_tokens at its entry's prices against OpenRouter's in-flight budget (low
+# balance and newer accounts only): ~$1.07 per call averaged over the v3 menu,
+# ~$43 for 40 spread evenly, up to ~$205 if all 40 went to Claude Fable 5.2.
+# docs/MINER_GUIDE.md tells miners what balance to keep.
+HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "40")))
 
 # --- Protocol v2 benchmark pool (approved scope, 2026-11-04) ---
 # Consensus constants from V2_ACTIVATION_BLOCK, written into the v2 pool

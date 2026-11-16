@@ -60,6 +60,34 @@ PINNED_PRICE_TABLE_SHA256 = (
 PINNED_PRICE_TABLE_V2_SHA256 = (
     "9b18e3fbc786c3aea90966b69984717ead66c27f4bf4a98a388a9674f1be2aaa"
 )
+# Protocol v3's menu (data/models_v3.json; identical copy in
+# fugal_subnet/routing_data/). 2026-11-16, user-approved: 23 models, 53
+# `model@effort` entries = the union of the arena.ai Text, Agent and WebDev
+# Pareto frontiers available on OpenRouter (Granite 4.2 8B for 4.1) plus Qwen4
+# Max, Muse Spark 1.3 and Muse Wonder; each model at its frontier effort(s)
+# plus low and high. Every entry pins its OpenRouter hosts (same quantization,
+# no flex tiers, no fallbacks) and is priced at the dearer pinned host from
+# OpenRouter's /endpoints of 2026-11-16. Gemini 4 Carbon pins Vertex global +
+# us (Google AI Studio capped answers at 32k), so $2.2 / $11. Live-checked
+# 2026-11-16 (every entry answered; ~/projects/fugal-v2-handoff/v3-prep/
+# measurements/livecheck-2026-11-16.jsonl).
+# TODO(v3 release): `max_tokens` per entry is PROVISIONAL = min(131072, the
+# smallest answer limit of its pinned hosts). The final budgets are set from
+# the 128k measurement of 2026-11-16 (results-128k.jsonl) before the release;
+# re-pin this hash then.
+PINNED_PRICE_TABLE_V3_SHA256 = (
+    "1494ad3f597f77f20a4bafb0c7401a23c357a4afb140fcab895d49bb6b6881f2"
+)
+# Protocol v3's token manifest (the cost denominator), PROVISIONAL, status
+# `candidate`: 4 rows measured in v2 at the same model and setting, 49 rows
+# estimated from v2's measured means by the stated rule in
+# scripts/build_token_manifest_v3.py (no paid calls). Replaced row by row from
+# the attested token medians v3 exploration publishes; the v3 release review
+# promotes it to `reviewed`. Pinned like the menu: a change re-prices every
+# v3 miner's routing.
+PINNED_TOKEN_MANIFEST_V3_SHA256 = (
+    "1c0261e41dce1c407a9b22015515e42a76a664285890c95a58d1abb02d09e7ce"
+)
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM
 # quote means trusting this CA in addition to Intel's — see docs/INVARIANTS.md.
@@ -595,8 +623,9 @@ def check_one_accuracy_definition_on_the_consensus_path(errors: list[str]) -> No
 
 
 ROUTING_DATA_REQUIRED = (
-    "models.json", "models_v2.json",
+    "models.json", "models_v2.json", "models_v3.json",
     "benchmark_tokens_v1.json", "benchmark_tokens_protocol_v2.json",
+    "benchmark_tokens_protocol_v3.json",
 )
 
 
@@ -645,6 +674,47 @@ def check_price_table_v2_pinned(errors: list[str]) -> None:
             or rs.get("enabled") is True
         ):
             errors.append(f"data/models_v2.json: {r.get('id')!r} must pin exactly one valid reasoning setting")
+
+
+def check_menu_v3_pinned(errors: list[str]) -> None:
+    """The v3 menu and token manifest match their pins; the menu passes
+    routing_protocol.validate_menu_v3; the manifest has exactly one row per
+    menu entry, and no row's completion mean exceeds its entry's budget."""
+    from fugal_subnet.routing_protocol import validate_menu_v3
+    from fugal_subnet.vendor import success_contract
+
+    menu_path = ROOT / "data" / "models_v3.json"
+    man_path = ROOT / "data" / "benchmark_tokens_protocol_v3.json"
+    for path, pin, what in ((menu_path, PINNED_PRICE_TABLE_V3_SHA256, "v3 menu"),
+                            (man_path, PINNED_TOKEN_MANIFEST_V3_SHA256, "v3 token manifest")):
+        if not path.exists():
+            errors.append(f"data/{path.name} is missing")
+            return
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != pin:
+            errors.append(f"data/{path.name}: hash {actual[:16]}... does not match pin "
+                          f"{pin[:16]}... (a {what} change re-scores every v3 miner)")
+    rows = json.loads(menu_path.read_text())
+    try:
+        validate_menu_v3(rows)
+    except ValueError as e:
+        errors.append(f"data/models_v3.json: {e}")
+        return
+    manifest = json.loads(man_path.read_text())
+    try:
+        success_contract.validate_manifest(manifest)
+    except (ValueError, KeyError) as e:
+        errors.append(f"data/benchmark_tokens_protocol_v3.json: {e}")
+        return
+    budget = {r["id"]: int(r.get("max_tokens") or 0) for r in rows}
+    ids = [r["id"] for r in manifest["models"]]
+    if sorted(ids) != sorted(budget):
+        errors.append("data/benchmark_tokens_protocol_v3.json: rows do not match the v3 menu "
+                      "entries one to one")
+    for r in manifest["models"]:
+        if budget.get(r["id"]) and r["mean_out_tokens"] > budget[r["id"]]:
+            errors.append(f"data/benchmark_tokens_protocol_v3.json: {r['id']} completion mean "
+                          "exceeds the entry's max_tokens")
 
 
 def check_price_table_pinned(errors: list[str]) -> None:
@@ -1110,6 +1180,7 @@ def main(argv: list[str] | None = None) -> None:
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)
+    check_menu_v3_pinned(errors)
     check_collateral_endpoint_explicit(errors)
     check_external_calls_bounded(errors)
     check_measured_registers_documented(errors)

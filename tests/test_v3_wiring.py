@@ -95,10 +95,20 @@ def test_a_menu_a_harness_could_not_call_is_refused(row, why):
         routing_protocol.validate_menu_v3([])
 
 
-def test_the_v3_files_are_not_shipped_until_the_release_pins_them():
-    assert not routing_protocol.PRICES_PATH_V3.exists()
-    with pytest.raises(FileNotFoundError):
-        routing_protocol.price_table(3)
+def test_the_shipped_v3_menu_and_manifest_are_callable_and_agree():
+    """The pinned v3 menu (check_safety_invariants pins its hash) is a menu a
+    harness can call, its token manifest has one row per entry, and every
+    entry sends its own answer budget and pinned hosts."""
+    from fugal_subnet.vendor import success_contract as contract
+
+    rows = json.loads(routing_protocol.PRICES_PATH_V3.read_text())
+    routing_protocol.validate_menu_v3(rows)
+    manifest = json.loads(routing_protocol.MANIFEST_PATH_V3.read_text())
+    contract.validate_manifest(manifest)
+    assert sorted(r["id"] for r in manifest["models"]) == routing_protocol.models_for_protocol(3)
+    for r in rows:
+        req = routing_protocol.request_for(3, r["id"], 16384)
+        assert req["max_tokens"] == r["max_tokens"] and req["provider"]["allow_fallbacks"] is False
 
 
 def test_the_harness_sends_a_v3_entrys_request_as_pinned(monkeypatch):

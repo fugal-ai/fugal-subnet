@@ -112,6 +112,16 @@ validator that scored the whole field zero while looking healthy):
    information only; the check stays until protocol v1 is removed.
 4. The token manifest shipped in the checkout is `reviewed`, not `candidate`
    (`docs/SUCCESS_CONTRACT.md`).
+5. From the release that schedules protocol v3: the pinned embeddings file is
+   on disk. Fetch it once after updating the checkout (it is checked against
+   `config.EMBEDDINGS_SHA256` and written in place only if it matches; a file
+   already in place with that hash is kept):
+
+   ```bash
+   .venv/bin/python -m fugal_subnet.embeddings_file fetch   # -> data/embeddings/pool_v3.npz
+   ```
+
+   `FUGAL_EMBEDDINGS_FILE` points elsewhere if you keep it on another disk.
 
 ### Minimum mainnet environment (finney, netuid 70)
 

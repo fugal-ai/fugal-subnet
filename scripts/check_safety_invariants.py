@@ -255,6 +255,24 @@ def check_pinned_system_prompt_v3(errors: list[str]) -> None:
             "prompt is part of every v3 grade; change the pin deliberately")
 
 
+def check_v3_release_pins(errors: list[str]) -> None:
+    """A release that schedules protocol v3 on finney must pin everything a v3
+    epoch reads that is not in the repository: the embeddings file (its hash, and
+    where the image build and validators fetch it from) and the shared system
+    prompt. Without them a v3 miner cannot route and a validator cannot compute
+    odds, so the flip would stall every node at the activation block."""
+    from fugal_subnet import config
+
+    if config.FINNEY_V3_ACTIVATION_BLOCK is None:
+        return
+    missing = [name for name in ("EMBEDDINGS_SHA256", "EMBEDDINGS_URL",
+                                 "HARNESS_SYSTEM_PROMPT_V3")
+               if not getattr(config, name, None)]
+    if missing:
+        errors.append("fugal_subnet/config.py: FINNEY_V3_ACTIVATION_BLOCK is set but "
+                      + ", ".join(missing) + " is not pinned; the v3 release must pin it")
+
+
 def check_epoch_id_single_source(errors: list[str]) -> None:
     """Both neurons must derive epoch identity from the same helper.
 
@@ -1221,6 +1239,7 @@ def main(argv: list[str] | None = None) -> None:
     check_live_requires_app_identity(errors)
     check_live_composes_are_frozen(errors if args.release else launch_gate)
     check_release_composes_target_v2(errors if args.release else launch_gate)
+    check_v3_release_pins(errors if args.release else launch_gate)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)
     check_documented_flags(errors)

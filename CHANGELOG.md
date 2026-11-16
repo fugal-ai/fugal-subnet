@@ -4,6 +4,31 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — a follower rebuilt across the v3 flip keeps only v3 epochs (consensus, v3)
+A live validator empties its comparison window when the protocol changes
+(v2 -> v3). A rebuild from reveals replayed every reveal in the last 48
+epochs, so a follower that rebuilt or re-anchored during the first 48 epochs
+after the flip held v2 epochs in its v3 window and decided seats and weights
+differently from its peers. `v2_rebuild` now replays only the reveals built
+under the newest reveal's protocol (`v2_state.rules`, else
+`protocol_version`); the seat-only change at the odds block keeps the
+window, as live. Found by the new in-process rehearsal
+(`scripts/rehearsal_v3.py`: v2 -> v3 -> odds seat, three validators, one
+restarted from disk and one rebuilt from reveals, 37 checks).
+
+### Added — the v3 image carries the shared system prompt and the embeddings file
+- `config.HARNESS_SYSTEM_PROMPT_V3`: the product's house prompt, with one
+  change so it never fights a graded answer format (a format the request
+  asks for takes precedence). Hash-pinned (`SYSTEM_PROMPT_V3_SHA256` in
+  `check_safety_invariants.py`); the product must send the same text.
+- `python -m fugal_subnet.embeddings_file fetch`: downloads the pinned
+  embeddings file from `config.EMBEDDINGS_URL` and writes it only if its
+  sha256 matches `config.EMBEDDINGS_SHA256`. The image build runs it, so the
+  file's bytes are measured; validators run it once at setup
+  (VALIDATOR_GUIDE, step 3).
+- `check_safety_invariants.py`: a release that schedules v3 on finney must
+  pin the embeddings hash and URL and the system prompt (`--release`).
+
 ### Added — protocol v3, not scheduled: the seat decided on a head's odds (consensus; needs a new miner image, pool, menu and embeddings file before any chain can schedule it)
 Everything below is inert until a release pins the v3 pool, menu and
 embeddings file and compiles in finney's blocks. v2 epochs are scored exactly

@@ -140,6 +140,15 @@ or every honest miner that reboots onto the new firmware is refused).
    validator removes it and restarts. Until then, both are valid, and a proof
    from either image verifies.
 
+**The validator release must know the new compose.** At startup on finney a
+validator refuses an approved set in which no compose hash is a frozen compose
+(`deploy/dstack/app-compose.frozen-*.json`) in its own checkout. Keeping both
+entries in step 1 passes that check on any release that knows the old one. A
+set that keeps only the newer image's entry (step 3, or a validator that skips
+step 1) starts only on a release that ships that image's frozen compose, so
+upgrade the validator to that release first. The refusal is loud, not silent:
+the validator does not start and names the hashes it looked for.
+
 The window should be long enough for a miner operator to notice, redeploy and
 re-embed with margin: **48 hours minimum** for a compose-hash rotation, longer
 for a base rotation, because that one also needs the dstack image re-uploaded

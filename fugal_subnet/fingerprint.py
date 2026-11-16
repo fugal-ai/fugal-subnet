@@ -137,21 +137,27 @@ def environment_fingerprint() -> dict:
             "v2_activation_block": config.V2_ACTIVATION_BLOCK,
             # The fresh-data confirmation rule's activation: finney's compiled
             # block and the variable other chains read. Both, because the
-            # fingerprint is taken without a chain connection; on finney the
-            # variable is refused unless it equals the compiled block.
+            # fingerprint is taken without a chain connection. On finney the
+            # variable is refused unless it equals the compiled block, so a
+            # variable that equals it changes nothing and is left out: two
+            # finney validators on the same rule publish the same digest
+            # whether or not they also set it.
             "confirm_activation_block": {
                 "finney": config.FINNEY_CONFIRM_ACTIVATION_BLOCK,
-                "env": config.CONFIRM_ACTIVATION_BLOCK_ENV,
+                "env": _env_unless_finney(config.CONFIRM_ACTIVATION_BLOCK_ENV,
+                                          config.FINNEY_CONFIRM_ACTIVATION_BLOCK),
             },
             # Protocol v3 and the odds seat, the same two ways.
             "v3_activation_block": {
                 "finney": config.FINNEY_V3_ACTIVATION_BLOCK,
-                "env": config.V3_ACTIVATION_BLOCK_ENV,
+                "env": _env_unless_finney(config.V3_ACTIVATION_BLOCK_ENV,
+                                          config.FINNEY_V3_ACTIVATION_BLOCK),
             },
             "embeddings_v3": config.EMBEDDINGS_SHA256,
             "odds_seat_block": {
                 "finney": config.FINNEY_ODDS_SEAT_BLOCK,
-                "env": config.ODDS_SEAT_BLOCK_ENV,
+                "env": _env_unless_finney(config.ODDS_SEAT_BLOCK_ENV,
+                                          config.FINNEY_ODDS_SEAT_BLOCK),
             },
             # The v2 price table is consensus from the flip, and a release/v2
             # validator ships it while still scoring v1 epochs; its hash is here
@@ -199,6 +205,12 @@ def environment_fingerprint() -> dict:
         },
         "approved_entries": sorted(config.TEE_APPROVED_MEASUREMENTS),
     }
+
+
+def _env_unless_finney(env, finney):
+    """The activation variable as the digest records it: left out (None) when
+    it repeats finney's compiled block, the only value finney accepts."""
+    return None if env == finney else env
 
 
 def _head_odds_constant(name: str):

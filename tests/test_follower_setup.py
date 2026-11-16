@@ -178,6 +178,20 @@ def test_the_time_budget_stops_a_sync_and_the_next_one_continues(tmp_path):
     assert r2.ok and r2.present == r.downloaded and r2.newest == "e00000005"
 
 
+def test_the_time_budget_also_bounds_a_long_listing(tmp_path):
+    """The listing runs before commitments are read every epoch, so a slow
+    paged listing must stop at the budget too, not only between downloads."""
+    bucket = Bucket()
+    bucket.page_size = 1
+    for e in range(1, 8):
+        bucket.put(e)
+    ticks = iter(range(0, 1000, 10))
+    r = reveal_sync.sync("fugal-reveals", 70, str(tmp_path), budget_s=25,
+                         opener=bucket, clock=lambda: next(ticks))
+    assert r.error and "time budget" in r.error and r.downloaded == 0
+    assert len([u for u in bucket.calls if "/storage/v1/b/" in u]) < 7
+
+
 # --- root or follower ----------------------------------------------------------------
 
 
@@ -404,3 +418,222 @@ def test_the_package_version_is_the_projects():
 
     with open(pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml", "rb") as f:
         assert tomllib.load(f)["project"]["version"] == fugal_subnet.__version__
+
+
+@pytest.mark.parametrize("raw, want", [
+    ("", None), ("1", True), ("true", True), ("YES", True), (" yes ", True),
+    ("0", False), ("false", False), ("No", False)])
+def test_fugal_root_reads_only_explicit_values(raw, want):
+    assert config.parse_root_flag(raw) is want
+
+
+@pytest.mark.parametrize("raw", ["off", "on", "2", "root", "y"])
+def test_an_unknown_fugal_root_value_is_refused(raw):
+    """FUGAL_ROOT=off used to make a validator the root: anything that was
+    not 0, false or no counted as yes."""
+    with pytest.raises(ValueError, match="FUGAL_ROOT"):
+        config.parse_root_flag(raw)
+
+
+def test_a_validator_with_an_unknown_fugal_root_does_not_start():
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ, FUGAL_ROOT="off")
+    r = subprocess.run([sys.executable, "-c", "import fugal_subnet.config"],
+                       env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode != 0 and "FUGAL_ROOT" in r.stderr
+
+
+# --- followers verify downloaded reveals against the root's on-chain commitment --
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _pointer(bucket, epoch):
+    eid = f"e{epoch:08d}"
+    return eid, _sha(bucket.objects[f"70/{eid}/reveal.json"])
+
+
+def _vsync(bucket, tmp_path, pointer, **kw):
+    return reveal_sync.sync("fugal-reveals", 70, str(tmp_path / "ref"), opener=bucket,
+                            verify=True, pointer=pointer,
+                            ledger_path=str(tmp_path / "ref.pointers.json"), **kw)
+
+
+def _on_disk(tmp_path, epoch):
+    p = tmp_path / "ref" / f"e{epoch:08d}" / "reveal.json"
+    return p.read_bytes() if p.exists() else None
+
+
+def test_the_roots_commitment_is_parsed_exactly():
+    sha = "ab" * 32
+    assert reveal_sync.parse_pointer(f"reveal:e00026443:{sha}") == ("e00026443", sha)
+    for bad in ("", "reveal:e1:" + sha, f"reveal:e00026443:{sha[:-1]}", f"head:{sha}",
+                f"reveal:e00026443:{sha.upper()}", f"reveal:e00026443:{sha}x", None, 7):
+        assert reveal_sync.parse_pointer(bad) is None
+
+
+def test_a_newest_reveal_that_differs_from_the_roots_commitment_is_refused(tmp_path):
+    bucket = Bucket()
+    for e in (10, 11, 12):
+        bucket.put(e)
+    r = _vsync(bucket, tmp_path, ("e00000012", "0" * 64))
+    assert _on_disk(tmp_path, 12) is None
+    assert any(f.startswith("e00000012") for f in r.rejected) and not r.ok
+    # Older reveals the follower has no record for are accepted, as before.
+    assert r.newest == "e00000011"
+
+
+def test_a_newest_reveal_that_matches_the_roots_commitment_is_accepted(tmp_path):
+    bucket = Bucket()
+    for e in (10, 11, 12):
+        bucket.put(e)
+    r = _vsync(bucket, tmp_path, _pointer(bucket, 12))
+    assert r.ok and r.newest == "e00000012" and r.downloaded == 3 and not r.rejected
+    assert _on_disk(tmp_path, 12) == bucket.objects["70/e00000012/reveal.json"]
+
+
+def test_reveals_newer_than_the_commitment_wait_for_it(tmp_path):
+    """The root uploads, then commits; a reveal past the pointer is not yet
+    vouched for, so it is not taken, and one already on disk is removed."""
+    bucket = Bucket()
+    for e in (10, 11, 12):
+        bucket.put(e)
+    reveal_sync.sync("fugal-reveals", 70, str(tmp_path / "ref"), opener=bucket)  # unverified
+    assert _on_disk(tmp_path, 12) is not None
+    r = _vsync(bucket, tmp_path, _pointer(bucket, 11))
+    assert r.unvouched == 1 and r.newest == "e00000011" and _on_disk(tmp_path, 12) is None
+
+
+def test_without_the_roots_commitment_nothing_is_fetched_and_disk_is_kept(tmp_path):
+    bucket = Bucket()
+    bucket.put(10)
+    reveal_sync.sync("fugal-reveals", 70, str(tmp_path / "ref"), opener=bucket)
+    bucket.put(11)
+    bucket.calls.clear()
+    r = _vsync(bucket, tmp_path, None)
+    assert r.error and "commitment" in r.error and not bucket.calls
+    assert r.newest == "e00000010" and _on_disk(tmp_path, 11) is None
+
+
+def test_a_recorded_older_pointer_that_differs_is_refused(tmp_path):
+    bucket = Bucket()
+    for e in (10, 11):
+        bucket.put(e)
+    assert _vsync(bucket, tmp_path, _pointer(bucket, 11)).ok
+    # Later the bucket's e11 is replaced; the follower recorded the root's
+    # commitment to the original, so the replacement never reaches disk and
+    # the copy on disk is not swapped for it.
+    original = _on_disk(tmp_path, 11)
+    bucket.put(11, raw=json.dumps({"epoch_id": "e00000011", "protocol_version": 2,
+                                   "v2_state": {"seat": {"champion": "f" * 64}}}).encode())
+    bucket.put(12)
+    (tmp_path / "ref" / "e00000011" / "reveal.json").unlink()
+    r = _vsync(bucket, tmp_path, _pointer(bucket, 12))
+    assert any(f.startswith("e00000011") for f in r.rejected)
+    assert _on_disk(tmp_path, 11) is None and _on_disk(tmp_path, 12) is not None
+    assert original is not None
+
+
+def test_a_local_file_that_differs_from_a_recorded_pointer_is_removed(tmp_path):
+    bucket = Bucket()
+    bucket.put(10)
+    assert _vsync(bucket, tmp_path, _pointer(bucket, 10)).ok
+    (tmp_path / "ref" / "e00000010" / "reveal.json").write_bytes(
+        json.dumps({"epoch_id": "e00000010", "protocol_version": 2}).encode())
+    bucket.put(11)
+    r = _vsync(bucket, tmp_path, _pointer(bucket, 11))
+    # The forged local copy is replaced by the bucket's original, which matches.
+    assert _on_disk(tmp_path, 10) == bucket.objects["70/e00000010/reveal.json"] and r.ok
+
+
+def test_the_pointer_record_survives_a_restart(tmp_path):
+    bucket = Bucket()
+    bucket.put(12)
+    assert _vsync(bucket, tmp_path, _pointer(bucket, 12)).ok
+    ledger = reveal_sync.load_pointers(str(tmp_path / "ref.pointers.json"))
+    assert ledger == {"e00000012": _sha(bucket.objects["70/e00000012/reveal.json"])}
+    # A new process: the reference directory is gone, the record is not.
+    import shutil
+    shutil.rmtree(tmp_path / "ref")
+    bucket.put(12, raw=json.dumps({"epoch_id": "e00000012", "protocol_version": 2}).encode())
+    bucket.put(13)
+    r = _vsync(bucket, tmp_path, _pointer(bucket, 13))
+    assert any(f.startswith("e00000012") for f in r.rejected) and _on_disk(tmp_path, 12) is None
+
+
+def test_a_damaged_pointer_record_is_read_as_empty(tmp_path):
+    path = tmp_path / "p.json"
+    path.write_text("{not json")
+    assert reveal_sync.load_pointers(str(path)) == {}
+    path.write_text(json.dumps({"e00000001": "zz", "bogus": "a" * 64, "e00000002": "b" * 64}))
+    assert reveal_sync.load_pointers(str(path)) == {"e00000002": "b" * 64}
+
+
+def test_the_root_hotkey_is_built_in_on_finney():
+    assert config.root_hotkey(True, "") == config.FINNEY_ROOT_HOTKEY
+    assert config.root_hotkey(True, config.FINNEY_ROOT_HOTKEY) == config.FINNEY_ROOT_HOTKEY
+    with pytest.raises(ValueError, match="FUGAL_ROOT_HOTKEY"):
+        config.root_hotkey(True, "5" + "X" * 47)
+    assert config.root_hotkey(False, "") is None
+    assert config.root_hotkey(False, " 5Abc ") == "5Abc"
+
+
+def test_the_root_pointer_is_read_from_the_root_hotkey_only(monkeypatch):
+    sha = "cd" * 32
+    commitments = {"5Root": (f"reveal:e00000012:{sha}", 100),
+                   "5Other": (f"reveal:e00000099:{'ee' * 32}", 101)}
+    from fugal_subnet import commitments as cm
+    monkeypatch.setattr(cm, "get_commitments_with_blocks", lambda st, n, block=None: commitments)
+    assert reveal_sync.read_root_pointer(object(), 70, "5Root") == ("e00000012", sha)
+    assert reveal_sync.read_root_pointer(object(), 70, "5Missing") is None
+
+    def boom(*a, **k):
+        raise RuntimeError("node down")
+    monkeypatch.setattr(cm, "get_commitments_with_blocks", boom)
+    assert reveal_sync.read_root_pointer(object(), 70, "5Root") is None
+
+
+def test_a_follower_with_a_root_hotkey_verifies_what_it_fetches(tmp_path, monkeypatch):
+    bucket = Bucket()
+    for e in (10, 11):
+        bucket.put(e)
+    monkeypatch.setattr(reveal_sync.urllib.request, "urlopen", bucket)
+    monkeypatch.setattr(reveal_sync, "read_root_pointer",
+                        lambda st, n, hk: ("e00000011", "0" * 64) if hk == "5Root" else None)
+    r = reveal_sync.Role(False, str(tmp_path / "ref"), "fugal-reveals", "the default",
+                         root_hotkey="5Root")
+    res = validator._sync_reference(r, 70, since=0, budget_s=5, required=False,
+                                    subtensor=object())
+    assert res.rejected and _on_disk(tmp_path, 11) is None
+    assert (tmp_path / "ref.pointers.json").exists()
+    # At startup a follower that can verify nothing it would start from is refused.
+    monkeypatch.setattr(reveal_sync, "read_root_pointer", lambda st, n, hk: None)
+    import shutil
+    shutil.rmtree(tmp_path / "ref")
+    with pytest.raises(click.ClickException, match="Could not fetch the root validator's reveals"):
+        validator._sync_reference(r, 70, since=0, budget_s=5, required=True, subtensor=object())
+
+
+def test_a_finney_follower_is_given_the_built_in_root_hotkey():
+    r = role(root_hotkey=config.FINNEY_ROOT_HOTKEY)
+    assert r.root_hotkey == config.FINNEY_ROOT_HOTKEY
+    assert "verified against" in r.describe()
+    # An operator-managed directory is the operator's to keep honest.
+    assert role(explicit_dir="/x", root_hotkey="5Root").root_hotkey is None
+    assert role(root_flag=True, root_hotkey="5Root").root_hotkey is None
+
+
+def test_a_finney_validator_with_a_different_root_hotkey_does_not_start():
+    import subprocess
+    import sys
+    env = {**__import__("os").environ, "FUGAL_ROOT_HOTKEY": "5" + "X" * 47}
+    code = ("from fugal_subnet import config; "
+            "config.root_hotkey(True)")
+    proc = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                          timeout=120)
+    assert proc.returncode != 0 and "FUGAL_ROOT_HOTKEY" in proc.stderr

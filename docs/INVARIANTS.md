@@ -2720,10 +2720,11 @@ first epoch whose boundary is at or after the confirmation activation block:
   champion clears every record: each was a pass against the previous holder.
 - **A seat filled from empty is open first.** The first fill, and a take over
   a retired ghost, beat nobody: the first fill is the best of several noisy
-  measurements. For `CHAMPION_CONFIRM_OPEN_EPOCHS` (5) epochs after such a
-  fill the seat can be taken by the plain test, exactly as before this rule,
-  and a head that takes it that way gets the same open period. Only then is
-  the champion settled (`SeatState.confirm_from`). A champion that was itself
+  measurements. Such a seat is settled from epoch fill +
+  `CHAMPION_CONFIRM_OPEN_EPOCHS` (5) (`SeatState.confirm_from`); in the four
+  epochs between the fill and then, it can be taken by the plain test,
+  exactly as before this rule, and a head that takes it that way gets the
+  same open period from its own epoch. A champion that was itself
   confirmed is settled at once. Without the open period the rule would also
   protect a lucky first fill.
 - **A champion that only missed is still confirmed against.** While its ghost
@@ -2742,8 +2743,8 @@ and 0 of 120 runs; ten independently trained heads, 17.5% and 0 of 120; thirty
 near-copies, 22.5% and 2.5% (1 of 40).
 
 **What it costs, measured** (the same script, 120 runs each). A challenger
-with a real edge still takes the seat in every run, in about twice the
-epochs: +1.5 points over a near-copy champion, epoch
+with a real edge still takes the seat, in about twice the epochs (every run
+inside 150 epochs at +0.85 and above; 94% at +0.5): +1.5 points over a near-copy champion, epoch
 5 becomes 10; +0.85, median 8 becomes 18; +0.5, median 31 becomes 57 (94% of
 runs inside 150 epochs); an independently trained head +2 points better, 5
 becomes 11. On the mainnet reveals e00026349 to e00026384, the one take in
@@ -2768,8 +2769,8 @@ that plus slack for one early miss. A ghost created before the block keeps
 the expiry it was given.
 
 **Activation.** `config.confirm_activation_block(genesis)`: finney's block is
-compiled into the release (`FINNEY_CONFIRM_ACTIVATION_BLOCK`; `None` until a
-release schedules it), and `FUGAL_CONFIRM_ACTIVATION_BLOCK` set to anything
+compiled into the release (`FINNEY_CONFIRM_ACTIVATION_BLOCK`; `None` until the
+protocol v3 release sets it with the v3 and odds seat blocks), and `FUGAL_CONFIRM_ACTIVATION_BLOCK` set to anything
 else on finney is refused at startup. Other chains read the variable. The
 v2 flip relied on every operator setting a variable, and a validator that had
 not set it ran the old rules with nothing in its log to say so. Which rule
@@ -3212,9 +3213,25 @@ in their reveals only after the hold, so some lag is unavoidable.
   the operator ran a `gsutil rsync` on a timer and pointed
   `FUGAL_FRAME_BOOTSTRAP` at the result (still honoured as it is); a mainnet
   validator without either started with an empty seat, burned its weight and
-  logged no error. The fetch adds no trust (the model is the paragraph
-  above): a file that fails the listing's size or MD5, does not parse, or
-  names another epoch never reaches disk; object names are matched exactly;
+  logged no error. **Followers verify downloaded reveals against the root's
+  on-chain commitment** (`reveal:<epoch_id>:<sha256>`, which the root's
+  hotkey commits for the newest reveal it publishes): the reveal at the
+  committed epoch must match it; a reveal newer than the commitment is not
+  taken (and removed from disk) until the root commits it; every commitment
+  read is recorded beside the reference directory, and an older reveal with a
+  recorded commitment must match it; without a readable commitment nothing is
+  fetched. The root's hotkey is in the release on finney
+  (`config.FINNEY_ROOT_HOTKEY`, refused if `FUGAL_ROOT_HOTKEY` names another);
+  elsewhere `FUGAL_ROOT_HOTKEY`, unset meaning unverified. **Known limit:** the
+  pallet keeps one commitment per hotkey, so a reveal published before the
+  follower first ran has no recorded commitment and is accepted as before;
+  reveals that each carry the previous reveal's hash would close this
+  (planned with the protocol v3 reset). Operational, not consensus: it
+  decides which files a follower accepts, never how an epoch is scored, and
+  it changes no reveal and no digest. Otherwise the fetch adds no trust (the
+  model is the paragraph above): a file that fails the listing's size or MD5,
+  does not parse, or names another epoch never reaches disk; object names are
+  matched exactly;
   every request and the sync as a whole are bounded; and in the epoch loop a
   failed fetch is a log line, never the epoch's failure (I6). At startup, a
   live follower with no reference reveals at all and no way to fetch any is

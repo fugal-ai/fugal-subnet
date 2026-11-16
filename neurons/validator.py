@@ -376,9 +376,15 @@ def _check_chain_configuration(genesis: str | None, live: bool, approved, activa
     return confirm_block
 
 
-def _sync_reference(role, netuid: int, *, since: int, budget_s: float, required: bool):
+def _sync_reference(role, netuid: int, *, since: int, budget_s: float, required: bool,
+                    subtensor=None):
     """Fetch the root's reveals for a follower that syncs them itself; a no-op
     for a root or an operator-managed directory. Returns the SyncResult or None.
+
+    With the root's hotkey known (built in on finney), every fetched reveal is
+    verified against the root's on-chain reveal commitment, read here from
+    `subtensor` (reveal_sync, TRUST); a reveal that differs never reaches
+    disk and is logged as an ERROR.
 
     `required` (startup): a follower that has no reference reveals at all and
     cannot fetch any is refused, because it would start with an empty seat and
@@ -390,8 +396,21 @@ def _sync_reference(role, netuid: int, *, since: int, budget_s: float, required:
 
     if role is None or role.root or not role.bucket:
         return None
-    result = reveal_sync.sync(role.bucket, netuid, role.reference_dir, since=since,
-                              budget_s=budget_s)
+    if role.root_hotkey:
+        pointer = (reveal_sync.read_root_pointer(subtensor, netuid, role.root_hotkey)
+                   if subtensor is not None else None)
+        result = reveal_sync.sync(role.bucket, netuid, role.reference_dir, since=since,
+                                  budget_s=budget_s, verify=True, pointer=pointer,
+                                  ledger_path=reveal_sync.pointer_ledger_path(role.reference_dir))
+    else:
+        result = reveal_sync.sync(role.bucket, netuid, role.reference_dir, since=since,
+                                  budget_s=budget_s)
+    if result.rejected:
+        logger.error(
+            "Root reveals from gs://%s/%d: %d reveal(s) differ from the root's on-chain "
+            "commitment and were NOT used (%s). This validator keeps the reveals it already "
+            "verified; tell the subnet owner.", role.bucket, netuid, len(result.rejected),
+            "; ".join(result.rejected[:3]))
     (logger.info if result.ok else logger.warning)(
         "Root reveals from gs://%s/%d: %s", role.bucket, netuid, result.summary())
     if required and result.newest is None:
@@ -742,14 +761,21 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     reveal_delay = REVEAL_DELAY_EPOCHS or delay_epochs_for(subtensor, netuid)
     # Root or follower in the v2 star (fugal_subnet/reveal_sync.resolve_role).
     from fugal_subnet import reveal_sync
+    try:
+        root_hotkey = _cfg.root_hotkey(on_finney)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
     role = reveal_sync.resolve_role(
         finney=on_finney, root_flag=_cfg.ROOT_VALIDATOR, own_bucket=REVEAL_BUCKET,
         reference_bucket=_cfg.REFERENCE_BUCKET,
         explicit_dir=os.getenv("FUGAL_FRAME_BOOTSTRAP") or None,
-        state_path=STATE_PATH, netuid=netuid,
+        state_path=STATE_PATH, netuid=netuid, root_hotkey=root_hotkey,
     )
     if role is not None:
         logger.info("v2 role: %s", role.describe())
+        if not role.root and role.bucket and not role.root_hotkey:
+            logger.warning("The reveals this follower fetches are not verified against the "
+                           "chain: set FUGAL_ROOT_HOTKEY to the root validator's hotkey.")
     if reveal_uploader is not None:
         logger.info("Reveals publish to gs://%s after %d epoch(s)", REVEAL_BUCKET, reveal_delay)
     elif role is not None and not role.root:
@@ -925,7 +951,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         # history); afterwards only what the comparison window reads.
         _sync_reference(role, netuid, required=live and fresh_start,
                         since=0 if fresh_start else now_epoch - CHAMPION_WINDOW_EPOCHS - 2,
-                        budget_s=1800.0 if fresh_start else 120.0)
+                        budget_s=1800.0 if fresh_start else 120.0, subtensor=subtensor)
         rebuild_dir = role.reference_dir
     else:
         rebuild_dir = os.getenv("FUGAL_FRAME_BOOTSTRAP") or None
@@ -1057,7 +1083,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 # A follower that fetches the root's reveals itself brings
                 # them up to date first. Never the epoch's failure (I6).
                 _sync_reference(role, netuid, required=False, budget_s=120.0,
-                                since=epoch_index - CHAMPION_WINDOW_EPOCHS - 2)
+                                since=epoch_index - CHAMPION_WINDOW_EPOCHS - 2,
+                                subtensor=subtensor)
                 synced = _v2_sync_step(
                     epoch_index=epoch_index, last_epoch_index=last_epoch_index,
                     first_v2_epoch=V2_ACTIVATION_BLOCK // blocks_per_epoch,

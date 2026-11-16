@@ -962,8 +962,15 @@ def seat_step(
     settled = confirm_on and (confirm_from is None or epoch >= confirm_from)
     guarded = [b for b in bars
                if settled and (b == champion or ghost_reason.get(b) == "missed")]
-    pending = _live_pending(state.pending if confirm_on else (), epoch, window, candidates,
-                            guarded, params, detail)
+    # A window that is not trusted decides nothing this epoch, so it does not
+    # judge the pending records either: they pass through as published. Judged
+    # against a lost or refilling window, every record reads as a broken run,
+    # and a restarted root would publish a seat that dropped them all.
+    if not allow_take:
+        pending = {p.head_hash: p for p in (state.pending if confirm_on else ())}
+    else:
+        pending = _live_pending(state.pending if confirm_on else (), epoch, window,
+                                candidates, guarded, params, detail)
 
     qualifying: list[tuple[int, tuple, str]] = []
     for c in challengers:

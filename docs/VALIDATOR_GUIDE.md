@@ -286,8 +286,9 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_BENCHMARK_POOL` | — | Leave unset. A materialised pool file is accepted only if it matches the pinned manifest and the size floor; a non-pinned pool must declare `FUGAL_POOL_UNPINNED=1` and is for local rehearsals only |
 | `FUGAL_VALIDATOR_IP` | — | This host's public egress IPv4: the address miners SEE your queries come from (`curl -s https://ifconfig.me` from this host; behind NAT, the NAT's address, and it must be a single stable one). Recorded on chain at startup (only when it changed) so miners can admit validators, and only validators, at their firewall (`scripts/axon_firewall.py`). Nothing listens on it. Unset: miners that firewall their axon cannot be reached by this validator, so **a live finney validator without a public IPv4 here is refused at startup** |
 | `FUGAL_REVEAL_BUCKET` | — | Public-read GCS bucket each epoch's `reveal.json` is published to, after the weight commit-reveal window, with its sha256 committed on chain by this hotkey (`reveal:<epoch_id>:<sha256>`). Unset: reveals stay on local disk. The ROOT must set it (the other validators read its reveals); for any other validator it is optional |
-| `FUGAL_ROOT` | unset | `1` on the ROOT validator only (the subnet owner's): it follows nobody. Unset, a validator is the root only if its `FUGAL_REVEAL_BUCKET` is the reference bucket. `0` makes even that validator a follower, for a root that is recovering lost state (see "The root") |
+| `FUGAL_ROOT` | unset | `1` on the ROOT validator only (the subnet owner's): it follows nobody. Unset, a validator is the root only if its `FUGAL_REVEAL_BUCKET` is the reference bucket. `0` makes even that validator a follower, for a root that is recovering lost state (see "The root"). Any value other than `1`, `true`, `yes`, `0`, `false`, `no` is refused at startup |
 | `FUGAL_REFERENCE_BUCKET` | finney: `fugal-reveals` | The root's public reveal bucket a follower fetches from. Built in on finney; set it on a testnet that has a root |
+| `FUGAL_ROOT_HOTKEY` | finney: the root's hotkey (built in) | The root validator's hotkey. A follower verifies every reveal it fetches against this hotkey's on-chain reveal commitment. Built in on finney, where any other value is refused at startup; set it on a testnet that has a root (unset there: fetched reveals are not verified, with a warning) |
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
 | `FUGAL_FRAME_BOOTSTRAP` | — | **Not needed on a follower any more**: it fetches the root's reveals itself. Still honoured: a directory of a reference validator's reveals that the operator keeps in sync, used as the v2 reference in place of the built-in fetch. On a root, a directory of its own (or a peer's) published reveals to rebuild lost state from at startup |
 | `FUGAL_POOL_FILE` | `data/benchmarks/pool.json.gz` | Where the materialised pool built by `scripts/export_pool.py` is looked for; verified against the manifest on load |
@@ -533,7 +534,12 @@ validator (the subnet owner's), whose reveals are public:
   at startup and before every epoch, over HTTPS from the public bucket
   (finney: `gs://fugal-reveals/70`), into `reference-reveals/<netuid>/` beside
   its state file. It needs outbound HTTPS to `storage.googleapis.com` and no
-  credentials. The startup log says `v2 role: follower of the reveals in …`,
+  credentials. Every reveal it fetches is checked against the root's
+  on-chain commitment (the `reveal:<epoch>:<sha256>` the root's hotkey
+  commits); one that differs is never used and is logged as an ERROR
+  (`… differ from the root's on-chain commitment and were NOT used`): tell
+  the subnet owner. The root's hotkey is built in on finney; a testnet names
+  it in `FUGAL_ROOT_HOTKEY`. The startup log says `v2 role: follower of the reveals in …`,
   and every epoch `Root reveals from gs://…: N fetched, …` and `Following
   root: seat uid N (head …) at e…, entries N, fugal vX (root vY), reference
   lag K epoch(s); own seat …`. The lag is normally the commit-reveal hold.

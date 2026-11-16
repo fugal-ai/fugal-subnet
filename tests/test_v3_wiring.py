@@ -263,3 +263,24 @@ def test_v3_seat_params_never_read_the_anchor_model(monkeypatch):
     monkeypatch.setattr(v2_epoch, "anchor_spend_per_question", boom)
     p = v2_epoch.seat_params_from_config(protocol_version=3)
     assert dataclasses.asdict(p)["anchor_spend"] == 0.49
+
+
+@pytest.mark.parametrize("finney_name, env_name", [
+    ("FINNEY_V3_ACTIVATION_BLOCK", "V3_ACTIVATION_BLOCK_ENV"),
+    ("FINNEY_ODDS_SEAT_BLOCK", "ODDS_SEAT_BLOCK_ENV"),
+    ("FINNEY_CONFIRM_ACTIVATION_BLOCK", "CONFIRM_ACTIVATION_BLOCK_ENV"),
+])
+def test_an_activation_variable_that_repeats_finneys_block_leaves_the_digest_alone(
+        monkeypatch, finney_name, env_name):
+    """Finney accepts an activation variable only when it equals the compiled
+    block, so setting it changes no rule; the digest must not say otherwise
+    (the Release A review fix, applied to the v3 and odds seat blocks too)."""
+    from fugal_subnet import config, fingerprint
+
+    monkeypatch.setattr(config, finney_name, 9_700_000)
+    monkeypatch.setattr(config, env_name, None)
+    unset = fingerprint.consensus_digest()
+    monkeypatch.setattr(config, env_name, 9_700_000)
+    assert fingerprint.consensus_digest() == unset
+    monkeypatch.setattr(config, env_name, 1_000)   # another chain's rule still shows
+    assert fingerprint.consensus_digest() != unset

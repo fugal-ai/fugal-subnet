@@ -147,6 +147,25 @@ def test_a_record_lapses_when_its_first_pass_leaves_the_window():
     assert any("lapsed" in t for t in why(out[4], GOOD))
 
 
+def test_a_validator_whose_window_is_not_trusted_keeps_the_pending_records():
+    """A validator that lost its window (allow_take=False) makes no take and
+    no first decision, and it must publish the pending records as its peers
+    do. Dropping them as "run was broken" made a restarted root publish a seat
+    with no records; followers re-anchor on the root, so every waiting
+    challenger lost its progress across the subnet."""
+    out, window = run(both(range(1)), settled())
+    state = out[0].state
+    assert state.pending == (Pending(GOOD, 0, CHAMP),)
+    policies = {CHAMP: champion_policy, GOOD: better}
+    cands = {h: cand(h, seniority=i, since=0) for i, h in enumerate(sorted(policies))}
+    peer = seat_step(state, 1, "e00000001", add(window, 1, policies), cands, params=CONFIRM)
+    lost = seat_step(state, 1, "e00000001", add(Window.empty(48), 1, policies), cands,
+                     params=CONFIRM, allow_take=False)
+    assert peer.event == lost.event == "hold"
+    assert lost.state.pending == peer.state.pending == (Pending(GOOD, 0, CHAMP),)
+    assert not any("dropped" in t for t in why(lost, GOOD))
+
+
 def test_a_new_champion_clears_every_other_pending_record():
     other = noisy(oracle_router, 0.05, 7)          # also far better than the champion
     plan = {e: {CHAMP: champion_policy, GOOD: better, "other": other} for e in range(3)}
@@ -301,10 +320,8 @@ def test_the_new_constants_are_consensus_and_in_the_digest():
     for name in ("CHAMPION_CONFIRM_QUESTIONS", "CHAMPION_CONFIRM_OPEN_EPOCHS",
                  "CHAMPION_GHOST_RETIRE_CONFIRM"):
         assert fp["scoring"][name] == getattr(config, name)
-    assert fp["epoch"]["confirm_activation_block"] == {
-        "finney": config.FINNEY_CONFIRM_ACTIVATION_BLOCK,
-        "env": config.CONFIRM_ACTIVATION_BLOCK_ENV,
-    }
+    assert fp["epoch"]["confirm_activation_block"]["finney"] == \
+        config.FINNEY_CONFIRM_ACTIVATION_BLOCK
     moved = dict(fp, epoch=dict(fp["epoch"], confirm_activation_block={"finney": 1, "env": None}))
     assert fingerprint.consensus_digest(moved) != fingerprint.consensus_digest(fp)
 
@@ -388,3 +405,20 @@ def test_end_to_end_before_the_block_the_published_seat_has_no_new_field():
     r = chain(range(3), {5: always("m/strong"), 6: oracle})
     assert set(r.reveal["v2_state"]["seat"]) == {
         "champion", "champion_since", "history", "ghosts", "high_water", "high_water_hard"}
+
+
+def test_the_digest_is_the_same_whether_finneys_block_is_also_set_in_the_variable(monkeypatch):
+    """On finney the variable is accepted only when it equals the compiled
+    block, so setting it changes nothing; the published digest must not say
+    otherwise."""
+    from fugal_subnet import fingerprint
+
+    monkeypatch.setattr(config, "FINNEY_CONFIRM_ACTIVATION_BLOCK", 9_600_000)
+    monkeypatch.setattr(config, "CONFIRM_ACTIVATION_BLOCK_ENV", None)
+    unset = fingerprint.consensus_digest()
+    monkeypatch.setattr(config, "CONFIRM_ACTIVATION_BLOCK_ENV", 9_600_000)
+    assert config.confirm_activation_block(config.FINNEY_GENESIS_HASH) == 9_600_000
+    assert fingerprint.consensus_digest() == unset
+    # A different block in the variable (another chain's rule) still shows.
+    monkeypatch.setattr(config, "CONFIRM_ACTIVATION_BLOCK_ENV", 1_000)
+    assert fingerprint.consensus_digest() != unset

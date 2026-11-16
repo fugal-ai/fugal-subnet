@@ -52,7 +52,8 @@ confirmed on fresh questions"). No miner image changes.
 - `champion.py`: `Pending`, `SeatState.pending` / `confirm_from`,
   `seat_step` and `_live_pending`; the fresh test is the same `paired_test`
   on epochs after the pass, with its own resampling stream. A seat filled
-  from empty can be taken by the plain test for its first 5 epochs. A
+  from empty can be taken by the plain test in the 4 epochs after the fill
+  and is settled from fill + 5 (`CHAMPION_CONFIRM_OPEN_EPOCHS`). A
   champion that only missed is still confirmed against; a retired ghost is
   not (it answers no new questions).
 - From the same block a retired champion's ghost bars for 8 epochs
@@ -60,7 +61,7 @@ confirmed on fresh questions"). No miner image changes.
   retirement can never be paired with the ghost, so the old window could
   leave the seat empty and burning for about 29 hours.
 - `config.confirm_activation_block`: finney's block is in the release
-  (`FINNEY_CONFIRM_ACTIVATION_BLOCK`, not yet scheduled), and the variable
+  (`FINNEY_CONFIRM_ACTIVATION_BLOCK`, set by the v3 release together with the v3 and odds seat blocks), and the variable
   cannot move it there; other chains read `FUGAL_CONFIRM_ACTIVATION_BLOCK`.
   Before the block nothing changes: the same weights and a byte-identical
   published seat. The consensus digest changes with the release (three new
@@ -69,9 +70,17 @@ confirmed on fresh questions"). No miner image changes.
   (`scripts/experiments/experiment_seat_confirmation.py`): ten challengers
   with no edge took a settled champion's seat in 8% to 18% of 60-epoch runs
   before and in none of 120 with the rule (thirty near-copies: 22.5% and
-  2.5%). Every challenger with a real edge still takes the seat, in about
-  twice the epochs (+1.5 points: epoch 5 becomes 10; +0.85: median 8
-  becomes 18).
+  2.5%). A challenger with a real edge still takes the seat, in about twice
+  the epochs (+1.5 points: epoch 5 becomes 10; +0.85: median 8 becomes 18;
+  +0.5: 94% of runs inside 150 epochs).
+- A validator whose window is not trusted (lost or refilling) makes no take,
+  and it now also passes the pending records through as published instead of
+  judging them against that window, where every record read as a broken run.
+- The consensus digest leaves out an activation variable
+  (`FUGAL_CONFIRM_ACTIVATION_BLOCK`, `FUGAL_V3_ACTIVATION_BLOCK`,
+  `FUGAL_ODDS_SEAT_BLOCK`) equal to finney's compiled block (the only value
+  finney accepts), so two finney validators on the same rule publish the same
+  digest whether or not they set it.
 - `tests/test_seat_confirmation.py`; a `seat_confirmation` stage in
   `scripts/check_determinism.py`.
 
@@ -80,6 +89,18 @@ confirmed on fresh questions"). No miner image changes.
   plain HTTPS from the public bucket, at startup and before every epoch. No
   `gsutil` timer and no `FUGAL_FRAME_BOOTSTRAP` (both still work). The root
   sets `FUGAL_ROOT=1`, or is recognised by publishing to the reference bucket.
+- **Followers verify downloaded reveals against the root's on-chain
+  commitment** (`reveal:<epoch>:<sha256>`): the reveal at the committed epoch
+  must match; one newer than the commitment waits for it; every commitment a
+  follower reads is recorded beside its reference directory
+  (`reference-reveals/<netuid>.pointers.json`) and older reveals with a
+  recorded commitment must match it; a reveal that differs is never used and
+  is logged as an ERROR. The root's hotkey is in the release on finney
+  (`config.FINNEY_ROOT_HOTKEY`; a different `FUGAL_ROOT_HOTKEY` is refused at
+  startup); a testnet names it in `FUGAL_ROOT_HOTKEY`. Reveals published
+  before a follower first ran have no recorded commitment and are accepted as
+  before; hash-chained reveals in the v3 reset will cover those too. Not a
+  consensus change: no reveal or digest changes.
 - **Refused at startup on finney (live):** `FUGAL_V2_ACTIVATION_BLOCK` unset
   or not 9485640; no approved entry for a v2 miner image; no public IPv4 in
   `FUGAL_VALIDATOR_IP`; a follower with no reference reveals and no way to
@@ -98,6 +119,14 @@ confirmed on fresh questions"). No miner image changes.
   unless the root was down. A follower without `FUGAL_REVEAL_BUCKET` is told
   once, at INFO: only the root's reveals are read.
 - VALIDATOR_GUIDE: a "Minimum mainnet environment" box.
+- `FUGAL_ROOT` accepts only `1`, `true`, `yes`, `0`, `false`, `no` (or
+  unset); any other value is refused at startup. `FUGAL_ROOT=off` used to make
+  a validator the root.
+- The reveal sync's time budget also bounds a paged bucket listing, not only
+  the downloads after it.
+- APPROVED_ENTRY_ROTATION: a validator on finney starts only if one of its
+  approved composes is frozen in its own release, so a rotation that keeps
+  only a newer image's entry needs the validator release that ships it.
 
 ### Fixed
 - `fugal_subnet.__version__` said 0.3.1 in the 0.3.2 release, so reveals named
@@ -1748,7 +1777,9 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/fugal-ai/fugal-subnet/releases/tag/v0.1.0

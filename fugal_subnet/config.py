@@ -824,6 +824,7 @@ CHAMPION_GHOST_RETIRE_CONFIRM = int(os.getenv("FUGAL_CHAMPION_GHOST_RETIRE_CONFI
 # (confirm_activation_block). None means not scheduled: the release that
 # schedules it sets the number here. Other chains (testnet, the rehearsals)
 # have no compiled value and read FUGAL_CONFIRM_ACTIVATION_BLOCK.
+# The single v3 upgrade sets this together with the v3 and odds seat blocks.
 FINNEY_CONFIRM_ACTIVATION_BLOCK: int | None = None
 _confirm_activation = os.getenv("FUGAL_CONFIRM_ACTIVATION_BLOCK", "").strip()
 CONFIRM_ACTIVATION_BLOCK_ENV = int(_confirm_activation) if _confirm_activation else None
@@ -927,9 +928,51 @@ REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
 # lost its state follows another validator's reveals until it has caught up
 # (docs/VALIDATOR_GUIDE.md, "The root"), although it publishes to the
 # reference bucket. Unset: decided by the bucket.
-_root = os.getenv("FUGAL_ROOT", "").strip().lower()
-ROOT_VALIDATOR: bool | None = (None if not _root else _root not in ("0", "false", "no"))
+# Only the explicit values count; anything else is refused at import, so a
+# typo such as FUGAL_ROOT=off cannot make a validator the root.
+
+
+def parse_root_flag(raw: str) -> bool | None:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return None
+    if value in ("1", "true", "yes"):
+        return True
+    if value in ("0", "false", "no"):
+        return False
+    raise ValueError(f"FUGAL_ROOT={raw!r} is not one of 1, true, yes, 0, false, no "
+                     "(or unset). Fix it before starting the validator.")
+
+
+ROOT_VALIDATOR: bool | None = parse_root_flag(os.getenv("FUGAL_ROOT", ""))
 REFERENCE_BUCKET = os.getenv("FUGAL_REFERENCE_BUCKET", "").strip()
+
+# The root validator's hotkey. Followers verify the reveals they download
+# against this hotkey's on-chain commitment (`reveal:<epoch_id>:<sha256>`,
+# reveal_publisher), so the bucket alone cannot change what they re-anchor
+# on. Built into the release on finney (uid 0 of netuid 70, the subnet
+# owner's validator), where the variable cannot change it; other chains name
+# their root in FUGAL_ROOT_HOTKEY, and without it a follower fetches
+# unverified, as before. Not a consensus input: it decides which published
+# files a follower accepts, never how an epoch is scored.
+FINNEY_ROOT_HOTKEY = "5E4x811vM4DLkrTwMhrMX1deUp9zPt3GJLinxZneBvAMTL5U"
+ROOT_HOTKEY_ENV = os.getenv("FUGAL_ROOT_HOTKEY", "").strip()
+
+
+def root_hotkey(finney: bool, env: str | None = None) -> str | None:
+    """The hotkey whose reveal commitment a follower verifies against.
+
+    On finney the release's; a FUGAL_ROOT_HOTKEY that names another hotkey is
+    refused, so a typo or a stale value cannot point followers elsewhere.
+    Elsewhere the variable, or None (unverified, as before this check)."""
+    value = (ROOT_HOTKEY_ENV if env is None else env).strip()
+    if finney:
+        if value and value != FINNEY_ROOT_HOTKEY:
+            raise ValueError(
+                f"FUGAL_ROOT_HOTKEY={value} is set on finney, where the root's hotkey is "
+                f"fixed by the release ({FINNEY_ROOT_HOTKEY}). Unset it.")
+        return FINNEY_ROOT_HOTKEY
+    return value or None
 
 # --- Head archive (operational; nothing here reads back into a score) ---
 # Directory where the validator keeps every VERIFIED miner head, raw bytes
@@ -1097,6 +1140,7 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_REVEAL_DELAY_EPOCHS",
     "FUGAL_ROOT",
     "FUGAL_REFERENCE_BUCKET",
+    "FUGAL_ROOT_HOTKEY",
     "FUGAL_HEAD_ARCHIVE_DIR",
     "FUGAL_ARCHIVE_ENDPOINTS",
     "FUGAL_FALLBACK_ENDPOINTS",

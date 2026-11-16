@@ -650,13 +650,15 @@ NV   = 100 x mean_i NV_i                          (percentage points)
   - What it costs a head that is really better: about twice the epochs. In
     simulation with the shipped rule, a head 1.5 points better takes the seat
     at epoch 10 instead of 5, one 0.85 points better at a median of 18 instead
-    of 8, and every such head still takes it.
+    of 8, and every such head still takes it within 150 epochs (one 0.5 points
+    better: 94% of runs).
   - Keep serving. Your fresh questions are the epochs since your first pass
     in your current unbroken run; one missed epoch drops the pending record,
     and your next pass starts the count again.
   - A seat that was filled from empty (the first champion after a reset, or a
-    take over a retired champion's ghost) can be taken by the single test for
-    its first `CHAMPION_CONFIRM_OPEN_EPOCHS` (5) epochs.
+    take over a retired champion's ghost) can be taken by the single test in the
+    four epochs after the fill; from epoch fill + `CHAMPION_CONFIRM_OPEN_EPOCHS`
+    (5) on it is settled and a take needs confirming.
   - You can see it: the reveal's `champion.detail` has your lines (`passed
     the take test; …`, then `vs fresh questions, …: n=… NV=… LCB=…`), and
     `v2_state.seat.pending` lists every waiting head and the epoch it passed.

@@ -148,7 +148,7 @@ class StubUpstream:
     def start(self):
         import hashlib
         import threading
-        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         outer = self
 
@@ -193,7 +193,16 @@ class StubUpstream:
             def log_message(self, *a):
                 pass
 
-        self._server = HTTPServer(("127.0.0.1", self.port), Handler)
+        class Server(ThreadingHTTPServer):
+            # Every v3 miner keeps HARNESS_CONCURRENCY (40) calls in flight and
+            # a rehearsal runs several. A single-threaded server with the default
+            # backlog of 5 reset the overflow (ConnectionResetError at the
+            # miners' proxies, 2026-11-16). Replies are a pure function of the
+            # request, so answering them concurrently changes nothing else.
+            daemon_threads = True
+            request_queue_size = 512
+
+        self._server = Server(("127.0.0.1", self.port), Handler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         print(f"  Stub upstream on 127.0.0.1:{self.port} (no API key, no spend)",

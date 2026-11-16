@@ -45,7 +45,7 @@ import json
 import logging
 import os
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -192,7 +192,14 @@ def main() -> int:
     logger.info("Skill spread on gsm8k: %s %.2f .. %s %.2f",
                 cheap, Handler.skill[cheap]["gsm8k"], dear, Handler.skill[dear]["gsm8k"])
 
-    srv = HTTPServer((args.host, args.port), Handler)
+    # Threaded with a deep backlog: a v3 miner keeps 40 calls in flight
+    # (config.HARNESS_CONCURRENCY), and a single-threaded server with the
+    # default backlog of 5 resets the overflow.
+    class _Server(ThreadingHTTPServer):
+        daemon_threads = True
+        request_queue_size = 512
+
+    srv = _Server((args.host, args.port), Handler)
     logger.info("Stub upstream on http://%s:%d — no API key, no spend",
                 args.host, args.port)
     try:

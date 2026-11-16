@@ -92,3 +92,41 @@ def test_the_chain_rehearsal_stub_answers_v3_calls_the_same_way():
         assert ask(port, code_q).startswith("```python\nprint(sum(")
     finally:
         st.stop()
+
+
+def test_the_rehearsal_stub_serves_every_miners_calls_in_flight_at_once():
+    """Each v3 miner keeps HARNESS_CONCURRENCY (40) calls in flight, and the
+    rehearsal runs three. The stub was a single-threaded HTTPServer with the
+    default listen backlog of 5: the v3 local-chain rehearsal (2026-11-16)
+    logged ConnectionResetError on the miners' proxies and graded the calls
+    failed. It must accept 3 x 40 connections at once and answer them
+    concurrently."""
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fugal_subnet.config import HARNESS_CONCURRENCY
+
+    sys.path.insert(0, str(ROOT))
+    from scripts.setup_local_testnet import StubUpstream
+
+    up = StubUpstream({"q?": "5"}, {"m/x": 1.0}, port=0)
+    up.start()
+    try:
+        srv = up._server
+        assert getattr(srv, "daemon_threads", False), "the stub must answer calls concurrently"
+        assert srv.request_queue_size >= 3 * HARNESS_CONCURRENCY
+        port = srv.server_address[1]
+        n = 3 * HARNESS_CONCURRENCY
+
+        def one(_):
+            req = Request(f"http://127.0.0.1:{port}/v1/chat/completions",
+                          data=json.dumps({"model": "m/x", "messages": [
+                              {"role": "user", "content": "q?"}]}).encode(),
+                          headers={"Content-Type": "application/json"})
+            with urlopen(req, timeout=30) as r:
+                return r.status
+
+        with ThreadPoolExecutor(n) as pool:
+            assert list(pool.map(one, range(n))) == [200] * n
+    finally:
+        up.stop()

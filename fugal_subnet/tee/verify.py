@@ -285,15 +285,17 @@ def verify_proof(
         mock: If True, skip hardware-trust checks (DCAP, measurement).
         protocol_version: the epoch's version (slicer.protocol_version_for_boundary).
             The proof's routing evidence namespace and the head's cost profile
-            are checked against that version's (identity() / identity_v2(),
+            are checked against that version's (routing_protocol.identity_for,
             benchmark_costs_for(head, version)); the harness stamps the same.
 
     Returns:
         VerifyResult with pass/fail and reason.
     """
     warnings: list[str] = []
-    from fugal_subnet.routing_protocol import identity, identity_v2
-    expected_namespace = identity_v2() if int(protocol_version) >= 2 else identity()
+    # The namespace the harness stamps (harness: identity_for(version)); a
+    # second formatting of it here once refused every v3 proof (2026-11-16).
+    from fugal_subnet.routing_protocol import identity_for
+    expected_namespace = identity_for(int(protocol_version))
     if proof.routing_protocol != expected_namespace:
         return VerifyResult(
             False,

@@ -396,7 +396,7 @@ def miner_env(extra=None):
         os.path.join(RESULTS, "pool.json")
     )
     # The v2 pool, for validators scoring v2 epochs (loader.load_pool(2)) and
-    # v2 miners. Written only by scenario v2_flip; unused otherwise.
+    # v2 miners. Written by scenarios v2_flip and v3_flip; unused otherwise.
     env["FUGAL_BENCHMARK_POOL_V2"] = os.path.abspath(
         os.path.join(RESULTS, "pool_v2.json")
     )
@@ -613,9 +613,11 @@ def run_scenarios(args, report: Report) -> int:
     gold_by_prompt = {q["prompt"]: q["gold"] for q in pool}
     want = ["a", "b", "c", "d", "e"] if args.scenario == "all" else [args.scenario]
     skill = dict(SKILL)
-    if "v2_flip" in want:
+    if "v2_flip" in want or "v3_flip" in want:
         # v2 epochs ask v2 questions of v2 models; the stub answers both, with
-        # the same cheap/mid/dear skill ladder.
+        # the same cheap/mid/dear skill ladder. v3_flip needs the v2 pool too:
+        # its validators score the v2 epochs before the v3 block (load_pool(2)),
+        # and a stale pool_v2.json left by an earlier v2_flip run once hid that.
         with open(write_pool_v2(os.path.join(RESULTS, "pool_v2.json")), encoding="utf-8") as f:
             gold_by_prompt.update({q["prompt"]: q["gold"] for q in json.load(f)})
         skill.update(dict(zip(v2_models(), (0.30, 0.60, 0.85))))
@@ -1772,11 +1774,35 @@ def _wait_for_chain_epoch(subtensor, after_idx: int, timeout: float = 900) -> in
     return None
 
 
+def _epoch_protocols(log_path: str) -> dict[int, int]:
+    """{epoch index: protocol version} from a validator's own log line
+    `=== Epoch eN (boundary block B, hash H, protocol vK) ===`. An epoch no miner
+    served writes no reveal, so this, not the reveal, says which rules the
+    validator ran (v3_flip has no v2 miner: its miners hold their axons until
+    the v3 block, as a v3 image's head does on finney)."""
+    import re
+
+    out: dict[int, int] = {}
+    try:
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                m = re.search(r"=== Epoch e(\d+) \(.*protocol v(\d+)\) ===", line)
+                if m:
+                    out[int(m.group(1))] = int(m.group(2))
+    except OSError:
+        pass
+    return out
+
+
 def _v3_flip_checks(report, S, rows, v3_idx, odds_idx, killed_at, comparable_reveal):
     v3_rows = {i: r for i, r in rows.items() if i >= v3_idx}
-    report.check(S, "epochs before the v3 block are protocol v2",
-                 all(r["reveals"][0].get("protocol_version") == 2
-                     for i, r in rows.items() if i < v3_idx) and any(i < v3_idx for i in rows))
+    ran = _epoch_protocols(os.path.join(RESULTS, "v3f_val1.log"))
+    before = {i: v for i, v in ran.items() if i < v3_idx}
+    after = {i: v for i, v in ran.items() if i >= v3_idx}
+    report.check(S, "epochs before the v3 block are protocol v2 (and v3 from it)",
+                 bool(before) and set(before.values()) == {2}
+                 and bool(after) and set(after.values()) == {3},
+                 f"before {sorted(before.items())} after {sorted(after.items())}")
     report.check(S, "from the v3 block every reveal is protocol v3 with pooled exploration "
                     "and published odds",
                  bool(v3_rows) and all(

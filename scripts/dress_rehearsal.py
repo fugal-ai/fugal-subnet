@@ -1813,12 +1813,34 @@ def _v3_flip_checks(report, S, rows, v3_idx, odds_idx, killed_at, comparable_rev
                  all(((r["reveals"][0].get("v2_state") or {}).get("rules") or {}).get("seat")
                      == ("odds" if i >= odds_idx else "net_value")
                      for i, r in v3_rows.items()))
-    agree = [i for i, r in v3_rows.items()
-             if all(comparable_reveal(x) == comparable_reveal(r["reveals"][0])
-                    for x in r["reveals"][1:] if x)]
-    report.check(S, "every validator publishes the same reveal every v3 epoch "
-                    "(val2 restarted mid-epoch, val3 rebuilt late)",
-                 sorted(agree) == sorted(v3_rows), f"disagree at {sorted(set(v3_rows) - set(agree))}")
+    # val1 and val2 hold the same history (val2 was killed and restarted from
+    # its own disk), so they must publish the same reveal byte for byte
+    # (v2_sync.comparable_reveal). val3 was rebuilt from val1's reveals: it must
+    # agree on what consensus compares (v2_sync.consensus_view: v2_state and the
+    # nonzero weights), which decides seats and weights. Its v1 composite
+    # `scores` is a diagnostic computed from a v1 reference frame each validator
+    # accumulates locally, which a rebuilt follower starts without (v2 behaviour,
+    # unchanged by v3); differing diagnostic fields are listed, not failed.
+    from fugal_subnet.v2_sync import consensus_view
+
+    agree, notes = [], {}
+    for i, r in v3_rows.items():
+        ref, peers = r["reveals"][0], r["reveals"][1:]
+        same = (not peers or not peers[0]
+                or comparable_reveal(peers[0]) == comparable_reveal(ref))
+        for late in (x for x in peers[1:] if x):
+            same = same and consensus_view(late) == consensus_view(ref)
+            diff = sorted(k for k in set(comparable_reveal(late)) | set(comparable_reveal(ref))
+                          if comparable_reveal(late).get(k) != comparable_reveal(ref).get(k))
+            if diff:
+                notes[i] = diff
+        if same:
+            agree.append(i)
+    report.check(S, "every validator agrees every v3 epoch (val2 restarted mid-epoch: same "
+                    "reveal; val3 rebuilt late: same consensus view)",
+                 sorted(agree) == sorted(v3_rows),
+                 f"disagree at {sorted(set(v3_rows) - set(agree))}"
+                 + (f"; rebuilt follower's diagnostic-only differences {notes}" if notes else ""))
     report.check(S, "val2 was killed mid-epoch and restarted", killed_at is not None)
     code_rows = [row for r in v3_rows.values()
                  for row in (r["reveals"][0].get("exploration_pool") or [])

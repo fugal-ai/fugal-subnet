@@ -88,15 +88,19 @@ PINNED_PRICE_TABLE_V2_SHA256 = (
 PINNED_PRICE_TABLE_V3_SHA256 = (
     "1494ad3f597f77f20a4bafb0c7401a23c357a4afb140fcab895d49bb6b6881f2"
 )
-# Protocol v3's token manifest (the cost denominator), PROVISIONAL, status
-# `candidate`: 4 rows measured in v2 at the same model and setting, 49 rows
-# estimated from v2's measured means by the stated rule in
-# scripts/build_token_manifest_v3.py (no paid calls). Replaced row by row from
-# the attested token medians v3 exploration publishes; the v3 release review
-# promotes it to `reviewed`. Pinned like the menu: a change re-prices every
-# v3 miner's routing.
+# Protocol v3's token manifest (the cost denominator), status `candidate`.
+# 2026-11-16: 49 rows MEASURED in v3 (10 calls each, the same 10 non-code v3
+# questions for every entry, through the v3 harness path: system prompt,
+# entry budget, pinned hosts; $3.86, rows in ~/projects/fugal-v2-handoff/
+# v3-prep/measurements/tokens-2026-11-16.jsonl, none used its whole budget);
+# 3 rows kept from v2 (same model and setting, within 2x of the v3 sample);
+# mimo-v2.6-pro replaced by its v3 sample (v2 was 5.8x longer); gemma-4-31b
+# estimated (9 of 10 calls; one question's upstream kept failing). Rule:
+# scripts/build_token_manifest_v3.py. Code questions are not in the sample;
+# v3 exploration's attested token medians replace rows at the monthly menu
+# update. Pinned like the menu: a change re-prices every v3 miner's routing.
 PINNED_TOKEN_MANIFEST_V3_SHA256 = (
-    "1c0261e41dce1c407a9b22015515e42a76a664285890c95a58d1abb02d09e7ce"
+    "b363844cdc5979e4bde00066b4bd92f874fdf7028b4d1860fde41c932657334a"
 )
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM

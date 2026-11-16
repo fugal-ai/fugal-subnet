@@ -65,20 +65,30 @@ entries rarer, but cheap reasoners can be slow too.
 
 ## Token statistics (`benchmark_tokens_protocol_v3.json`)
 
-The cost side of every routing decision. **No paid calls** built it
-(`scripts/build_token_manifest_v3.py`):
+The cost side of every routing decision (`scripts/build_token_manifest_v3.py`,
+rules in order):
 
-1. **measured** (4 rows): v2 measured the same model at the same reasoning
-   setting; its means are reused.
-2. **scaled** (36 rows): v2 measured the model, or a named predecessor or
-   sibling, at another setting; prompt mean as is, completion mean × an effort
-   factor (low 0.5, medium 1, high 2, xhigh 3, max 4; v2's `max_tokens: 8192`
-   and `enabled: true` read as medium), capped at the entry's budget.
-3. **default** (13 rows): no v2 model to lean on; the median v2 means, ×
-   the effort factor.
+0. **measured in v3** (49 rows): 10 calls per entry on the same 10 non-code
+   v3 questions (category mix of the v3 targets without code), through the
+   v3 harness path (shared system prompt, the entry's own budget, its pinned
+   hosts), 2026-11-16, $3.86 in all
+   (`scripts/record_token_observations.py --protocol 3`; rows in
+   `~/projects/fugal-v2-handoff/v3-prep/measurements/tokens-2026-11-16.jsonl`).
+   No call used its whole budget; median latency 2-29 s per entry, the
+   slowest single call 705 s (gpt-6.1-terra@max).
+1. **measured in v2** (3 rows): terra@medium, sol@medium, mimo-v2.6-flash,
+   kept because the v3 sample agrees within 2x. mimo-v2.6-pro's v2 mean was
+   5.8x the v3 sample's, so v3 replaced it.
+2. **scaled** (0 rows) and 3. **default** (1 row: gemma-4-31b, 9 of its 10
+   calls landed; one question's upstream kept returning 502): the v2-based
+   estimates, marked `provisional`.
 
-Every row but rule 1 is marked `provisional`. Status `candidate`; the release
-review promotes it.
+Effort does not always do what its name says: glm-5.3-flash@low answered
+longer than @high on this sample, and qwen4-max@low longer than @high. Ten
+questions is a small sample and long answers are heavy-tailed (one hard
+question took 54k tokens at a 128k budget on 2026-11-16), so these means are
+a floor for the hard categories; code questions are not in the sample.
+Status `candidate`; the release review promotes it.
 
 **Reuse policy (owner's rule, 2026-11-16): never pay twice for the same
 measurement.** v3 exploration publishes, per pooled pair, the attested
@@ -92,24 +102,20 @@ rows already measured are never re-measured. Paid results are saved under
 ## Cost-aware exploration (`fugal_subnet/explore_weights.py`)
 
 Design and the unbiasedness argument: INVARIANTS, "I4 — every miner measures
-the models (v3)". The numbers at the provisional token means (which are LOW
-for long reasoners: they were measured at a 16k budget):
+the models (v3)". At the measured token means of 2026-11-16:
 
 | | Uniform | Cost-aware (cap $0.20, floor 1/4 → exponent 1/2) |
 |---|---|---|
-| Expected spend per miner per epoch | $0.316 | $0.163 |
-| p99 / max over 20,000 simulated epochs | $0.431 / $0.464 | $0.288 / $0.358 |
-| Per miner per day (20 epochs) | $6.32 | $3.25 |
-| Design effect of the weights | 1.00 | 1.32 |
-| Weight range | 1 | 0.33 to 2.68 |
-| Chance per call: cheapest / dearest entry | 1.9% / 1.9% | 5.7% / 0.70% |
+| Expected spend per miner per epoch | $0.233 | $0.117 |
+| Per miner per day (20 epochs) | $4.66 | $2.34 |
+| Weight range | 1 | 0.36 to 2.87 |
+| Chance per call: cheapest / dearest entry | 1.9% / 1.9% | 5.3% / 0.66% |
 
-As measured token means replace the provisional ones, the dearest entries'
-costs rise and the cap selects a steeper exponent automatically (up to 2,
-design effect ≤ ~3 at floor 1/4). The floor bounds that: the dearest entry
-keeps ≥ 0.47% of calls, so if Fable 5.2 @max really costs ~$1 a call, the
-floor alone costs a miner ~$0.15 an epoch, and the cap would then bind at
-the steepest exponent. Revisit the cap and floor with the measured means.
+The dearest entry per call is gemini-4-carbon@high ($0.075 a question). The
+cap selects the same exponent as at the provisional means, so the release
+constants stand. As exploration's attested means replace these (code
+questions included), the cap selects a steeper exponent automatically if
+the costs rise; the floor keeps every entry measured.
 
 ## Open questions
 

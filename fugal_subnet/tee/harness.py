@@ -368,11 +368,18 @@ def _call_model(
             **({"reasoning": reasoning} if reasoning else {}),
         }).encode()
 
+    headers = {"Content-Type": "application/json", "X-Fugal-Request": current_request_id()}
+    wait_s = HARNESS_CALL_TIMEOUT_S
+    if request is not None:
+        # v3: the proxy prices the call under the ENTRY id (the table's key) and
+        # holds it to the entry's own deadline; we wait a margin past that.
+        from fugal_subnet import config as _config
+        headers["X-Fugal-Entry"] = model_id
+        wait_s = _config.call_deadline_s(request) + _config.HARNESS_WAIT_MARGIN_S
     req = Request(
         f"http://127.0.0.1:{proxy.port}/chat/completions",
         data=payload,
-        headers={"Content-Type": "application/json",
-                 "X-Fugal-Request": current_request_id()},
+        headers=headers,
         method="POST",
     )
 
@@ -383,7 +390,7 @@ def _call_model(
             # so the proxy's 502 reaches us before we give up on the proxy;
             # otherwise the proxy writes into a closed socket (BrokenPipe) and the
             # failure is logged twice as two different errors.
-            with urlopen(req, timeout=HARNESS_CALL_TIMEOUT_S) as resp:
+            with urlopen(req, timeout=wait_s) as resp:
                 data = json.loads(resp.read())
             break
         except Exception as e:

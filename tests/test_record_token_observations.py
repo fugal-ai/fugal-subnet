@@ -144,3 +144,57 @@ def test_the_default_output_is_never_checked_in_data():
     for protocol in (1, 2):
         out = pathlib.Path(mod.DEFAULT_OUT.format(protocol=protocol))
         assert out.parent == ROOT / "results", out
+
+
+def test_v3_shares_questions_across_entries():
+    mod = _load()
+    pool = _pool()
+    cats = {"mmlu": "knowledge", "math": "math", "gsm8k": "easy_math"}
+    targets = {"knowledge": 0.5, "math": 0.3, "easy_math": 0.2}
+    a = mod.plan(pool, ["m/x@low", "m/x@high"], 5, "seed", categories=cats, targets=targets, shared=True)
+    low = [q["question_id"] for m, q in a if m == "m/x@low"]
+    high = [q["question_id"] for m, q in a if m == "m/x@high"]
+    assert len(low) == 5 and low == high, "v3 compares entries on the same questions"
+
+
+def test_v3_budget_reserves_each_calls_worst_case(tmp_path, monkeypatch):
+    """A 128k-budget call can cost dollars, so the cap must hold against what
+    in-flight calls COULD cost, not only what finished calls did."""
+    mod = _load()
+    from fugal_subnet import routing_protocol
+    from fugal_subnet.tee import harness
+    from fugal_subnet.tee.runtime import APICallRecord, MeteringProxy
+
+    entry = "m/x@max"
+    monkeypatch.setattr(routing_protocol, "request_for",
+                        lambda v, e, d: {"model": "m/x", "max_tokens": 100_000})
+    calls = []
+
+    def fake_call(proxy, model_id, question, request=None):
+        assert request is not None and request["max_tokens"] == 100_000
+        calls.append(model_id)
+        proxy.records.append(APICallRecord(
+            model_id=model_id, prompt_tokens=100, completion_tokens=10, cost_usd=0.01,
+            timestamp=0.0, response_hash="x" * 64, provider_cost_usd=0.02,
+            request_id=harness.current_request_id()))
+        return "1"
+
+    monkeypatch.setattr(harness, "_call_model", fake_call)
+    proxy = MeteringProxy()
+    proxy.prices = {entry: (1e-6, 10e-6)}          # worst case ≈ 100k x $10/M = $1.00 a call
+    scheduled = [(entry, q) for q in _pool(10)]
+    out = tmp_path / "obs.jsonl"
+    totals = mod.record(proxy, scheduled, str(out), max_usd=2.5, concurrency=4,
+                        provenance={}, protocol=3, categories={"mmlu": "knowledge"})
+    # Each call reserves ~$1.00 until it settles at $0.02 (provider figure wins): the cap is
+    # never at risk, and after each settles the next may start.
+    assert totals["rows"] == len(calls) == 10
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert all(r["max_tokens"] == 100_000 and r["hit_budget"] is False and "latency_ms" in r for r in rows)
+    # A cap below one call's worst case makes no call at all.
+    proxy2 = MeteringProxy()
+    proxy2.prices = proxy.prices
+    calls.clear()
+    t2 = mod.record(proxy2, scheduled, str(tmp_path / "o2.jsonl"), max_usd=0.5, concurrency=4,
+                    provenance={}, protocol=3)
+    assert t2["rows"] == 0 and calls == []

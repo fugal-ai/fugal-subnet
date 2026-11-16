@@ -23,6 +23,8 @@ Scenarios
   e  the real backbone path end to end
   v2_flip  protocol v2 across an activation block (not part of "all"; see
            scenario_v2_flip, and scripts/rehearsal_v2.py for the in-process half)
+  v3_flip  protocol v3 across its activation and odds-seat blocks (not part of
+           "all"; see scenario_v3_flip, and scripts/rehearsal_v3.py)
 
 No API spend is possible: model replies are stubbed deterministically and
 priced through the real pinned table.
@@ -617,9 +619,16 @@ def run_scenarios(args, report: Report) -> int:
         with open(write_pool_v2(os.path.join(RESULTS, "pool_v2.json")), encoding="utf-8") as f:
             gold_by_prompt.update({q["prompt"]: q["gold"] for q in json.load(f)})
         skill.update(dict(zip(v2_models(), (0.30, 0.60, 0.85))))
+    solutions: dict = {}
+    if "v3_flip" in want and not _v3_pieces_missing():
+        # v3 epochs ask v3 questions (code included) of three v3 menu entries.
+        path, solutions = write_pool_v3(os.path.join(RESULTS, "pool_v3.json"))
+        with open(path, encoding="utf-8") as f:
+            gold_by_prompt.update({q["prompt"]: q["gold"] for q in json.load(f)})
+        skill.update(dict(zip(v3_entries(), (0.30, 0.60, 0.85))))
 
     from scripts.setup_local_testnet import StubUpstream
-    stub = StubUpstream(gold_by_prompt, skill)
+    stub = StubUpstream(gold_by_prompt, skill, solution_by_prompt=solutions)
     stub.start()
 
     subtensor = bt.Subtensor(network=ENDPOINT)
@@ -630,6 +639,9 @@ def run_scenarios(args, report: Report) -> int:
         # every other wallet keeps the UID it has in scenarios a-e; unstaked,
         # so its set_weights is refused, but it scores and reveals like a peer.
         coldkeys.append("dr_ctl")
+    if "v3_flip" in want:
+        # A third validator, started late from the root's reveals.
+        coldkeys.append("dr_val3")
     netuid, wallets = setup_subnet(subtensor, coldkeys)
 
     scenarios = {
@@ -642,6 +654,8 @@ def run_scenarios(args, report: Report) -> int:
                                   stub),
         "v2_flip": lambda p: scenario_v2_flip(report, subtensor, netuid, wallets,
                                               pool_path, p, args.v2_epochs),
+        "v3_flip": lambda p: scenario_v3_flip(report, subtensor, netuid, wallets,
+                                              pool_path, p, args.v3_epochs),
     }
 
     try:
@@ -1530,17 +1544,278 @@ def _v2_flip_seat_checks(report, S, rows, v2e, uid, miss, names, close):
                  else "the champion did not resume within --v2-epochs")
 
 
+# ── scenario v3_flip: protocol v3 across its activation and odds-seat blocks ──
+#
+# The shipped neurons on the local chain with v2 already active:
+# V3_FLIP_V2_EPOCHS v2 epochs, the v3 activation at a named boundary, the
+# odds-seat block V3_FLIP_NV_EPOCHS later, then odds epochs. Three validators:
+# val1 (the root), val2 (killed mid-epoch once, then restarted) and val3,
+# started late from val1's reveal directory (FUGAL_FRAME_BOOTSTRAP), the
+# rebuild path a follower uses. Miners serve v3 heads over a v3 fixture pool
+# that includes code questions graded in the real sandbox (graders_code).
+#
+# Needs from the branch (checked at start; a missing piece is a SKIP, which
+# fails the run): load_pool(3) with FUGAL_BENCHMARK_POOL_V3, the v3 menu
+# (routing_protocol.price_table(3)), and the code grader. The fixture
+# embeddings file is computed here from the backbone over the fixture pool;
+# mock neurons accept an unpinned file (EMBEDDINGS_SHA256 is None until the
+# release), the live ones never do.
+#
+# SHORTENED FOR THE REHEARSAL (mock-only consensus overrides, printed):
+#   burn-in 2 slices, a take 1 slice of paired questions, odds pairs 40,
+#   max weight delta 1.0. On the stub every (question, entry) outcome is a
+#   coin with a per-benchmark bias, so no head can beat the per-benchmark
+#   reference on odds: after the odds block the seat is expected to stay
+#   EMPTY and burn. That a predicting head takes the seat is proven in
+#   process (scripts/rehearsal_v3.py); this scenario proves the mechanics on
+#   the real chain: protocol switch, pooled exploration, published odds,
+#   identical reveals across validators, a restart, a late rebuilt follower,
+#   and code graded in the miner's sandbox.
+
+V3_FLIP_V2_EPOCHS = 2
+V3_FLIP_NV_EPOCHS = 2
+
+
+def write_pool_v3(path: str, per_benchmark: int = 8) -> tuple[str, dict]:
+    """A v3-shaped fixture pool over every v3 benchmark. Code benchmarks get
+    stdin/stdout programs graded by graders_code (exec_stdio) and the program a
+    correct model writes (`stub_solution`, read only by the stub)."""
+    import random
+
+    from fugal_subnet.config import BENCHMARK_CATEGORY_V3
+
+    rng = random.Random(20261116)
+    pool, solutions = [], {}
+    for bench in sorted(BENCHMARK_CATEGORY_V3):
+        code = BENCHMARK_CATEGORY_V3[bench] == "code"
+        for i in range(per_benchmark):
+            qid = f"dr3_{bench}_{i:03d}"
+            if code:
+                k = rng.randint(2, 9)
+                prompt = (f"[v3 {bench} {i}] Read two integers a and b from one line and "
+                          f"print {k}*a + b. Answer with one python program in a code block.")
+                tests = [{"input": f"{a} {b}\n", "output": f"{k * a + b}\n"}
+                         for a, b in ((1, 2), (10, -4), (0, 0))]
+                sol = f"a, b = map(int, input().split())\nprint({k} * a + b)"
+                solutions[prompt] = sol
+                pool.append({"question_id": qid, "prompt": prompt, "gold": "",
+                             "grader_id": "exec_stdio", "benchmark": bench,
+                             "stub_solution": sol,
+                             "metadata": {"checker": {"id": "exec_stdio",
+                                                      "params": {"tests": tests}}}})
+            else:
+                a, b = rng.randint(100, 999), rng.randint(100, 999)
+                pool.append({"question_id": qid, "prompt": f"[v3 {bench}] What is {a} + {b}?",
+                             "gold": str(a + b), "grader_id": "numeric_final",
+                             "benchmark": bench, "metadata": {}})
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pool, f)
+    return path, solutions
+
+
+def v3_entries() -> list[str]:
+    """Three v3 menu entries across the table: cheapest, middle and dearest."""
+    from fugal_subnet.routing_protocol import price_table
+
+    table = price_table(3)
+    ranked = sorted(table, key=lambda m: (table[m][1], table[m][0], m))
+    return [ranked[0], ranked[len(ranked) // 2], ranked[-1]]
+
+
+def _warm_v3_embeddings(out_path: str, pool_v3: str, timeout: int = 2400) -> float:
+    """The fixture embeddings file: one backbone row per fixture question, the
+    same code path the owner uses for the real file, saved as the .npz both
+    neurons read (question_ids, H)."""
+    t0 = time.time()
+    code = ("import sys; sys.path.insert(0, '.'); import numpy as np; "
+            "from fugal_subnet.benchmarks.loader import load_pool; "
+            "import neurons.miner as m; pool = load_pool(3); "
+            "h = np.asarray(m._compute_hidden_states(pool), dtype=np.float32); "
+            f"np.savez({out_path!r}, question_ids=np.array([q['question_id'] for q in pool]), "
+            "H=h)")
+    subprocess.run([sys.executable, "-c", code],
+                   env=miner_env({"FUGAL_BENCHMARK_POOL_V3": pool_v3}), check=True, timeout=timeout,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return time.time() - t0
+
+
+def write_head_v3(path: str, entry_index: int | None, seed: int = 0) -> str:
+    """A v3 head over the three rehearsal entries: always one entry, or (None)
+    a random split."""
+    import numpy as np
+
+    from fugal_subnet.config import HEAD_HIDDEN_DIM
+    from fugal_subnet.routing_protocol import manifest_path
+    from fugal_subnet.vendor import success_contract as contract
+
+    entries = v3_entries()
+    if entry_index is None:
+        rng = np.random.RandomState(seed)
+        W = (rng.randn(len(entries), HEAD_HIDDEN_DIM) * 0.02).astype(np.float32)
+        b = rng.randn(len(entries)).astype(np.float32)
+    else:
+        W = np.zeros((len(entries), HEAD_HIDDEN_DIM), dtype=np.float32)
+        b = np.full(len(entries), -4.0, dtype=np.float32)
+        b[entry_index] = 4.0
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    np.savez(path, **contract.make_head(W, b, entries, json.loads(manifest_path(3).read_text()),
+                                        "synthetic-test-only rehearsal (v3)"))
+    return path
+
+
+def _v3_pieces_missing() -> str:
+    """'' when the branch has every v3 piece this scenario drives, else why not."""
+    try:
+        from fugal_subnet import graders_code  # noqa: F401
+        from fugal_subnet.routing_protocol import price_table
+        price_table(3)
+    except Exception as e:  # noqa: BLE001
+        return f"v3 menu or code grader missing: {e}"
+    import inspect
+
+    from fugal_subnet.benchmarks import loader
+    if "3" not in inspect.getsource(loader.load_pool):
+        return "load_pool(3) is not on this branch (the v3 pool lands with the pool track)"
+    return ""
+
+
+def scenario_v3_flip(report, subtensor, netuid, wallets, pool_path, procs, max_v3_epochs):
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch, epoch_id_for_block
+    from scripts.rehearsal_v2 import comparable_reveal
+
+    S = "v3_flip"
+    print("\n[Scenario v3_flip] protocol v3 across its activation and odds-seat blocks",
+          flush=True)
+    why = _v3_pieces_missing()
+    if why:
+        report.skip(S, "the v3 flip on a real chain", why)
+        return
+
+    bpe = blocks_per_epoch(int(EPOCH_INTERVAL_S))
+    slice_n = int(miner_env()["FUGAL_SLICE_SIZE"])
+    emb = os.path.abspath(os.path.join(RESULTS, "embeddings_v3.npz"))
+    pool_v3 = os.path.abspath(os.path.join(RESULTS, "pool_v3.json"))
+    v2_now = _epoch_index_now(subtensor) * bpe          # v2 active from this boundary
+    print(f"    v3 fixture embeddings in {_warm_v3_embeddings(emb, pool_v3):.0f}s", flush=True)
+    v3_idx = _epoch_index_now(subtensor) + V3_FLIP_V2_EPOCHS + 1
+    odds_idx = v3_idx + V3_FLIP_NV_EPOCHS
+    blocks = {"FUGAL_V2_ACTIVATION_BLOCK": str(v2_now),
+              "FUGAL_V3_ACTIVATION_BLOCK": str(v3_idx * bpe),
+              "FUGAL_ODDS_SEAT_BLOCK": str(odds_idx * bpe)}
+    shortened = {
+        "FUGAL_V2_BURN_IN_QUESTIONS": str(2 * slice_n),
+        "FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS": str(slice_n),
+        "FUGAL_ODDS_MIN_PAIRS": "40", "FUGAL_ODDS_CONFIRM_PAIRS": "40",
+        "FUGAL_SINGLE_MODEL_MIN_PAIRS": "10",
+        "FUGAL_MAX_WEIGHT_DELTA": "1.0",
+    }
+    env = {**blocks, **shortened, "FUGAL_BENCHMARK_POOL_V3": pool_v3,
+           "FUGAL_EMBEDDINGS_FILE": emb}
+    print(f"    blocks {blocks} (v3 = {epoch_id_for_block(v3_idx)}, odds = "
+          f"{epoch_id_for_block(odds_idx)}); rehearsal-only overrides: {shortened}", flush=True)
+
+    heads = {"dr_m1": write_head_v3(os.path.join(RESULTS, "head_v3_1.npz"), 1),
+             "dr_m2": write_head_v3(os.path.join(RESULTS, "head_v3_2.npz"), 2),
+             "dr_m3": write_head_v3(os.path.join(RESULTS, "head_v3_3.npz"), None, seed=63)}
+    # v3 miners route from the embeddings file (no backbone), commit in the
+    # epoch before the v3 block and hold their axons until it, so they start
+    # now and the loop follows the CHAIN's epochs: v2 epochs are scored with
+    # no v3 miner serving, as on finney before the flip.
+    for ck, port in (("dr_m1", 8171), ("dr_m2", 8172), ("dr_m3", 8173)):
+        _launch(procs, ck, netuid, heads[ck], pool_v3, port, f"v3f_{ck}", extra_env=env)
+    rows, last_idx, killed_at, val3_started = {}, _epoch_index_now(subtensor), None, None
+    while True:
+        idx_now = _wait_for_chain_epoch(subtensor, last_idx)
+        if idx_now is None:
+            report.check(S, "the chain kept producing epochs", False, f"after {last_idx}")
+            break
+        last_idx = idx_now
+        if idx_now - v3_idx >= max_v3_epochs:
+            break
+        if idx_now == v3_idx + 1 and killed_at is None:
+            if _kill_mid_epoch("dr_val2", netuid, "v3f_val2", env):
+                killed_at = idx_now
+        specs = [("dr_val1", "v3f_val1", {**env, "FUGAL_ROOT": "1"}),
+                 ("dr_val2", "v3f_val2", env)]
+        if idx_now >= odds_idx + 1:
+            # A follower started late, rebuilt from val1's published reveals.
+            if val3_started is None:
+                val3_started = idx_now
+            specs.append(("dr_val3", "v3f_val3",
+                          {**env, "FUGAL_FRAME_BOOTSTRAP":
+                           os.path.join(RESULTS, "v3f_val1", "epochs")}))
+        entries = _run_validators_together(netuid, specs)
+        scored = entries[0].get("epoch_id") or epoch_id_for_block(idx_now)
+        idx = int(scored[1:])
+        last_idx = max(last_idx, idx)
+        rows[idx] = {"reveals": [_reveal(s[1], scored) for s in specs], "entries": entries}
+        r1 = rows[idx]["reveals"][0]
+        print(f"    {scored} (v{r1.get('protocol_version', '?')}): "
+              f"seat={(r1.get('champion') or {}).get('event', '-')} "
+              f"rules={(r1.get('v2_state') or {}).get('rules')} "
+              f"pool={len(r1.get('exploration_pool') or [])} odds={len(r1.get('head_odds') or {})}",
+              flush=True)
+        if idx >= odds_idx + 2 and val3_started is not None and idx > val3_started:
+            break
+    _v3_flip_checks(report, S, rows, v3_idx, odds_idx, killed_at, comparable_reveal)
+
+
+def _wait_for_chain_epoch(subtensor, after_idx: int, timeout: float = 900) -> int | None:
+    """The chain's epoch index once it is past `after_idx`, or None on timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        idx = _epoch_index_now(subtensor)
+        if idx > after_idx:
+            return idx
+        time.sleep(2)
+    return None
+
+
+def _v3_flip_checks(report, S, rows, v3_idx, odds_idx, killed_at, comparable_reveal):
+    v3_rows = {i: r for i, r in rows.items() if i >= v3_idx}
+    report.check(S, "epochs before the v3 block are protocol v2",
+                 all(r["reveals"][0].get("protocol_version") == 2
+                     for i, r in rows.items() if i < v3_idx) and any(i < v3_idx for i in rows))
+    report.check(S, "from the v3 block every reveal is protocol v3 with pooled exploration "
+                    "and published odds",
+                 bool(v3_rows) and all(
+                     r["reveals"][0].get("protocol_version") == 3
+                     and r["reveals"][0].get("exploration_pool")
+                     and r["reveals"][0].get("head_odds") for r in v3_rows.values()))
+    report.check(S, "the rules switch from net value to odds at the odds-seat block",
+                 all(((r["reveals"][0].get("v2_state") or {}).get("rules") or {}).get("seat")
+                     == ("odds" if i >= odds_idx else "net_value")
+                     for i, r in v3_rows.items()))
+    agree = [i for i, r in v3_rows.items()
+             if all(comparable_reveal(x) == comparable_reveal(r["reveals"][0])
+                    for x in r["reveals"][1:] if x)]
+    report.check(S, "every validator publishes the same reveal every v3 epoch "
+                    "(val2 restarted mid-epoch, val3 rebuilt late)",
+                 sorted(agree) == sorted(v3_rows), f"disagree at {sorted(set(v3_rows) - set(agree))}")
+    report.check(S, "val2 was killed mid-epoch and restarted", killed_at is not None)
+    code_rows = [row for r in v3_rows.values()
+                 for row in (r["reveals"][0].get("exploration_pool") or [])
+                 if str(row.get("benchmark", "")).startswith("code")]
+    ys = {float(row.get("y", -1)) for row in code_rows}
+    report.check(S, "code questions are graded in the miner's sandbox (some pass, some fail)",
+                 bool(code_rows) and 1.0 in ys and 0.0 in ys,
+                 f"{len(code_rows)} code rows, outcomes {sorted(ys)}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scenario", default="all",
-                    choices=["a", "b", "c", "d", "e", "v2_flip", "all"])
+                    choices=["a", "b", "c", "d", "e", "v2_flip", "v3_flip", "all"])
     ap.add_argument("--keep-chain", action="store_true",
                     help="Leave the chain container running afterwards")
     ap.add_argument("--epochs", type=int, default=12,
                     help="Epochs for scenario d (default 12)")
     ap.add_argument("--v2-epochs", type=int, default=16,
                     help="Most v2 epochs scenario v2_flip runs after the flip (default 16)")
+    ap.add_argument("--v3-epochs", type=int, default=10,
+                    help="Most v3 epochs scenario v3_flip runs after the v3 block (default 10)")
     args = ap.parse_args()
 
     report = Report()
@@ -1559,7 +1834,8 @@ def main() -> int:
         # Epoch length against the miner's late-start guard: see
         # TARGET_EPOCH_SECONDS. Every scenario needs the headroom, not only
         # v2_flip (scenario a stalled at 90 s on a fast devnet).
-        target = V2_FLIP_EPOCH_SECONDS if args.scenario == "v2_flip" else TARGET_EPOCH_SECONDS
+        target = (V2_FLIP_EPOCH_SECONDS if args.scenario in ("v2_flip", "v3_flip")
+                  else TARGET_EPOCH_SECONDS)
         EPOCH_INTERVAL_S = calibrate_epoch_interval(
             subtensor0, target, EPOCH_INTERVAL_S,
         )

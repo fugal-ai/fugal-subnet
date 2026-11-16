@@ -396,7 +396,7 @@ def miner_env(extra=None):
         os.path.join(RESULTS, "pool.json")
     )
     # The v2 pool, for validators scoring v2 epochs (loader.load_pool(2)) and
-    # v2 miners. Written only by scenario v2_flip; unused otherwise.
+    # v2 miners. Written by scenarios v2_flip and v3_flip; unused otherwise.
     env["FUGAL_BENCHMARK_POOL_V2"] = os.path.abspath(
         os.path.join(RESULTS, "pool_v2.json")
     )
@@ -613,9 +613,11 @@ def run_scenarios(args, report: Report) -> int:
     gold_by_prompt = {q["prompt"]: q["gold"] for q in pool}
     want = ["a", "b", "c", "d", "e"] if args.scenario == "all" else [args.scenario]
     skill = dict(SKILL)
-    if "v2_flip" in want:
+    if "v2_flip" in want or "v3_flip" in want:
         # v2 epochs ask v2 questions of v2 models; the stub answers both, with
-        # the same cheap/mid/dear skill ladder.
+        # the same cheap/mid/dear skill ladder. v3_flip needs the v2 pool too:
+        # its validators score the v2 epochs before the v3 block (load_pool(2)),
+        # and a stale pool_v2.json left by an earlier v2_flip run once hid that.
         with open(write_pool_v2(os.path.join(RESULTS, "pool_v2.json")), encoding="utf-8") as f:
             gold_by_prompt.update({q["prompt"]: q["gold"] for q in json.load(f)})
         skill.update(dict(zip(v2_models(), (0.30, 0.60, 0.85))))
@@ -1772,11 +1774,35 @@ def _wait_for_chain_epoch(subtensor, after_idx: int, timeout: float = 900) -> in
     return None
 
 
+def _epoch_protocols(log_path: str) -> dict[int, int]:
+    """{epoch index: protocol version} from a validator's own log line
+    `=== Epoch eN (boundary block B, hash H, protocol vK) ===`. An epoch no miner
+    served writes no reveal, so this, not the reveal, says which rules the
+    validator ran (v3_flip has no v2 miner: its miners hold their axons until
+    the v3 block, as a v3 image's head does on finney)."""
+    import re
+
+    out: dict[int, int] = {}
+    try:
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                m = re.search(r"=== Epoch e(\d+) \(.*protocol v(\d+)\) ===", line)
+                if m:
+                    out[int(m.group(1))] = int(m.group(2))
+    except OSError:
+        pass
+    return out
+
+
 def _v3_flip_checks(report, S, rows, v3_idx, odds_idx, killed_at, comparable_reveal):
     v3_rows = {i: r for i, r in rows.items() if i >= v3_idx}
-    report.check(S, "epochs before the v3 block are protocol v2",
-                 all(r["reveals"][0].get("protocol_version") == 2
-                     for i, r in rows.items() if i < v3_idx) and any(i < v3_idx for i in rows))
+    ran = _epoch_protocols(os.path.join(RESULTS, "v3f_val1.log"))
+    before = {i: v for i, v in ran.items() if i < v3_idx}
+    after = {i: v for i, v in ran.items() if i >= v3_idx}
+    report.check(S, "epochs before the v3 block are protocol v2 (and v3 from it)",
+                 bool(before) and set(before.values()) == {2}
+                 and bool(after) and set(after.values()) == {3},
+                 f"before {sorted(before.items())} after {sorted(after.items())}")
     report.check(S, "from the v3 block every reveal is protocol v3 with pooled exploration "
                     "and published odds",
                  bool(v3_rows) and all(
@@ -1787,20 +1813,46 @@ def _v3_flip_checks(report, S, rows, v3_idx, odds_idx, killed_at, comparable_rev
                  all(((r["reveals"][0].get("v2_state") or {}).get("rules") or {}).get("seat")
                      == ("odds" if i >= odds_idx else "net_value")
                      for i, r in v3_rows.items()))
-    agree = [i for i, r in v3_rows.items()
-             if all(comparable_reveal(x) == comparable_reveal(r["reveals"][0])
-                    for x in r["reveals"][1:] if x)]
-    report.check(S, "every validator publishes the same reveal every v3 epoch "
-                    "(val2 restarted mid-epoch, val3 rebuilt late)",
-                 sorted(agree) == sorted(v3_rows), f"disagree at {sorted(set(v3_rows) - set(agree))}")
+    # val1 and val2 hold the same history (val2 was killed and restarted from
+    # its own disk), so they must publish the same reveal byte for byte
+    # (v2_sync.comparable_reveal). val3 was rebuilt from val1's reveals: it must
+    # agree on what consensus compares (v2_sync.consensus_view: v2_state and the
+    # nonzero weights), which decides seats and weights. Its v1 composite
+    # `scores` is a diagnostic computed from a v1 reference frame each validator
+    # accumulates locally, which a rebuilt follower starts without (v2 behaviour,
+    # unchanged by v3); differing diagnostic fields are listed, not failed.
+    from fugal_subnet.v2_sync import consensus_view
+
+    agree, notes = [], {}
+    for i, r in v3_rows.items():
+        ref, peers = r["reveals"][0], r["reveals"][1:]
+        same = (not peers or not peers[0]
+                or comparable_reveal(peers[0]) == comparable_reveal(ref))
+        for late in (x for x in peers[1:] if x):
+            same = same and consensus_view(late) == consensus_view(ref)
+            diff = sorted(k for k in set(comparable_reveal(late)) | set(comparable_reveal(ref))
+                          if comparable_reveal(late).get(k) != comparable_reveal(ref).get(k))
+            if diff:
+                notes[i] = diff
+        if same:
+            agree.append(i)
+    report.check(S, "every validator agrees every v3 epoch (val2 restarted mid-epoch: same "
+                    "reveal; val3 rebuilt late: same consensus view)",
+                 sorted(agree) == sorted(v3_rows),
+                 f"disagree at {sorted(set(v3_rows) - set(agree))}"
+                 + (f"; rebuilt follower's diagnostic-only differences {notes}" if notes else ""))
     report.check(S, "val2 was killed mid-epoch and restarted", killed_at is not None)
     code_rows = [row for r in v3_rows.values()
                  for row in (r["reveals"][0].get("exploration_pool") or [])
                  if str(row.get("benchmark", "")).startswith("code")]
-    ys = {float(row.get("y", -1)) for row in code_rows}
+    # A pooled pair's outcome is the coldkey median in 1/ODDS_SCALE units
+    # (explore_pool.Pair.y): ODDS_SCALE is a pass, 0 a fail.
+    from fugal_subnet.head_odds import ODDS_SCALE
+
+    ys = {int(row.get("y", -1)) for row in code_rows}
     report.check(S, "code questions are graded in the miner's sandbox (some pass, some fail)",
-                 bool(code_rows) and 1.0 in ys and 0.0 in ys,
-                 f"{len(code_rows)} code rows, outcomes {sorted(ys)}")
+                 bool(code_rows) and ODDS_SCALE in ys and 0 in ys,
+                 f"{len(code_rows)} code rows, outcomes {sorted(ys)} (pass = {ODDS_SCALE})")
 
 
 def main() -> int:

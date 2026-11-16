@@ -6,10 +6,10 @@ sandbox works. Without that every code answer grades 0 and is still paid
 for, silently: graders.grade does not know the two checkers, and returns 0
 for an unknown one.
 
-The check goes through the harness's OWN path (tee.harness.grade on
-tee.harness.build_grader_task, with the harness's allow_exec), on one right
-and one wrong answer per checker, so it holds whatever the wiring looks like
-and fails closed if the harness grades code any other way.
+The check goes through the harness's OWN path (tee.harness.grade_question,
+the call run_benchmark grades every reply with), on one right and one wrong
+answer per checker, so it holds whatever the wiring looks like and fails
+closed if the harness grades code any other way.
 """
 from __future__ import annotations
 
@@ -44,9 +44,8 @@ def harness_grades_code() -> tuple[bool, str]:
     for q, right, wrong in _PROBES:
         cid = q["grader_id"]
         try:
-            task = harness.build_grader_task(q)
-            got_right = harness.grade(task, right, allow_exec=harness.HARNESS_ALLOW_EXEC)
-            got_wrong = harness.grade(task, wrong, allow_exec=harness.HARNESS_ALLOW_EXEC)
+            got_right = int(harness.grade_question(q, right))
+            got_wrong = int(harness.grade_question(q, wrong))
         except Exception as e:  # noqa: BLE001 - any failure is a failed gate
             return False, f"{cid}: the harness's grading call raised {type(e).__name__}: {e}"
         if got_right != 1 or got_wrong != 0:

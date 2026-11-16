@@ -35,6 +35,16 @@ GRADER_SHA256 = (
 CODE_GRADER_SHA256 = (
     "92bceddcee0c6fad9eed2b217aa9de3fa9c309b0276fc5180095703e38862a60"
 )
+# The v3 shared system prompt (config.HARNESS_SYSTEM_PROMPT_V3): every v3 model
+# call carries it, so a byte change moves every v3 grade and the token means.
+# Pinned like the graders; changing it is a deliberate act — update the hash in
+# the same commit, say why, and change fugal-core's text with it. History:
+#   7b300e49...  2026-11-16, first version: fugal-core's house prompt with
+#                "a requested answer format wins" (DRAFT, review before the v3
+#                image is frozen).
+SYSTEM_PROMPT_V3_SHA256 = (
+    "7b300e491b7a5d8cb9629b8799115c52983ddfb93f4981b145f85ce3f31591d1"
+)
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole
 # subnet. Pinned for the same reason graders.py is. Changing prices is a
@@ -227,6 +237,22 @@ def check_pinned_code_grader(errors: list[str]) -> None:
             f"match the pin {CODE_GRADER_SHA256[:16]}... — a code grader change is a "
             "consensus break"
         )
+
+
+def check_pinned_system_prompt_v3(errors: list[str]) -> None:
+    from fugal_subnet import config
+
+    text = config.HARNESS_SYSTEM_PROMPT_V3
+    if not text:
+        errors.append("fugal_subnet/config.py: HARNESS_SYSTEM_PROMPT_V3 is empty; the v3 "
+                      "image must pin the shared system prompt")
+        return
+    actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if actual != SYSTEM_PROMPT_V3_SHA256:
+        errors.append(
+            f"fugal_subnet/config.py: HARNESS_SYSTEM_PROMPT_V3 hash {actual[:16]}... does "
+            f"not match the pin {SYSTEM_PROMPT_V3_SHA256[:16]}... — the shared system "
+            "prompt is part of every v3 grade; change the pin deliberately")
 
 
 def check_epoch_id_single_source(errors: list[str]) -> None:
@@ -1177,6 +1203,7 @@ def main(argv: list[str] | None = None) -> None:
     check_deserialize_contract(errors)
     check_pinned_grader(errors)
     check_pinned_code_grader(errors)
+    check_pinned_system_prompt_v3(errors)
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)

@@ -301,11 +301,26 @@ HARNESS_MAX_TOKENS = 16384
 # socket timeout is not a deadline, because OpenRouter keeps a non-streamed
 # request alive while the model reasons (one such call was measured at 917 s).
 # The system prompt every v3 model call carries, identical in the harness and
-# in whatever serves the winning head, so a model is measured the way it is
-# used. An image constant like the budgets above. None until the v3 image pins
-# the text (it must not fight the benchmarks' answer formats: a boxed result,
-# a letter, a final number); with None no system message is sent.
-HARNESS_SYSTEM_PROMPT_V3: str | None = None
+# in whatever serves the winning head (fugal-core), so a model is measured the
+# way it is used. An image constant like the budgets above, hash-pinned in
+# scripts/check_safety_invariants.py (SYSTEM_PROMPT_V3_SHA256): a byte change
+# moves every v3 grade. Source: fugal-core's WORKER_SYSTEM_PROMPT (fugal/
+# router.py), with one change: its "Lead with the answer, then supporting
+# detail" fought two graders (numeric_final reads the LAST number; letter_mcq
+# lost replies that open with a bold letter and then explain, measured
+# 2026-11-10 on 26% of Fable 5.2's correct SuperGPQA answers), so it is
+# replaced by "a requested answer format wins". fugal-core must carry the same
+# text. DRAFT 2026-11-16, for review before the v3 image is frozen.
+HARNESS_SYSTEM_PROMPT_V3: str | None = (
+    "You are Fugal, a helpful AI assistant. Each message may be handled by a different "
+    "underlying model, so keep one consistent voice and identity: never claim to be, or "
+    "speculate about, any specific model or the company that built you. Be concise and "
+    "direct. Use Markdown for structure and fenced code blocks with a language tag for "
+    "code. If you are unsure or lack the information to answer, say so plainly instead of "
+    "guessing. When a request says how to give the answer, such as a single letter, a "
+    "final number at the end, a \\boxed{} result or one code block, follow that format "
+    "exactly; it takes precedence over everything above."
+)
 PROXY_CALL_DEADLINE_S = 420.0      # total time the proxy spends on one call, retries included
 HARNESS_CALL_TIMEOUT_S = 450.0     # the harness's wait on the proxy; > PROXY_CALL_DEADLINE_S
 

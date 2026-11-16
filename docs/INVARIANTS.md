@@ -3569,10 +3569,19 @@ prices, the token manifest and every reveal are keyed on; what goes on the
 wire is the entry's request: the provider's model id, one reasoning setting,
 the answer budget and a provider order with fallbacks forbidden
 (`routing_protocol.request_for`, `validate_menu_v3`). The harness sends it as
-pinned, with one shared system prompt when the image pins one
-(`config.HARNESS_SYSTEM_PROMPT_V3`), so a model is measured the way it is
-called. The table is part of the measured image and of the consensus digest,
-like v2's.
+pinned, with one shared system prompt (`config.HARNESS_SYSTEM_PROMPT_V3`), so a
+model is measured the way it is called. The table is part of the measured image
+and of the consensus digest, like v2's.
+
+**The shared system prompt is consensus text.** Every v3 call carries it, so a
+byte change moves every v3 grade and every token mean. It is pinned as
+`SYSTEM_PROMPT_V3_SHA256` in `scripts/check_safety_invariants.py` (an empty
+prompt also fails) and ships in the measured image. The product (fugal-core)
+must send the same text, or the subnet measures models under a prompt users
+never get. It may not fight a graded answer format: fugal-core's "lead with the
+answer, then supporting detail" was dropped because `numeric_final` reads the
+last number and `letter_mcq` lost replies that open with a bold letter and then
+explain; the v3 text says a format the request asks for takes precedence.
 
 ## Attack surface by actor
 

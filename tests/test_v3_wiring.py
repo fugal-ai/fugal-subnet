@@ -122,6 +122,8 @@ def test_the_harness_sends_a_v3_entrys_request_as_pinned(monkeypatch):
     proxy = type("P", (), {"port": 1})()
     request = {"model": "openai/gpt-6.1-sol", "max_tokens": 16384, "reasoning": {"effort": "high"},
                "provider": {"order": ["openai"], "allow_fallbacks": False}}
+    # Without a system prompt the request goes out as pinned, plus the user turn.
+    monkeypatch.setattr(harness, "HARNESS_SYSTEM_PROMPT_V3", None)
     assert harness._call_model(proxy, "openai/gpt-6.1-sol@high", {"prompt": "2+2?"},
                                request=request) == "B"
     assert sent["body"] == {**request, "messages": [{"role": "user", "content": "2+2?"}]}
@@ -130,6 +132,18 @@ def test_the_harness_sends_a_v3_entrys_request_as_pinned(monkeypatch):
     harness._call_model(proxy, "openai/gpt-6.1-sol@high", {"prompt": "2+2?"}, request=request)
     assert sent["body"]["messages"][0] == {"role": "system", "content": "Answer the question."}
     assert "@" not in json.dumps(sent["body"])
+
+
+def test_the_v3_image_pins_a_shared_system_prompt_that_yields_to_answer_formats():
+    """The shipped prompt is set (no v3 call goes out bare) and tells the model
+    that a requested answer format wins: numeric_final reads the LAST number and
+    letter_mcq loses a reply that opens with a letter and then explains."""
+    from fugal_subnet import config as cfg
+
+    text = cfg.HARNESS_SYSTEM_PROMPT_V3
+    assert text and harness.HARNESS_SYSTEM_PROMPT_V3 == text
+    assert "takes precedence" in text and "final number at the end" in text
+    assert "Lead with the answer" not in text
 
 
 # --- the embeddings file -------------------------------------------------------

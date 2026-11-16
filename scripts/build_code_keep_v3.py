@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -62,6 +63,8 @@ def main(argv=None) -> int:
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--work", required=True, help="per-problem results (jsonl, resumable)")
     ap.add_argument("--extra-work", nargs="*", default=[], help="more result files to resume from (read only)")
+    ap.add_argument("--redo-pattern", default=r"\bthreading\b|concurrent\.futures|multiprocessing",
+                    help="re-measure results from another grader version whose reference matches")
     ap.add_argument("--only", default="", help="calibrate only these benchmarks (comma list); still writes --out from all results")
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
@@ -99,6 +102,23 @@ def main(argv=None) -> int:
     for b, cands in sources.items():
         print(f"{b:20s} {len(cands):5d} candidates  {dict(stats[b])}", flush=True)
 
+    # A result from another grader version is reused only when that version's change
+    # cannot touch this reference: the 2026-11-16 re-pin changed thread stacks, malloc
+    # arenas, the CPU count and the wall backstop, never the CPU limits or the comparison,
+    # so only references that start threads or processes are measured again.
+    grader = gc.grader_hash()
+    redo = re.compile(args.redo_pattern) if args.redo_pattern else None
+    stale = 0
+    for cands in sources.values():
+        for c in cands:
+            key = (c["benchmark"], c["source_id"])
+            row = done.get(key)
+            if (row and row.get("grader") != grader and redo
+                    and any(redo.search(ref or "") for ref in c["references"])):
+                del done[key]
+                stale += 1
+    print(f"{stale} results from another grader version will be measured again", flush=True)
+
     t0 = time.monotonic()
     work = open(args.work, "a", encoding="utf-8")
 
@@ -111,7 +131,7 @@ def main(argv=None) -> int:
         r = one(p, cal)
         row = {"benchmark": c["benchmark"], "source_id": c["source_id"], "kept": r["kept"],
                "tests": r["tests"], "reference_cpu": r["reference_cpu"],
-               "unique_answer": r["unique_answer"], "wall_secs": r["wall_secs"]}
+               "unique_answer": r["unique_answer"], "wall_secs": r["wall_secs"], "grader": grader}
         work.write(json.dumps(row) + "\n")
         work.flush()
         done[key] = row

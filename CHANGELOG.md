@@ -112,7 +112,8 @@ as before (the determinism check's v2 digests are unchanged).
   in the grader's sandbox (`scripts/build_code_keep_v3.py`). The v3 manifest
   hashes every field a grader reads. The miner refuses to start if the code
   sandbox self-test fails, and the grading identity in commitments, reveals and
-  the digest names both grader files.
+  the digest names both grader files. Pinned: 48,320 questions (pool_hash
+  546db512…, content_hash 0c02baaf…), 4,867 of them code.
 - `tests/test_head_odds.py`, `test_explore_private.py`, `test_odds_seat.py`,
   `test_v3_epoch.py`, `test_v3_wiring.py`, `test_v3_call_budgets.py`,
   `test_explore_weights.py`; five new stages in `scripts/check_determinism.py`.

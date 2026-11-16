@@ -60,7 +60,7 @@ SYSTEM_PROMPT_V3_SHA256 = (
 #                       (scripts/build_code_keep_v3.py)
 POOL_V3_DATA_SHA256 = {
     "exclusions_v3.json": "ee346f7f486372351336a6cfb23143e927a29222d47c1d41562b9de5dc1cf26e",
-    "code_keep_v3.json": "CODE_KEEP_PIN",
+    "code_keep_v3.json": "a02c71940b7765b45fcb315153f0686aeaa78d56e6180afa76aafa604a20f4bc",
 }
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole

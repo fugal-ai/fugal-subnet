@@ -245,6 +245,33 @@ def check_pinned_code_grader(errors: list[str]) -> None:
         )
 
 
+def check_code_questions_are_graded(errors: list[str], root: Path | None = None) -> None:
+    """A v3 pool manifest that holds code questions (exec_stdio / exec_func)
+    ships only with a harness that grades them with graders_code and a working
+    sandbox (fugal_subnet/code_gate.py; v3 review, 2026-11-16, finding 7).
+    Otherwise every code answer grades 0 and is still paid for."""
+    import sys
+
+    root = root or ROOT
+    manifest = root / "fugal_subnet" / "benchmarks" / "pool_manifest_v3.json"
+    if not manifest.is_file():
+        return
+    text = manifest.read_text(encoding="utf-8")
+    if '"exec_stdio"' not in text and '"exec_func"' not in text:
+        return
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from fugal_subnet import code_gate, graders_code
+
+    ok, why = graders_code.sandbox_selftest()
+    if not ok:
+        errors.append(f"{manifest.relative_to(root)}: code questions, but the code sandbox "
+                      f"self-test fails here: {why}")
+    ok, why = code_gate.harness_grades_code()
+    if not ok:
+        errors.append(f"{manifest.relative_to(root)}: code questions, but {why}")
+
+
 def check_pinned_system_prompt_v3(errors: list[str]) -> None:
     from fugal_subnet import config
 
@@ -1227,6 +1254,7 @@ def main(argv: list[str] | None = None) -> None:
     check_deserialize_contract(errors)
     check_pinned_grader(errors)
     check_pinned_code_grader(errors)
+    check_code_questions_are_graded(errors)
     check_pinned_system_prompt_v3(errors)
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)

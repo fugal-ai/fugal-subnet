@@ -735,6 +735,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         odds_block = _cfg.odds_seat_block(genesis)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
+    _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL)
     if v3_block is None:
         logger.info("Protocol v3: not scheduled on this chain")
     else:
@@ -2602,6 +2603,22 @@ def _v2_sync_step(*, epoch_index: int, last_epoch_index: int, first_v2_epoch: in
     except Exception as e:  # noqa: BLE001 - never stops the epoch (I6); state and gap kept
         logger.error("v2 sync against the reference failed (%s); state and gap kept", e)
         return _V2Sync(changed, state)
+
+
+def _check_v3_blocks_aligned(v3_block, odds_block, epoch_interval) -> None:
+    """Refuse a v3 or odds-seat block that is not an epoch boundary, the way
+    the v2 block is refused and the way a v3 miner refuses it
+    (miner.py, validate_activation_block). Accepting it here while miners
+    refuse it would leave validators scoring a flip no v3 miner can start at
+    (v3 review, 2026-11-16)."""
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
+
+    bpe = blocks_per_epoch(epoch_interval)
+    for name, block in (("v3 activation", v3_block), ("odds-seat", odds_block)):
+        try:
+            validate_activation_block(block, bpe)
+        except ValueError as e:
+            raise click.ClickException(f"{name} block: {e}") from e
 
 
 def _rebuild_tables(epoch_inputs, config_module) -> dict:

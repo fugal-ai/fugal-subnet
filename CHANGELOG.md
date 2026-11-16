@@ -16,6 +16,34 @@ window, as live. Found by the new in-process rehearsal
 (`scripts/rehearsal_v3.py`: v2 -> v3 -> odds seat, three validators, one
 restarted from disk and one rebuilt from reveals, 37 checks).
 
+### Fixed — v3 review, 2026-11-16 (consensus, v3; nothing here changes v2)
+- **Startup rebuild prices.** A validator rebuilt from reveals after the v3
+  flip priced the v3 epochs at v2's table, so 51 of 53 menu entries were
+  unpriced and every later epoch failed ("an answered question has no
+  cell"). A rebuild or re-anchor now prices the replayed epochs at their own
+  protocol's table and categories.
+- **Re-anchor across the flip.** A re-anchor on a reference epoch from before
+  the flip, with the validator's own epochs after it, carried the old
+  protocol's seat into the new window. It is now refused, state and gap
+  kept, until the reference publishes an epoch after the flip.
+- **A head gives odds for every menu entry.** A model a head had no row for
+  was scored at the reference's odds, so a copy of the champion with its
+  weakest row removed beat the champion with no skill of its own. A missing
+  row now scores as certainly wrong, a head that does not cover the menu is
+  published with no odds, and such a head is not eligible for the odds seat.
+- **First fill on odds needs significant skill**, the test a challenger's
+  odds pass against the reference, not a point estimate ≥ 0.
+- **Code grader** (`graders_code.py`, new pin `8ed4730b…`): priority,
+  scheduling, `fchmod` and `fchown` calls refused; thread capacity and the
+  CPU count a program sees no longer depend on the TD; wider wall backstop
+  (20 s a run, 60 s a question). CPU limits and the comparison are unchanged.
+- **Release gate for code questions** (`fugal_subnet/code_gate.py`): a v3
+  miner refuses to start with code questions in its pool unless its harness
+  grades them with the code grader and the sandbox self-test passes.
+- The validator refuses a v3 or odds-seat block that is not an epoch
+  boundary (the miner already did), and the cost-aware exploration constants
+  are in the consensus digest.
+
 ### Added — the v3 image carries the shared system prompt and the embeddings file
 - `config.HARNESS_SYSTEM_PROMPT_V3`: the product's house prompt, with one
   change so it never fights a graded answer format (a format the request

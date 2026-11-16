@@ -3755,6 +3755,20 @@ with shared grades absorbing the borderline residual. The harness must run
 `sandbox_selftest()` at start and refuse code questions if it fails. Design:
 [CODE_GRADER_V3.md](decisions/CODE_GRADER_V3.md).
 
+The v3 review (2026-11-16) hardened it before it shipped: no priority or
+scheduling call at all and no `fchmod`/`fchown` (with `PRIO_USER` and
+`who=0`, `setpriority` reached every process of the uid); new threads get
+8 MiB stacks, two malloc arenas and a fixed CPU count of 4, so at least 64
+threads start and `ThreadPoolExecutor()` behaves the same on every TD (the
+main thread's 64 MiB stack is unchanged); the wall backstop is
+max(3 × CPU + 2 s, 20 s) a run and 60 s a question. **Release gate:** a pool
+with `exec_stdio`/`exec_func` questions is served only by an image whose
+harness grades them through `graders_code` with a working sandbox
+(`fugal_subnet/code_gate.py`: the miner refuses to start otherwise, and
+`check_safety_invariants` checks it when the v3 pool manifest holds code),
+because `graders.grade` returns 0 for both checkers
+(`tests/test_code_release_gate.py`, `tests/test_graders_code_review.py`).
+
 **The model upstream is miner-controlled (fixed 2026-10-14; was OPEN, breaks I3).**
 
 *Status.* Closed by making the application binding mandatory. The upstream is

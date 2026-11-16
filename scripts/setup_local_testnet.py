@@ -134,9 +134,12 @@ class StubUpstream:
     agreement assertions meaningful rather than coincidental.
     """
 
-    def __init__(self, gold_by_prompt: dict, skill: dict, port: int = 8799):
+    def __init__(self, gold_by_prompt: dict, skill: dict, port: int = 8799,
+                 solution_by_prompt: dict | None = None):
         self.gold = gold_by_prompt
         self.skill = skill
+        # Code questions (v3, graders_code): the program a correct model writes.
+        self.solution = dict(solution_by_prompt or {})
         self.port = port
         self._server = None
         self._thread = None
@@ -154,11 +157,22 @@ class StubUpstream:
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 req = json.loads(body)
                 model = req.get("model", "")
-                prompt = req["messages"][0]["content"]
+                # The question is the LAST user turn: from protocol v3 every
+                # call leads with the shared system prompt.
+                users = [m for m in req["messages"] if m.get("role") == "user"]
+                prompt = (users or req["messages"])[-1]["content"]
+                # A v3 menu entry is (model, reasoning effort); the entry id
+                # itself never goes upstream.
+                effort = (req.get("reasoning") or {}).get("effort")
+                key = f"{model}@{effort}" if effort and f"{model}@{effort}" in outer.skill \
+                    else model
 
-                digest = hashlib.sha256(f"{prompt}|{model}".encode()).digest()
-                correct = (digest[0] / 255.0) < outer.skill.get(model, 0.5)
-                text = outer.gold.get(prompt, "0") if correct else "0"
+                digest = hashlib.sha256(f"{prompt}|{key}".encode()).digest()
+                correct = (digest[0] / 255.0) < outer.skill.get(key, 0.5)
+                if prompt in outer.solution:
+                    text = f"```python\n{outer.solution[prompt] if correct else 'pass'}\n```"
+                else:
+                    text = outer.gold.get(prompt, "0") if correct else "0"
                 outer.calls += 1
 
                 payload = json.dumps({

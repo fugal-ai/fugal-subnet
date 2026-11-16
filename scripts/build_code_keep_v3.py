@@ -61,6 +61,8 @@ def main(argv=None) -> int:
     ap.add_argument("--cc-target", type=int, default=cs.CC_SAMPLE)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--work", required=True, help="per-problem results (jsonl, resumable)")
+    ap.add_argument("--extra-work", nargs="*", default=[], help="more result files to resume from (read only)")
+    ap.add_argument("--only", default="", help="calibrate only these benchmarks (comma list); still writes --out from all results")
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
 
@@ -71,10 +73,12 @@ def main(argv=None) -> int:
     cal = argparse.Namespace(margin=0.25, runs=2, max_tests=16, min_tests=cs.MIN_TESTS, scan_tests=40)
 
     done = {}
-    if os.path.exists(args.work):
-        for line in open(args.work, encoding="utf-8"):
-            r = json.loads(line)
-            done[(r["benchmark"], r["source_id"])] = r
+    for path in [*args.extra_work, args.work]:
+        if os.path.exists(path):
+            for line in open(path, encoding="utf-8"):
+                r = json.loads(line)
+                done[(r["benchmark"], r["source_id"])] = r
+    only = set(filter(None, args.only.split(",")))
 
     stats = {}
     sources = {
@@ -115,10 +119,12 @@ def main(argv=None) -> int:
 
     with ThreadPoolExecutor(args.workers) as ex:
         for b in ("code_leetcode", "code_mbppplus", "code_humanevalplus"):
+            if only and b not in only:
+                continue
             list(ex.map(run, sources[b]))
             print(f"{b} calibrated ({time.monotonic() - t0:.0f} s)", flush=True)
         # code_contests: in sha256 order of the id, batch by batch, until the target is kept.
-        order = _order(sources["code_contests"])
+        order = _order(sources["code_contests"]) if not only or "code_contests" in only else []
         kept_cc, i, batch = 0, 0, args.workers * 8
         while kept_cc < args.cc_target and i < len(order):
             rows = list(ex.map(run, order[i:i + batch]))
@@ -130,7 +136,11 @@ def main(argv=None) -> int:
     rows = []
     for b in ("code_leetcode", "code_mbppplus", "code_humanevalplus"):
         rows += [done[(c["benchmark"], c["source_id"])] for c in sources[b]
-                 if done[(c["benchmark"], c["source_id"])]["kept"]]
+                 if done.get((c["benchmark"], c["source_id"]), {}).get("kept")]
+    missing = [b for b in sources if sources[b] and not all((c["benchmark"], c["source_id"]) in done
+                                                            for c in sources[b][:1])]
+    if missing:
+        print(f"NOTE: no results yet for {missing}; --out covers only what is calibrated", flush=True)
     cc_kept = [c for c in _order(sources["code_contests"])
                if (c["benchmark"], c["source_id"]) in done and done[(c["benchmark"], c["source_id"])]["kept"]]
     rows += [done[(c["benchmark"], c["source_id"])] for c in cc_kept[:args.cc_target]]

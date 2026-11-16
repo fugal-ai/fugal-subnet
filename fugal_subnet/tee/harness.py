@@ -189,6 +189,10 @@ def run_benchmark(
     if explore_models and (explore_size > 0 or protocol_version >= 3):
         pool_by_id = {q["question_id"]: q for q in benchmark_pool}
         plan_kwargs = {"hotkey": hotkey or None} if protocol_version >= 3 else {}
+        if protocol_version >= 3:
+            # The same cost-aware shares the validator draws with (pinned menu
+            # and token manifest), or every proof fails the exploration check.
+            plan_kwargs["shares"] = epoch_plan.explore_shares(protocol_version, explore_models)
         explore_map = epoch_plan.exploration_plan(
             protocol_version, nonce_bytes, benchmark_pool, set(question_ids), explore_models,
             explore_size, **plan_kwargs,

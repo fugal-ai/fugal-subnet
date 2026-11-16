@@ -3416,11 +3416,36 @@ measures 15 pairs an epoch whatever its size. In v3
 - **A private set** of `EXPLORE_PRIVATE_SIZE` (24) pairs per miner, drawn from
   the epoch nonce and the miner's hotkey (`exploration.private_nonce`,
   `slicer.select_private_explore`): disjoint from the scored slice and the
-  shared set, on the scored slice's category mix, each sent to a model by
-  round-robin over a model list permuted with the same per-miner nonce. A
+  shared set, on the scored slice's category mix, each sent to an entry drawn
+  by the epoch's cost-aware shares (below) with the same per-miner nonce. A
   proof is bound to its hotkey, and the validator derives the same set from
   the hotkey it queried, so the proof check is still an exact match of what
   was assigned. A miner learns its set only when the epoch nonce exists.
+
+**Cost-aware exploration, unbiased by weights** (`fugal_subnet/explore_weights.py`).
+Drawn uniformly over the v3 menu (53 entries, answer budgets up to ~128k
+tokens), exploration would charge a miner as much for a Fable 5.2 @max call
+(~$5 at 128k) as for hundreds of cheap ones. So entry e is drawn with
+probability pi_e = (1 - floor) * r_e / sum(r) + floor / M, with
+r_e = (c_max / c_e)^alpha and c_e its expected dollars per call (pinned prices x
+token means). `EXPLORE_COST_FLOOR` (1/4) keeps every entry at a quarter of a
+uniform share or more; alpha is the most uniform of 0, 1/2, ... 2 whose
+EXPECTED spend for a miner's 32 calls is within `EXPLORE_SPEND_CAP_USD`
+($0.20). The questions take their entries by systematic sampling on the
+share line (uniform shares give a round-robin), so each question's entry has
+probability exactly pi_e. Each pooled pair carries w_e = 1 / (M * pi_e)
+(`weight`, WEIGHT_SCALE units, in the reveal and the window file), and
+`odds_score.brier_units` / `skill_units` multiply each pair's units by it:
+under the sampling distribution E[w] = 1, so the seat's paired test estimates
+what uniform sampling would have counted (Horvitz-Thompson), at a variance
+cost bounded by w <= 1 / floor. Pair COUNTS (min_pairs) stay counts.
+Per-entry statistics (the reference R's rate per entry and benchmark, the
+single-model table) condition on the entry and take no weight. The cap is on
+expected spend, deliberately: a rule that stopped at a realized total would
+make an entry's chance depend on the draws before it, and the weights would
+no longer undo the sampling. Everything is exact: Fraction costs, an integer
+square root, integer shares and weights (I1; `explore_weights` stage of
+`scripts/check_determinism.py`). `tests/test_explore_weights.py`.
 
 The pooled pairs (`fugal_subnet/explore_pool.py`) are built the way a shared
 grade is: failed calls dropped; one vote per coldkey per pair; the outcome

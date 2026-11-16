@@ -25,9 +25,32 @@ as before (the determinism check's v2 digests are unchanged).
   `model@effort` ids, one reasoning setting, the answer budget and pinned
   providers per entry.
 - V pinned in dollars from v3 (`CHAMPION_VALUE_PER_CORRECT_USD`).
+- **The v3 menu is pinned** (`data/models_v3.json`, hash in
+  `check_safety_invariants`): 23 models, 53 `model@effort` entries (the
+  arena.ai Text, Agent and WebDev Pareto frontiers available on OpenRouter,
+  plus Qwen4 Max, Muse Spark 1.3 and Muse Wonder), each with pinned OpenRouter
+  hosts, the dearer host's price, and its own answer budget (`max_tokens`, up
+  to 131,072; provisional until the 128k measurement).
+- **A provisional v3 token manifest** (`benchmark_tokens_protocol_v3.json`,
+  pinned, status `candidate`): no paid calls; 4 rows reused from v2's
+  measured means, 49 estimated by the rule in
+  `scripts/build_token_manifest_v3.py`. Replaced row by row from the attested
+  token medians v3 exploration publishes, at the monthly menu update.
+- **Each entry's own call deadline** (`config.call_deadline_s`): 10 min at low
+  effort, 15 at medium or none, 30 at high/xhigh/max, all inside the 36-minute
+  collection point; v1 and v2 calls keep 420 s. The harness names the entry to
+  the metering proxy (`X-Fugal-Entry`), which prices v3 calls by entry id (it
+  priced by the provider model id, which a multi-effort entry is not).
+- **Cost-aware exploration** (`explore_weights.py`): entries are drawn for
+  exploration with a probability that falls with expected cost (floor: a
+  quarter of a uniform share; exponent: the most uniform whose expected spend
+  per miner per epoch is within $0.20), and every pooled pair carries its
+  inverse-probability weight, which the odds score applies, so the seat test
+  still estimates what uniform sampling would have. Pooled pairs also publish
+  the attested call time (`latency_ms`), for routers to learn from.
 - `tests/test_head_odds.py`, `test_explore_private.py`, `test_odds_seat.py`,
-  `test_v3_epoch.py`, `test_v3_wiring.py`; four new stages in
-  `scripts/check_determinism.py`.
+  `test_v3_epoch.py`, `test_v3_wiring.py`, `test_v3_call_budgets.py`,
+  `test_explore_weights.py`; five new stages in `scripts/check_determinism.py`.
 
 ### Fixed — failed model calls in the miner harness (next miner image)
 Reported by a miner with logs and a reproduction.

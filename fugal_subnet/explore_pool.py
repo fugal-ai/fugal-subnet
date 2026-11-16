@@ -54,6 +54,7 @@ class ExploreAnswer:
     private: bool                 # from the miner's private set (else the shared set)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    latency_ms: int = 0           # attested wall time of the call (proof.QuestionResult)
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,11 @@ class Pair:
     voters: int                   # coldkeys that answered it
     prompt_tokens: int            # coldkey-median attested tokens, rounded
     completion_tokens: int
+    # The pair's inverse-probability weight in explore_weights.WEIGHT_SCALE
+    # units: exploration draws entries by cost, and the odds score weighs each
+    # pair back to what uniform sampling would have counted.
+    weight: int = 1_000_000
+    latency_ms: int = 0           # coldkey-median attested call time, for routers to learn from
 
 
 def _round_half_up(x: Fraction) -> int:
@@ -109,8 +115,13 @@ def capped(answers: Iterable[ExploreAnswer], nonce: bytes, coldkey_cap: int) -> 
 
 
 def pool_pairs(answers: Iterable[ExploreAnswer], *, nonce: bytes, coldkey_cap: int,
-               flagged: Iterable[str] = ()) -> list[Pair]:
-    """The epoch's pooled pairs, sorted by (question, model)."""
+               flagged: Iterable[str] = (),
+               weights: Mapping[str, int] | None = None) -> list[Pair]:
+    """The epoch's pooled pairs, sorted by (question, model).
+
+    `weights` is {entry: inverse-probability weight} of the epoch's exploration
+    shares (explore_weights.weights); None weighs every pair one."""
+    from fugal_subnet.explore_weights import WEIGHT_SCALE
     out_of = set(flagged)
     live = [a for a in answers if not a.failed and a.coldkey not in out_of]
     live = capped(live, nonce, coldkey_cap)
@@ -122,11 +133,14 @@ def pool_pairs(answers: Iterable[ExploreAnswer], *, nonce: bytes, coldkey_cap: i
         grade = [Fraction(sum(bool(a.correct) for a in v), len(v)) for v in votes.values()]
         p_tok = [Fraction(sum(int(a.prompt_tokens) for a in v), len(v)) for v in votes.values()]
         c_tok = [Fraction(sum(int(a.completion_tokens) for a in v), len(v)) for v in votes.values()]
+        lat = [Fraction(sum(int(a.latency_ms) for a in v), len(v)) for v in votes.values()]
         pairs.append(Pair(
             question_id=qid, model=model,
             y=_round_half_up(_median(grade) * ODDS_SCALE), voters=len(votes),
             prompt_tokens=_round_half_up(_median(p_tok)),
             completion_tokens=_round_half_up(_median(c_tok)),
+            weight=int(weights[model]) if weights is not None else WEIGHT_SCALE,
+            latency_ms=_round_half_up(_median(lat)),
         ))
     return pairs
 
@@ -190,6 +204,7 @@ def pairs_for_reveal(pairs: Iterable[Pair], benchmark_of: Mapping[str, str]) -> 
         {"question_id": p.question_id, "model": p.model,
          "benchmark": str(benchmark_of.get(p.question_id, "")), "y": int(p.y),
          "voters": int(p.voters), "prompt_tokens": int(p.prompt_tokens),
-         "completion_tokens": int(p.completion_tokens)}
+         "completion_tokens": int(p.completion_tokens), "weight": int(p.weight),
+         "latency_ms": int(p.latency_ms)}
         for p in sorted(pairs, key=lambda p: (p.question_id, p.model))
     ]

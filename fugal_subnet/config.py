@@ -144,6 +144,23 @@ EXPLORE_PRIVATE_SIZE = int(os.getenv("FUGAL_EXPLORE_PRIVATE_SIZE", "24"))
 # hotkeys' worth: an operator with one hotkey is never cut, and one with fifty
 # supplies a twelfth of a twenty-operator pool, not most of it.
 EXPLORE_COLDKEY_CAP = int(os.getenv("FUGAL_EXPLORE_COLDKEY_CAP", "36"))
+# Cost-aware exploration (protocol v3; fugal_subnet/explore_weights.py). Menu
+# entries are drawn for exploration with a probability that falls with their
+# expected cost (pinned prices x token means), never below EXPLORE_COST_FLOOR
+# of a uniform share, at the most uniform exponent (0, 1/2, ... up to
+# EXPLORE_COST_MAX_HALVES / 2) whose expected spend for a miner's
+# EXPLORE_SHARED_SIZE + EXPLORE_PRIVATE_SIZE calls is within
+# EXPLORE_SPEND_CAP_USD. Pooled pairs carry inverse-probability weights, so the
+# odds score still estimates what uniform sampling would have. At the
+# provisional v3 token means (2026-11-16) uniform exploration costs a miner
+# $0.316 per epoch; the $0.20 cap selects exponent 1/2 ($0.163, design effect
+# 1.32). The cap is EXPECTED spend: a sampling rule that stopped at a realized
+# total would make an entry's chance depend on the draws before it, and the
+# weights would no longer undo it. Compiled constants: they decide which pairs
+# every miner is assigned and how every pair is weighted (consensus).
+EXPLORE_SPEND_CAP_USD = "0.20"
+EXPLORE_COST_FLOOR = "1/4"
+EXPLORE_COST_MAX_HALVES = 4
 # An operator whose private answers are more than this many standard
 # deviations from what the reference expects of those models on those kinds of
 # question has its pairs left out of the epoch's pool

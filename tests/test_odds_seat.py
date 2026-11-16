@@ -127,7 +127,8 @@ def test_the_pool_is_published_sorted_with_each_questions_benchmark():
                             {"q1": "mmlu"})
     assert [r["question_id"] for r in rows] == ["q1", "q2"]
     assert rows[0] == {"question_id": "q1", "model": "m", "benchmark": "mmlu", "y": ODDS_SCALE,
-                       "voters": 2, "prompt_tokens": 5, "completion_tokens": 9}
+                       "voters": 2, "prompt_tokens": 5, "completion_tokens": 9,
+                       "weight": 1_000_000, "latency_ms": 0}
     assert rows[1]["benchmark"] == ""
 
 

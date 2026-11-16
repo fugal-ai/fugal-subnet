@@ -124,7 +124,8 @@ def test_a_v3_epoch_pools_the_exploration_and_scores_every_head_on_it():
                for per in r.window.odds.values() for o in per.values())
     assert [row["question_id"] for row in rv["exploration_pool"]] == list(pairs.question_ids)
     assert rv["exploration_pool"][0].keys() == {
-        "question_id", "model", "benchmark", "y", "voters", "prompt_tokens", "completion_tokens"}
+        "question_id", "model", "benchmark", "y", "voters", "prompt_tokens", "completion_tokens",
+        "weight", "latency_ms"}
     assert set(rv["head_odds"]) == {H(5), H(6), H(7)}
     assert len(rv["v2_state"]["odds_digest"]) == 64
     assert set(rv["odds_shadow"][H(6)]) >= {"uid", "pairs", "skill_points"}

@@ -94,7 +94,8 @@ include = ["fugal_subnet*", "neurons*"]
 # load_pool(2) for v2). Left out of the wheel the v1 one does not fail — it
 # goes quiet, and the validator loads an unverified pool while logging
 # nothing. tests/test_packaging.py holds both names here.
-"fugal_subnet.benchmarks" = ["pool_manifest.json", "pool_manifest_v2.json"]
+"fugal_subnet.benchmarks" = ["pool_manifest.json", "pool_manifest_v2.json", "pool_manifest_v3.json",
+                            "exclusions_v3.json", "code_keep_v3.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

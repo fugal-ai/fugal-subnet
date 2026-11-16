@@ -1,0 +1,206 @@
+{
+ "category_targets": {
+  "code": 0.15,
+  "easy_math": 0.05,
+  "everyday": 0.15,
+  "hard": 0.2,
+  "instruction": 0.15,
+  "knowledge": 0.2,
+  "math": 0.1
+ },
+ "code_keep_sha256": "a02c71940b7765b45fcb315153f0686aeaa78d56e6180afa76aafa604a20f4bc",
+ "content_hash": "0c02baaf8a76e8a94b0395582ce0b193d161604be1f23343ced81d633c4605ab",
+ "dataset_revisions": {
+  "ByteDance-Seed/BeyondAIME": "c705198ae1043810b1e1693bd879250b51a7a523",
+  "EleutherAI/hendrycks_math": "21a5633873b6a120296cce3e2df9d5550074f4a3",
+  "KbsdJames/Omni-MATH": "40ba231d8f16e29ecd40e6407e2c8640145a8f62",
+  "TIGER-Lab/MMLU-Pro": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+  "allenai/RLVR-IFeval": "47c03c73621c4aab2b824b7818681117d662770e",
+  "allenai/ai2_arc": "210d026faf9955653af8916fad021475a3f00453",
+  "cais/mmlu": "c30699e8356da336a370243923dbaf21066bb9fe",
+  "deepmind/code_contests": "802411c3010cb00d1b05bad57ca77365a3c699d6",
+  "evalplus/humanevalplus": "d32357cf319e50e9c8d8dab5ea876c72b0fd321b",
+  "evalplus/mbppplus": "b2d74c91837c3f2a20c1299ae98133cbe7cfa077",
+  "google/IFEval": "966cd89545d6b6acfd7638bc708b98261ca58e84",
+  "m-a-p/SuperGPQA": "4430d4458112c7d4497fdcf94d7cc223313d6acf",
+  "maveriq/bigbenchhard": "a493490a030bfe06c7baa2db022263afbfa04cfb",
+  "newfacade/LeetCodeDataset": "215604aeed660029df7de2fea5a4d7b6ed476a08",
+  "openai/gsm8k": "740312add88f781978c0658806c59bc2815b9866",
+  "opencompass/AIME2025": "a6ad95f611d72cf628a80b58bd0432ef6638f958",
+  "qq8933/AIME_1983_2024": "3e2cc86390666c5c756622afc0eeb9e6194496bc"
+ },
+ "exclusion_counts": {
+  "all_fail": {
+   "math_l35": 9,
+   "mmlu": 7,
+   "mmlupro": 27,
+   "omnimath_hard": 1,
+   "omnimath_mid": 3,
+   "supergpqa_hard": 179
+  },
+  "kept": {
+   "aime": 911,
+   "aime25": 24,
+   "arc": 3369,
+   "beyondaime": 100,
+   "code_contests": 2500,
+   "code_humanevalplus": 156,
+   "code_leetcode": 1858,
+   "code_mbppplus": 353,
+   "gsm8k_train": 7473,
+   "ifeval": 215,
+   "math_l12": 1912,
+   "math_l35": 3619,
+   "mmlu": 2837,
+   "mmlupro": 10048,
+   "omnimath_hard": 844,
+   "omnimath_mid": 1114,
+   "rlvr_ifeval": 4143,
+   "supergpqa_hard": 6844
+  },
+  "loaded": {
+   "aime": 932,
+   "aime25": 30,
+   "arc": 3369,
+   "beyondaime": 100,
+   "code_contests": 2500,
+   "code_humanevalplus": 156,
+   "code_leetcode": 2018,
+   "code_mbppplus": 353,
+   "gsm8k_train": 7473,
+   "ifeval": 215,
+   "math_l12": 1912,
+   "math_l35": 3669,
+   "mmlu": 3000,
+   "mmlupro": 12032,
+   "omnimath_hard": 845,
+   "omnimath_mid": 1117,
+   "rlvr_ifeval": 4143,
+   "supergpqa_hard": 7050
+  },
+  "routerarena": {
+   "aime": 21,
+   "aime25": 6,
+   "code_leetcode": 160,
+   "math_l35": 41,
+   "mmlu": 156,
+   "mmlupro": 1957,
+   "supergpqa_hard": 27
+  }
+ },
+ "exclusions_sha256": "ee346f7f486372351336a6cfb23143e927a29222d47c1d41562b9de5dc1cf26e",
+ "gated_datasets": [],
+ "n_questions": 48320,
+ "per_benchmark": {
+  "aime": {
+   "category": "hard",
+   "licence": "MIT (qq8933/AIME_1983_2024)",
+   "n": 911,
+   "weight": null
+  },
+  "aime25": {
+   "category": "hard",
+   "licence": "MIT (opencompass/AIME2025)",
+   "n": 24,
+   "weight": null
+  },
+  "arc": {
+   "category": "everyday",
+   "licence": "CC-BY-SA-4.0 (allenai/ai2_arc)",
+   "n": 3369,
+   "weight": null
+  },
+  "beyondaime": {
+   "category": "hard",
+   "licence": "CC0-1.0 (ByteDance-Seed/BeyondAIME)",
+   "n": 100,
+   "weight": null
+  },
+  "code_contests": {
+   "category": "code",
+   "licence": "CC-BY-4.0 (deepmind/code_contests)",
+   "n": 2500,
+   "weight": null
+  },
+  "code_humanevalplus": {
+   "category": "code",
+   "licence": "Apache-2.0 (evalplus/humanevalplus)",
+   "n": 156,
+   "weight": null
+  },
+  "code_leetcode": {
+   "category": "code",
+   "licence": "Apache-2.0 (newfacade/LeetCodeDataset; statements are LeetCode's)",
+   "n": 1858,
+   "weight": null
+  },
+  "code_mbppplus": {
+   "category": "code",
+   "licence": "Apache-2.0 (evalplus/mbppplus)",
+   "n": 353,
+   "weight": null
+  },
+  "gsm8k_train": {
+   "category": "easy_math",
+   "licence": "MIT (openai/gsm8k)",
+   "n": 7473,
+   "weight": null
+  },
+  "ifeval": {
+   "category": "instruction",
+   "licence": "Apache-2.0 (google/IFEval)",
+   "n": 215,
+   "weight": null
+  },
+  "math_l12": {
+   "category": "easy_math",
+   "licence": "MIT (EleutherAI/hendrycks_math)",
+   "n": 1912,
+   "weight": null
+  },
+  "math_l35": {
+   "category": "math",
+   "licence": "MIT (EleutherAI/hendrycks_math)",
+   "n": 3619,
+   "weight": null
+  },
+  "mmlu": {
+   "category": "knowledge",
+   "licence": "MIT (cais/mmlu)",
+   "n": 2837,
+   "weight": null
+  },
+  "mmlupro": {
+   "category": "knowledge",
+   "licence": "MIT (TIGER-Lab/MMLU-Pro)",
+   "n": 10048,
+   "weight": null
+  },
+  "omnimath_hard": {
+   "category": "hard",
+   "licence": "Apache-2.0 (KbsdJames/Omni-MATH)",
+   "n": 844,
+   "weight": null
+  },
+  "omnimath_mid": {
+   "category": "math",
+   "licence": "Apache-2.0 (KbsdJames/Omni-MATH)",
+   "n": 1114,
+   "weight": null
+  },
+  "rlvr_ifeval": {
+   "category": "instruction",
+   "licence": "ODC-BY (allenai/RLVR-IFeval)",
+   "n": 4143,
+   "weight": null
+  },
+  "supergpqa_hard": {
+   "category": "hard",
+   "licence": "ODC-BY (m-a-p/SuperGPQA)",
+   "n": 6844,
+   "weight": null
+  }
+ },
+ "pool_hash": "546db512f5c7eb5923b79dc5bc5f4a21447f9af39b846e6c75a1544a32eae13f",
+ "protocol": 3
+}

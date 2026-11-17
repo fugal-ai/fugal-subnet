@@ -360,7 +360,10 @@ def _log_pccs_endpoint(url: str) -> None:
         logger.info("DCAP collateral endpoint: %s", url)
 
 
-def probe_collateral_endpoint(url: str, timeout: float = 15.0,
+COLLATERAL_PROBE_TIMEOUT_S = 5.0
+
+
+def probe_collateral_endpoint(url: str, timeout: float = COLLATERAL_PROBE_TIMEOUT_S,
                               opener=None) -> tuple[bool, str]:
     """Whether the DCAP collateral endpoint `url` serves collateral, asked
     once at validator startup: (ok, why).
@@ -371,6 +374,12 @@ def probe_collateral_endpoint(url: str, timeout: float = 15.0,
     The probe fetches Intel's root CA CRL through the standard PCCS v4 API,
     which every PCCS serves and which needs no quote; it checks reachability,
     not trust (collateral is verified against Intel's root when it is used).
+
+    It names itself with a User-Agent, as the verifier's own HTTP client does:
+    pccs.phala.network answers urllib's default "Python-urllib/3.x" with 403
+    while serving the identical request with any named client, which made
+    the first version of this probe refuse a healthy endpoint (v0.5.0, the
+    live root). The result is advisory: the caller only warns.
     """
     import urllib.error
     import urllib.request
@@ -379,9 +388,13 @@ def probe_collateral_endpoint(url: str, timeout: float = 15.0,
     if not url:
         return False, "no DCAP collateral endpoint is configured (FUGAL_PCCS_URL)"
     probe = f"{url}/sgx/certification/v4/rootcacrl"
+    from fugal_subnet import __version__
+    request = urllib.request.Request(
+        probe, headers={"User-Agent": f"fugal-validator/{__version__} (collateral probe)",
+                        "Accept": "*/*"})
     open_url = opener or urllib.request.urlopen
     try:
-        with open_url(probe, timeout=timeout) as resp:
+        with open_url(request, timeout=timeout) as resp:
             status = getattr(resp, "status", 200)
             body = resp.read(1 << 16)
     except urllib.error.HTTPError as e:

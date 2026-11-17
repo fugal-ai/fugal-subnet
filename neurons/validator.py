@@ -888,9 +888,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             if live and not getattr(_cfg, "EMBEDDINGS_SHA256", None):
                 raise ValueError("config.EMBEDDINGS_SHA256 is not pinned, so the embeddings "
                                  "file could not be checked")
+            # The pin, unless the pool itself is declared unpinned (never on
+            # finney: FUGAL_POOL_UNPINNED is a consensus variable).
+            from fugal_subnet.embeddings_file import embeddings_pin
             v3_embeddings = Embeddings.load(
                 os.getenv("FUGAL_EMBEDDINGS_FILE", "data/embeddings/pool_v3.npz"),
-                getattr(_cfg, "EMBEDDINGS_SHA256", None))
+                embeddings_pin())
             missing = v3_embeddings.covers([q["question_id"] for q in pool_v3])
             if missing:
                 raise ValueError(f"the embeddings file has no row for {len(missing)} pool "

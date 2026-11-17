@@ -1078,7 +1078,7 @@ def _load_pinned_embeddings(pool, mock: bool = False):
     pool question in pool order. Live refuses a file that is not pinned or
     does not match the pin; mock may load an unpinned one for a rehearsal."""
     from fugal_subnet.config import EMBEDDINGS_SHA256
-    from fugal_subnet.embeddings_file import Embeddings
+    from fugal_subnet.embeddings_file import Embeddings, embeddings_pin
 
     if not EMBEDDINGS_SHA256 and not mock:
         raise click.ClickException(
@@ -1086,7 +1086,8 @@ def _load_pinned_embeddings(pool, mock: bool = False):
             "embeddings file")
     path = os.getenv("FUGAL_EMBEDDINGS_FILE", os.path.join("data", "embeddings", "pool_v3.npz"))
     try:
-        return Embeddings.load(path, EMBEDDINGS_SHA256).aligned([q["question_id"] for q in pool])
+        # The pin, unless the pool itself is declared unpinned (never on finney).
+        return Embeddings.load(path, embeddings_pin()).aligned([q["question_id"] for q in pool])
     except (OSError, ValueError, KeyError) as e:
         raise click.ClickException(f"embeddings file {path}: {e}") from e
 

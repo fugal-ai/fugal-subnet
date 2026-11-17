@@ -58,6 +58,17 @@ SUPERSEDED_COMPOSES: dict[str, str] = {
         "2026-11-17 finney compose: no FUGAL_V3_ACTIVATION_BLOCK (use 2026-11-17b)",
     "95700330f06d05a30b49e4c621edacef6467d80d7f2162bda92cbdb89acb192d":
         "2026-11-17 test compose: superseded by 2026-11-17b with the finney twin",
+    # Retired protocols: their images cannot produce a valid proof for the
+    # protocol in force (v3 from finney block 9,527,760), so approving them adds
+    # nothing; leaving them out keeps the approved set to images that can score.
+    "9ab870cfe60d0c61f5764966a177d9146276979e65df0dbaa8370dcd3a75f166":
+        "2026-11-03c finney compose: protocol v1 image, retired",
+    "c9b5c43b57d540d0e8a321efb673b6c42d1effd011dd716934f5df2a6ff0dad8":
+        "2026-11-03c test compose: protocol v1 image, retired",
+    "5408259ffb5e1971f7552fdef7011415737651eb5aa737996b222dd638c7e796":
+        "2026-11-10b finney compose: protocol v2 image, retired at the v3 flip",
+    "ba6eb6f254dd6b4ef7f3f9860af1aeba00061b96f4a4d7260700f041eab5d458":
+        "2026-11-10b test compose: protocol v2 image, retired at the v3 flip",
 }
 
 FINNEY_DEFAULT_ARCHIVE = "wss://archive.chain.opentensor.ai:443"

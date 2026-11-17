@@ -19,8 +19,18 @@ def _hash(name: str) -> str:
 def test_finney_approves_every_current_frozen_compose_from_the_code():
     entries = dict(vs.frozen_compose_entries("finney"))
     assert f"{BASE}:{_hash('app-compose.frozen-2026-11-17b-finney.json')}" in entries
-    assert f"{BASE}:{_hash('app-compose.frozen-2026-11-10b-finney.json')}" in entries
     assert all(name.endswith("-finney.json") for name in entries.values())
+
+
+def test_retired_protocol_images_are_not_approved_from_the_code():
+    """v1 (2026-11-03c) and v2 (2026-11-10b) images cannot prove the protocol in
+    force, so the approved set holds only images that can score."""
+    entries = dict(vs.frozen_compose_entries("finney"))
+    for old in ("2026-11-03c", "2026-11-10b"):
+        for net in ("finney", "test"):
+            h = _hash(f"app-compose.frozen-{old}-{net}.json")
+            assert h in vs.SUPERSEDED_COMPOSES
+            assert f"{BASE}:{h}" not in entries
 
 
 def test_a_superseded_compose_is_never_approved_from_the_code():

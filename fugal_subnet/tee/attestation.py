@@ -360,6 +360,39 @@ def _log_pccs_endpoint(url: str) -> None:
         logger.info("DCAP collateral endpoint: %s", url)
 
 
+def probe_collateral_endpoint(url: str, timeout: float = 15.0,
+                              opener=None) -> tuple[bool, str]:
+    """Whether the DCAP collateral endpoint `url` serves collateral, asked
+    once at validator startup: (ok, why).
+
+    A dead endpoint is otherwise discovered at the collection point, where
+    every proof of the epoch is left unverified (seen on the v3 testnet
+    rehearsal: a follower pointed at a local cache that was not running).
+    The probe fetches Intel's root CA CRL through the standard PCCS v4 API,
+    which every PCCS serves and which needs no quote; it checks reachability,
+    not trust (collateral is verified against Intel's root when it is used).
+    """
+    import urllib.error
+    import urllib.request
+
+    url = (url or "").strip().rstrip("/")
+    if not url:
+        return False, "no DCAP collateral endpoint is configured (FUGAL_PCCS_URL)"
+    probe = f"{url}/sgx/certification/v4/rootcacrl"
+    open_url = opener or urllib.request.urlopen
+    try:
+        with open_url(probe, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+            body = resp.read(1 << 16)
+    except urllib.error.HTTPError as e:
+        return False, f"{probe} answered HTTP {e.code}"
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return False, f"{probe} is unreachable: {e}"
+    if status != 200 or not body:
+        return False, f"{probe} answered HTTP {status} with {len(body)} bytes"
+    return True, f"{url} serves collateral"
+
+
 def verification_order(nonce_hex: str, n: int) -> list[int]:
     """The order proofs are verified in, derived from the epoch nonce.
 

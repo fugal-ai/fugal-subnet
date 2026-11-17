@@ -547,7 +547,7 @@ def _read_verified_pool_cache_v2(cache: str) -> list[dict] | None:
     return pool
 
 
-def _write_pool_cache_v2(pool: list[dict], cache: str) -> None:
+def _write_pool_cache_v2(pool: list[dict], cache: str, protocol: int = 2) -> None:
     """Write the verified pool in its load order (embeddings are indexed by position),
     atomically, so a crash mid-write leaves no partial file to fail the next read."""
     import gzip
@@ -559,9 +559,10 @@ def _write_pool_cache_v2(pool: list[dict], cache: str) -> None:
         with open(tmp, "wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as f:
             f.write(payload)
         os.replace(tmp, cache)
-        logger.info("v2 pool cached at %s for later boots", cache)
+        logger.info("v%d pool cached at %s for later boots", protocol, cache)
     except OSError as e:
-        logger.warning("Could not write the v2 pool cache %s (%s); the next boot rebuilds it", cache, e)
+        logger.warning("Could not write the v%d pool cache %s (%s); the next boot rebuilds it",
+                       protocol, cache, e)
 
 
 def load_pool(protocol_version: int, strict: bool = True) -> list[dict]:
@@ -744,5 +745,5 @@ def load_all_v3(strict: bool = True) -> list[dict]:
     _verify_against_manifest_v3(pool, strict)
     _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict)
     if cache:
-        _write_pool_cache_v2(pool, cache)
+        _write_pool_cache_v2(pool, cache, protocol=3)
     return pool

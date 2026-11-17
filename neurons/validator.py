@@ -305,6 +305,30 @@ def v2_compose_hashes(activation_block: int, root: str | None = None) -> set[str
     return out
 
 
+def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> None:
+    """Ask the DCAP collateral endpoint once at startup instead of finding it
+    dead at the collection point, where every proof of the epoch would go
+    unverified. A live finney validator refuses to start; elsewhere (mock,
+    testnet, rehearsals) it warns. Mock never verifies quotes, so it skips the
+    probe."""
+    if not live:
+        return
+    from fugal_subnet import config
+    from fugal_subnet.tee.attestation import probe_collateral_endpoint
+
+    ok, why = (probe or probe_collateral_endpoint)(config.TEE_PCCS_URL,
+                                                   float(config.TEE_COLLATERAL_TIMEOUT))
+    if ok:
+        logger.info("DCAP collateral endpoint checked: %s", why)
+        return
+    msg = (f"The DCAP collateral endpoint cannot serve collateral: {why}. Every proof "
+           "would go unverified at collection. Fix FUGAL_PCCS_URL (default "
+           "https://pccs.phala.network) or start the local caching PCCS it points at.")
+    if on_finney:
+        raise click.ClickException(msg)
+    logger.warning(msg)
+
+
 def _check_chain_configuration(genesis: str | None, live: bool, approved, activation_block,
                                validator_ip: str) -> int | None:
     """Refuse, once the chain is known, what would make a FINNEY validator
@@ -730,6 +754,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     confirm_block = _check_chain_configuration(
         genesis, live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, VALIDATOR_IP)
     on_finney = genesis is not None and str(genesis).lower() == _cfg.FINNEY_GENESIS_HASH.lower()
+    _check_collateral_endpoint(live, on_finney)
     try:
         v3_block = _cfg.v3_activation_block(genesis)
         odds_block = _cfg.odds_seat_block(genesis)
@@ -840,7 +865,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     pool_models = sorted(prices)
     model_index = {m: i for i, m in enumerate(pool_models)}
     explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
-    logger.info("Price table: %d models; exploration quota %d questions/epoch",
+    logger.info("Price table: %d models; v1/v2 exploration quota %d questions/epoch "
+                "(v3: per-miner exploration, logged with the v3 inputs)",
                 len(prices), explore_size)
 
     # Every epoch input that differs by protocol version, loaded once at

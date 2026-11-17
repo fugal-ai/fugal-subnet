@@ -112,8 +112,10 @@ def find_duplicates(
         cluster.sort(key=lambda uid: commit_blocks.get(uid, float("inf")))
         survivor = cluster[0]
         copies = cluster[1:]
+        # %s, not %d: seniority can be inf (no commitment seen, as in mock),
+        # which %d cannot format, and logging then prints a traceback.
         logger.info(
-            "Dedup cluster: survivor UID %d (block %d), copies: %s",
+            "Dedup cluster: survivor UID %d (block %s), copies: %s",
             survivor, commit_blocks.get(survivor, -1),
             [(uid, commit_blocks.get(uid, -1)) for uid in copies],
         )

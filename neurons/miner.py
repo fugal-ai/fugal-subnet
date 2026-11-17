@@ -271,8 +271,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         prices = load_prices(TEE_MODEL_PRICES_PATH) if TEE_MODEL_PRICES_PATH else price_table(1)
         pool_models = sorted(prices)
     explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
-    logger.info("Price table: %d models; exploration quota %d questions/epoch",
-                len(pool_models), explore_size)
+    if protocol >= 3:
+        from fugal_subnet.config import EXPLORE_PRIVATE_SIZE, EXPLORE_SHARED_SIZE
+        logger.info("Menu: %d entries; exploration %d shared + %d private calls/epoch",
+                    len(pool_models), EXPLORE_SHARED_SIZE, EXPLORE_PRIVATE_SIZE)
+    else:
+        logger.info("Price table: %d models; exploration quota %d questions/epoch",
+                    len(pool_models), explore_size)
 
     logger.info("Head loaded: %s (%d bytes)", head_path or "(pushed over the attested channel)", len(head_data))
     logger.info("Weights hash: %s", weights_hash[:16])
@@ -699,7 +704,7 @@ def _wait_for_block(subtensor, block: int, purpose: str, poll_s: float = 30.0) -
             continue
         if current >= block:
             return
-        logger.info("Holding for v2: %d blocks until block %d, then %s", block - current, block, purpose)
+        logger.info("Holding: %d blocks until block %d, then %s", block - current, block, purpose)
         time.sleep(poll_s)
 
 
@@ -771,7 +776,7 @@ def _tpm_intermediates_at_startup(tee_runtime) -> list:
         logger.warning("Could not build the TPM intermediates (%s: %s); %s", type(e).__name__, e, why)
         return []
     if chain:
-        logger.info("Carrying %d TPM intermediate certificate(s) in each v2 proof", len(chain))
+        logger.info("Carrying %d TPM intermediate certificate(s) in each proof", len(chain))
     else:
         logger.warning("No TPM intermediate chain could be built for this TD's key; %s", why)
     return chain

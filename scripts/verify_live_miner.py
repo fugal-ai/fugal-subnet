@@ -268,5 +268,16 @@ def main() -> int:
     return 0 if ok else 1
 
 
+def _exit_now(code: int) -> None:
+    """Exit with `code` without interpreter teardown. async_substrate_interface's
+    __del__ joins a websocket thread that never finishes at finalization, so a
+    normal exit hung after the verdict was printed (seen on the v3 testnet check,
+    exit 124 under `timeout`); the validator's --once exit has the same fix.
+    Nothing durable is pending here: the verdict is printed and flushed."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _exit_now(main())

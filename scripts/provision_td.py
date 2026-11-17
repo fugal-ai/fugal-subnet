@@ -98,7 +98,8 @@ def head_protocols(head_bytes: bytes) -> list[int]:
     ok = []
     for version in (1, 2, 3):
         try:
-            benchmark_costs_for(head, version)
+            # v3: menu B accepts a head built for either v3 menu.
+            benchmark_costs_for(head, version, menu="b" if version == 3 else None)
         except Exception:  # noqa: BLE001 - any refusal means "not this protocol"
             continue
         ok.append(version)

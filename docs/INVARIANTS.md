@@ -3373,6 +3373,42 @@ visible, to miners and across validators, before it decides anything.
 
 `tests/test_v3_wiring.py`, `tests/test_v3_epoch.py`.
 
+### I1/I3 — v3 menu B applies from one named boundary, with a grace period (v0.6.0)
+
+Menu B adds entries to the v3 menu without a protocol change. Every per-epoch
+reader picks the epoch's menu from its BOUNDARY block through
+`routing_protocol.menu_for_epoch(3, boundary, config.menu_b_block(genesis))`:
+the validator's slice, exploration, pricing and proof checks, and the miner's
+run inside the TD. Menu A is used before the block and menu B from it.
+Finney's block is compiled in (`FINNEY_MENU_B_BLOCK` = 9,531,000, one epoch
+after the odds seat block). The variable `FUGAL_MENU_B_BLOCK` cannot move it
+there; other chains read the variable. The block, `MENU_GRACE_EPOCHS` and both
+menu B files are in the consensus digest. The rationale is in
+`docs/decisions/V3_MENU_B.md`.
+
+- **Menu A is unchanged and menu B extends it.** Menu B's first 53 entries and
+  token rows are menu A's, byte for byte, and its index space is menu A's
+  followed by the added entries. A head built for menu A stays valid on menu B.
+  Its seat, burn-in, seniority and window carry across the block, and nothing
+  resets. Before the block every output (reveals, seats, the saved window,
+  exploration draws, requests) is identical to v0.5.0. Both menu B files are
+  hash-pinned, and the extension property is checked
+  (`check_safety_invariants.check_menu_v3b_pinned`).
+- **During grace the added entries are explored but scored for nobody.** For
+  `MENU_GRACE_EPOCHS` epochs from the block, the added entries' pooled pairs
+  are marked unscored (`EpochPairs.scored`, published as
+  `odds_unscored_entries`) for every head alike, then and afterwards. The odds
+  seat's full-menu rule covers menu A only during this time. Scoring a missing
+  row at R's odds instead would let a head omit exactly the rows where R beats
+  it. After grace the full-menu rule covers all of menu B: a head with no row
+  for an added entry may not take or hold the odds seat.
+- **A rebuild reproduces it.** A rebuild prices every v3 reveal at menu B's
+  table (a superset with menu A's prices) and reads the mask from the reveal.
+  A saved window keeps the mask. `check_determinism` runs the odds stage with a
+  grace mask.
+
+`tests/test_v3_menu_b.py`.
+
 ### I1 — odds are computed exactly by the validator (v3)
 
 A head's prediction for a (question, model) pair is a function of two pinned

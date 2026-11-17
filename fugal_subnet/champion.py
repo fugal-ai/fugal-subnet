@@ -234,6 +234,12 @@ class EpochPairs:
     # (pairs,) int64 inverse-probability weights in explore_weights.WEIGHT_SCALE
     # units (cost-aware exploration); None weighs every pair one.
     weight: np.ndarray | None = None
+    # (pairs,) bool: the pairs the odds score counts. None counts every pair.
+    # v3 menu B's grace period (routing_protocol.grace_excluded) leaves the
+    # added entries' pairs unscored for every head alike: they are still
+    # pooled, published and fed to the reference, but no head is scored on
+    # them, then or later.
+    scored: np.ndarray | None = None
 
     def __post_init__(self):
         n = len(self.question_ids)
@@ -244,6 +250,8 @@ class EpochPairs:
                 raise ValueError(f"{name} must hold one value per pair")
         if self.weight is not None and (self.weight.shape != (n,) or (n and int(self.weight.min()) < 1)):
             raise ValueError("weight must hold one positive value per pair")
+        if self.scored is not None and (self.scored.shape != (n,) or self.scored.dtype != bool):
+            raise ValueError("scored must hold one bool per pair")
 
 
 @dataclass

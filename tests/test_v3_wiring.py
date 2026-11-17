@@ -293,6 +293,7 @@ def test_v3_seat_params_never_read_the_anchor_model(monkeypatch):
     ("FINNEY_V3_ACTIVATION_BLOCK", "V3_ACTIVATION_BLOCK_ENV"),
     ("FINNEY_ODDS_SEAT_BLOCK", "ODDS_SEAT_BLOCK_ENV"),
     ("FINNEY_CONFIRM_ACTIVATION_BLOCK", "CONFIRM_ACTIVATION_BLOCK_ENV"),
+    ("FINNEY_MENU_B_BLOCK", "MENU_B_BLOCK_ENV"),
 ])
 def test_an_activation_variable_that_repeats_finneys_block_leaves_the_digest_alone(
         monkeypatch, finney_name, env_name):

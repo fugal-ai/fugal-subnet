@@ -766,9 +766,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     try:
         v3_block = _cfg.v3_activation_block(genesis)
         odds_block = _cfg.odds_seat_block(genesis)
+        menu_b_blk = _cfg.menu_b_block(genesis)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
-    _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL)
+    _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL, menu_b_blk)
+    if menu_b_blk is not None:
+        logger.info("Protocol v3 menu B: from the first epoch whose boundary is at or after "
+                    "block %d; its added entries unscored for %d epochs from it",
+                    menu_b_blk, _cfg.MENU_GRACE_EPOCHS)
     if v3_block is None:
         logger.info("Protocol v3: not scheduled on this chain")
     else:
@@ -910,7 +915,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # and the pinned embeddings file every head's odds are computed from. A
     # live validator that cannot load them refuses to start now, not at the
     # activation block.
-    v3_embeddings = v3_index = None
+    v3_embeddings = v3_index = epoch_inputs_v3b = None
     v3_status = "not scheduled"
     if v3_block is not None:
         from fugal_subnet import epoch_plan
@@ -947,6 +952,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 pool_v3, {q["question_id"]: q for q in pool_v3}, prices_v3,
                 models_v3, {m: i for i, m in enumerate(models_v3)},
             )
+            if menu_b_blk is not None:
+                # v3 menu B: the same pool, menu A's entries plus the added
+                # ones appended (routing_protocol.models_for_protocol).
+                from fugal_subnet.routing_protocol import MENU_B
+                models_v3b = models_for_protocol(3, MENU_B)
+                epoch_inputs_v3b = (
+                    pool_v3, epoch_inputs[3][1], price_table(3, MENU_B),
+                    models_v3b, {m: i for i, m in enumerate(models_v3b)},
+                )
             logger.info("Protocol v3 inputs: pool %d questions (pool_hash=%s), %d menu "
                         "entries, embeddings for %d questions", len(pool_v3),
                         pool_hash(pool_v3)[:16], len(models_v3), len(v3_embeddings.row))
@@ -1068,7 +1082,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # reveal at v2's left every v3 cell unpriced; v3 review, finding 1).
             prices=epoch_inputs.get(2, epoch_inputs[1])[2],
             bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
-            tables=_rebuild_tables(epoch_inputs, config_module),
+            tables=_rebuild_tables(epoch_inputs, config_module, epoch_inputs_v3b),
         )
         if rebuilt.newest_epoch_id is not None:
             v2_window, v2_seat = rebuilt.window, rebuilt.seat
@@ -1152,7 +1166,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     prices=epoch_inputs[protocol_version][2],
                     bench_category=getattr(config_module, f"BENCHMARK_CATEGORY_V{protocol_version}",
                                            None),
-                    tables=_rebuild_tables(epoch_inputs, config_module),
+                    tables=_rebuild_tables(epoch_inputs, config_module, epoch_inputs_v3b),
                 )
                 if synced.changed:
                     (scoring_state, v2_window, v2_seat, v2_copy, v2_window_degraded,
@@ -1198,6 +1212,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             benchmark_pool, gold_answers, prices, pool_models, model_index = (
                 epoch_inputs[protocol_version]
             )
+            # v3 menu B, from its block (the miner picks it the same way).
+            from fugal_subnet.routing_protocol import menu_for_epoch
+            epoch_menu = menu_for_epoch(protocol_version, boundary_block, menu_b_blk)
+            if epoch_menu == "b":
+                if epoch_inputs_v3b is None:
+                    raise RuntimeError(f"epoch {epoch_id} is on v3 menu B but its inputs "
+                                       "were not loaded at startup")
+                benchmark_pool, gold_answers, prices, pool_models, model_index = epoch_inputs_v3b
             plan = _epoch_slice(protocol_version, epoch_id, block_hash, benchmark_pool,
                                 gold_answers, pool_models, SLICE_SIZE, explore_size)
             nonce, questions, question_ids = plan.nonce, plan.questions, plan.question_ids
@@ -1293,6 +1315,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 mock=mock,
                 collateral_budget=collateral_budget,
                 protocol_version=protocol_version,
+                menu=epoch_menu,
             )
             for uid in order:
                 hotkey_ss58 = metagraph.hotkeys[uid] if uid < len(metagraph.hotkeys) else ""
@@ -1522,6 +1545,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 v3_odds = None
                 if protocol_version >= 3:
                     from fugal_subnet import explore_weights as _xw
+                    from fugal_subnet import routing_protocol as _rp
                     from fugal_subnet.v2_epoch import OddsInput
                     v3_odds = OddsInput(
                         nonce=nonce,
@@ -1538,7 +1562,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         single_model_min_pairs=_cfg.SINGLE_MODEL_MIN_PAIRS,
                         category_targets=_cfg.CATEGORY_TARGETS_V3,
                         explore_weights=(_xw.weights(explore_shares) if explore_shares else None),
-                        menu=tuple(pool_models),
+                        # Menu B's grace: the added entries are drawn and
+                        # pooled, but scored for no head (routing_protocol).
+                        menu=_rp.scored_menu(protocol_version, boundary_block, menu_b_blk,
+                                             blocks_per_epoch, _cfg.MENU_GRACE_EPOCHS),
+                        unscored=_rp.grace_excluded(protocol_version, boundary_block,
+                                                    menu_b_blk, blocks_per_epoch,
+                                                    _cfg.MENU_GRACE_EPOCHS),
                     )
                 v2_result = run_v2_epoch(
                     epoch_index=epoch_index, epoch_id=epoch_id,
@@ -1903,6 +1933,7 @@ class _EpochChecks(NamedTuple):
     mock: bool
     collateral_budget: object
     protocol_version: int
+    menu: str | None = None
 
 
 class _Checked(NamedTuple):
@@ -1988,6 +2019,7 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
             mock=checks.mock,
             collateral_budget=checks.collateral_budget,
             protocol_version=checks.protocol_version,
+            menu=checks.menu,
         )
     except ImportError:
         raise
@@ -2654,7 +2686,7 @@ def _v2_sync_step(*, epoch_index: int, last_epoch_index: int, first_v2_epoch: in
         return _V2Sync(changed, state)
 
 
-def _check_v3_blocks_aligned(v3_block, odds_block, epoch_interval) -> None:
+def _check_v3_blocks_aligned(v3_block, odds_block, epoch_interval, menu_b_blk=None) -> None:
     """Refuse a v3 or odds-seat block that is not an epoch boundary, the way
     the v2 block is refused and the way a v3 miner refuses it
     (miner.py, validate_activation_block). Accepting it here while miners
@@ -2663,19 +2695,27 @@ def _check_v3_blocks_aligned(v3_block, odds_block, epoch_interval) -> None:
     from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
 
     bpe = blocks_per_epoch(epoch_interval)
-    for name, block in (("v3 activation", v3_block), ("odds-seat", odds_block)):
+    for name, block in (("v3 activation", v3_block), ("odds-seat", odds_block),
+                        ("menu B", menu_b_blk)):
         try:
             validate_activation_block(block, bpe)
         except ValueError as e:
             raise click.ClickException(f"{name} block: {e}") from e
 
 
-def _rebuild_tables(epoch_inputs, config_module) -> dict:
+def _rebuild_tables(epoch_inputs, config_module, inputs_v3b=None) -> dict:
     """{protocol: (prices, bench_category)} for every protocol whose inputs this
     validator loaded (v2 on), so a rebuild or re-anchor prices each replayed
-    reveal at its own protocol's table (v3 review, finding 1)."""
-    return {p: (inputs[2], getattr(config_module, f"BENCHMARK_CATEGORY_V{p}", None))
-            for p, inputs in sorted(epoch_inputs.items()) if p >= 2}
+    reveal at its own protocol's table (v3 review, finding 1).
+
+    With v3 menu B scheduled, v3's table is menu B's: menu A's entries at
+    menu A's prices plus the added ones, so a reveal from either side of the
+    menu B block is priced exactly as the live epoch priced it."""
+    out = {p: (inputs[2], getattr(config_module, f"BENCHMARK_CATEGORY_V{p}", None))
+           for p, inputs in sorted(epoch_inputs.items()) if p >= 2}
+    if inputs_v3b is not None and 3 in out:
+        out[3] = (inputs_v3b[2], out[3][1])
+    return out
 
 
 def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_category,

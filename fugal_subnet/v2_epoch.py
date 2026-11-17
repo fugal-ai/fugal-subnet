@@ -145,6 +145,8 @@ def save_window(path: str, window: Window) -> None:
             arrays[f"x_c_{e}"] = ep.completion_tokens
             if ep.weight is not None:
                 arrays[f"x_w_{e}"] = ep.weight
+            if ep.scored is not None:
+                arrays[f"x_s_{e}"] = ep.scored
     arrays["meta"] = np.frombuffer(json.dumps(meta, sort_keys=True).encode("utf-8"), dtype=np.uint8)
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
@@ -188,6 +190,7 @@ def load_window(path: str, size: int) -> Window:
                 prompt_tokens=np.array(z[f"x_p_{e}"], dtype=np.int32),
                 completion_tokens=np.array(z[f"x_c_{e}"], dtype=np.int32),
                 weight=(np.array(z[f"x_w_{e}"], dtype=np.int64) if f"x_w_{e}" in z.files else None),
+                scored=(np.array(z[f"x_s_{e}"], dtype=bool) if f"x_s_{e}" in z.files else None),
             )
             for e, v in meta.get("pairs", {}).items()
         }
@@ -401,7 +404,13 @@ class OddsInput:
     # The protocol's menu. A head whose rows do not cover every entry makes no
     # prediction at all (every pair -1), so it is not eligible for the odds
     # seat (champion._no_full_menu). None checks only the pairs drawn.
+    # During v3 menu B's grace period this is the menu without the added
+    # entries (routing_protocol.scored_menu).
     menu: tuple[str, ...] | None = None
+    # Entries whose pairs are pooled but not scored this epoch, for every head
+    # alike: v3 menu B's added entries during its grace period
+    # (routing_protocol.grace_excluded). Empty outside it.
+    unscored: frozenset[str] = frozenset()
 
 
 def odds_b64(odds: np.ndarray) -> str:
@@ -464,6 +473,8 @@ def _pool_and_odds(window: Window, oi: OddsInput, serving: Mapping[str, int],
         completion_tokens=np.array([p.completion_tokens for p in pooled], dtype=np.int32),
         weight=(np.array([p.weight for p in pooled], dtype=np.int64)
                 if oi.explore_weights is not None else None),
+        scored=(np.array([p.model not in oi.unscored for p in pooled], dtype=bool)
+                if oi.unscored else None),
     )
     hidden = [oi.hidden_of(q) for q in pairs.question_ids]
     odds: dict[str, np.ndarray] = {}
@@ -722,6 +733,8 @@ def run_v2_epoch(
         extra["odds_digest"] = odds_digest(pool_rows, odds_rows)
         v3_fields = {
             "exploration_pool": pool_rows,
+            **({"odds_unscored_entries": sorted(odds_input.unscored)}
+               if odds_input.unscored else {}),
             "head_odds": odds_rows,
             "exploration_excluded_coldkeys": {
                 ck: why for ck, why in sorted(implausible.items())},

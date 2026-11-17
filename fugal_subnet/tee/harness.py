@@ -116,6 +116,7 @@ def run_benchmark(
     explore_size: int = 0,
     hotkey: str = "",
     protocol_version: int = 1,
+    menu: str | None = None,
 ) -> BenchmarkProof:
     """Execute the routing benchmark inside the TEE.
 
@@ -140,7 +141,11 @@ def run_benchmark(
     """
     head = load_head_from_npz(head_bytes)
     # v1 keeps calling benchmark_costs exactly as before; v2 prices on its own manifest and table.
-    costs = benchmark_costs(head) if protocol_version == 1 else benchmark_costs_for(head, protocol_version)
+    # `menu`: the epoch's v3 menu (routing_protocol.menu_for_epoch); the
+    # validator verifies the head and prices the calls on the same one.
+    menu_kw = {"menu": menu} if menu else {}
+    costs = (benchmark_costs(head) if protocol_version == 1
+             else benchmark_costs_for(head, protocol_version, **menu_kw))
     weights_hash = hashlib.sha256(head_bytes).hexdigest()
 
     nonce_bytes = bytes.fromhex(nonce) if len(nonce) == 64 else nonce.encode()
@@ -220,7 +225,7 @@ def run_benchmark(
     outcomes = {
         (q["question_id"], is_explore): (response_text, failed, cost, p_tok, c_tok, lat)
         for q, _model, is_explore, response_text, failed, cost, p_tok, c_tok, lat
-        in _call_all(proxy, call_order, epoch_id, protocol_version)
+        in _call_all(proxy, call_order, epoch_id, protocol_version, **menu_kw)
     }
 
     for q, model_id, is_explore in scheduled:
@@ -335,7 +340,7 @@ def current_request_id() -> str:
     return getattr(_request_ctx, "request_id", "")
 
 
-def _call_all(proxy, scheduled, epoch_id, protocol_version: int = 1):
+def _call_all(proxy, scheduled, epoch_id, protocol_version: int = 1, menu: str | None = None):
     """Make every scheduled model call, HARNESS_CONCURRENCY at a time, and yield
     (question, model_id, is_exploration, text, failed, cost, prompt_tokens,
     completion_tokens) in the ORDER SCHEDULED — never completion order. Cost is
@@ -357,7 +362,8 @@ def _call_all(proxy, scheduled, epoch_id, protocol_version: int = 1):
                 # v3: the menu entry's whole request (provider model id,
                 # reasoning, answer budget, pinned providers), sent as pinned.
                 text = _call_model(proxy, model_id, q, request=request_for(
-                    protocol_version, model_id, HARNESS_MAX_TOKENS))
+                    protocol_version, model_id, HARNESS_MAX_TOKENS,
+                    **({"menu": menu} if menu else {})))
             else:
                 # v2 sends each model's single pinned reasoning setting; v1 calls exactly as before.
                 setting = reasoning_for(protocol_version, model_id) if protocol_version != 1 else None

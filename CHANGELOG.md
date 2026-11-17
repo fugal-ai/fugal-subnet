@@ -4,6 +4,25 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — v3 menu B: seven OpenAI entries from block 9,531,000, with a 20-epoch grace (validators and miners)
+`openai/gpt-6.2-astra@{low,high,max}` ($8 / $40 per M tokens) and
+`openai/gpt-6.2-sol@{low,medium,high,max}` ($2 / $10) join the v3 menu from
+block 9,531,000 (epoch 26475, ~2026-11-18 04:22 UTC). That block is compiled
+in for finney and comes one epoch after the odds seat block. Their token
+rows were measured: 10 calls each on the v3 request path. Menu A is unchanged,
+so heads, seats, burn-in and the window carry over, and nothing changes
+before the block. Exploration draws the new entries from the block. For 20
+epochs (~24 h) their pairs are pooled but scored for no head. After that, a
+head must give odds for all 60 entries to take or hold the odds seat.
+New pinned files: `data/models_v3b.json` and
+`data/benchmark_tokens_protocol_v3b.json`. See `docs/decisions/V3_MENU_B.md`.
+
+### Changed — the miner takes its protocol from the release's compiled blocks (miners)
+The miner reads its protocol, flip block and menu B block from the release's
+compiled finney blocks, keyed on the chain's genesis hash. It no longer
+relies on its compose's environment alone. On finney the variables may only
+repeat the compiled values.
+
 ### Changed — validator upgrades are "update + restart" (validators)
 Every earlier release asked each operator to paste a new approved entry, fetch
 the embeddings file and set an archive endpoint by hand. Now

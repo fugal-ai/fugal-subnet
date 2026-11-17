@@ -105,7 +105,8 @@ PINNED_PRICE_TABLE_V2_SHA256 = (
 PINNED_PRICE_TABLE_V3_SHA256 = (
     "1494ad3f597f77f20a4bafb0c7401a23c357a4afb140fcab895d49bb6b6881f2"
 )
-# Protocol v3's token manifest (the cost denominator), status `candidate`.
+# Protocol v3's token manifest (the cost denominator), status `reviewed`
+# (approved by the owner 2026-11-17; live miners require a reviewed manifest).
 # 2026-11-16: 49 rows MEASURED in v3 (10 calls each, the same 10 non-code v3
 # questions for every entry, through the v3 harness path: system prompt,
 # entry budget, pinned hosts; $3.86, rows in ~/projects/fugal-v2-handoff/
@@ -117,7 +118,7 @@ PINNED_PRICE_TABLE_V3_SHA256 = (
 # v3 exploration's attested token medians replace rows at the monthly menu
 # update. Pinned like the menu: a change re-prices every v3 miner's routing.
 PINNED_TOKEN_MANIFEST_V3_SHA256 = (
-    "b363844cdc5979e4bde00066b4bd92f874fdf7028b4d1860fde41c932657334a"
+    "17d362de9f5675bf3a677c5dae5fa7dc1a4363ae966e22bc73b8a91691e2526a"
 )
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM

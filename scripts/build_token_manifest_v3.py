@@ -129,12 +129,12 @@ for e in menu:
 manifest = {
     "version": "fugal-token-statistics-v1",
     "profile_id": v2["profile_id"],
-    "status": "candidate",
+    "status": "reviewed",
     "sources": {"benchmark_tokens_protocol_v2.json": hashlib.sha256(open(V2, "rb").read()).hexdigest(),
                 **({"tokens-2026-11-16.jsonl": hashlib.sha256(open(V3_OBS, "rb").read()).hexdigest()}
                    if V3_OBS else {})},
     "worker_profile": (
-        "Protocol v3 PROVISIONAL token statistics, built 2026-11-16 with no paid calls "
+        "Protocol v3 token statistics, built 2026-11-16 "
         "(scripts/build_token_manifest_v3.py rule): rows measured in v2 at the same model and "
         "reasoning setting are reused as they are; every other row is an estimate from v2's "
         "measured means, marked provisional. Replaced row by row at the monthly menu update by "
@@ -144,7 +144,9 @@ manifest = {
     "models": rows,
     "review": {
         "date": "2026-11-16",
-        "status_note": "candidate: the v3 release review promotes it to reviewed",
+        "status_note": ("reviewed: approved by the owner on 2026-11-17 for the v3 release "
+                        "(49 entries measured on the v3 path, 3 v2 rows within 2x kept, "
+                        "gemma-4-31b provisional at 9 calls)"),
         "counts": counts,
         "v2_rows_kept_over_v3": kept_v2_over_v3,
         "v2_rows_replaced_by_v3_over_2x": v3_over_v2,

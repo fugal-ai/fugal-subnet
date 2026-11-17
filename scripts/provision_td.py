@@ -96,7 +96,7 @@ def head_protocols(head_bytes: bytes) -> list[int]:
     except ValueError:
         return []          # not a head any validator loads (e.g. no success contract)
     ok = []
-    for version in (1, 2):
+    for version in (1, 2, 3):
         try:
             benchmark_costs_for(head, version)
         except Exception:  # noqa: BLE001 - any refusal means "not this protocol"
@@ -231,7 +231,7 @@ def main() -> int:
         head = f.read()
     protocols = head_protocols(head)  # refuse to push a head every validator would reject
     if not protocols:
-        raise SystemExit(f"{args.head} cannot enter the benchmark under protocol v1 or v2 "
+        raise SystemExit(f"{args.head} cannot enter the benchmark under protocol v1, v2 or v3 "
                          "(a legacy head, or one built against another manifest); every "
                          "validator would refuse it. Rebuild it with scripts/train_head.py.")
 

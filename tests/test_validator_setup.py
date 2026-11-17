@@ -167,3 +167,46 @@ def test_the_checklist_and_guide_say_update_and_restart():
     guide = (ROOT / "docs" / "VALIDATOR_GUIDE.md").read_text()
     assert "READY:" in guide
     assert os.path.exists(ROOT / "fugal_subnet" / "validator_setup.py")
+
+
+# --- keyed on the chain's genesis, not the --network string (v0.6.0 review, finding 3) ---
+
+def test_a_finney_validator_on_its_own_node_gets_the_release_entries(monkeypatch):
+    from fugal_subnet import config
+    url = "ws://127.0.0.1:9944"
+    assert vs.network_for_genesis(config.FINNEY_GENESIS_HASH, url) == "finney"
+    monkeypatch.setattr(config, "TEE_APPROVED_MEASUREMENTS", [])
+    monkeypatch.setattr(config, "ARCHIVE_ENDPOINTS", [])
+    monkeypatch.setattr(config, "FALLBACK_ENDPOINTS", [])
+    out = vs.apply_for_chain(config.FINNEY_GENESIS_HASH, url)
+    want = f"{BASE}:{_hash('app-compose.frozen-2026-11-17b-finney.json')}"
+    assert want in config.TEE_APPROVED_MEASUREMENTS
+    assert out["newest"] == "app-compose.frozen-2026-11-17b-finney.json"
+    assert out["endpoints_changed"]
+    assert config.ARCHIVE_ENDPOINTS == [vs.FINNEY_DEFAULT_ARCHIVE]
+
+
+def test_a_local_chain_gets_no_entries_from_the_code(monkeypatch):
+    from fugal_subnet import config
+    local = "0x" + "11" * 32
+    monkeypatch.setattr(config, "TEE_APPROVED_MEASUREMENTS", [])
+    monkeypatch.setattr(config, "ARCHIVE_ENDPOINTS", [])
+    out = vs.apply_for_chain(local, "ws://127.0.0.1:9944")
+    assert vs.network_for_genesis(local, "ws://127.0.0.1:9944") is None
+    assert config.TEE_APPROVED_MEASUREMENTS == [] and out["added"] == []
+    assert not out["endpoints_changed"]
+
+
+def test_a_named_network_is_not_resolved_twice(monkeypatch):
+    from fugal_subnet import config
+    monkeypatch.setattr(config, "TEE_APPROVED_MEASUREMENTS", ["x:y"])
+    out = vs.apply_for_chain(config.FINNEY_GENESIS_HASH, "finney")
+    assert out["added"] == [] and config.TEE_APPROVED_MEASUREMENTS == ["x:y"]
+
+
+def test_the_validator_applies_the_chain_setup_after_reading_the_genesis():
+    src = (ROOT / "neurons" / "validator.py").read_text()
+    g = src.index("genesis = chain_genesis_hash(subtensor)")
+    a = src.index("validator_setup.apply_for_chain(genesis, network)")
+    c = src.index("confirm_block = _check_chain_configuration(")
+    assert g < a < c

@@ -230,7 +230,15 @@ ODDS_SEAT_BLOCK_ENV = int(_odds_seat) if _odds_seat else None
 FINNEY_MENU_B_BLOCK: int | None = 9531000
 _menu_b = os.getenv("FUGAL_MENU_B_BLOCK", "").strip()
 MENU_B_BLOCK_ENV = int(_menu_b) if _menu_b else None
-MENU_GRACE_EPOCHS = int(os.getenv("FUGAL_MENU_GRACE_EPOCHS", "20"))
+# The grace length is consensus like the blocks (it decides which pairs every
+# head is scored on): finney's is compiled and a variable may only repeat it;
+# another chain reads the variable (default the finney value). Positive only.
+# Resolve it with menu_grace_epochs(genesis); MENU_GRACE_EPOCHS is the
+# variable-or-default value for code that has no chain (tests, tools).
+FINNEY_MENU_GRACE_EPOCHS: int = 20
+_menu_grace = os.getenv("FUGAL_MENU_GRACE_EPOCHS", "").strip()
+MENU_GRACE_EPOCHS_ENV = int(_menu_grace) if _menu_grace else None
+MENU_GRACE_EPOCHS = MENU_GRACE_EPOCHS_ENV if MENU_GRACE_EPOCHS_ENV is not None else FINNEY_MENU_GRACE_EPOCHS
 # The odds seat test (champion._challenge_odds, odds_score.py). The margin is
 # in Brier points (0.01 of Brier score): a challenger's lower bound, at
 # CHAMPION_CONFIDENCE, must clear it on at least ODDS_MIN_PAIRS pairs both
@@ -313,6 +321,23 @@ def menu_b_block(genesis_hash: str | None) -> int | None:
         raise ValueError(f"the menu B block ({block}) must not be before the v3 "
                          f"activation block ({v3})")
     return block
+
+
+def menu_grace_epochs(genesis_hash: str | None) -> int:
+    """Menu B's grace in epochs on the chain with this genesis (the same rule
+    as the blocks: finney's is compiled; v0.6.0 review, finding 2)."""
+    env = MENU_GRACE_EPOCHS_ENV
+    if env is not None and env < 1:
+        raise ValueError(f"FUGAL_MENU_GRACE_EPOCHS must be a positive number of epochs, got {env}")
+    if genesis_hash is not None and str(genesis_hash).lower() != FINNEY_GENESIS_HASH.lower():
+        return env if env is not None else FINNEY_MENU_GRACE_EPOCHS
+    if env is not None and env != FINNEY_MENU_GRACE_EPOCHS:
+        where = ("on finney" if genesis_hash is not None else
+                 "and the chain's genesis hash could not be read, so this cannot be shown "
+                 "not to be finney")
+        raise ValueError(f"FUGAL_MENU_GRACE_EPOCHS={env} is set {where}, where the grace is "
+                         f"fixed by the release ({FINNEY_MENU_GRACE_EPOCHS}). Unset it.")
+    return FINNEY_MENU_GRACE_EPOCHS
 
 
 def protocol_for_chain(genesis_hash: str | None) -> int:

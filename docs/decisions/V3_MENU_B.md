@@ -2,6 +2,17 @@
 
 Decided 2026-11-17, owner-approved for v0.6.0.
 
+## Upgrade timing (required)
+
+Miners must re-provision on the v0.6.0 image (its frozen compose comes in the
+follow-up composes PR) **before** block 9,531,000: from that block validators
+plan exploration over menu B's 60 entries, and a v0.5.0 image, which plans over
+menu A's 53, fails verification. Validators must update to `main` at or after
+the composes PR merge and restart before the block, because approved entries
+are read at startup; a v0.5.0 validator left running past the block keeps
+menu A and diverges from the upgraded ones. The grace length (20 epochs) is
+compiled for finney like the block (`config.menu_grace_epochs`).
+
 ## What changes
 
 Seven entries join the v3 menu: `openai/gpt-6.2-astra@{low,high,max}` ($8 / $40 per

@@ -162,7 +162,11 @@ def environment_fingerprint() -> dict:
                 "finney": config.FINNEY_MENU_B_BLOCK,
                 "env": _env_unless_finney(config.MENU_B_BLOCK_ENV, config.FINNEY_MENU_B_BLOCK),
             },
-            "menu_grace_epochs": config.MENU_GRACE_EPOCHS,
+            "menu_grace_epochs": {
+                "finney": config.FINNEY_MENU_GRACE_EPOCHS,
+                "env": _env_unless_finney(config.MENU_GRACE_EPOCHS_ENV,
+                                          config.FINNEY_MENU_GRACE_EPOCHS),
+            },
             "menu_v3b": _file_sha256(_routing_data("models_v3b.json")),
             "tokens_v3b": _file_sha256(_routing_data("benchmark_tokens_protocol_v3b.json")),
             "odds_seat_block": {

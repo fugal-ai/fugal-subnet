@@ -6,6 +6,25 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [0.6.0] - 2026-11-17
 
+### Upgrade BEFORE block 9,531,000 (~2026-11-18 04:22 UTC)
+- **Miners:** re-provision on the v0.6.0 image with its new frozen compose
+  (published in the follow-up composes PR) before the block. The v0.5.0 image
+  plans exploration over menu A's 53 entries; from the block validators plan
+  it over menu B's 60, so a v0.5.0 miner's proofs fail from that block.
+- **Validators:** update to `main` at or after the composes PR merge and
+  restart before the block (approved entries are read at startup, so the new
+  image is approved only after the restart). A v0.5.0 validator left running
+  past the block keeps menu A and diverges from upgraded validators.
+
+### Fixed — v0.6.0 review
+- The menu B grace length is consensus like the blocks: finney's 20 epochs
+  are compiled in (`FINNEY_MENU_GRACE_EPOCHS`), a `FUGAL_MENU_GRACE_EPOCHS`
+  that differs is refused on finney, and it must be positive everywhere
+  (`config.menu_grace_epochs`).
+- Approved entries and the finney default endpoints follow the chain's genesis
+  hash, so a finney validator on its own node (`--network ws://…`) gets the
+  release's entries too (`validator_setup.apply_for_chain`).
+
 ### Added — v3 menu B: seven OpenAI entries from block 9,531,000, with a 20-epoch grace (validators and miners)
 `openai/gpt-6.2-astra@{low,high,max}` ($8 / $40 per M tokens) and
 `openai/gpt-6.2-sol@{low,medium,high,max}` ($2 / $10) join the v3 menu from

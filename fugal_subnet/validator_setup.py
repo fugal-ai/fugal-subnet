@@ -176,6 +176,46 @@ def prepare(network: str | None) -> dict:
             "archive": bool(config.ARCHIVE_ENDPOINTS)}
 
 
+def network_for_genesis(genesis: str | None, network: str | None) -> str | None:
+    """Which public network's composes apply, from the chain itself: finney's
+    genesis hash means finney whatever `--network` says (a validator on its own
+    finney node passes a ws:// URL; v0.6.0 review, finding 3). Otherwise the
+    `--network` name, if it is one of the two public networks."""
+    from fugal_subnet import config
+
+    if genesis is not None and str(genesis).lower() == config.FINNEY_GENESIS_HASH.lower():
+        return "finney"
+    return network_name(network)
+
+
+def apply_for_chain(genesis: str | None, network: str | None) -> dict:
+    """After the chain is connected: add the entries and finney endpoints that
+    `prepare` could not know from a `--network` URL. In place, like `prepare`.
+    Returns {"added", "newest", "endpoints_changed"}."""
+    from fugal_subnet import config
+
+    net = network_for_genesis(genesis, network)
+    added: list[tuple[str, str]] = []
+    if net is not None and network_name(network) != net:
+        entries, added = resolve_approved(list(config.TEE_APPROVED_MEASUREMENTS), net)
+        config.TEE_APPROVED_MEASUREMENTS[:] = entries
+        if added:
+            logger.info("Approved from this release's frozen composes (%s, from the chain's "
+                        "genesis): %s", net,
+                        "; ".join(f"{name} ({e.split(':', 1)[1][:12]}…)" for e, name in added))
+    changed = False
+    if net == "finney" and network_name(network) != "finney":
+        archive, fallback, changed = default_endpoints(
+            "finney", list(config.ARCHIVE_ENDPOINTS), list(config.FALLBACK_ENDPOINTS))
+        if changed:
+            config.ARCHIVE_ENDPOINTS[:] = archive
+            config.FALLBACK_ENDPOINTS[:] = fallback
+            logger.info("Chain endpoints: archive %s, fallback %s (finney defaults, from the "
+                        "chain's genesis)", ", ".join(archive), ", ".join(fallback))
+    newest = (frozen_compose_entries(net) or [("", "")])[-1][1]
+    return {"added": added, "newest": newest, "endpoints_changed": changed}
+
+
 def ensure_embeddings(path: str, pin: str | None, url: str | None, *, fetch=None) -> str:
     """Make `path` the pinned embeddings file, downloading it if missing or
     wrong. Returns a note for the log. Raises only when a needed download fails

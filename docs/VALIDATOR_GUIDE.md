@@ -149,6 +149,12 @@ committed in the release (`fugal_subnet/validator_setup.py`), the embeddings
 file is fetched and verified, and on finney the archive and fallback endpoints
 default to OpenTensor's when unset.
 
+**v0.6.0 (menu B) timing:** update and restart **before block 9,531,000**
+(~2026-11-18 04:22 UTC), at or after the composes PR merge, so the new miner
+image is approved; a validator still on v0.5.0 after the block keeps the old
+menu and diverges. Running your own finney node (`--network ws://…`) is fine:
+the release's entries and default endpoints follow the chain's genesis hash.
+
 ### Minimum mainnet environment (finney, netuid 70)
 
 > Everything a finney validator must set, in `/etc/fugal/validator.env`. The

@@ -671,9 +671,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet import config as _cfg
     from fugal_subnet.config import V2_ACTIVATION_BLOCK
+    # A `--network` URL (a validator on its own node) gets its release entries
+    # once the chain's genesis is known (below), so an empty list is only
+    # refused here when the network is already known.
+    defer_entries = (live and not TEE_APPROVED_MEASUREMENTS
+                     and validator_setup.network_name(network) is None
+                     and validator_setup.from_code_enabled())
     _check_live_configuration(
-        live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, EPOCH_INTERVAL,
-        getattr(_cfg, "BENCHMARK_CATEGORY_V2", None),
+        live and not defer_entries, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK,
+        EPOCH_INTERVAL, getattr(_cfg, "BENCHMARK_CATEGORY_V2", None),
     )
 
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
@@ -758,6 +764,21 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         assert_consensus_overrides_allowed(genesis)
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
+    chain_setup = validator_setup.apply_for_chain(genesis, network)
+    if chain_setup["newest"]:
+        setup_summary["newest"] = chain_setup["newest"]
+    setup_summary["entries"] = len(TEE_APPROVED_MEASUREMENTS)
+    if chain_setup["endpoints_changed"]:
+        subtensor = bt.Subtensor(
+            network=network,
+            archive_endpoints=ARCHIVE_ENDPOINTS or None,
+            fallback_endpoints=FALLBACK_ENDPOINTS or None,
+        )
+    if chain_setup["added"] or defer_entries:
+        _check_live_configuration(
+            live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, EPOCH_INTERVAL,
+            getattr(_cfg, "BENCHMARK_CATEGORY_V2", None),
+        )
     from fugal_subnet.config import VALIDATOR_IP
     confirm_block = _check_chain_configuration(
         genesis, live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, VALIDATOR_IP)
@@ -767,13 +788,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         v3_block = _cfg.v3_activation_block(genesis)
         odds_block = _cfg.odds_seat_block(genesis)
         menu_b_blk = _cfg.menu_b_block(genesis)
+        menu_grace = _cfg.menu_grace_epochs(genesis)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
     _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL, menu_b_blk)
     if menu_b_blk is not None:
         logger.info("Protocol v3 menu B: from the first epoch whose boundary is at or after "
                     "block %d; its added entries unscored for %d epochs from it",
-                    menu_b_blk, _cfg.MENU_GRACE_EPOCHS)
+                    menu_b_blk, menu_grace)
     if v3_block is None:
         logger.info("Protocol v3: not scheduled on this chain")
     else:
@@ -1565,10 +1587,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         # Menu B's grace: the added entries are drawn and
                         # pooled, but scored for no head (routing_protocol).
                         menu=_rp.scored_menu(protocol_version, boundary_block, menu_b_blk,
-                                             blocks_per_epoch, _cfg.MENU_GRACE_EPOCHS),
+                                             blocks_per_epoch, menu_grace),
                         unscored=_rp.grace_excluded(protocol_version, boundary_block,
                                                     menu_b_blk, blocks_per_epoch,
-                                                    _cfg.MENU_GRACE_EPOCHS),
+                                                    menu_grace),
                     )
                 v2_result = run_v2_epoch(
                     epoch_index=epoch_index, epoch_id=epoch_id,

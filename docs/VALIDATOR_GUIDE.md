@@ -118,16 +118,36 @@ validator that scored the whole field zero while looking healthy):
    information only; the check stays until protocol v1 is removed.
 4. The token manifest shipped in the checkout is `reviewed`, not `candidate`
    (`docs/SUCCESS_CONTRACT.md`).
-5. From the release that schedules protocol v3: the pinned embeddings file is
-   on disk. Fetch it once after updating the checkout (it is checked against
-   `config.EMBEDDINGS_SHA256` and written in place only if it matches; a file
-   already in place with that hash is kept):
+5. The pinned embeddings file (protocol v3) is fetched by the validator itself
+   at startup when it is missing or does not match `config.EMBEDDINGS_SHA256`;
+   it is written in place only if it matches. To fetch it ahead of a restart:
 
    ```bash
    .venv/bin/python -m fugal_subnet.embeddings_file fetch   # -> data/embeddings/pool_v3.npz
    ```
 
-   `FUGAL_EMBEDDINGS_FILE` points elsewhere if you keep it on another disk.
+   `FUGAL_EMBEDDINGS_FILE` points elsewhere if you keep it on another disk. In
+   Docker, keep `data/embeddings` on a volume so it survives a container restart.
+
+### Upgrading (every release)
+
+```bash
+git pull                       # or check out the release tag
+uv sync --locked --extra tee
+sudo systemctl restart fugal-validator   # or restart your container
+```
+
+Then check the startup log for one line:
+
+```
+READY: approved entries N (newest app-compose.frozen-<tag>-finney.json), v3 inputs ok (pool 48320, embeddings ok), archive ok, collateral ok, role follower (verified)
+```
+
+`NOT READY: …` names each missing item and the one command that fixes it.
+Nothing else is manual: the approved entries come from the frozen composes
+committed in the release (`fugal_subnet/validator_setup.py`), the embeddings
+file is fetched and verified, and on finney the archive and fallback endpoints
+default to OpenTensor's when unset.
 
 ### Minimum mainnet environment (finney, netuid 70)
 
@@ -141,19 +161,21 @@ validator that scored the whole field zero while looking healthy):
 > FUGAL_NETUID=70
 > FUGAL_EPOCH_INTERVAL=4320
 > FUGAL_V2_ACTIVATION_BLOCK=9485640
-> FUGAL_TEE_MEASUREMENTS=<the current approved entry or entries>
 > FUGAL_VALIDATOR_IP=<this host's public egress IPv4>
-> FUGAL_ARCHIVE_ENDPOINTS=<an archive-capable subtensor endpoint>
 > FUGAL_STATE_PATH=/var/lib/fugal/validator_state.json
 > FUGAL_EPOCH_DIR=/var/lib/fugal/epochs
 > FUGAL_EPOCH_LOG_DIR=/var/lib/fugal
 > ```
 >
-> - **`FUGAL_TEE_MEASUREMENTS`**: from the signed image release,
+> - **Approved entries are not set by hand any more.** The validator approves
+>   every frozen compose committed in its own checkout (minus any listed as
+>   superseded), with the pinned base measurement. `FUGAL_TEE_MEASUREMENTS`
+>   still adds entries if you set it; `FUGAL_APPROVED_FROM_CODE=0` uses it alone.
+>   To check an entry against the signed release:
 >   `python scripts/fetch_approved_entries.py --tag <image tag> --network finney`.
->   It prints the line to paste. Image tags signed before 2026-11-05 (`03b`,
->   `03c`) carry no entry in what was signed and are refused by the script;
->   they are the retired v1 image and are not needed.
+> - **Archive endpoint**: on finney, unset `FUGAL_ARCHIVE_ENDPOINTS` /
+>   `FUGAL_FALLBACK_ENDPOINTS` default to `wss://archive.chain.opentensor.ai:443`
+>   and `wss://entrypoint-finney.opentensor.ai:443`. Set them to use your own.
 > - **`FUGAL_VALIDATOR_IP`**: `curl -s https://ifconfig.me` from this host.
 > - **Nothing to set to follow the root.** A validator that is not the root
 >   fetches the root's published reveals itself. Only the root sets
@@ -162,7 +184,8 @@ validator that scored the whole field zero while looking healthy):
 >   `FUGAL_V2_ACTIVATION_BLOCK` is unset or different, if no approved entry is
 >   a v2 miner image, or if `FUGAL_VALIDATOR_IP` is not a public IPv4 address.
 >   Each of these used to start, look healthy, and burn the validator's weight.
-> - **What a healthy start logs**, in this order: `Approved entries: N`,
+> - **What a healthy start logs**: one `READY: …` line (see "Upgrading" above),
+>   and before it, in this order: `Approved entries: N`,
 >   `Protocol v2 activation: boundary block 9485640`, `Consensus environment
 >   digest: <16 hex>` (the same on every validator of one release),
 >   `v2 role: follower of the reveals in …` (or `ROOT`), `validator IP <ip>

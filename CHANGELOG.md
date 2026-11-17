@@ -4,6 +4,28 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Changed — validator upgrades are "update + restart" (validators)
+Every earlier release asked each operator to paste a new approved entry, fetch
+the embeddings file and set an archive endpoint by hand. Now
+(`fugal_subnet/validator_setup.py`):
+- approved entries come from the code: every frozen compose committed in the
+  checkout (`deploy/dstack/app-compose.frozen-*-<network>.json`) with the pinned
+  base measurement, except composes listed as superseded (the 2026-11-17 pair,
+  which lacked the v3 block). `FUGAL_TEE_MEASUREMENTS` still adds entries;
+  `FUGAL_APPROVED_FROM_CODE=0` uses it alone;
+- the pinned embeddings file is fetched at startup when missing or wrong, and
+  verified against the pin before it replaces anything;
+- on finney, unset `FUGAL_ARCHIVE_ENDPOINTS` / `FUGAL_FALLBACK_ENDPOINTS` default
+  to OpenTensor's archive and entrypoint endpoints;
+- one `READY: …` line at startup, or `NOT READY: …` with the fix for each item.
+Consensus-neutral: the consensus digest, every score and every reveal outside
+`environment` are unchanged.
+
+### Fixed — no "invalid escape sequence" warnings from code questions
+Python 3.12 printed a SyntaxWarning for each backslash in the code questions'
+test text while building the v3 pool. The parsed values were never affected;
+the parse now runs with those warnings filtered.
+
 ### Fixed — the collateral startup probe only warns, and names itself (validators)
 v0.5.0's startup probe of the DCAP collateral endpoint refused to start a live
 finney validator when the probe failed. pccs.phala.network answers urllib's

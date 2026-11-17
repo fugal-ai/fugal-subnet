@@ -1233,6 +1233,9 @@ CONSENSUS_ENV_VARS = (
 CONSENSUS_ENV_INPUTS = (
     "FUGAL_EPOCH_INTERVAL",
     "FUGAL_TEE_MEASUREMENTS",
+    # Read by validator_setup: 0 makes FUGAL_TEE_MEASUREMENTS the only source
+    # of approved entries (default: the release's frozen composes are added).
+    "FUGAL_APPROVED_FROM_CODE",
     "FUGAL_V2_ACTIVATION_BLOCK",
     # Read off finney only: there the block is compiled in
     # (FINNEY_CONFIRM_ACTIVATION_BLOCK) and a different value is refused.

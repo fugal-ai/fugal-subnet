@@ -63,6 +63,22 @@ class Embeddings:
 DEFAULT_PATH = "data/embeddings/pool_v3.npz"
 
 
+def embeddings_pin() -> str | None:
+    """The sha256 a loaded embeddings file must have: config.EMBEDDINGS_SHA256,
+    or None when the pool is declared unpinned (FUGAL_POOL_UNPINNED).
+
+    The file holds one row per pool question, so a pool that is not the pinned
+    one (a local testnet or rehearsal fixture) cannot have the pinned file. The
+    waiver is the pool's own: FUGAL_POOL_UNPINNED is a consensus variable, so
+    the consensus-environment check refuses it on finney, and elsewhere it is
+    in the digest every neuron must share. Finney therefore always checks the
+    compiled pin."""
+    from fugal_subnet import config
+    from fugal_subnet.benchmarks.loader import _unpinned_pool_declared
+
+    return None if _unpinned_pool_declared() else config.EMBEDDINGS_SHA256
+
+
 def fetch(url: str, expected_sha256: str, dest: str, *, timeout: float = 600.0) -> str:
     """Download the pinned embeddings file to `dest` and return its path.
 

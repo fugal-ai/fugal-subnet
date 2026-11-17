@@ -305,7 +305,7 @@ def v2_compose_hashes(activation_block: int, root: str | None = None) -> set[str
     return out
 
 
-def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> None:
+def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> bool | None:
     """Ask the DCAP collateral endpoint once at startup, so a dead one is
     named in the log before the collection point leaves an epoch unverified.
     ADVISORY ONLY, on every chain: it never refuses to start. The first
@@ -314,7 +314,7 @@ def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> None:
     verifier's real requests; a probe can be wrong where the verifier is not.
     Mock never verifies quotes, so it skips the probe."""
     if not live:
-        return
+        return None
     from fugal_subnet import config
     from fugal_subnet.tee.attestation import probe_collateral_endpoint
 
@@ -324,12 +324,13 @@ def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> None:
         ok, why = False, f"the probe itself failed ({type(e).__name__}: {e})"
     if ok:
         logger.info("DCAP collateral endpoint checked: %s", why)
-        return
+        return True
     logger.warning(
         "WARNING: the DCAP collateral endpoint did not answer the startup probe: %s. "
         "If proofs go unverified at collection, check FUGAL_PCCS_URL (default "
         "https://pccs.phala.network) or the local caching PCCS it points at. "
         "Starting anyway: this probe is advisory.", why)
+    return False
 
 
 def _check_chain_configuration(genesis: str | None, live: bool, approved, activation_block,
@@ -649,6 +650,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    # Upgrades are "update + restart": approved entries from this release's
+    # frozen composes, finney's default endpoints (fugal_subnet/validator_setup).
+    from fugal_subnet import validator_setup
+    setup_summary = validator_setup.prepare(network)
 
     from fugal_subnet.config import (
         EPOCH_COLLECT_FRACTION,
@@ -757,7 +762,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     confirm_block = _check_chain_configuration(
         genesis, live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, VALIDATOR_IP)
     on_finney = genesis is not None and str(genesis).lower() == _cfg.FINNEY_GENESIS_HASH.lower()
-    _check_collateral_endpoint(live, on_finney)
+    collateral_ok = _check_collateral_endpoint(live, on_finney)
     try:
         v3_block = _cfg.v3_activation_block(genesis)
         odds_block = _cfg.odds_seat_block(genesis)
@@ -906,6 +911,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # live validator that cannot load them refuses to start now, not at the
     # activation block.
     v3_embeddings = v3_index = None
+    v3_status = "not scheduled"
     if v3_block is not None:
         from fugal_subnet import epoch_plan
         from fugal_subnet.benchmarks.loader import load_pool
@@ -920,9 +926,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # The pin, unless the pool itself is declared unpinned (never on
             # finney: FUGAL_POOL_UNPINNED is a consensus variable).
             from fugal_subnet.embeddings_file import embeddings_pin
-            v3_embeddings = Embeddings.load(
-                os.getenv("FUGAL_EMBEDDINGS_FILE", "data/embeddings/pool_v3.npz"),
-                embeddings_pin())
+            embeddings_path = os.getenv("FUGAL_EMBEDDINGS_FILE", "data/embeddings/pool_v3.npz")
+            # Fetched here when missing or wrong (verified against the pin
+            # before it replaces anything), so an upgrade needs no manual fetch.
+            logger.info(validator_setup.ensure_embeddings(
+                embeddings_path, embeddings_pin(), getattr(_cfg, "EMBEDDINGS_URL", None)))
+            v3_embeddings = Embeddings.load(embeddings_path, embeddings_pin())
             missing = v3_embeddings.covers([q["question_id"] for q in pool_v3])
             if missing:
                 raise ValueError(f"the embeddings file has no row for {len(missing)} pool "
@@ -932,6 +941,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             if live:
                 raise click.ClickException(f"protocol v3 inputs could not be loaded: {e}") from e
             logger.warning("protocol v3 inputs could not be loaded (mock): %s", e)
+            v3_status = f"failed:{e}"
         else:
             epoch_inputs[3] = (
                 pool_v3, {q["question_id"]: q for q in pool_v3}, prices_v3,
@@ -940,6 +950,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             logger.info("Protocol v3 inputs: pool %d questions (pool_hash=%s), %d menu "
                         "entries, embeddings for %d questions", len(pool_v3),
                         pool_hash(pool_v3)[:16], len(models_v3), len(v3_embeddings.row))
+            v3_status = f"ok:{len(pool_v3)}"
+    role_name = ("none" if role is None else "ROOT" if role.root else
+                 "follower (verified)" if role.root_hotkey else "follower")
+    ready, ready_text = validator_setup.ready_line(
+        entries=len(TEE_APPROVED_MEASUREMENTS), newest=setup_summary["newest"], v3=v3_status,
+        archive=bool(ARCHIVE_ENDPOINTS), collateral=collateral_ok, role=role_name)
+    (logger.info if ready else logger.warning)(ready_text)
 
 
     state = load_state(MinerRecord)

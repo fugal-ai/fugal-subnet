@@ -185,8 +185,14 @@ def missing_rows(window: Window, head: str, since_epoch: int | None = None,
     odds for. Any is disqualifying for the odds seat: from v3 a head gives odds
     for every menu entry (v2_epoch._pool_and_odds publishes a head that does
     not cover the menu with no odds at all)."""
-    return int(sum(int((window.odds[head][e] < 0).sum())
+    return int(sum(int((_kept(window.odds[head][e], window.pairs[e]) < 0).sum())
                    for e in scored_epochs(window, head, since_epoch, run_only)))
+
+
+def _kept(values, ep: EpochPairs):
+    """`values` (one per pair) without the pairs the odds score leaves out
+    (EpochPairs.scored: v3 menu B's grace period)."""
+    return values if ep.scored is None else values[ep.scored]
 
 
 def scored_epochs(window: Window, head: str, since_epoch: int | None = None,
@@ -219,11 +225,12 @@ def _by_category(units: list[np.ndarray], cats: list[np.ndarray]) -> OddsUnits:
 def _weighted(units: np.ndarray, ep: EpochPairs) -> np.ndarray:
     """Per-pair units times the pair's exploration weight (explore_weights):
     pairs of entries drawn less often count for more, so the sum estimates what
-    uniform sampling would have. Exact integers; a pair count stays a count."""
-    if ep.weight is None:
-        return units
-    from fugal_subnet.explore_weights import apply
-    return apply(units, ep.weight)
+    uniform sampling would have. Exact integers; a pair count stays a count.
+    Pairs the odds score leaves out (EpochPairs.scored) are dropped."""
+    if ep.weight is not None:
+        from fugal_subnet.explore_weights import apply
+        units = apply(units, ep.weight)
+    return _kept(units, ep)
 
 
 def skill_units(window: Window, ref: Reference, head: str, since_epoch: int | None = None,
@@ -233,7 +240,7 @@ def skill_units(window: Window, ref: Reference, head: str, since_epoch: int | No
     for e in scored_epochs(window, head, since_epoch, run_only):
         ep = window.pairs[e]
         units.append(_weighted(loss(ref.of(e), ep.y) - loss(head_odds_on(window, ref, head, e), ep.y), ep))
-        cats.append(np.asarray(ep.categories))
+        cats.append(_kept(np.asarray(ep.categories), ep))
     return _by_category(units, cats)
 
 
@@ -250,7 +257,7 @@ def brier_units(window: Window, ref: Reference, challenger: str, bar: str,
         ep = window.pairs[e]
         units.append(_weighted(loss(head_odds_on(window, ref, bar, e), ep.y)
                                - loss(head_odds_on(window, ref, challenger, e), ep.y), ep))
-        cats.append(np.asarray(ep.categories))
+        cats.append(_kept(np.asarray(ep.categories), ep))
     return _by_category(units, cats)
 
 

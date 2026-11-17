@@ -120,6 +120,23 @@ PINNED_PRICE_TABLE_V3_SHA256 = (
 PINNED_TOKEN_MANIFEST_V3_SHA256 = (
     "17d362de9f5675bf3a677c5dae5fa7dc1a4363ae966e22bc73b8a91691e2526a"
 )
+# Protocol v3 menu B (data/models_v3b.json and its manifest; identical copies
+# in fugal_subnet/routing_data/), from config.menu_b_block. 2026-11-17,
+# owner-approved for v0.6.0: menu A byte for byte (the pins above unchanged),
+# plus 7 entries appended: openai/gpt-6.2-astra@{low,high,max} at $8/$40 and
+# openai/gpt-6.2-sol@{low,medium,high,max} at $2/$10 per M tokens, max_tokens
+# 128000, pinned to openai then azure with no fallbacks. The manifest is menu
+# A's reviewed rows plus one MEASURED row per added entry (10 calls each on the
+# v3 request path, all served by OpenAI, $0.72; data/observations/
+# tokens_v3b_new_entries_2026-11-17.jsonl). Built by scripts/build_menu_v3b.py,
+# which reproduces both files byte for byte. Each check below also holds menu
+# B's first 53 rows equal to menu A's, which is what keeps A heads valid.
+PINNED_PRICE_TABLE_V3B_SHA256 = (
+    "28903ad0054bbc33ddc8d4c50e9713010c370e7e4551bb1075e93dbf884891ff"
+)
+PINNED_TOKEN_MANIFEST_V3B_SHA256 = (
+    "57e23781338ab466a3fbdf556c03946f86f90e89e8a1cdea3c51ea26dc75040f"
+)
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM
 # quote means trusting this CA in addition to Intel's — see docs/INVARIANTS.md.
@@ -731,6 +748,7 @@ ROUTING_DATA_REQUIRED = (
     "models.json", "models_v2.json", "models_v3.json",
     "benchmark_tokens_v1.json", "benchmark_tokens_protocol_v2.json",
     "benchmark_tokens_protocol_v3.json",
+    "models_v3b.json", "benchmark_tokens_protocol_v3b.json",
 )
 
 
@@ -779,6 +797,44 @@ def check_price_table_v2_pinned(errors: list[str]) -> None:
             or rs.get("enabled") is True
         ):
             errors.append(f"data/models_v2.json: {r.get('id')!r} must pin exactly one valid reasoning setting")
+
+
+def check_menu_v3b_pinned(errors: list[str]) -> None:
+    """Menu B and its manifest match their pins, pass the same checks as menu
+    A, and extend menu A: every menu A row (entry and token row) is in menu B
+    unchanged, in order, ahead of the added ones."""
+    from fugal_subnet.routing_protocol import validate_menu_v3
+    from fugal_subnet.vendor import success_contract
+
+    files = (("models_v3b.json", PINNED_PRICE_TABLE_V3B_SHA256, "v3 menu B"),
+             ("benchmark_tokens_protocol_v3b.json", PINNED_TOKEN_MANIFEST_V3B_SHA256,
+              "v3 menu B token manifest"))
+    for name, pin, what in files:
+        path = ROOT / "data" / name
+        if not path.exists():
+            errors.append(f"data/{name} is missing")
+            return
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != pin:
+            errors.append(f"data/{name}: hash {actual[:16]}... does not match pin "
+                          f"{pin[:16]}... (a {what} change re-scores every v3 miner)")
+    menu_a = json.loads((ROOT / "data" / "models_v3.json").read_text())
+    menu_b = json.loads((ROOT / "data" / "models_v3b.json").read_text())
+    man_a = json.loads((ROOT / "data" / "benchmark_tokens_protocol_v3.json").read_text())
+    man_b = json.loads((ROOT / "data" / "benchmark_tokens_protocol_v3b.json").read_text())
+    try:
+        validate_menu_v3(menu_b)
+        success_contract.validate_manifest(man_b, deployable=True)
+    except (ValueError, KeyError) as e:
+        errors.append(f"data/models_v3b.json or its manifest: {e}")
+        return
+    if menu_b[:len(menu_a)] != menu_a or len(menu_b) <= len(menu_a):
+        errors.append("data/models_v3b.json must be menu A's rows unchanged, then the added entries")
+    if man_b["models"][:len(man_a["models"])] != man_a["models"]:
+        errors.append("data/benchmark_tokens_protocol_v3b.json must keep menu A's rows unchanged")
+    budget = {r["id"]: int(r.get("max_tokens") or 0) for r in menu_b}
+    if sorted(r["id"] for r in man_b["models"]) != sorted(budget):
+        errors.append("data/benchmark_tokens_protocol_v3b.json: rows do not match menu B one to one")
 
 
 def check_menu_v3_pinned(errors: list[str]) -> None:
@@ -1329,6 +1385,7 @@ def main(argv: list[str] | None = None) -> None:
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)
     check_menu_v3_pinned(errors)
+    check_menu_v3b_pinned(errors)
     check_collateral_endpoint_explicit(errors)
     check_external_calls_bounded(errors)
     check_measured_registers_documented(errors)

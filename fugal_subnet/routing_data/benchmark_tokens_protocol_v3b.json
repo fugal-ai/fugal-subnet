@@ -1,0 +1,486 @@
+{
+ "version": "fugal-token-statistics-v1",
+ "profile_id": "1910b573b2406b62ea13b691e411e91bfec2dcf3ab7a9beb2ad01444ab227565",
+ "status": "reviewed",
+ "sources": {
+  "benchmark_tokens_protocol_v2.json": "acd8ff4cd9a6511b35f78990dad53da01437cc1567040ef3f70ef88b8c4c2b4f",
+  "tokens-2026-11-16.jsonl": "3cd34b23febd6365d08ecae3bf0892bed39b4f103c59ba40bc3b1f089bf7c7b0",
+  "tokens_v3b_new_entries_2026-11-17.jsonl": "6e41b7525ffe408a4b8e26ee8559e2f276ca317120a961c7d8486ed161243b5c"
+ },
+ "worker_profile": "Protocol v3 token statistics, built 2026-11-16 (scripts/build_token_manifest_v3.py rule): rows measured in v2 at the same model and reasoning setting are reused as they are; every other row is an estimate from v2's measured means, marked provisional. Replaced row by row at the monthly menu update by the attested per-entry token medians protocol v3 exploration publishes (single_model.single_model_table); new entries get a small paid sample appended.",
+ "omitted_missing_or_zero_input": 0,
+ "models": [
+  {
+   "id": "openai/gpt-6-luna@low",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 244.3,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "openai/gpt-6-luna@high",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 645.3,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "openai/gpt-6.1-terra@low",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 129.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "openai/gpt-6.1-terra@medium",
+   "samples": 40,
+   "mean_in_tokens": 217.625,
+   "mean_out_tokens": 380.05,
+   "basis": "measured: v2 2026-11-09, same model and reasoning setting"
+  },
+  {
+   "id": "openai/gpt-6.1-terra@high",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 444.5,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "openai/gpt-6.1-terra@max",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 6505.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "openai/gpt-6.1-sol@low",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 137.1,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "openai/gpt-6.1-sol@medium",
+   "samples": 40,
+   "mean_in_tokens": 170.05,
+   "mean_out_tokens": 191.7,
+   "basis": "measured: v2 2026-11-09, same model and reasoning setting"
+  },
+  {
+   "id": "openai/gpt-6.1-sol@high",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 358.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "openai/gpt-6.1-sol@max",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 648.5,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-sonnet-5.5@low",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 252.6,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-sonnet-5.5@high",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 347.8,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-sonnet-5.5@xhigh",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 488.1,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-opus-5.5@low",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 310.7,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-opus-5.5@high",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 398.3,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-opus-5.5@max",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 1068.3,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-fable-5.2@low",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 178.5,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-fable-5.2@high",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 292.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-fable-5.2@xhigh",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 321.9,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "anthropic/claude-fable-5.2@max",
+   "samples": 10,
+   "mean_in_tokens": 342.2,
+   "mean_out_tokens": 426.5,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "google/gemini-3.8-flash@low",
+   "samples": 10,
+   "mean_in_tokens": 244.5,
+   "mean_out_tokens": 585.4,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "google/gemini-3.8-flash@high",
+   "samples": 10,
+   "mean_in_tokens": 244.5,
+   "mean_out_tokens": 3011.3,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "google/gemini-4-argon@low",
+   "samples": 10,
+   "mean_in_tokens": 278.1,
+   "mean_out_tokens": 235.3,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "google/gemini-4-argon@high",
+   "samples": 10,
+   "mean_in_tokens": 278.1,
+   "mean_out_tokens": 1474.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "google/gemini-4-carbon@low",
+   "samples": 10,
+   "mean_in_tokens": 278.1,
+   "mean_out_tokens": 2098.3,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "google/gemini-4-carbon@high",
+   "samples": 10,
+   "mean_in_tokens": 278.1,
+   "mean_out_tokens": 6776.5,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "meta/muse-ember@low",
+   "samples": 10,
+   "mean_in_tokens": 260.4,
+   "mean_out_tokens": 663.0,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "meta/muse-ember@high",
+   "samples": 10,
+   "mean_in_tokens": 260.4,
+   "mean_out_tokens": 1087.4,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "meta/muse-ember@max",
+   "samples": 10,
+   "mean_in_tokens": 260.4,
+   "mean_out_tokens": 1386.5,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "deepseek/deepseek-v4.1-flash-1017@low",
+   "samples": 10,
+   "mean_in_tokens": 264.9,
+   "mean_out_tokens": 656.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "deepseek/deepseek-v4.1-flash-1017@high",
+   "samples": 10,
+   "mean_in_tokens": 264.9,
+   "mean_out_tokens": 951.4,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "deepseek/deepseek-v4.1-flash-1017@max",
+   "samples": 10,
+   "mean_in_tokens": 264.9,
+   "mean_out_tokens": 1244.8,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "deepseek/deepseek-v4-flash@low",
+   "samples": 10,
+   "mean_in_tokens": 238.9,
+   "mean_out_tokens": 1687.4,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "deepseek/deepseek-v4-flash@high",
+   "samples": 10,
+   "mean_in_tokens": 238.9,
+   "mean_out_tokens": 2181.9,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "deepseek/deepseek-v4-pro@low",
+   "samples": 10,
+   "mean_in_tokens": 238.9,
+   "mean_out_tokens": 1442.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "deepseek/deepseek-v4-pro@high",
+   "samples": 10,
+   "mean_in_tokens": 238.9,
+   "mean_out_tokens": 1655.6,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "z-ai/glm-5.3-flash@low",
+   "samples": 10,
+   "mean_in_tokens": 252.3,
+   "mean_out_tokens": 628.0,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "z-ai/glm-5.3-flash@high",
+   "samples": 10,
+   "mean_in_tokens": 252.3,
+   "mean_out_tokens": 530.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "moonshotai/kimi-k3.1-pro@low",
+   "samples": 10,
+   "mean_in_tokens": 331.3,
+   "mean_out_tokens": 318.1,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "moonshotai/kimi-k3.1-pro@high",
+   "samples": 10,
+   "mean_in_tokens": 331.3,
+   "mean_out_tokens": 440.9,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "moonshotai/kimi-k3.1-pro@max",
+   "samples": 10,
+   "mean_in_tokens": 330.3,
+   "mean_out_tokens": 1074.1,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "qwen/qwen4-max@low",
+   "samples": 10,
+   "mean_in_tokens": 272.3,
+   "mean_out_tokens": 2481.0,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "qwen/qwen4-max@high",
+   "samples": 10,
+   "mean_in_tokens": 272.3,
+   "mean_out_tokens": 783.9,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "ibm-granite/granite-4.2-8b@low",
+   "samples": 10,
+   "mean_in_tokens": 266.0,
+   "mean_out_tokens": 381.7,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "ibm-granite/granite-4.2-8b@high",
+   "samples": 10,
+   "mean_in_tokens": 257.0,
+   "mean_out_tokens": 6607.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "xiaomi/mimo-v2.6-flash",
+   "samples": 39,
+   "mean_in_tokens": 151.51282051282053,
+   "mean_out_tokens": 1712.5128205128206,
+   "basis": "measured: v2 2026-11-09, same model and reasoning setting"
+  },
+  {
+   "id": "xiaomi/mimo-v2.6-pro",
+   "samples": 10,
+   "mean_in_tokens": 254.6,
+   "mean_out_tokens": 741.8,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "xiaomi/mimo-v2.5-pro",
+   "samples": 10,
+   "mean_in_tokens": 576.9,
+   "mean_out_tokens": 1019.8,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "google/gemma-4-31b-it",
+   "samples": 1,
+   "mean_in_tokens": 218.85,
+   "mean_out_tokens": 1047.9,
+   "provisional": true,
+   "basis": "default: median of the 19 v2 means (completion x 1 for effort medium)"
+  },
+  {
+   "id": "meta/muse-spark-1.3@low",
+   "samples": 10,
+   "mean_in_tokens": 260.4,
+   "mean_out_tokens": 778.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "meta/muse-spark-1.3@high",
+   "samples": 10,
+   "mean_in_tokens": 260.4,
+   "mean_out_tokens": 1535.5,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "meta/muse-wonder@low",
+   "samples": 10,
+   "mean_in_tokens": 260.4,
+   "mean_out_tokens": 523.0,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "meta/muse-wonder@high",
+   "samples": 10,
+   "mean_in_tokens": 260.4,
+   "mean_out_tokens": 938.2,
+   "basis": "measured: v3 2026-11-16, 10 calls on the non-code v3 pool through the v3 harness path (system prompt, entry budget, pinned hosts); 0 used the whole budget"
+  },
+  {
+   "id": "openai/gpt-6.2-astra@high",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 202.6,
+   "basis": "measured: v3 2026-11-17, 10 calls on the non-code v3 pool through the v3 request path (pinned hosts, entry budget, system prompt)"
+  },
+  {
+   "id": "openai/gpt-6.2-astra@low",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 78.1,
+   "basis": "measured: v3 2026-11-17, 10 calls on the non-code v3 pool through the v3 request path (pinned hosts, entry budget, system prompt)"
+  },
+  {
+   "id": "openai/gpt-6.2-astra@max",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 1006.6,
+   "basis": "measured: v3 2026-11-17, 10 calls on the non-code v3 pool through the v3 request path (pinned hosts, entry budget, system prompt)"
+  },
+  {
+   "id": "openai/gpt-6.2-sol@high",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 144.6,
+   "basis": "measured: v3 2026-11-17, 10 calls on the non-code v3 pool through the v3 request path (pinned hosts, entry budget, system prompt)"
+  },
+  {
+   "id": "openai/gpt-6.2-sol@low",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 105.5,
+   "basis": "measured: v3 2026-11-17, 10 calls on the non-code v3 pool through the v3 request path (pinned hosts, entry budget, system prompt)"
+  },
+  {
+   "id": "openai/gpt-6.2-sol@max",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 937.2,
+   "basis": "measured: v3 2026-11-17, 10 calls on the non-code v3 pool through the v3 request path (pinned hosts, entry budget, system prompt)"
+  },
+  {
+   "id": "openai/gpt-6.2-sol@medium",
+   "samples": 10,
+   "mean_in_tokens": 248.8,
+   "mean_out_tokens": 110.8,
+   "basis": "measured: v3 2026-11-17, 10 calls on the non-code v3 pool through the v3 request path (pinned hosts, entry budget, system prompt)"
+  }
+ ],
+ "review": {
+  "date": "2026-11-16",
+  "status_note": "reviewed: approved by the owner on 2026-11-17 for the v3 release (49 entries measured on the v3 path, 3 v2 rows within 2x kept, gemma-4-31b provisional at 9 calls)",
+  "counts": {
+   "measured_v3": 49,
+   "measured": 3,
+   "scaled": 0,
+   "default": 1
+  },
+  "v2_rows_kept_over_v3": [
+   "openai/gpt-6.1-terra@medium",
+   "openai/gpt-6.1-sol@medium",
+   "xiaomi/mimo-v2.6-flash"
+  ],
+  "v2_rows_replaced_by_v3_over_2x": [
+   "xiaomi/mimo-v2.6-pro"
+  ],
+  "effort_factors": {
+   "minimal": 0.25,
+   "low": 0.5,
+   "medium": 1.0,
+   "high": 2.0,
+   "xhigh": 3.0,
+   "max": 4.0
+  },
+  "predecessors": {
+   "deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-pro-0813",
+   "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4.1-flash",
+   "deepseek/deepseek-v4.1-flash-1017": "deepseek/deepseek-v4.1-flash",
+   "qwen/qwen4-max": "qwen/qwen3.8-2.4t-a95b",
+   "xiaomi/mimo-v2.5-pro": "xiaomi/mimo-v2.6-pro",
+   "google/gemini-4-carbon": "google/gemini-4-argon"
+  },
+  "limitations": [
+   "v2 means were measured on the v2 pool with a 16,384-token answer budget; v3 adds code questions and raises budgets to each entry's max_tokens, so provisional completion means are likely low for long reasoners.",
+   "Effort factors are a stated assumption, not a measurement."
+  ],
+  "menu_b": {
+   "date": "2026-11-17",
+   "status_note": "reviewed: menu A's reviewed rows unchanged, plus one row per added entry measured on the v3 path (10 calls each, all served by OpenAI); approved by the owner on 2026-11-17 for v0.6.0",
+   "added": [
+    "openai/gpt-6.2-astra@high",
+    "openai/gpt-6.2-astra@low",
+    "openai/gpt-6.2-astra@max",
+    "openai/gpt-6.2-sol@high",
+    "openai/gpt-6.2-sol@low",
+    "openai/gpt-6.2-sol@max",
+    "openai/gpt-6.2-sol@medium"
+   ]
+  }
+ }
+}

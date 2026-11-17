@@ -189,7 +189,7 @@ def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
         if protocol < 3:
             return 0.0
         pin, pout = proxy.prices.get(model, (0.0, 0.0))
-        budget = request_for(3, model, HARNESS_MAX_TOKENS)["max_tokens"]
+        budget = request_for(3, model, HARNESS_MAX_TOKENS, menu="b")["max_tokens"]
         return (len(q["prompt"]) // 2 + 2000) * pin + budget * pout
 
     def one(item):
@@ -227,7 +227,7 @@ def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
         request = None
         try:
             if protocol >= 3:
-                request = request_for(3, model, HARNESS_MAX_TOKENS)
+                request = request_for(3, model, HARNESS_MAX_TOKENS, menu="b")
                 text = _call_model(proxy, model, q, request=request)
             else:
                 setting = (reasoning or {}).get(model)

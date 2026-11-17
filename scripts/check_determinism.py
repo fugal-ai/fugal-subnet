@@ -549,8 +549,12 @@ def _protocol_v3(seed: int) -> dict:
             y=np.array([p.y for p in pooled], dtype=np.int32),
             prompt_tokens=np.array([p.prompt_tokens for p in pooled], dtype=np.int32),
             completion_tokens=np.array([p.completion_tokens for p in pooled], dtype=np.int32),
-            weight=np.array([p.weight for p in pooled], dtype=np.int64))
-        d_of = np.array([meta[(p.question_id, p.model)][0] for p in pooled])
+            weight=np.array([p.weight for p in pooled], dtype=np.int64),
+            # v3 menu B's grace (EpochPairs.scored): from epoch 7 the last
+            # model is an added entry, unscored for three epochs.
+            scored=(np.array([p.model != models[-1] for p in pooled], dtype=bool)
+                    if 7 <= epoch < 10 else None))
+        d_of =np.array([meta[(p.question_id, p.model)][0] for p in pooled])
         a_of = np.array([acc[models.index(p.model)] for p in pooled])
         predict = {noise_name: np.rint(10_000 / (1 + np.exp(-(a_of - d_of - shift) / width))
                                        ).astype(np.int16)

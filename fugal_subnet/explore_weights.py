@@ -61,6 +61,14 @@ def entry_costs(models: list[str], version: int = 3) -> dict[str, Fraction]:
     table = {r["id"]: r for r in json.loads(routing_protocol.prices_path(version).read_text())}
     manifest = {r["id"]: r for r in
                 json.loads(routing_protocol.manifest_path(version).read_text())["models"]}
+    if int(version) == 3 and any(e not in table for e in models):
+        # v3 menu B: its added entries' rows (menu A's rows are the same in both
+        # files, so an epoch on menu A draws exactly as before).
+        b = routing_protocol.MENU_B
+        table = {**{r["id"]: r for r in json.loads(routing_protocol.prices_path(3, b).read_text())},
+                 **table}
+        manifest = {**{r["id"]: r for r in json.loads(
+            routing_protocol.manifest_path(3, b).read_text())["models"]}, **manifest}
     out = {}
     for e in models:
         price, tok = table[e], manifest[e]

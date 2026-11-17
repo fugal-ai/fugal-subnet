@@ -207,8 +207,10 @@ EXPLORE_PRIVATE_MIN_TRIALS = int(os.getenv("FUGAL_EXPLORE_PRIVATE_MIN_TRIALS", "
 # confirmation rule: finney's blocks are compiled into the release that
 # schedules them (None = not scheduled), the variables are for other chains,
 # and on finney a variable that says anything else is refused.
-FINNEY_V3_ACTIVATION_BLOCK: int | None = None
-FINNEY_ODDS_SEAT_BLOCK: int | None = None
+# v0.5.0 (2026-11-17): v3 from epoch 26466, block 9,527,760 (~2026-11-17 17:34
+# UTC); the seat on odds 8 epochs later, block 9,530,640 (~2026-11-18 03:10 UTC).
+FINNEY_V3_ACTIVATION_BLOCK: int | None = 9527760
+FINNEY_ODDS_SEAT_BLOCK: int | None = 9530640
 _v3_activation = os.getenv("FUGAL_V3_ACTIVATION_BLOCK", "").strip()
 V3_ACTIVATION_BLOCK_ENV = int(_v3_activation) if _v3_activation else None
 _odds_seat = os.getenv("FUGAL_ODDS_SEAT_BLOCK", "").strip()
@@ -940,8 +942,9 @@ CHAMPION_GHOST_RETIRE_CONFIRM = int(os.getenv("FUGAL_CHAMPION_GHOST_RETIRE_CONFI
 # (confirm_activation_block). None means not scheduled: the release that
 # schedules it sets the number here. Other chains (testnet, the rehearsals)
 # have no compiled value and read FUGAL_CONFIRM_ACTIVATION_BLOCK.
-# The single v3 upgrade sets this together with the v3 and odds seat blocks.
-FINNEY_CONFIRM_ACTIVATION_BLOCK: int | None = None
+# The single v3 upgrade sets this together with the v3 and odds seat blocks:
+# v0.5.0 (2026-11-17), the same block as v3.
+FINNEY_CONFIRM_ACTIVATION_BLOCK: int | None = 9527760
 _confirm_activation = os.getenv("FUGAL_CONFIRM_ACTIVATION_BLOCK", "").strip()
 CONFIRM_ACTIVATION_BLOCK_ENV = int(_confirm_activation) if _confirm_activation else None
 

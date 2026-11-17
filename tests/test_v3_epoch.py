@@ -290,7 +290,11 @@ def test_v3_prices_a_correct_answer_in_pinned_dollars():
 
 def test_the_v3_blocks_are_compiled_for_finney_and_ordered(monkeypatch):
     finney, other = config.FINNEY_GENESIS_HASH, "0x" + "ab" * 32
-    assert config.v3_activation_block(finney) is None and config.odds_seat_block(finney) is None
+    # v0.5.0 schedules v3 on finney: epoch boundaries, the odds seat 8 epochs later.
+    v3, odds = config.v3_activation_block(finney), config.odds_seat_block(finney)
+    assert (v3, odds) == (9_527_760, 9_530_640)
+    assert v3 % 360 == 0 and odds % 360 == 0 and odds - v3 == 8 * 360
+    assert config.confirm_activation_block(finney) == v3
     monkeypatch.setattr(config, "FINNEY_V3_ACTIVATION_BLOCK", 9_600_120)
     monkeypatch.setattr(config, "FINNEY_ODDS_SEAT_BLOCK", 9_603_000)
     assert (config.v3_activation_block(finney), config.odds_seat_block(finney)) == (9_600_120, 9_603_000)

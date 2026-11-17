@@ -4,6 +4,24 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-17
+
+One upgrade for validators and miners: protocol v3 and the seat-confirmation
+rules. Finney blocks are compiled in: v3 and seat confirmation from block
+9,527,760 (epoch 26466, ~2026-11-17 17:34 UTC); the seat is decided on odds
+from block 9,530,640 (~2026-11-18 03:10 UTC). Before v3's block the release
+runs v2 exactly as v0.3.2 does.
+
+### Added — validators check the DCAP collateral endpoint at startup
+A live validator asks its collateral endpoint once at startup; on finney a
+dead endpoint refuses to start instead of leaving an epoch unverified.
+
+### Fixed — v3 log labels, dedup logging with an unknown block, verify_live_miner exit
+A v3 node's logs no longer name v2; dedup no longer fails to log a cluster
+whose commitment block is unknown; `scripts/verify_live_miner.py` exits after
+its verdict instead of hanging in interpreter teardown.
+
+
 ### Fixed — a follower rebuilt across the v3 flip keeps only v3 epochs (consensus, v3)
 A live validator empties its comparison window when the protocol changes
 (v2 -> v3). A rebuild from reveals replayed every reveal in the last 48
@@ -150,7 +168,7 @@ confirmed on fresh questions"). No miner image changes.
   retirement can never be paired with the ghost, so the old window could
   leave the seat empty and burning for about 29 hours.
 - `config.confirm_activation_block`: finney's block is in the release
-  (`FINNEY_CONFIRM_ACTIVATION_BLOCK`, set by the v3 release together with the v3 and odds seat blocks), and the variable
+  (`FINNEY_CONFIRM_ACTIVATION_BLOCK` = 9,527,760, the v3 block), and the variable
   cannot move it there; other chains read `FUGAL_CONFIRM_ACTIVATION_BLOCK`.
   Before the block nothing changes: the same weights and a byte-identical
   published seat. The consensus digest changes with the release (three new
@@ -1866,7 +1884,8 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.2...v0.5.0
 [0.3.2]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.2.0...v0.3.0

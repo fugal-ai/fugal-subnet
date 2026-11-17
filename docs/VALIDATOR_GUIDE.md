@@ -5,6 +5,12 @@ from miners, compare every head on the same questions, and pay the champion
 seat. **Validators never call models** — miners pay for their own inference
 inside Intel TDX confidential VMs.
 
+**Protocol v3 from block 9,527,760** (epoch 26466, ~2026-11-17 17:34 UTC),
+release v0.5.0; the seat on odds from block 9,530,640 (~2026-11-18 03:10 UTC).
+The blocks are compiled into v0.5.0: upgrade, fetch the embeddings file once
+(`python -m fugal_subnet.embeddings_file fetch`), add the v0.5.0 image's
+approved entry beside the current one, and restart before the block.
+
 This guide describes **protocol v2**. Until the published activation block the
 subnet scores by the v1 rules; the switch is the one procedure every validator
 must perform, in "Protocol v2: flip procedure" below.

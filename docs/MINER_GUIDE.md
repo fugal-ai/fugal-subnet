@@ -5,6 +5,13 @@ TDX confidential VM each epoch, producing hardware-attested proofs of routing
 quality. The best router holds the champion seat and earns most of the miner
 share.
 
+> **Protocol v3 from block 9,527,760** (epoch 26466, ~2026-11-17 17:34 UTC),
+> release v0.5.0; the seat is decided on odds from block 9,530,640
+> (~2026-11-18 03:10 UTC). v3 replaces the menu, the question pool and the
+> scoring (honest odds per menu entry, Brier on random calls); see the v3
+> notes in this guide and the CHANGELOG. Re-provision on the v0.5.0 image
+> before the block.
+
 > This guide describes **protocol v2**. Until the published activation block
 > the subnet scores by the v1 rules; the differences, and how to move a running
 > v1 miner without losing epochs, are in [Moving from v1 to v2](#moving-from-v1-to-v2-before-the-activation-block)

@@ -2770,7 +2770,7 @@ the expiry it was given.
 
 **Activation.** `config.confirm_activation_block(genesis)`: finney's block is
 compiled into the release (`FINNEY_CONFIRM_ACTIVATION_BLOCK`; `None` until the
-protocol v3 release sets it with the v3 and odds seat blocks), and `FUGAL_CONFIRM_ACTIVATION_BLOCK` set to anything
+protocol v3 release sets it with the v3 and odds seat blocks: 9,527,760 in v0.5.0), and `FUGAL_CONFIRM_ACTIVATION_BLOCK` set to anything
 else on finney is refused at startup. Other chains read the variable. The
 v2 flip relied on every operator setting a variable, and a validator that had
 not set it ran the old rules with nothing in its log to say so. Which rule
@@ -3343,7 +3343,8 @@ while every head's odds are computed and published, so the new objective is
 visible, to miners and across validators, before it decides anything.
 
 - **Finney's blocks are compiled in** (`config.FINNEY_V3_ACTIVATION_BLOCK`,
-  `FINNEY_ODDS_SEAT_BLOCK`; `None` until a release schedules them), and the
+  `FINNEY_ODDS_SEAT_BLOCK`; v0.5.0 schedules them: v3 from block 9,527,760, the
+  seat on odds from block 9,530,640), and the
   variables (`FUGAL_V3_ACTIVATION_BLOCK`, `FUGAL_ODDS_SEAT_BLOCK`) cannot
   move them there; other chains read the variables
   (`config.v3_activation_block`, `odds_seat_block`). Both pairs are in the

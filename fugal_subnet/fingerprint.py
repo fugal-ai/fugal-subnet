@@ -156,6 +156,19 @@ def environment_fingerprint() -> dict:
                                           config.FINNEY_V3_ACTIVATION_BLOCK),
             },
             "embeddings_v3": config.EMBEDDINGS_SHA256,
+            # v3 menu B: its block (the same two ways), its grace and its
+            # pinned files (the menu A files are covered by identity_v3).
+            "menu_b_block": {
+                "finney": config.FINNEY_MENU_B_BLOCK,
+                "env": _env_unless_finney(config.MENU_B_BLOCK_ENV, config.FINNEY_MENU_B_BLOCK),
+            },
+            "menu_grace_epochs": {
+                "finney": config.FINNEY_MENU_GRACE_EPOCHS,
+                "env": _env_unless_finney(config.MENU_GRACE_EPOCHS_ENV,
+                                          config.FINNEY_MENU_GRACE_EPOCHS),
+            },
+            "menu_v3b": _file_sha256(_routing_data("models_v3b.json")),
+            "tokens_v3b": _file_sha256(_routing_data("benchmark_tokens_protocol_v3b.json")),
             "odds_seat_block": {
                 "finney": config.FINNEY_ODDS_SEAT_BLOCK,
                 "env": _env_unless_finney(config.ODDS_SEAT_BLOCK_ENV,

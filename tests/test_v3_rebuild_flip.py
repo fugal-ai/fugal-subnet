@@ -152,9 +152,9 @@ def test_the_validator_rebuilds_and_reanchors_with_every_protocols_table():
 
     src = (pathlib.Path(__file__).resolve().parents[1] / "neurons" / "validator.py").read_text()
     start = src[src.index("rebuilt = rebuild_v2_from_reveals("):]
-    assert "tables=_rebuild_tables(epoch_inputs, config_module)" in start[:start.index(")\n")]
+    assert "tables=_rebuild_tables(epoch_inputs, config_module, epoch_inputs_v3b)" in start[:start.index(")\n")]
     step = src[src.index("synced = _v2_sync_step("):]
-    assert "tables=_rebuild_tables(epoch_inputs, config_module)" in step[:step.index(")\n")]
+    assert "tables=_rebuild_tables(epoch_inputs, config_module, epoch_inputs_v3b)" in step[:step.index(")\n")]
     assert "bench_category=bench_category, tables=tables)" in src   # down to resync
 
     cfg = types.SimpleNamespace(BENCHMARK_CATEGORY_V2={"a": "x"}, BENCHMARK_CATEGORY_V3={"b": "y"})

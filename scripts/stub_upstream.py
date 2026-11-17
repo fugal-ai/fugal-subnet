@@ -72,6 +72,7 @@ def all_prices() -> dict:
     table = {**price_table(1), **price_table(2)}
     try:
         table.update(price_table(3))
+        table.update(price_table(3, "b"))     # v3 menu B: A plus the added entries
     except Exception:  # noqa: BLE001 - a branch without the v3 menu
         pass
     return table

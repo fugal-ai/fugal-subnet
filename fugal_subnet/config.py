@@ -215,6 +215,30 @@ _v3_activation = os.getenv("FUGAL_V3_ACTIVATION_BLOCK", "").strip()
 V3_ACTIVATION_BLOCK_ENV = int(_v3_activation) if _v3_activation else None
 _odds_seat = os.getenv("FUGAL_ODDS_SEAT_BLOCK", "").strip()
 ODDS_SEAT_BLOCK_ENV = int(_odds_seat) if _odds_seat else None
+# --- Protocol v3, menu B: entries added at a block, with a grace period ---
+# The v3 menu grows at MENU_B's block without a reset: menu A (models_v3.json,
+# 53 entries) before it, menu B (models_v3b.json: A unchanged plus the added
+# entries, appended to A's index space) from it. Heads built for menu A stay
+# valid; seats, burn-in and the window carry over. For MENU_GRACE_EPOCHS from
+# the block the added entries are drawn for exploration (so miners get data)
+# but left out of the odds score for every head alike; after it a head must
+# give odds for every menu B entry to take or hold the odds seat
+# (docs/decisions/V3_MENU_B.md). Same finney/env rule as the blocks above.
+# v0.6.0 (2026-11-17): menu B from epoch 26475, block 9,531,000 (~2026-11-18
+# 04:22 UTC), one epoch after the odds seat block; grace 20 epochs, to
+# ~2026-11-19 04:22 UTC.
+FINNEY_MENU_B_BLOCK: int | None = 9531000
+_menu_b = os.getenv("FUGAL_MENU_B_BLOCK", "").strip()
+MENU_B_BLOCK_ENV = int(_menu_b) if _menu_b else None
+# The grace length is consensus like the blocks (it decides which pairs every
+# head is scored on): finney's is compiled and a variable may only repeat it;
+# another chain reads the variable (default the finney value). Positive only.
+# Resolve it with menu_grace_epochs(genesis); MENU_GRACE_EPOCHS is the
+# variable-or-default value for code that has no chain (tests, tools).
+FINNEY_MENU_GRACE_EPOCHS: int = 20
+_menu_grace = os.getenv("FUGAL_MENU_GRACE_EPOCHS", "").strip()
+MENU_GRACE_EPOCHS_ENV = int(_menu_grace) if _menu_grace else None
+MENU_GRACE_EPOCHS = MENU_GRACE_EPOCHS_ENV if MENU_GRACE_EPOCHS_ENV is not None else FINNEY_MENU_GRACE_EPOCHS
 # The odds seat test (champion._challenge_odds, odds_score.py). The margin is
 # in Brier points (0.01 of Brier score): a challenger's lower bound, at
 # CHAMPION_CONFIDENCE, must clear it on at least ODDS_MIN_PAIRS pairs both
@@ -286,6 +310,45 @@ def _chain_block(genesis_hash: str | None, finney_value: int | None, env_value: 
 def v3_activation_block(genesis_hash: str | None) -> int | None:
     return _chain_block(genesis_hash, FINNEY_V3_ACTIVATION_BLOCK, V3_ACTIVATION_BLOCK_ENV,
                         "FUGAL_V3_ACTIVATION_BLOCK")
+
+
+def menu_b_block(genesis_hash: str | None) -> int | None:
+    """The block from which the v3 menu is menu B. Never before v3."""
+    block = _chain_block(genesis_hash, FINNEY_MENU_B_BLOCK, MENU_B_BLOCK_ENV,
+                         "FUGAL_MENU_B_BLOCK")
+    v3 = v3_activation_block(genesis_hash)
+    if block is not None and (v3 is None or block < v3):
+        raise ValueError(f"the menu B block ({block}) must not be before the v3 "
+                         f"activation block ({v3})")
+    return block
+
+
+def menu_grace_epochs(genesis_hash: str | None) -> int:
+    """Menu B's grace in epochs on the chain with this genesis (the same rule
+    as the blocks: finney's is compiled; v0.6.0 review, finding 2)."""
+    env = MENU_GRACE_EPOCHS_ENV
+    if env is not None and env < 1:
+        raise ValueError(f"FUGAL_MENU_GRACE_EPOCHS must be a positive number of epochs, got {env}")
+    if genesis_hash is not None and str(genesis_hash).lower() != FINNEY_GENESIS_HASH.lower():
+        return env if env is not None else FINNEY_MENU_GRACE_EPOCHS
+    if env is not None and env != FINNEY_MENU_GRACE_EPOCHS:
+        where = ("on finney" if genesis_hash is not None else
+                 "and the chain's genesis hash could not be read, so this cannot be shown "
+                 "not to be finney")
+        raise ValueError(f"FUGAL_MENU_GRACE_EPOCHS={env} is set {where}, where the grace is "
+                         f"fixed by the release ({FINNEY_MENU_GRACE_EPOCHS}). Unset it.")
+    return FINNEY_MENU_GRACE_EPOCHS
+
+
+def protocol_for_chain(genesis_hash: str | None) -> int:
+    """The protocol a miner image serves on this chain: from the release's
+    compiled finney blocks (the variables only repeat them there, or set them
+    on another chain). A compose that leaves a variable out can no longer
+    leave a miner on the protocol before it (2026-11-17: a compose without
+    FUGAL_V3_ACTIVATION_BLOCK would have kept every miner on v2)."""
+    if v3_activation_block(genesis_hash) is not None:
+        return 3
+    return 2 if V2_ACTIVATION_BLOCK is not None else 1
 
 
 def odds_seat_block(genesis_hash: str | None) -> int | None:
@@ -1233,12 +1296,17 @@ CONSENSUS_ENV_VARS = (
 CONSENSUS_ENV_INPUTS = (
     "FUGAL_EPOCH_INTERVAL",
     "FUGAL_TEE_MEASUREMENTS",
+    # Read by validator_setup: 0 makes FUGAL_TEE_MEASUREMENTS the only source
+    # of approved entries (default: the release's frozen composes are added).
+    "FUGAL_APPROVED_FROM_CODE",
     "FUGAL_V2_ACTIVATION_BLOCK",
     # Read off finney only: there the block is compiled in
     # (FINNEY_CONFIRM_ACTIVATION_BLOCK) and a different value is refused.
     "FUGAL_CONFIRM_ACTIVATION_BLOCK",
     "FUGAL_V3_ACTIVATION_BLOCK",
     "FUGAL_ODDS_SEAT_BLOCK",
+    "FUGAL_MENU_B_BLOCK",
+    "FUGAL_MENU_GRACE_EPOCHS",
 )
 OPERATIONAL_ENV_VARS = (
     "FUGAL_VALIDATOR_IP",

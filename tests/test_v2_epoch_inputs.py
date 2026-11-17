@@ -114,4 +114,5 @@ def test_the_head_cost_profile_is_checked_for_the_epochs_version():
 
     from fugal_subnet.tee import verify
     src = inspect.getsource(verify.verify_proof)
-    assert "benchmark_costs_for(load_head_from_npz(head_bytes), int(protocol_version))" in src
+    assert ("benchmark_costs_for(load_head_from_npz(head_bytes), int(protocol_version),\n"
+            "                                menu=menu)") in src

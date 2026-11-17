@@ -167,7 +167,7 @@ def test_v3_budget_reserves_each_calls_worst_case(tmp_path, monkeypatch):
 
     entry = "m/x@max"
     monkeypatch.setattr(routing_protocol, "request_for",
-                        lambda v, e, d: {"model": "m/x", "max_tokens": 100_000})
+                        lambda v, e, d, **kw: {"model": "m/x", "max_tokens": 100_000})
     calls = []
 
     def fake_call(proxy, model_id, question, request=None):

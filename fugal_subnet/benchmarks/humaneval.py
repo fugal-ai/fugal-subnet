@@ -65,7 +65,10 @@ def _extract_io_from_tests(test_code: str, entry: str, full_solution: str) -> tu
     """
     try:
         import ast
-        tree = ast.parse(test_code)
+
+        from fugal_subnet.benchmarks.code_sets import quiet_escapes
+        with quiet_escapes():
+            tree = ast.parse(test_code)
     except SyntaxError:
         return [], []
 

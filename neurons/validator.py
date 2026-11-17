@@ -305,7 +305,7 @@ def v2_compose_hashes(activation_block: int, root: str | None = None) -> set[str
     return out
 
 
-def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> None:
+def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> bool | None:
     """Ask the DCAP collateral endpoint once at startup, so a dead one is
     named in the log before the collection point leaves an epoch unverified.
     ADVISORY ONLY, on every chain: it never refuses to start. The first
@@ -314,7 +314,7 @@ def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> None:
     verifier's real requests; a probe can be wrong where the verifier is not.
     Mock never verifies quotes, so it skips the probe."""
     if not live:
-        return
+        return None
     from fugal_subnet import config
     from fugal_subnet.tee.attestation import probe_collateral_endpoint
 
@@ -324,12 +324,13 @@ def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> None:
         ok, why = False, f"the probe itself failed ({type(e).__name__}: {e})"
     if ok:
         logger.info("DCAP collateral endpoint checked: %s", why)
-        return
+        return True
     logger.warning(
         "WARNING: the DCAP collateral endpoint did not answer the startup probe: %s. "
         "If proofs go unverified at collection, check FUGAL_PCCS_URL (default "
         "https://pccs.phala.network) or the local caching PCCS it points at. "
         "Starting anyway: this probe is advisory.", why)
+    return False
 
 
 def _check_chain_configuration(genesis: str | None, live: bool, approved, activation_block,
@@ -649,6 +650,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    # Upgrades are "update + restart": approved entries from this release's
+    # frozen composes, finney's default endpoints (fugal_subnet/validator_setup).
+    from fugal_subnet import validator_setup
+    setup_summary = validator_setup.prepare(network)
 
     from fugal_subnet.config import (
         EPOCH_COLLECT_FRACTION,
@@ -666,9 +671,15 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     )
     from fugal_subnet import config as _cfg
     from fugal_subnet.config import V2_ACTIVATION_BLOCK
+    # A `--network` URL (a validator on its own node) gets its release entries
+    # once the chain's genesis is known (below), so an empty list is only
+    # refused here when the network is already known.
+    defer_entries = (live and not TEE_APPROVED_MEASUREMENTS
+                     and validator_setup.network_name(network) is None
+                     and validator_setup.from_code_enabled())
     _check_live_configuration(
-        live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, EPOCH_INTERVAL,
-        getattr(_cfg, "BENCHMARK_CATEGORY_V2", None),
+        live and not defer_entries, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK,
+        EPOCH_INTERVAL, getattr(_cfg, "BENCHMARK_CATEGORY_V2", None),
     )
 
     from fugal_subnet.fingerprint import assert_environment, consensus_digest
@@ -753,17 +764,38 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         assert_consensus_overrides_allowed(genesis)
     except RuntimeError as e:
         raise click.ClickException(str(e)) from e
+    chain_setup = validator_setup.apply_for_chain(genesis, network)
+    if chain_setup["newest"]:
+        setup_summary["newest"] = chain_setup["newest"]
+    setup_summary["entries"] = len(TEE_APPROVED_MEASUREMENTS)
+    if chain_setup["endpoints_changed"]:
+        subtensor = bt.Subtensor(
+            network=network,
+            archive_endpoints=ARCHIVE_ENDPOINTS or None,
+            fallback_endpoints=FALLBACK_ENDPOINTS or None,
+        )
+    if chain_setup["added"] or defer_entries:
+        _check_live_configuration(
+            live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, EPOCH_INTERVAL,
+            getattr(_cfg, "BENCHMARK_CATEGORY_V2", None),
+        )
     from fugal_subnet.config import VALIDATOR_IP
     confirm_block = _check_chain_configuration(
         genesis, live, TEE_APPROVED_MEASUREMENTS, V2_ACTIVATION_BLOCK, VALIDATOR_IP)
     on_finney = genesis is not None and str(genesis).lower() == _cfg.FINNEY_GENESIS_HASH.lower()
-    _check_collateral_endpoint(live, on_finney)
+    collateral_ok = _check_collateral_endpoint(live, on_finney)
     try:
         v3_block = _cfg.v3_activation_block(genesis)
         odds_block = _cfg.odds_seat_block(genesis)
+        menu_b_blk = _cfg.menu_b_block(genesis)
+        menu_grace = _cfg.menu_grace_epochs(genesis)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
-    _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL)
+    _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL, menu_b_blk)
+    if menu_b_blk is not None:
+        logger.info("Protocol v3 menu B: from the first epoch whose boundary is at or after "
+                    "block %d; its added entries unscored for %d epochs from it",
+                    menu_b_blk, menu_grace)
     if v3_block is None:
         logger.info("Protocol v3: not scheduled on this chain")
     else:
@@ -905,7 +937,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
     # and the pinned embeddings file every head's odds are computed from. A
     # live validator that cannot load them refuses to start now, not at the
     # activation block.
-    v3_embeddings = v3_index = None
+    v3_embeddings = v3_index = epoch_inputs_v3b = None
+    v3_status = "not scheduled"
     if v3_block is not None:
         from fugal_subnet import epoch_plan
         from fugal_subnet.benchmarks.loader import load_pool
@@ -920,9 +953,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # The pin, unless the pool itself is declared unpinned (never on
             # finney: FUGAL_POOL_UNPINNED is a consensus variable).
             from fugal_subnet.embeddings_file import embeddings_pin
-            v3_embeddings = Embeddings.load(
-                os.getenv("FUGAL_EMBEDDINGS_FILE", "data/embeddings/pool_v3.npz"),
-                embeddings_pin())
+            embeddings_path = os.getenv("FUGAL_EMBEDDINGS_FILE", "data/embeddings/pool_v3.npz")
+            # Fetched here when missing or wrong (verified against the pin
+            # before it replaces anything), so an upgrade needs no manual fetch.
+            logger.info(validator_setup.ensure_embeddings(
+                embeddings_path, embeddings_pin(), getattr(_cfg, "EMBEDDINGS_URL", None)))
+            v3_embeddings = Embeddings.load(embeddings_path, embeddings_pin())
             missing = v3_embeddings.covers([q["question_id"] for q in pool_v3])
             if missing:
                 raise ValueError(f"the embeddings file has no row for {len(missing)} pool "
@@ -932,14 +968,31 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             if live:
                 raise click.ClickException(f"protocol v3 inputs could not be loaded: {e}") from e
             logger.warning("protocol v3 inputs could not be loaded (mock): %s", e)
+            v3_status = f"failed:{e}"
         else:
             epoch_inputs[3] = (
                 pool_v3, {q["question_id"]: q for q in pool_v3}, prices_v3,
                 models_v3, {m: i for i, m in enumerate(models_v3)},
             )
+            if menu_b_blk is not None:
+                # v3 menu B: the same pool, menu A's entries plus the added
+                # ones appended (routing_protocol.models_for_protocol).
+                from fugal_subnet.routing_protocol import MENU_B
+                models_v3b = models_for_protocol(3, MENU_B)
+                epoch_inputs_v3b = (
+                    pool_v3, epoch_inputs[3][1], price_table(3, MENU_B),
+                    models_v3b, {m: i for i, m in enumerate(models_v3b)},
+                )
             logger.info("Protocol v3 inputs: pool %d questions (pool_hash=%s), %d menu "
                         "entries, embeddings for %d questions", len(pool_v3),
                         pool_hash(pool_v3)[:16], len(models_v3), len(v3_embeddings.row))
+            v3_status = f"ok:{len(pool_v3)}"
+    role_name = ("none" if role is None else "ROOT" if role.root else
+                 "follower (verified)" if role.root_hotkey else "follower")
+    ready, ready_text = validator_setup.ready_line(
+        entries=len(TEE_APPROVED_MEASUREMENTS), newest=setup_summary["newest"], v3=v3_status,
+        archive=bool(ARCHIVE_ENDPOINTS), collateral=collateral_ok, role=role_name)
+    (logger.info if ready else logger.warning)(ready_text)
 
 
     state = load_state(MinerRecord)
@@ -1051,7 +1104,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # reveal at v2's left every v3 cell unpriced; v3 review, finding 1).
             prices=epoch_inputs.get(2, epoch_inputs[1])[2],
             bench_category=getattr(config_module, "BENCHMARK_CATEGORY_V2", None),
-            tables=_rebuild_tables(epoch_inputs, config_module),
+            tables=_rebuild_tables(epoch_inputs, config_module, epoch_inputs_v3b),
         )
         if rebuilt.newest_epoch_id is not None:
             v2_window, v2_seat = rebuilt.window, rebuilt.seat
@@ -1135,7 +1188,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                     prices=epoch_inputs[protocol_version][2],
                     bench_category=getattr(config_module, f"BENCHMARK_CATEGORY_V{protocol_version}",
                                            None),
-                    tables=_rebuild_tables(epoch_inputs, config_module),
+                    tables=_rebuild_tables(epoch_inputs, config_module, epoch_inputs_v3b),
                 )
                 if synced.changed:
                     (scoring_state, v2_window, v2_seat, v2_copy, v2_window_degraded,
@@ -1181,6 +1234,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             benchmark_pool, gold_answers, prices, pool_models, model_index = (
                 epoch_inputs[protocol_version]
             )
+            # v3 menu B, from its block (the miner picks it the same way).
+            from fugal_subnet.routing_protocol import menu_for_epoch
+            epoch_menu = menu_for_epoch(protocol_version, boundary_block, menu_b_blk)
+            if epoch_menu == "b":
+                if epoch_inputs_v3b is None:
+                    raise RuntimeError(f"epoch {epoch_id} is on v3 menu B but its inputs "
+                                       "were not loaded at startup")
+                benchmark_pool, gold_answers, prices, pool_models, model_index = epoch_inputs_v3b
             plan = _epoch_slice(protocol_version, epoch_id, block_hash, benchmark_pool,
                                 gold_answers, pool_models, SLICE_SIZE, explore_size)
             nonce, questions, question_ids = plan.nonce, plan.questions, plan.question_ids
@@ -1276,6 +1337,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 mock=mock,
                 collateral_budget=collateral_budget,
                 protocol_version=protocol_version,
+                menu=epoch_menu,
             )
             for uid in order:
                 hotkey_ss58 = metagraph.hotkeys[uid] if uid < len(metagraph.hotkeys) else ""
@@ -1505,6 +1567,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                 v3_odds = None
                 if protocol_version >= 3:
                     from fugal_subnet import explore_weights as _xw
+                    from fugal_subnet import routing_protocol as _rp
                     from fugal_subnet.v2_epoch import OddsInput
                     v3_odds = OddsInput(
                         nonce=nonce,
@@ -1521,7 +1584,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                         single_model_min_pairs=_cfg.SINGLE_MODEL_MIN_PAIRS,
                         category_targets=_cfg.CATEGORY_TARGETS_V3,
                         explore_weights=(_xw.weights(explore_shares) if explore_shares else None),
-                        menu=tuple(pool_models),
+                        # Menu B's grace: the added entries are drawn and
+                        # pooled, but scored for no head (routing_protocol).
+                        menu=_rp.scored_menu(protocol_version, boundary_block, menu_b_blk,
+                                             blocks_per_epoch, menu_grace),
+                        unscored=_rp.grace_excluded(protocol_version, boundary_block,
+                                                    menu_b_blk, blocks_per_epoch,
+                                                    menu_grace),
                     )
                 v2_result = run_v2_epoch(
                     epoch_index=epoch_index, epoch_id=epoch_id,
@@ -1886,6 +1955,7 @@ class _EpochChecks(NamedTuple):
     mock: bool
     collateral_budget: object
     protocol_version: int
+    menu: str | None = None
 
 
 class _Checked(NamedTuple):
@@ -1971,6 +2041,7 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
             mock=checks.mock,
             collateral_budget=checks.collateral_budget,
             protocol_version=checks.protocol_version,
+            menu=checks.menu,
         )
     except ImportError:
         raise
@@ -2637,7 +2708,7 @@ def _v2_sync_step(*, epoch_index: int, last_epoch_index: int, first_v2_epoch: in
         return _V2Sync(changed, state)
 
 
-def _check_v3_blocks_aligned(v3_block, odds_block, epoch_interval) -> None:
+def _check_v3_blocks_aligned(v3_block, odds_block, epoch_interval, menu_b_blk=None) -> None:
     """Refuse a v3 or odds-seat block that is not an epoch boundary, the way
     the v2 block is refused and the way a v3 miner refuses it
     (miner.py, validate_activation_block). Accepting it here while miners
@@ -2646,19 +2717,27 @@ def _check_v3_blocks_aligned(v3_block, odds_block, epoch_interval) -> None:
     from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
 
     bpe = blocks_per_epoch(epoch_interval)
-    for name, block in (("v3 activation", v3_block), ("odds-seat", odds_block)):
+    for name, block in (("v3 activation", v3_block), ("odds-seat", odds_block),
+                        ("menu B", menu_b_blk)):
         try:
             validate_activation_block(block, bpe)
         except ValueError as e:
             raise click.ClickException(f"{name} block: {e}") from e
 
 
-def _rebuild_tables(epoch_inputs, config_module) -> dict:
+def _rebuild_tables(epoch_inputs, config_module, inputs_v3b=None) -> dict:
     """{protocol: (prices, bench_category)} for every protocol whose inputs this
     validator loaded (v2 on), so a rebuild or re-anchor prices each replayed
-    reveal at its own protocol's table (v3 review, finding 1)."""
-    return {p: (inputs[2], getattr(config_module, f"BENCHMARK_CATEGORY_V{p}", None))
-            for p, inputs in sorted(epoch_inputs.items()) if p >= 2}
+    reveal at its own protocol's table (v3 review, finding 1).
+
+    With v3 menu B scheduled, v3's table is menu B's: menu A's entries at
+    menu A's prices plus the added ones, so a reveal from either side of the
+    menu B block is priced exactly as the live epoch priced it."""
+    out = {p: (inputs[2], getattr(config_module, f"BENCHMARK_CATEGORY_V{p}", None))
+           for p, inputs in sorted(epoch_inputs.items()) if p >= 2}
+    if inputs_v3b is not None and 3 in out:
+        out[3] = (inputs_v3b[2], out[3][1])
+    return out
 
 
 def _v2_sync_inner(*, epoch_index, reference_dir, state, changed, prices, bench_category,

@@ -263,6 +263,7 @@ def verify_proof(
     mock: bool = False,
     collateral_budget=None,
     protocol_version: int = 1,
+    menu: str | None = None,
 ) -> VerifyResult:
     """Verify a miner's TEE-attested benchmark proof.
 
@@ -287,6 +288,8 @@ def verify_proof(
             The proof's routing evidence namespace and the head's cost profile
             are checked against that version's (routing_protocol.identity_for,
             benchmark_costs_for(head, version)); the harness stamps the same.
+        menu: the epoch's v3 menu (routing_protocol.menu_for_epoch); on menu B
+            a head built for menu A or menu B is accepted.
 
     Returns:
         VerifyResult with pass/fail and reason.
@@ -481,7 +484,8 @@ def verify_proof(
         try:
             if head_bytes is None:
                 raise ValueError("missing success head bytes")
-            benchmark_costs_for(load_head_from_npz(head_bytes), int(protocol_version))
+            benchmark_costs_for(load_head_from_npz(head_bytes), int(protocol_version),
+                                menu=menu)
         except (ValueError, KeyError, TypeError) as e:
             return VerifyResult(False, f"Incompatible success head: {e}")
 

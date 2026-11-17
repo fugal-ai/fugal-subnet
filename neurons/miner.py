@@ -167,7 +167,20 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # embedding the pool (3 h 20 min on a c3-standard-8). It used to run after
     # both: a misconfigured TD received the API key and hotkey, embedded for
     # hours, and only then said no.
-    _assert_chain_allows(network, mock)
+    genesis = _assert_chain_allows(network, mock)
+    # The protocol, its flip block and the v3 menu B block this image serves:
+    # finney's are compiled into the release (the variables may only repeat
+    # them there); another chain reads the variables (config._chain_block).
+    # Before v0.6.0 the protocol came from FUGAL_V3_ACTIVATION_BLOCK alone, so
+    # a compose that left it out kept the miner on the protocol before.
+    from fugal_subnet import config as _chain_cfg
+    try:
+        protocol = _chain_cfg.protocol_for_chain(genesis)
+        flip_block = (_chain_cfg.v3_activation_block(genesis) if protocol == 3
+                      else _chain_cfg.V2_ACTIVATION_BLOCK)
+        menu_b_block = _chain_cfg.menu_b_block(genesis) if protocol == 3 else None
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
     _assert_axon_ip_routable(os.getenv("FUGAL_AXON_IP"))
 
     if await_provisioning:
@@ -185,19 +198,19 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         raise click.ClickException(
             "--head-path is required unless --await-provisioning is set"
         )
-    from fugal_subnet.config import V2_ACTIVATION_BLOCK as _V2_BLOCK
-    from fugal_subnet.config import V3_ACTIVATION_BLOCK_ENV as _V3_BLOCK
     from fugal_subnet.head_eval import load_head_from_npz
-    from fugal_subnet.routing_protocol import benchmark_costs_for
+    from fugal_subnet.routing_protocol import MENU_A, MENU_B, benchmark_costs_for
     # Validate the head against the protocol this image serves: a v2 head checks
     # against the v2 token manifest. v1's check refused every genuine v2 head at
     # startup (found by the v2 flip rehearsal). A v3 head is also held to the
     # parameter bound validators refuse a proof for (head_odds.check_head_bounds):
     # better refused here than after an epoch's inference bill.
     _head = load_head_from_npz(head_data)
-    _image_protocol = 3 if _V3_BLOCK is not None else 2 if _V2_BLOCK is not None else 1
-    benchmark_costs_for(_head, _image_protocol, require_reviewed=not mock)
-    if _image_protocol >= 3:
+    # Once v3 menu B is scheduled a head built for either menu is accepted (a
+    # menu B head is refused by validators for epochs before its block).
+    benchmark_costs_for(_head, protocol, require_reviewed=not mock,
+                        menu=MENU_B if menu_b_block is not None else MENU_A)
+    if protocol >= 3:
         from fugal_subnet.head_odds import check_head_bounds
         try:
             check_head_bounds(_head.W, _head.b)
@@ -222,12 +235,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # the miner needs no dual mode, only the hold below. Unset means v1.
     from fugal_subnet.benchmarks.loader import load_pool, pool_hash
 
-    # A protocol v3 image sets FUGAL_V3_ACTIVATION_BLOCK the same way and
-    # serves v3 only, from that block.
-    from fugal_subnet.config import V2_ACTIVATION_BLOCK, V3_ACTIVATION_BLOCK_ENV
-    protocol = (3 if V3_ACTIVATION_BLOCK_ENV is not None
-                else 2 if V2_ACTIVATION_BLOCK is not None else 1)
-    flip_block = V3_ACTIVATION_BLOCK_ENV if protocol == 3 else V2_ACTIVATION_BLOCK
+    # A protocol v3 image serves v3 only, from its block (`protocol` and
+    # `flip_block` above, from the compiled finney blocks).
     if benchmark_pool:
         os.environ[f"FUGAL_BENCHMARK_POOL_V{protocol}" if protocol >= 2
                    else "FUGAL_BENCHMARK_POOL"] = os.path.abspath(benchmark_pool)
@@ -261,7 +270,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
     # The globally agreed model space. Exploration targets are drawn from this
     # sorted list, never from the miner's own head, so the samples the reference
     # frame is built from cannot be steered.
-    from fugal_subnet.routing_protocol import models_for_protocol, price_table
+    from fugal_subnet.routing_protocol import menu_for_epoch, models_for_protocol, price_table
     if protocol >= 2:
         prices = price_table(protocol)
         pool_models = models_for_protocol(protocol)
@@ -499,6 +508,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     continue
 
                 last_epoch_index = epoch_index
+                if protocol >= 3:
+                    # The epoch's v3 menu: B from its block (the validator
+                    # picks it the same way, from the epoch's boundary).
+                    epoch_menu = menu_for_epoch(protocol, boundary_block, menu_b_block)
+                    pool_models = models_for_protocol(protocol, epoch_menu)
+                    prices = price_table(protocol, epoch_menu)
+                else:
+                    epoch_menu = None
                 _run_epoch(
                     blocks_per_epoch=blocks_per_epoch,
                     head_data=head_data,
@@ -515,6 +532,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     explore_size=explore_size,
                     hotkey=my_hotkey,
                     protocol_version=protocol,
+                    menu=epoch_menu,
                     # The table this miner routes and explores over, in both
                     # protocols. v1 passed None, so the proxy priced with its
                     # default even when FUGAL_MODEL_PRICES (testnet only) had
@@ -546,13 +564,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
         logger.info("Miner shutdown complete")
 
 
-def _assert_chain_allows(network: str, mock: bool) -> None:
+def _assert_chain_allows(network: str, mock: bool):
     """Refuse what this chain forbids: --mock on finney (mock accepts
     unattested proofs), and a consensus constant overridden in the environment
     (refused on finney, warned about elsewhere, as on the validator). Keyed on
     the chain's genesis hash, so renaming the network does not get around it.
     The miner keeps --mock as its default because --live spends real money on
     inference; what it must never do is run mock on mainnet.
+
+    Returns the chain's genesis hash (None when it could not be read), from
+    which main() reads the release's compiled blocks for this chain.
     """
     import bittensor as bt
 
@@ -574,6 +595,7 @@ def _assert_chain_allows(network: str, mock: bool) -> None:
             subtensor.close()
         except Exception:  # noqa: BLE001 - closing a check connection is best effort
             pass
+    return genesis
 
 
 def _axon_registered(metagraph, uid: int) -> bool:
@@ -800,6 +822,7 @@ def _run_epoch(
     protocol_version=1,
     prices=None,
     block_now=None,
+    menu=None,
     tpm_intermediates=(),
 ):
     """Run a single benchmark epoch; `block_now` (the chain's current block)
@@ -845,6 +868,7 @@ def _run_epoch(
             # read off this axon and presented by anyone.
             hotkey=hotkey,
             protocol_version=protocol_version,
+            menu=menu,
         )
 
         # Before the content hash, which binds them (v2 proofs only: a v1

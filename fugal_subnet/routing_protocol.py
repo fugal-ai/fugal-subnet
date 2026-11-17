@@ -16,6 +16,11 @@ MANIFEST_PATH_V2 = ROOT / "routing_data" / "benchmark_tokens_protocol_v2.json"
 # validator with a v3 block scheduled refuses to start without them.
 PRICES_PATH_V3 = ROOT / "routing_data" / "models_v3.json"
 MANIFEST_PATH_V3 = ROOT / "routing_data" / "benchmark_tokens_protocol_v3.json"
+# Protocol v3's menu B (from config.menu_b_block): menu A's entries unchanged
+# plus the added ones, appended (scripts/build_menu_v3b.py). See "menu B" below.
+PRICES_PATH_V3B = ROOT / "routing_data" / "models_v3b.json"
+MANIFEST_PATH_V3B = ROOT / "routing_data" / "benchmark_tokens_protocol_v3b.json"
+MENU_A, MENU_B = "a", "b"
 BENCHMARK_LAMBDA = 1.0  # Consensus constant; never a miner environment setting.
 
 
@@ -58,7 +63,18 @@ def require_identity(value):
 # mid-run. The v2 table's hash is in the fingerprint's epoch block instead.
 
 
-def prices_path(version: int) -> Path:
+def _menu(version: int, menu: str | None) -> str:
+    menu = menu or MENU_A
+    if menu not in (MENU_A, MENU_B):
+        raise ValueError(f"unknown menu {menu!r}")
+    if menu == MENU_B and int(version) != 3:
+        raise ValueError("menu B exists for protocol v3 only")
+    return menu
+
+
+def prices_path(version: int, menu: str | None = None) -> Path:
+    if _menu(version, menu) == MENU_B:
+        return PRICES_PATH_V3B
     if version == 1:
         return PRICES_PATH
     if version == 2:
@@ -68,18 +84,65 @@ def prices_path(version: int) -> Path:
     raise ValueError(f"unknown protocol version {version!r}")
 
 
-def _table(version: int) -> list[dict]:
-    return json.loads(prices_path(version).read_text())
+def _table(version: int, menu: str | None = None) -> list[dict]:
+    return json.loads(prices_path(version, menu).read_text())
 
 
-def price_table(version: int) -> dict[str, tuple[float, float]]:
+def price_table(version: int, menu: str | None = None) -> dict[str, tuple[float, float]]:
     """{model_id: (price per input token, price per output token)} for this protocol."""
-    return {r["id"]: (r["in"] / 1e6, r["out"] / 1e6) for r in _table(version)}
+    return {r["id"]: (r["in"] / 1e6, r["out"] / 1e6) for r in _table(version, menu)}
 
 
-def models_for_protocol(version: int) -> list[str]:
-    """The global model index space for this protocol: the sorted model ids."""
+def models_for_protocol(version: int, menu: str | None = None) -> list[str]:
+    """The global model index space for this protocol: the sorted model ids.
+
+    Menu B's index space is menu A's sorted ids followed by the added entries,
+    sorted, so every menu A entry keeps its index and a window that spans the
+    menu B block stays aligned (an epoch's slice is indexed by its own list)."""
+    if _menu(version, menu) == MENU_B:
+        a = models_for_protocol(version, MENU_A)
+        return a + sorted(set(r["id"] for r in _table(version, MENU_B)) - set(a))
     return sorted(r["id"] for r in _table(version))
+
+
+def added_entries() -> list[str]:
+    """The entries menu B adds to menu A, sorted."""
+    return models_for_protocol(3, MENU_B)[len(models_for_protocol(3, MENU_A)):]
+
+
+def menu_for_epoch(protocol_version: int, boundary_block: int | None,
+                   menu_b_block: int | None) -> str:
+    """The menu an epoch is scored and served on: B from the first v3 epoch
+    whose boundary is at or after menu B's block, else A."""
+    if (int(protocol_version) >= 3 and menu_b_block is not None and boundary_block is not None
+            and int(boundary_block) >= int(menu_b_block)):
+        return MENU_B
+    return MENU_A
+
+
+def grace_excluded(protocol_version: int, boundary_block: int | None, menu_b_block: int | None,
+                   blocks_per_epoch: int, grace_epochs: int) -> frozenset[str]:
+    """The added entries left out of the odds score in this epoch: during the
+    grace period, the first `grace_epochs` epochs of menu B, for every head
+    alike. They are still drawn for exploration; after it they count."""
+    if menu_for_epoch(protocol_version, boundary_block, menu_b_block) != MENU_B:
+        return frozenset()
+    first = int(menu_b_block) // int(blocks_per_epoch)
+    if int(menu_b_block) % int(blocks_per_epoch):
+        first += 1
+    if int(boundary_block) // int(blocks_per_epoch) < first + int(grace_epochs):
+        return frozenset(added_entries())
+    return frozenset()
+
+
+def scored_menu(protocol_version: int, boundary_block: int | None, menu_b_block: int | None,
+                blocks_per_epoch: int, grace_epochs: int) -> tuple[str, ...]:
+    """The entries a head must give odds for to be eligible for the odds seat
+    this epoch: the epoch's menu without the entries in grace."""
+    menu = menu_for_epoch(protocol_version, boundary_block, menu_b_block)
+    out = grace_excluded(protocol_version, boundary_block, menu_b_block, blocks_per_epoch,
+                         grace_epochs)
+    return tuple(m for m in models_for_protocol(protocol_version, menu) if m not in out)
 
 
 def reasoning_for(version: int, model_id: str) -> dict | None:
@@ -97,7 +160,9 @@ def reasoning_for(version: int, model_id: str) -> dict | None:
     raise KeyError(f"{model_id!r} is not in the v{version} model list")
 
 
-def manifest_path(version: int) -> Path:
+def manifest_path(version: int, menu: str | None = None) -> Path:
+    if _menu(version, menu) == MENU_B:
+        return MANIFEST_PATH_V3B
     if version == 1:
         return MANIFEST_PATH
     if version == 2:
@@ -117,15 +182,43 @@ def identity_v2():
                             "prices": contract.file_hash(PRICES_PATH_V2)})
 
 
-def benchmark_costs_for(head, version: int, require_reviewed: bool = False):
-    """benchmark_costs for the epoch's protocol: its token manifest and price table."""
+def benchmark_costs_for(head, version: int, require_reviewed: bool = False,
+                        menu: str | None = None):
+    """benchmark_costs for the epoch's protocol: its token manifest and price table.
+
+    On menu B a head built for menu A is still accepted (its cost profile is
+    menu A's manifest, unchanged in B), priced at menu B's table (a superset
+    with menu A's prices). A head built for menu B is accepted on menu B only."""
     if version == 1:
         return benchmark_costs(head, require_reviewed=require_reviewed)
     if head.success is None:
         raise ValueError("legacy preference heads cannot enter the success benchmark")
-    manifest = json.loads(manifest_path(version).read_text())
-    contract.check_manifest(head.success, manifest, deployable=require_reviewed)
-    return contract.estimated_cost(head.success, price_table(version))
+    menu = _menu(version, menu)
+    manifests = ([manifest_path(version, MENU_B), manifest_path(version, MENU_A)]
+                 if menu == MENU_B else [manifest_path(version)])
+    last: Exception | None = None
+    for path in manifests:
+        try:
+            contract.check_manifest(head.success, json.loads(path.read_text()),
+                                    deployable=require_reviewed)
+            break
+        except ValueError as e:
+            last = e
+    else:
+        raise last if last is not None else ValueError("no token manifest")
+    return contract.estimated_cost(head.success, price_table(version, menu))
+
+
+def head_menu(head, version: int = 3) -> str:
+    """The menu a v3 head was built for: B if its cost profile is menu B's
+    manifest, else A. Raises for a head bound to neither."""
+    for menu in (MENU_A, MENU_B):
+        try:
+            contract.check_manifest(head.success, json.loads(manifest_path(version, menu).read_text()))
+            return menu
+        except (ValueError, KeyError, FileNotFoundError):
+            continue
+    raise ValueError("the head's cost profile is neither v3 menu's token manifest")
 
 
 # --- Protocol v3: a menu entry is a way of calling a model -------------------
@@ -159,7 +252,8 @@ def api_model_of(entry_id: str) -> str:
     return str(entry_id).split("@", 1)[0]
 
 
-def request_for(version: int, entry_id: str, default_max_tokens: int) -> dict:
+def request_for(version: int, entry_id: str, default_max_tokens: int,
+                menu: str | None = None) -> dict:
     """The request fields the harness sends for this menu entry.
 
     v2: the model id as it is, the pinned `reasoning` if any, the harness's
@@ -169,7 +263,7 @@ def request_for(version: int, entry_id: str, default_max_tokens: int) -> dict:
     """
     if version == 1:
         return {"model": entry_id, "max_tokens": int(default_max_tokens)}
-    for r in _table(version):
+    for r in _table(version, menu):
         if r["id"] != entry_id:
             continue
         out = {"model": str(r.get("model") or api_model_of(entry_id)) if version >= 3 else entry_id,

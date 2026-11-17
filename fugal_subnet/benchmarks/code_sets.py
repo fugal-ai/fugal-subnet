@@ -29,7 +29,9 @@ import ast
 import hashlib
 import json
 import re
+import warnings
 from collections import Counter
+from contextlib import contextmanager
 
 from fugal_subnet import graders_code
 
@@ -119,11 +121,27 @@ def _small(*parts) -> bool:
     return sum(len(json.dumps(p)) for p in parts) <= MAX_TEST_CHARS
 
 
+@contextmanager
+def quiet_escapes():
+    """Parse dataset text without Python's "invalid escape sequence" warnings.
+
+    Test cases quote raw text with backslashes (LaTeX, regexes); Python 3.12
+    reports each as a SyntaxWarning while parsing (3.11 as a silent
+    DeprecationWarning). The parsed values are the same either way; the
+    warnings only filled operators' logs (v0.5.0, Yuma)."""
+    with warnings.catch_warnings():
+        for category in (SyntaxWarning, DeprecationWarning):
+            warnings.filterwarnings("ignore", message=r".*invalid escape sequence",
+                                    category=category)
+        yield
+
+
 # --- LeetCodeDataset (exec_func) ------------------------------------------------
 
 def _lc_kwargs(text: str) -> dict:
     """'n = 7, queries = [[0,5]]' -> {'n': 7, 'queries': [[0, 5]]}; keyword literals only."""
-    call = ast.parse(f"f({text})", mode="eval").body
+    with quiet_escapes():
+        call = ast.parse(f"f({text})", mode="eval").body
     if not isinstance(call, ast.Call) or call.args:
         raise ValueError("positional or malformed input")
     out = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
@@ -153,7 +171,8 @@ def leetcode_candidates(rows, stats: Counter | None = None) -> list[dict]:
         tests = []
         for io in r.get("input_output") or []:
             try:
-                kw, want = _lc_kwargs(io["input"]), ast.literal_eval(io["output"])
+                with quiet_escapes():
+                    kw, want = _lc_kwargs(io["input"]), ast.literal_eval(io["output"])
             except Exception:                      # noqa: BLE001 - an unparseable test
                 continue
             if _json_native(kw) and _json_native(want, floats=False) and _small(kw, want):
@@ -177,7 +196,8 @@ def leetcode_candidates(rows, stats: Counter | None = None) -> list[dict]:
 def _evalplus_io(test_src: str):
     """(inputs, results, atol, called name) from an EvalPlus test: the literal `inputs` and
     `results` assignments, and the first `assertion(<f>(*inp), exp, atol)` call."""
-    tree = ast.parse(test_src)
+    with quiet_escapes():
+        tree = ast.parse(test_src)
     vals, atol, name = {}, None, None
     for node in ast.walk(tree):
         if (isinstance(node, ast.Assign) and len(node.targets) == 1

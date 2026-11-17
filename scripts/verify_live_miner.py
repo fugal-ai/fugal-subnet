@@ -137,16 +137,19 @@ def main() -> int:
     # The epoch's inputs by its boundary-keyed protocol version, exactly as the
     # validator picks them (neurons/validator.py, epoch_inputs): a v2 epoch is
     # a different pool, price table, model space, selection and proof namespace.
-    from fugal_subnet.config import v3_activation_block
+    from fugal_subnet.config import menu_b_block, v3_activation_block
+    from fugal_subnet.routing_protocol import menu_for_epoch
+    genesis = subtensor.get_block_hash(0)
     version = protocol_version_for_boundary(boundary, V2_ACTIVATION_BLOCK,
-                                            v3_activation_block(subtensor.get_block_hash(0)))
+                                            v3_activation_block(genesis))
+    menu = menu_for_epoch(version, boundary, menu_b_block(genesis))
 
     pool = load_pool(version)
     print(f"protocol v{version}: pool {len(pool)} questions, pool_hash={pool_hash(pool)[:16]}")
     questions = scored_slice(version, nonce, pool, SLICE_SIZE)
     qids = [q["question_id"] for q in questions]
-    prices = price_table(version)
-    pool_models = models_for_protocol(version)
+    prices = price_table(version, menu if version == 3 else None)
+    pool_models = models_for_protocol(version, menu if version == 3 else None)
     explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
     from fugal_subnet.epoch_plan import explore_shares
     shares = explore_shares(version, pool_models)

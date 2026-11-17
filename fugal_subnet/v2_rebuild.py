@@ -196,6 +196,17 @@ def pairs_from_reveal(reveal: Mapping, answered: Mapping[str, HeadEpoch],
                      for v in weights), eid, "exploration_pool `weight` must be positive integers")
     _require(list(zip(qids, models)) == sorted(set(zip(qids, models))),
              eid, "exploration_pool must be sorted with no repeated pair")
+    # v3 menu B's grace period: the entries pooled but not scored that epoch,
+    # as the live epoch published them (v2_epoch.OddsInput.unscored). Read
+    # like every other reveal field; the menu B block and grace length are in
+    # the consensus digest, so a peer that would leave out different entries
+    # is visibly different.
+    unscored = reveal.get("odds_unscored_entries")
+    if unscored is not None:
+        _require(isinstance(unscored, list) and unscored
+                 and all(isinstance(m, str) for m in unscored)
+                 and unscored == sorted(set(unscored)),
+                 eid, "`odds_unscored_entries` must be a sorted non-empty list of entries")
     pairs = EpochPairs(
         question_ids=qids, models=models, benchmarks=benches,
         categories=tuple(category_of({"benchmark": b}, bench_category) for b in benches),
@@ -203,6 +214,8 @@ def pairs_from_reveal(reveal: Mapping, answered: Mapping[str, HeadEpoch],
         prompt_tokens=np.array(ints["prompt_tokens"], dtype=np.int32),
         completion_tokens=np.array(ints["completion_tokens"], dtype=np.int32),
         weight=None if weights is None else np.array(weights, dtype=np.int64),
+        scored=(None if unscored is None
+                else np.array([m not in set(unscored) for m in models], dtype=bool)),
     )
     published = reveal.get("head_odds") or {}
     _require(isinstance(published, Mapping), eid, "`head_odds` must be a map")

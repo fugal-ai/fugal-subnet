@@ -4,6 +4,68 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-17
+
+### Upgrade BEFORE block 9,531,000 (~2026-11-18 04:22 UTC)
+- **Miners:** re-provision on the v0.6.0 image with its new frozen compose
+  (published in the follow-up composes PR) before the block. The v0.5.0 image
+  plans exploration over menu A's 53 entries; from the block validators plan
+  it over menu B's 60, so a v0.5.0 miner's proofs fail from that block.
+- **Validators:** update to `main` at or after the composes PR merge and
+  restart before the block (approved entries are read at startup, so the new
+  image is approved only after the restart). A v0.5.0 validator left running
+  past the block keeps menu A and diverges from upgraded validators.
+
+### Fixed — v0.6.0 review
+- The menu B grace length is consensus like the blocks: finney's 20 epochs
+  are compiled in (`FINNEY_MENU_GRACE_EPOCHS`), a `FUGAL_MENU_GRACE_EPOCHS`
+  that differs is refused on finney, and it must be positive everywhere
+  (`config.menu_grace_epochs`).
+- Approved entries and the finney default endpoints follow the chain's genesis
+  hash, so a finney validator on its own node (`--network ws://…`) gets the
+  release's entries too (`validator_setup.apply_for_chain`).
+
+### Added — v3 menu B: seven OpenAI entries from block 9,531,000, with a 20-epoch grace (validators and miners)
+`openai/gpt-6.2-astra@{low,high,max}` ($8 / $40 per M tokens) and
+`openai/gpt-6.2-sol@{low,medium,high,max}` ($2 / $10) join the v3 menu from
+block 9,531,000 (epoch 26475, ~2026-11-18 04:22 UTC). That block is compiled
+in for finney and comes one epoch after the odds seat block. Their token
+rows were measured: 10 calls each on the v3 request path. Menu A is unchanged,
+so heads, seats, burn-in and the window carry over, and nothing changes
+before the block. Exploration draws the new entries from the block. For 20
+epochs (~24 h) their pairs are pooled but scored for no head. After that, a
+head must give odds for all 60 entries to take or hold the odds seat.
+New pinned files: `data/models_v3b.json` and
+`data/benchmark_tokens_protocol_v3b.json`. See `docs/decisions/V3_MENU_B.md`.
+
+### Changed — the miner takes its protocol from the release's compiled blocks (miners)
+The miner reads its protocol, flip block and menu B block from the release's
+compiled finney blocks, keyed on the chain's genesis hash. It no longer
+relies on its compose's environment alone. On finney the variables may only
+repeat the compiled values.
+
+### Changed — validator upgrades are "update + restart" (validators)
+Every earlier release asked each operator to paste a new approved entry, fetch
+the embeddings file and set an archive endpoint by hand. Now
+(`fugal_subnet/validator_setup.py`):
+- approved entries come from the code: every frozen compose committed in the
+  checkout (`deploy/dstack/app-compose.frozen-*-<network>.json`) with the pinned
+  base measurement, except composes listed as superseded (the 2026-11-17 pair,
+  which lacked the v3 block). `FUGAL_TEE_MEASUREMENTS` still adds entries;
+  `FUGAL_APPROVED_FROM_CODE=0` uses it alone;
+- the pinned embeddings file is fetched at startup when missing or wrong, and
+  verified against the pin before it replaces anything;
+- on finney, unset `FUGAL_ARCHIVE_ENDPOINTS` / `FUGAL_FALLBACK_ENDPOINTS` default
+  to OpenTensor's archive and entrypoint endpoints;
+- one `READY: …` line at startup, or `NOT READY: …` with the fix for each item.
+Consensus-neutral: the consensus digest, every score and every reveal outside
+`environment` are unchanged.
+
+### Fixed — no "invalid escape sequence" warnings from code questions
+Python 3.12 printed a SyntaxWarning for each backslash in the code questions'
+test text while building the v3 pool. The parsed values were never affected;
+the parse now runs with those warnings filtered.
+
 ### Fixed — the collateral startup probe only warns, and names itself (validators)
 v0.5.0's startup probe of the DCAP collateral endpoint refused to start a live
 finney validator when the probe failed. pccs.phala.network answers urllib's
@@ -1900,7 +1962,8 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.2...v0.5.0
 [0.3.2]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...v0.3.1

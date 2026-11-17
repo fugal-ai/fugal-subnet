@@ -25,7 +25,7 @@
 # network/netuid and the activation block, so one digest yields two entries.
 services:
   miner:
-    image: ghcr.io/fugal-ai/fugal-miner@sha256:6c1f85e6ed349d61a7650cba0c557c8b236e4cf4e36a1842134f0ecc53a2040f
+    image: ghcr.io/fugal-ai/fugal-miner@sha256:fc6015e850d5b442d2e98cb7f16a849cda5b387235fcffac9b07522db1f365d4
     restart: unless-stopped
     ports:
       - "8091:8091"   # axon: validators reach the miner here (open to the world)
@@ -56,6 +56,7 @@ services:
       # The v2 pool after its first manifest-verified load, so a restart does not
       # need Hugging Face. Verified on every read; rebuilt if it fails.
       - FUGAL_POOL_CACHE_V2=/app/results/pool_v2.json.gz
+      - FUGAL_POOL_CACHE_V3=/app/results/pool_v3.json.gz
       # All vCPUs for the one-time backbone pass over the pool. Miner-side
       # only; validators never run the backbone (fugal_subnet/determinism.py).
       - FUGAL_BACKBONE_THREADS=0

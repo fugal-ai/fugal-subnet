@@ -39,6 +39,16 @@ def explore_nonce(nonce: bytes) -> bytes:
     return hashlib.sha256(nonce + b":explore").digest()
 
 
+def private_nonce(nonce: bytes, hotkey: str) -> bytes:
+    """One miner's exploration nonce (protocol v3): the epoch nonce and its
+    hotkey. The proof is bound to the same hotkey (tee/verify, "whose proof
+    this is"), so a miner cannot answer another miner's set, and it learns its
+    own only when the epoch nonce exists."""
+    if not hotkey:
+        raise ValueError("a private exploration set needs the miner's hotkey")
+    return hashlib.sha256(nonce + b":explore:" + hotkey.encode("utf-8")).digest()
+
+
 def select_explore_set(
     nonce: bytes,
     pool: list[dict],

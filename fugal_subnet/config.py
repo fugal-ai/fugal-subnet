@@ -92,7 +92,17 @@ HARNESS_ALLOW_EXEC = os.getenv("FUGAL_HARNESS_ALLOW_EXEC", "0") not in ("0", "",
 # 24 it is 14 min (18 min). The floor is one call at PROXY_CALL_DEADLINE_S.
 # More in flight also holds more of an OpenRouter in-flight budget; see
 # runtime.OPENROUTER_402_TRANSIENT and docs/MINER_GUIDE.md.
-HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "24")))
+# Raised to 40 for protocol v3 (2026-11-16). v3 answer budgets are each entry's
+# real limit (up to 128k) and high-effort calls may run 30 min, so the worst
+# exploration epoch (all 32 drawn calls at the 1,800 s deadline plus a 300-call
+# slice at 60 s) is 75,600 call-seconds: 3,150 s at 24 in flight, past the
+# 2,160 s collection point; 1,890 s at 40. Calls wait on the network, not the
+# CPU, so 40 threads cost the TD little. Each running call holds input +
+# max_tokens at its entry's prices against OpenRouter's in-flight budget (low
+# balance and newer accounts only): ~$1.07 per call averaged over the v3 menu,
+# ~$43 for 40 spread evenly, up to ~$205 if all 40 went to Claude Fable 5.2.
+# docs/MINER_GUIDE.md tells miners what balance to keep.
+HARNESS_CONCURRENCY = max(1, int(os.getenv("FUGAL_HARNESS_CONCURRENCY", "40")))
 
 # --- Protocol v2 benchmark pool (approved scope, 2026-11-04) ---
 # Consensus constants from V2_ACTIVATION_BLOCK, written into the v2 pool
@@ -122,6 +132,171 @@ BENCHMARK_CATEGORY_V2 = {
 # every 99 epochs (longer than the 48-epoch window), 14% of net value.
 # A consensus constant (in the pool manifest, whose hash is in the digest).
 BENCHMARK_WEIGHT_V2: dict[str, float] = {}
+
+# --- Protocol v3 benchmark pool and exploration ---
+# Decided 2026-11-16 (owner). Scoring rewards honest odds, which only questions
+# where models DISAGREE can teach, so the saturated knowledge share falls and
+# chat-like instruction following, everyday reasoning and code (most of real
+# router traffic) come in. Easy maths stays small: nearly every model gets it
+# right. Pinned in pool_manifest_v3.json (whose hash is in the digest).
+CATEGORY_TARGETS_V3 = {
+    "knowledge": 0.20, "hard": 0.20, "math": 0.10, "instruction": 0.15,
+    "everyday": 0.15, "easy_math": 0.05, "code": 0.15,
+}
+BENCHMARK_CATEGORY_V3 = {
+    "mmlupro": "knowledge", "mmlu": "knowledge",
+    "supergpqa_hard": "hard", "aime": "hard", "aime25": "hard", "beyondaime": "hard",
+    "omnimath_hard": "hard",
+    "math_l35": "math", "omnimath_mid": "math",
+    "ifeval": "instruction", "rlvr_ifeval": "instruction",
+    # BIG-Bench Hard stays held back (its only split is its published test set), so
+    # everyday reasoning is ARC (train split) in v3.0.
+    "arc": "everyday",
+    "gsm8k_train": "easy_math", "math_l12": "easy_math",
+    "code_leetcode": "code", "code_mbppplus": "code", "code_humanevalplus": "code",
+    "code_contests": "code",
+}
+BENCHMARK_WEIGHT_V3: dict[str, float] = {}
+# Exploration in v3 (epoch_plan.exploration_plan_v3). Every miner answers the
+# SHARED pairs: eight, which is EXPLORE_DISAGREE_MIN_SAMPLES, the fewest the
+# cross-miner agreement check judges a miner on. Each miner also answers its
+# own PRIVATE pairs, drawn from the epoch nonce and its hotkey: 24, so about
+# twenty operators measure about 500 distinct (question, model) pairs an
+# epoch and the odds seat test has its 1,500 pairs in three or four epochs.
+# 32 exploration calls against v2's 15 is about 5% more calls for a miner.
+EXPLORE_SHARED_SIZE = int(os.getenv("FUGAL_EXPLORE_SHARED_SIZE", "8"))
+EXPLORE_PRIVATE_SIZE = int(os.getenv("FUGAL_EXPLORE_PRIVATE_SIZE", "24"))
+# The most PRIVATE pairs one operator (coldkey) contributes to an epoch's
+# pool, however many hotkeys it runs (explore_pool.capped). One and a half
+# hotkeys' worth: an operator with one hotkey is never cut, and one with fifty
+# supplies a twelfth of a twenty-operator pool, not most of it.
+EXPLORE_COLDKEY_CAP = int(os.getenv("FUGAL_EXPLORE_COLDKEY_CAP", "36"))
+# Cost-aware exploration (protocol v3; fugal_subnet/explore_weights.py). Menu
+# entries are drawn for exploration with a probability that falls with their
+# expected cost (pinned prices x token means), never below EXPLORE_COST_FLOOR
+# of a uniform share, at the most uniform exponent (0, 1/2, ... up to
+# EXPLORE_COST_MAX_HALVES / 2) whose expected spend for a miner's
+# EXPLORE_SHARED_SIZE + EXPLORE_PRIVATE_SIZE calls is within
+# EXPLORE_SPEND_CAP_USD. Pooled pairs carry inverse-probability weights, so the
+# odds score still estimates what uniform sampling would have. At the
+# provisional v3 token means (2026-11-16) uniform exploration costs a miner
+# $0.316 per epoch; the $0.20 cap selects exponent 1/2 ($0.163, design effect
+# 1.32). The cap is EXPECTED spend: a sampling rule that stopped at a realized
+# total would make an entry's chance depend on the draws before it, and the
+# weights would no longer undo it. Compiled constants: they decide which pairs
+# every miner is assigned and how every pair is weighted (consensus).
+EXPLORE_SPEND_CAP_USD = "0.20"
+EXPLORE_COST_FLOOR = "1/4"
+EXPLORE_COST_MAX_HALVES = 4
+# An operator whose private answers are more than this many standard
+# deviations from what the reference expects of those models on those kinds of
+# question has its pairs left out of the epoch's pool
+# (explore_pool.private_implausible). Never a score.
+EXPLORE_PRIVATE_Z = int(os.getenv("FUGAL_EXPLORE_PRIVATE_Z", "4"))
+# An answer counts toward that judgement only once the window holds this many
+# pooled pairs of its model. Before that the reference is its prior, one half,
+# and every honest operator would be "implausibly" right. About four epochs
+# for a 33-entry menu at 500 pairs an epoch.
+EXPLORE_PRIVATE_MIN_TRIALS = int(os.getenv("FUGAL_EXPLORE_PRIVATE_MIN_TRIALS", "50"))
+
+# --- Protocol v3: activation, and the seat decided on odds ---
+# Protocol v3 (a new pool, a new menu, per-miner exploration, odds computed
+# and published for every head) applies from the first epoch whose boundary is
+# at or after V3's block; the seat is decided on odds from the first epoch at
+# or after the odds seat block, and on net value until then. As for the
+# confirmation rule: finney's blocks are compiled into the release that
+# schedules them (None = not scheduled), the variables are for other chains,
+# and on finney a variable that says anything else is refused.
+# v0.5.0 (2026-11-17): v3 from epoch 26466, block 9,527,760 (~2026-11-17 17:34
+# UTC); the seat on odds 8 epochs later, block 9,530,640 (~2026-11-18 03:10 UTC).
+FINNEY_V3_ACTIVATION_BLOCK: int | None = 9527760
+FINNEY_ODDS_SEAT_BLOCK: int | None = 9530640
+_v3_activation = os.getenv("FUGAL_V3_ACTIVATION_BLOCK", "").strip()
+V3_ACTIVATION_BLOCK_ENV = int(_v3_activation) if _v3_activation else None
+_odds_seat = os.getenv("FUGAL_ODDS_SEAT_BLOCK", "").strip()
+ODDS_SEAT_BLOCK_ENV = int(_odds_seat) if _odds_seat else None
+# The odds seat test (champion._challenge_odds, odds_score.py). The margin is
+# in Brier points (0.01 of Brier score): a challenger's lower bound, at
+# CHAMPION_CONFIDENCE, must clear it on at least ODDS_MIN_PAIRS pairs both
+# heads were scored on. Sized on the per-pair spread of Brier differences
+# measured on mainnet exploration (about 0.03 to 0.05): a head half a point
+# better takes the seat in three or four epochs of 500 pairs, one a point
+# better at the floor, and an edge of 0.2 points needs 17 to 50 epochs, which
+# is the price of near-equal heads not trading the seat on noise.
+BRIER_MARGIN = float(os.getenv("FUGAL_BRIER_MARGIN", "0.1"))
+ODDS_MIN_PAIRS = int(os.getenv("FUGAL_ODDS_MIN_PAIRS", "1500"))
+# Fresh pairs (drawn after its first pass) the confirmation of an odds take needs.
+ODDS_CONFIRM_PAIRS = int(os.getenv("FUGAL_ODDS_CONFIRM_PAIRS", "1500"))
+# A head that takes the seat on odds may not route worse than the head it
+# replaces by more than this many net-value points (the lower bound of its
+# paired net value must be above minus this).
+NV_NONINFERIORITY = float(os.getenv("FUGAL_NV_NONINFERIORITY", "0.5"))
+# Strength of the reference's shrinkage of a (model, benchmark) rate toward
+# the model's overall rate, in pseudo-pairs (odds_score.reference).
+ODDS_REF_PRIOR = int(os.getenv("FUGAL_ODDS_REF_PRIOR", "20"))
+# A model is listed in the published single-model table once the window holds
+# this many pooled pairs of it (single_model.py). Diagnostic: it decides no seat.
+SINGLE_MODEL_MIN_PAIRS = int(os.getenv("FUGAL_SINGLE_MODEL_MIN_PAIRS", "300"))
+# From v3 the value of one extra correct answer is a pinned number of dollars,
+# not CHAMPION_ACCURACY_VALUE times a model's expected spend. It is what v2's
+# rule gave on the day it was pinned (30 x the anchor's $0.0163 a question),
+# so nothing moves at the switch; what changes is that the menu can then
+# change, the anchor model included, without moving the exchange rate between
+# accuracy and cost.
+CHAMPION_VALUE_PER_CORRECT_USD = float(os.getenv("FUGAL_CHAMPION_VALUE_PER_CORRECT_USD", "0.49"))
+# sha256 of the v3 embeddings file: one row per v3 pool question, computed
+# once with the pinned backbone profile. The miner's TD routes from it and
+# every validator computes odds from it, so it is a consensus input like the
+# pool it belongs to, and a file with another hash is refused. None until the
+# v3 pool is pinned and its embeddings are computed; a live validator with v3
+# scheduled and no pin refuses to start. Where the file is on disk is
+# FUGAL_EMBEDDINGS_FILE (operational: the bytes are what is checked).
+# Pinned 2026-11-16: 48,320 rows (pool_manifest_v3.json) x 1024, 214,347,992
+# bytes; built by scripts/build_embeddings_v3.py (one prompt per row, batch 1,
+# one thread, pinned dispatch) and verified bit for bit on two CPUs.
+EMBEDDINGS_SHA256: str | None = "f64ca354a5c5fca191abd2bf6930f50e65d6af90390a46b9ebd15fc14cbe4e17"
+# Where the pinned file is published (an HTTPS URL, or file:// in tests). The
+# image build fetches it into the image (so its bytes are measured) and a
+# validator fetches it once at setup: `python -m fugal_subnet.embeddings_file
+# fetch`. The URL is only a location; the pinned hash is what is trusted, and a
+# download with another hash is refused before anything is written in place.
+# None until the v3 release publishes the file.
+EMBEDDINGS_URL: str | None = (
+    "https://storage.googleapis.com/fugal-reveals/embeddings/v3/embeddings-f64ca354a5c5fca191abd2bf6930f50e65d6af90390a46b9ebd15fc14cbe4e17.npz")
+
+
+def _chain_block(genesis_hash: str | None, finney_value: int | None, env_value: int | None,
+                 name: str) -> int | None:
+    """A rule's activation block on the chain with this genesis: finney's is
+    the compiled value and the variable may only repeat it; any other chain
+    reads the variable (confirm_activation_block states why)."""
+    if env_value is not None and env_value < 0:
+        raise ValueError(f"{name} must not be negative, got {env_value}")
+    if genesis_hash is not None and str(genesis_hash).lower() != FINNEY_GENESIS_HASH.lower():
+        return env_value
+    if env_value is not None and env_value != finney_value:
+        where = ("on finney" if genesis_hash is not None else
+                 "and the chain's genesis hash could not be read, so this cannot be shown "
+                 "not to be finney")
+        raise ValueError(f"{name}={env_value} is set {where}, where the block is fixed by "
+                         f"the release ({finney_value}). Unset it.")
+    return finney_value
+
+
+def v3_activation_block(genesis_hash: str | None) -> int | None:
+    return _chain_block(genesis_hash, FINNEY_V3_ACTIVATION_BLOCK, V3_ACTIVATION_BLOCK_ENV,
+                        "FUGAL_V3_ACTIVATION_BLOCK")
+
+
+def odds_seat_block(genesis_hash: str | None) -> int | None:
+    """The block from which the seat is decided on odds. Never before v3."""
+    block = _chain_block(genesis_hash, FINNEY_ODDS_SEAT_BLOCK, ODDS_SEAT_BLOCK_ENV,
+                         "FUGAL_ODDS_SEAT_BLOCK")
+    v3 = v3_activation_block(genesis_hash)
+    if block is not None and (v3 is None or block < v3):
+        raise ValueError(f"the odds seat block ({block}) must not be before the v3 "
+                         f"activation block ({v3})")
+    return block
 
 # Miner-side only (never a score): an epoch is not started with fewer than this
 # many blocks left before its collection block (~12 min at 12 s/block).
@@ -155,13 +330,80 @@ HARNESS_MAX_TOKENS = 16384
 # PROXY_CALL_DEADLINE_S is wall-clock (runtime._post_with_deadline): a per-read
 # socket timeout is not a deadline, because OpenRouter keeps a non-streamed
 # request alive while the model reasons (one such call was measured at 917 s).
+# The system prompt every v3 model call carries, identical in the harness and
+# in whatever serves the winning head (fugal-core), so a model is measured the
+# way it is used. An image constant like the budgets above, hash-pinned in
+# scripts/check_safety_invariants.py (SYSTEM_PROMPT_V3_SHA256): a byte change
+# moves every v3 grade. Source: fugal-core's WORKER_SYSTEM_PROMPT (fugal/
+# router.py), with one change: its "Lead with the answer, then supporting
+# detail" fought two graders (numeric_final reads the LAST number; letter_mcq
+# lost replies that open with a bold letter and then explain, measured
+# 2026-11-10 on 26% of Fable 5.2's correct SuperGPQA answers), so it is
+# replaced by "a requested answer format wins". fugal-core must carry the same
+# text. DRAFT 2026-11-16, for review before the v3 image is frozen.
+HARNESS_SYSTEM_PROMPT_V3: str | None = (
+    "You are Fugal, a helpful AI assistant. Each message may be handled by a different "
+    "underlying model, so keep one consistent voice and identity: never claim to be, or "
+    "speculate about, any specific model or the company that built you. Be concise and "
+    "direct. Use Markdown for structure and fenced code blocks with a language tag for "
+    "code. If you are unsure or lack the information to answer, say so plainly instead of "
+    "guessing. When a request says how to give the answer, such as a single letter, a "
+    "final number at the end, a \\boxed{} result or one code block, follow that format "
+    "exactly; it takes precedence over everything above."
+)
 PROXY_CALL_DEADLINE_S = 420.0      # total time the proxy spends on one call, retries included
 HARNESS_CALL_TIMEOUT_S = 450.0     # the harness's wait on the proxy; > PROXY_CALL_DEADLINE_S
+
+# Protocol v3: one deadline per menu entry, by its reasoning effort. A v3
+# entry carries its own answer budget (up to ~128k tokens, models_v3.json), and
+# a long answer is what the product would really return, so cutting it off at
+# 420 s would teach heads that slow, careful entries fail. The live check of
+# 2026-11-16 measured 100-300 s for high/max entries at a 16k budget and one
+# low-effort cheap reasoner at 1,117 s.
+#
+# The ceiling is the collection point, not the epoch: validators collect at
+# EPOCH_COLLECT_FRACTION (0.5) of a 72-minute epoch, 36 min after the
+# boundary, and the proof must be built and attested before then. 30 min for
+# the slow efforts leaves ~6 min for the rest of the proof.
+#
+# Throughput, worst case (docs/decisions/V3_MENU_BUDGETS.md has the
+# arithmetic): 300 scored calls at a 60 s mean plus all 32 exploration calls
+# at the 30-min deadline is 75,600 s of calls; at HARNESS_CONCURRENCY 24 that is
+# 3,150 s, past the 2,160 s collection point; it needs >= 38 in flight. The
+# expected case (exploration mostly fast) is ~1,470 s at 24.
+PROXY_CALL_DEADLINE_V3_S = {
+    "minimal": 600.0, "low": 600.0, "medium": 900.0,
+    "high": 1800.0, "xhigh": 1800.0, "max": 1800.0,
+}
+PROXY_CALL_DEADLINE_V3_DEFAULT_S = 900.0   # a v3 entry without an effort (thinking on, or none)
+HARNESS_WAIT_MARGIN_S = 30.0               # the harness waits this much longer than the proxy
+
+
+def call_deadline_s(request: dict) -> float:
+    """The proxy's wall-clock deadline for one upstream call, from its request.
+
+    A v3 request names pinned providers (routing_protocol.request_for); its
+    deadline comes from its reasoning effort. Any other request (v1, v2) keeps
+    PROXY_CALL_DEADLINE_S, byte-for-byte the old behaviour.
+    """
+    if not isinstance(request, dict) or "provider" not in request:
+        return PROXY_CALL_DEADLINE_S
+    reasoning = request.get("reasoning")
+    effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    if effort is None:
+        return PROXY_CALL_DEADLINE_V3_DEFAULT_S
+    return PROXY_CALL_DEADLINE_V3_S.get(str(effort), PROXY_CALL_DEADLINE_V3_DEFAULT_S)
 
 # Checkers that grade by running the candidate's code, and therefore return 0
 # unless HARNESS_ALLOW_EXEC. Named here rather than in graders.py, which is
 # hash-pinned and must stay byte-identical.
 EXECUTION_CHECKERS = frozenset({"exec_io", "exec_unittest"})
+# Protocol v3's code checkers (graders_code.py). They also run the candidate's
+# code, but in the seccomp sandbox, and are gated by its self-test
+# (graders_code.sandbox_selftest, run by harness.code_sandbox_status), NOT by
+# HARNESS_ALLOW_EXEC: the loader keeps their questions, and a harness whose
+# sandbox failed refuses to produce a proof for an epoch that has any.
+SANDBOXED_CODE_CHECKERS = frozenset({"exec_stdio", "exec_func"})
 
 # --- Proof bounds (I2) ---
 # The largest token count a proof result may carry, prompt or completion. Not
@@ -556,6 +798,11 @@ MAX_WEIGHT_DELTA = float(os.getenv("FUGAL_MAX_WEIGHT_DELTA", "0.3"))
 # protocol v2 activates at one named boundary".
 _v2_activation = os.getenv("FUGAL_V2_ACTIVATION_BLOCK", "").strip()
 V2_ACTIVATION_BLOCK = int(_v2_activation) if _v2_activation else None
+# Finney's flip block, as it happened (2026-11-11). A live finney validator
+# whose FUGAL_V2_ACTIVATION_BLOCK is unset or different is refused at startup
+# (neurons/validator.py, _check_chain_configuration): unset, it would score
+# every epoch by the v1 rules with nothing in its log to say so.
+FINNEY_V2_ACTIVATION_BLOCK = 9485640
 
 # --- Protocol v2: champion scoring (paired net value) ---
 # From the activation block, a challenger is compared with the current
@@ -646,6 +893,86 @@ CHAMPION_GHOST_RETIRE = int(os.getenv("FUGAL_CHAMPION_GHOST_RETIRE", "24"))
 # up to 14,400 paired questions, about two and a half days.
 CHAMPION_WINDOW_EPOCHS = int(os.getenv("FUGAL_CHAMPION_WINDOW_EPOCHS", "48"))
 
+# --- Protocol v2: fresh-data confirmation of a take ---
+# From the confirmation activation block (below), beating a settled champion
+# on the paired test once does not take its seat. The epoch of that first
+# pass is recorded, and the challenger takes the seat when it passes the SAME
+# test (same margin, same confidence) on questions drawn after that epoch: at
+# least CHAMPION_CONFIRM_QUESTIONS of them, while the first pass is still in
+# the comparison window. The champion holds, and is paid, meanwhile.
+#
+# Why. The take test runs every epoch for every challenger, so its false
+# positives add up over epochs AND over challengers: k heads with no real
+# edge pass by luck about k times as often as one, which makes registering
+# more hotkeys worth something. The first pass is therefore a selection, and
+# a selection is confirmed on data it did not see. A head with no edge has to
+# be lucky twice, on two samples that share no question.
+#
+# 1,500 fresh questions is five epochs and the same count as the burn-in and
+# CHAMPION_MIN_PAIRED_QUESTIONS, so "enough to judge on" means one thing.
+# Measured on the mainnet reveals e00026349-e00026384 (36 epochs): the one
+# take in them (+0.83 points at its first pass) measured +1.06 on its first
+# 1,500 fresh questions and confirms at 2,400 (eight epochs).
+CHAMPION_CONFIRM_QUESTIONS = int(os.getenv("FUGAL_CHAMPION_CONFIRM_QUESTIONS", "1500"))
+# A head seated from an EMPTY seat (the first fill, or over a retired ghost)
+# beat nobody, and the pick is the best of several noisy measurements. So for
+# this many epochs after such a fill the seat can still be taken by the plain
+# test, as before the rule; only then is the champion settled and a challenger
+# confirmed against it. Without this the confirmation would also protect a
+# lucky first fill. A champion that was itself confirmed is settled at once.
+CHAMPION_CONFIRM_OPEN_EPOCHS = int(os.getenv("FUGAL_CHAMPION_CONFIRM_OPEN_EPOCHS", "5"))
+# From the same block, a RETIRED champion's ghost bars for this many epochs
+# instead of CHAMPION_GHOST_RETIRE. A retired head answers no new questions,
+# so a head committed after it retired can never be paired with it, and for
+# the whole window the seat can only go to a head that already overlapped it;
+# otherwise the miner share burns (24 epochs is about 29 hours). The window
+# exists so that the owner's replacement head can finish burn-in and compete
+# for the empty seat on equal terms with copies of the retired one, which is
+# V2_BURN_IN_QUESTIONS (five epochs) plus slack for one early miss.
+CHAMPION_GHOST_RETIRE_CONFIRM = int(os.getenv("FUGAL_CHAMPION_GHOST_RETIRE_CONFIRM", "8"))
+# The activation block: the two rules above apply to every epoch whose
+# boundary block is at or after it (the boundary decides, as for v2, so a
+# retried or late epoch applies the same rules as every peer).
+#
+# Finney's value is COMPILED IN, not read from the environment. The v2 flip
+# asked every validator operator to set a variable, and a validator that had
+# not set it ran the old rules with nothing to say so. A validator that runs
+# this release agrees on the block by construction, and one that sets the
+# variable on finney to anything else is refused at startup
+# (confirm_activation_block). None means not scheduled: the release that
+# schedules it sets the number here. Other chains (testnet, the rehearsals)
+# have no compiled value and read FUGAL_CONFIRM_ACTIVATION_BLOCK.
+# The single v3 upgrade sets this together with the v3 and odds seat blocks:
+# v0.5.0 (2026-11-17), the same block as v3.
+FINNEY_CONFIRM_ACTIVATION_BLOCK: int | None = 9527760
+_confirm_activation = os.getenv("FUGAL_CONFIRM_ACTIVATION_BLOCK", "").strip()
+CONFIRM_ACTIVATION_BLOCK_ENV = int(_confirm_activation) if _confirm_activation else None
+
+
+def confirm_activation_block(genesis_hash: str | None) -> int | None:
+    """The confirmation rule's activation block on the chain with this genesis.
+
+    Finney: the compiled value, and the environment variable is refused unless
+    it says the same. Any other chain: the environment variable. An unreadable
+    genesis with the variable unset is treated as finney (the compiled value),
+    which is the safe reading: it can only be a chain this release knows.
+    """
+    env = CONFIRM_ACTIVATION_BLOCK_ENV
+    if env is not None and env < 0:
+        raise ValueError(f"FUGAL_CONFIRM_ACTIVATION_BLOCK must not be negative, got {env}")
+    if genesis_hash is not None and str(genesis_hash).lower() != FINNEY_GENESIS_HASH.lower():
+        return env
+    if env is not None and env != FINNEY_CONFIRM_ACTIVATION_BLOCK:
+        where = ("on finney" if genesis_hash is not None else
+                 "and the chain's genesis hash could not be read, so this cannot be shown "
+                 "not to be finney")
+        raise ValueError(
+            f"FUGAL_CONFIRM_ACTIVATION_BLOCK={env} is set {where}, where the block is "
+            f"fixed by the release ({FINNEY_CONFIRM_ACTIVATION_BLOCK}). Unset it."
+        )
+    return FINNEY_CONFIRM_ACTIVATION_BLOCK
+
+
 # --- Protocol v2: payout ---
 # The miner share is split across the last three champions: current, previous,
 # the one before. A seat pays only while its head is live and passes the
@@ -706,6 +1033,65 @@ REVEAL_BUCKET = os.getenv("FUGAL_REVEAL_BUCKET", "").strip()
 # Override the hold (epochs) read from the chain's commit-reveal period. 0 =
 # read it from the chain.
 REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
+
+# --- The v2 star: root and followers (operational) ---
+# Every validator but the root verifies its v2 seat state against the root's
+# published reveals and re-anchors on them after a missed epoch
+# (fugal_subnet/v2_sync.py). A follower fetches those reveals itself
+# (fugal_subnet/reveal_sync.py): on finney from the root's public bucket with
+# nothing to set, elsewhere from FUGAL_REFERENCE_BUCKET. The root is the
+# validator with FUGAL_ROOT=1, or the one whose FUGAL_REVEAL_BUCKET is the
+# reference bucket. FUGAL_FRAME_BOOTSTRAP (a directory the operator keeps in
+# sync) still works and takes precedence over the built-in fetch.
+# FUGAL_ROOT=0 says the opposite, for the one case that needs it: a root that
+# lost its state follows another validator's reveals until it has caught up
+# (docs/VALIDATOR_GUIDE.md, "The root"), although it publishes to the
+# reference bucket. Unset: decided by the bucket.
+# Only the explicit values count; anything else is refused at import, so a
+# typo such as FUGAL_ROOT=off cannot make a validator the root.
+
+
+def parse_root_flag(raw: str) -> bool | None:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return None
+    if value in ("1", "true", "yes"):
+        return True
+    if value in ("0", "false", "no"):
+        return False
+    raise ValueError(f"FUGAL_ROOT={raw!r} is not one of 1, true, yes, 0, false, no "
+                     "(or unset). Fix it before starting the validator.")
+
+
+ROOT_VALIDATOR: bool | None = parse_root_flag(os.getenv("FUGAL_ROOT", ""))
+REFERENCE_BUCKET = os.getenv("FUGAL_REFERENCE_BUCKET", "").strip()
+
+# The root validator's hotkey. Followers verify the reveals they download
+# against this hotkey's on-chain commitment (`reveal:<epoch_id>:<sha256>`,
+# reveal_publisher), so the bucket alone cannot change what they re-anchor
+# on. Built into the release on finney (uid 0 of netuid 70, the subnet
+# owner's validator), where the variable cannot change it; other chains name
+# their root in FUGAL_ROOT_HOTKEY, and without it a follower fetches
+# unverified, as before. Not a consensus input: it decides which published
+# files a follower accepts, never how an epoch is scored.
+FINNEY_ROOT_HOTKEY = "5E4x811vM4DLkrTwMhrMX1deUp9zPt3GJLinxZneBvAMTL5U"
+ROOT_HOTKEY_ENV = os.getenv("FUGAL_ROOT_HOTKEY", "").strip()
+
+
+def root_hotkey(finney: bool, env: str | None = None) -> str | None:
+    """The hotkey whose reveal commitment a follower verifies against.
+
+    On finney the release's; a FUGAL_ROOT_HOTKEY that names another hotkey is
+    refused, so a typo or a stale value cannot point followers elsewhere.
+    Elsewhere the variable, or None (unverified, as before this check)."""
+    value = (ROOT_HOTKEY_ENV if env is None else env).strip()
+    if finney:
+        if value and value != FINNEY_ROOT_HOTKEY:
+            raise ValueError(
+                f"FUGAL_ROOT_HOTKEY={value} is set on finney, where the root's hotkey is "
+                f"fixed by the release ({FINNEY_ROOT_HOTKEY}). Unset it.")
+        return FINNEY_ROOT_HOTKEY
+    return value or None
 
 # --- Head archive (operational; nothing here reads back into a score) ---
 # Directory where the validator keeps every VERIFIED miner head, raw bytes
@@ -780,6 +1166,18 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_FRONTIER_MIN_TRIALS",
     "FUGAL_BURN_IN_QUESTIONS",
     "FUGAL_V2_BURN_IN_QUESTIONS",
+    "FUGAL_EXPLORE_SHARED_SIZE",
+    "FUGAL_EXPLORE_PRIVATE_SIZE",
+    "FUGAL_EXPLORE_COLDKEY_CAP",
+    "FUGAL_EXPLORE_PRIVATE_Z",
+    "FUGAL_EXPLORE_PRIVATE_MIN_TRIALS",
+    "FUGAL_BRIER_MARGIN",
+    "FUGAL_ODDS_MIN_PAIRS",
+    "FUGAL_ODDS_CONFIRM_PAIRS",
+    "FUGAL_NV_NONINFERIORITY",
+    "FUGAL_ODDS_REF_PRIOR",
+    "FUGAL_SINGLE_MODEL_MIN_PAIRS",
+    "FUGAL_CHAMPION_VALUE_PER_CORRECT_USD",
     "FUGAL_EXPLORE_FAIL_MARGIN",
     "FUGAL_EXPLORE_DISAGREE_MAX",
     "FUGAL_EXPLORE_DISAGREE_MIN_SAMPLES",
@@ -816,6 +1214,9 @@ CONSENSUS_ENV_VARS = (
     "FUGAL_CHAMPION_WINDOW_EPOCHS",
     "FUGAL_CHAMPION_MIN_ACCURACY",
     "FUGAL_CHAMPION_MIN_PAIRED_QUESTIONS",
+    "FUGAL_CHAMPION_CONFIRM_QUESTIONS",
+    "FUGAL_CHAMPION_CONFIRM_OPEN_EPOCHS",
+    "FUGAL_CHAMPION_GHOST_RETIRE_CONFIRM",
     "FUGAL_PAYOUT_SEAT_SHARES",
     # Read by benchmarks/loader.py: both change which questions a neuron
     # scores (or whether the pool is verified at all), so they are refused on
@@ -833,6 +1234,11 @@ CONSENSUS_ENV_INPUTS = (
     "FUGAL_EPOCH_INTERVAL",
     "FUGAL_TEE_MEASUREMENTS",
     "FUGAL_V2_ACTIVATION_BLOCK",
+    # Read off finney only: there the block is compiled in
+    # (FINNEY_CONFIRM_ACTIVATION_BLOCK) and a different value is refused.
+    "FUGAL_CONFIRM_ACTIVATION_BLOCK",
+    "FUGAL_V3_ACTIVATION_BLOCK",
+    "FUGAL_ODDS_SEAT_BLOCK",
 )
 OPERATIONAL_ENV_VARS = (
     "FUGAL_VALIDATOR_IP",
@@ -851,6 +1257,9 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_MIN_VALIDATOR_STAKE",
     "FUGAL_REVEAL_BUCKET",
     "FUGAL_REVEAL_DELAY_EPOCHS",
+    "FUGAL_ROOT",
+    "FUGAL_REFERENCE_BUCKET",
+    "FUGAL_ROOT_HOTKEY",
     "FUGAL_HEAD_ARCHIVE_DIR",
     "FUGAL_ARCHIVE_ENDPOINTS",
     "FUGAL_FALLBACK_ENDPOINTS",
@@ -863,7 +1272,11 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_POOL_FILE",
     "FUGAL_BENCHMARK_POOL_V2",
     "FUGAL_POOL_FILE_V2",
+    "FUGAL_BENCHMARK_POOL_V3",
+    "FUGAL_POOL_FILE_V3",
+    "FUGAL_POOL_CACHE_V3",
     "FUGAL_FRAME_BOOTSTRAP",
+    "FUGAL_EMBEDDINGS_FILE",
     "FUGAL_BACKBONE_THREADS",
     "FUGAL_EPOCH_DIR",
     "FUGAL_EPOCH_LOG_DIR",

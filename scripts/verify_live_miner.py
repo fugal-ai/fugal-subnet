@@ -137,7 +137,9 @@ def main() -> int:
     # The epoch's inputs by its boundary-keyed protocol version, exactly as the
     # validator picks them (neurons/validator.py, epoch_inputs): a v2 epoch is
     # a different pool, price table, model space, selection and proof namespace.
-    version = protocol_version_for_boundary(boundary, V2_ACTIVATION_BLOCK)
+    from fugal_subnet.config import v3_activation_block
+    version = protocol_version_for_boundary(boundary, V2_ACTIVATION_BLOCK,
+                                            v3_activation_block(subtensor.get_block_hash(0)))
 
     pool = load_pool(version)
     print(f"protocol v{version}: pool {len(pool)} questions, pool_hash={pool_hash(pool)[:16]}")
@@ -146,7 +148,10 @@ def main() -> int:
     prices = price_table(version)
     pool_models = models_for_protocol(version)
     explore_size = max(1, int(round(SLICE_SIZE * EXPLORE_FRACTION)))
-    explore_map = exploration_plan(version, nonce, pool, set(qids), pool_models, explore_size)
+    from fugal_subnet.epoch_plan import explore_shares
+    shares = explore_shares(version, pool_models)
+    explore_map = exploration_plan(version, nonce, pool, set(qids), pool_models, explore_size,
+                                   shares=shares)
     gold = {q["question_id"]: q for q in pool}
     del prices  # priced by the validator, not here; loaded to fail early if missing
 
@@ -202,6 +207,11 @@ def main() -> int:
     # failed every real validator.
     from neurons.validator import _get_bundle_for_uid
     hotkey = metagraph.hotkeys[args.uid]
+    if version >= 3:
+        # v3: this miner's own exploration set (shared pairs + its hotkey's), as the
+        # validator builds it per miner (neurons/validator.py, the v3 per-uid checks).
+        explore_map = exploration_plan(3, nonce, pool, set(qids), pool_models, 0,
+                                       hotkey=hotkey, shares=shares)
     weights_hash = getattr(resp, "weights_hash", "")
     committed_ok, committed_detail = check_commitment(
         get_commitments_with_blocks(subtensor, args.netuid), hotkey, weights_hash, boundary)
@@ -258,5 +268,16 @@ def main() -> int:
     return 0 if ok else 1
 
 
+def _exit_now(code: int) -> None:
+    """Exit with `code` without interpreter teardown. async_substrate_interface's
+    __del__ joins a websocket thread that never finishes at finalization, so a
+    normal exit hung after the verdict was printed (seen on the v3 testnet check,
+    exit 124 under `timeout`); the validator's --once exit has the same fix.
+    Nothing durable is pending here: the verdict is printed and flushed."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _exit_now(main())

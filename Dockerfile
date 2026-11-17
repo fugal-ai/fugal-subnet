@@ -31,7 +31,15 @@ COPY neurons/ neurons/
 # (the miner imports none; the operator-side tools run on the operator's
 # machine), and every byte here is measured surface.
 COPY data/ data/
+# Protocol v3: the pinned embeddings file (one row per v3 pool question) is
+# fetched INTO the image, so its bytes are part of the measured image, and
+# checked against config.EMBEDDINGS_SHA256 before it is written in place (a
+# wrong download fails the build). Between releases, with no pin, it is a
+# no-op. The code grader (fugal_subnet/graders_code.py) needs nothing extra
+# here: ctypes ships with this Python, and Docker's default seccomp profile
+# lets a process install its own filter (docs/decisions/CODE_GRADER_V3.md).
 RUN uv sync --frozen --no-dev --extra tee \
+    && /app/.venv/bin/python -m fugal_subnet.embeddings_file fetch \
     && groupadd --gid 10001 fugal \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/fugal fugal \
     && mkdir -p /app/results /app/data /home/fugal/.bittensor \

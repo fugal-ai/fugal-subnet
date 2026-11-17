@@ -78,15 +78,17 @@ def _torch_runtime() -> dict[str, str]:
 
 
 def grader_hash() -> str:
-    """The canonical grader version string.
+    """The canonical grading version string: every file that decides a grade.
 
-    Delegates to fugal_subnet.graders rather than recomputing the digest. A
-    second implementation of the same hash is a thing that can silently drift
-    from the first, and this value is published in every reveal.
+    graders.py, and from protocol v3 graders_code.py (the code checkers), each
+    by its own grader_hash() rather than a recomputed digest: a second
+    implementation of the same hash is a thing that can silently drift from the
+    first, and this value is published in every reveal and commitment.
     """
+    from fugal_subnet import graders_code
     from fugal_subnet.graders import grader_hash as canonical
 
-    return canonical()
+    return f"{canonical()}+code:{graders_code.grader_hash()}"
 
 
 def environment_fingerprint() -> dict:
@@ -135,6 +137,30 @@ def environment_fingerprint() -> dict:
             # In the digest so a validator that would flip at a different
             # block, or never, is visibly different from its first epoch.
             "v2_activation_block": config.V2_ACTIVATION_BLOCK,
+            # The fresh-data confirmation rule's activation: finney's compiled
+            # block and the variable other chains read. Both, because the
+            # fingerprint is taken without a chain connection. On finney the
+            # variable is refused unless it equals the compiled block, so a
+            # variable that equals it changes nothing and is left out: two
+            # finney validators on the same rule publish the same digest
+            # whether or not they also set it.
+            "confirm_activation_block": {
+                "finney": config.FINNEY_CONFIRM_ACTIVATION_BLOCK,
+                "env": _env_unless_finney(config.CONFIRM_ACTIVATION_BLOCK_ENV,
+                                          config.FINNEY_CONFIRM_ACTIVATION_BLOCK),
+            },
+            # Protocol v3 and the odds seat, the same two ways.
+            "v3_activation_block": {
+                "finney": config.FINNEY_V3_ACTIVATION_BLOCK,
+                "env": _env_unless_finney(config.V3_ACTIVATION_BLOCK_ENV,
+                                          config.FINNEY_V3_ACTIVATION_BLOCK),
+            },
+            "embeddings_v3": config.EMBEDDINGS_SHA256,
+            "odds_seat_block": {
+                "finney": config.FINNEY_ODDS_SEAT_BLOCK,
+                "env": _env_unless_finney(config.ODDS_SEAT_BLOCK_ENV,
+                                          config.FINNEY_ODDS_SEAT_BLOCK),
+            },
             # The v2 price table is consensus from the flip, and a release/v2
             # validator ships it while still scoring v1 epochs; its hash is here
             # so two validators that would score v2 differently differ visibly
@@ -174,9 +200,25 @@ def environment_fingerprint() -> dict:
             # built from. In the digest so a validator pricing it differently
             # is visibly different.
             "CHAMPION_ANCHOR_SPEND_PER_Q": _anchor_spend_or_error(config.CHAMPION_ANCHOR_MODEL),
+            # v3's exact odds: the bound on a head's parameters and the pinned
+            # logit threshold table (fugal_subnet/head_odds.py).
+            "HEAD_MAX_ABS_PARAM": _head_odds_constant("HEAD_MAX_ABS_PARAM"),
+            "ODDS_THRESHOLDS_SHA256": _head_odds_constant("THRESHOLDS_SHA256"),
         },
         "approved_entries": sorted(config.TEE_APPROVED_MEASUREMENTS),
     }
+
+
+def _env_unless_finney(env, finney):
+    """The activation variable as the digest records it: left out (None) when
+    it repeats finney's compiled block, the only value finney accepts."""
+    return None if env == finney else env
+
+
+def _head_odds_constant(name: str):
+    from fugal_subnet import head_odds
+
+    return getattr(head_odds, name)
 
 
 def _anchor_spend_or_error(model: str):
@@ -207,6 +249,17 @@ _SCORING_CONSTANTS = (
     "CHAMPION_HARD_GATE_MIN_QUESTIONS", "CHAMPION_TIME_GATE_FACTOR",
     "CHAMPION_GHOST_OFF", "CHAMPION_GHOST_RETIRE", "CHAMPION_WINDOW_EPOCHS",
     "CHAMPION_MIN_ACCURACY", "CHAMPION_MIN_PAIRED_QUESTIONS", "PAYOUT_SEAT_SHARES",
+    # Fresh-data confirmation (in effect from the confirmation activation block).
+    "CHAMPION_CONFIRM_QUESTIONS", "CHAMPION_CONFIRM_OPEN_EPOCHS",
+    "CHAMPION_GHOST_RETIRE_CONFIRM",
+    # Protocol v3 (in effect from the v3 activation and odds seat blocks).
+    "EXPLORE_SHARED_SIZE", "EXPLORE_PRIVATE_SIZE", "EXPLORE_COLDKEY_CAP", "EXPLORE_PRIVATE_Z",
+    "EXPLORE_PRIVATE_MIN_TRIALS",
+    # Cost-aware exploration (explore_weights): they set every pair's sampling
+    # probability and weight (v3 review, 2026-11-16: missing from the digest).
+    "EXPLORE_SPEND_CAP_USD", "EXPLORE_COST_FLOOR", "EXPLORE_COST_MAX_HALVES",
+    "BRIER_MARGIN", "ODDS_MIN_PAIRS", "ODDS_CONFIRM_PAIRS", "NV_NONINFERIORITY",
+    "ODDS_REF_PRIOR", "SINGLE_MODEL_MIN_PAIRS", "CHAMPION_VALUE_PER_CORRECT_USD",
 )
 
 

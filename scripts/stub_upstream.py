@@ -45,7 +45,7 @@ import json
 import logging
 import os
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -62,6 +62,19 @@ BENCH_DIFFICULTY = {
     "supergpqa_hard": 0.75, "aime25": 0.80, "beyondaime": 0.85, "omnimath_hard": 0.80,
 }
 DEFAULT_DIFFICULTY = 0.4
+
+
+def all_prices() -> dict:
+    """Every protocol's price table, keyed by what the stub can tell apart: a
+    model id (v1, v2) or a v3 entry `model@effort`."""
+    from fugal_subnet.routing_protocol import price_table
+
+    table = {**price_table(1), **price_table(2)}
+    try:
+        table.update(price_table(3))
+    except Exception:  # noqa: BLE001 - a branch without the v3 menu
+        pass
+    return table
 
 
 def build_skill(prices: dict) -> dict:
@@ -88,6 +101,7 @@ def build_skill(prices: dict) -> dict:
 class Handler(BaseHTTPRequestHandler):
     gold: dict = {}
     bench: dict = {}
+    solution: dict = {}
     skill: dict = {}
     calls = 0
 
@@ -96,17 +110,30 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             req = json.loads(body)
             model = req.get("model", "")
-            prompt = req["messages"][0]["content"]
+            # The question is the LAST user turn: from protocol v3 every call
+            # leads with the shared system prompt (config.HARNESS_SYSTEM_PROMPT_V3).
+            users = [m for m in req["messages"] if m.get("role") == "user"]
+            prompt = (users or req["messages"])[-1]["content"]
         except Exception:
             self.send_response(400); self.end_headers()
             self.wfile.write(b'{"error":"bad request"}')
             return
 
-        digest = hashlib.sha256(f"{prompt}|{model}".encode("utf-8")).digest()
+        # A v3 menu entry is the model at one reasoning effort; the request
+        # carries both (the entry id itself never goes upstream).
+        effort = (req.get("reasoning") or {}).get("effort")
+        entry = f"{model}@{effort}" if effort and f"{model}@{effort}" in Handler.skill else model
+        digest = hashlib.sha256(f"{prompt}|{entry}".encode("utf-8")).digest()
         bench = Handler.bench.get(prompt, "")
-        p_correct = Handler.skill.get(model, {}).get(bench, 0.5)
+        p_correct = Handler.skill.get(entry, {}).get(bench, 0.5)
         correct = (int.from_bytes(digest[:4], "big") / 0xFFFFFFFF) < p_correct
-        text = Handler.gold.get(prompt, "0") if correct else "0"
+        solution = Handler.solution.get(prompt)
+        if solution is not None:
+            # A code question (graders_code): a correct reply is the fixture's
+            # reference program, a wrong one a program that prints nothing.
+            text = f"```python\n{solution if correct else 'pass'}\n```"
+        else:
+            text = Handler.gold.get(prompt, "0") if correct else "0"
         Handler.calls += 1
 
         payload = json.dumps({
@@ -141,8 +168,6 @@ def main() -> int:
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    from fugal_subnet.routing_protocol import price_table
-
     opener = gzip.open if args.pool.endswith(".gz") else open
     with opener(args.pool, "rt", encoding="utf-8") as f:
         pool = json.load(f)
@@ -152,10 +177,12 @@ def main() -> int:
     # drift from what the harness actually does.
     Handler.gold = {q["prompt"]: str(q.get("gold", "")) for q in pool}
     Handler.bench = {q["prompt"]: q.get("benchmark", "") for q in pool}
+    # Code fixtures carry the program a correct model would write.
+    Handler.solution = {q["prompt"]: q["stub_solution"] for q in pool if q.get("stub_solution")}
     # Both protocols' models, ranked together by price, so a v1 miner and a v2
     # miner each see skill rise with price. Ranking only v1's table left every
     # v2 model at a flat 0.5, where routing is unmeasurable.
-    Handler.skill = build_skill({**price_table(1), **price_table(2)})
+    Handler.skill = build_skill(all_prices())
 
     logger.info("Pool: %d questions | models: %d", len(pool), len(Handler.skill))
     cheap = min(Handler.skill, key=lambda m: Handler.skill[m]["aime"])
@@ -165,7 +192,14 @@ def main() -> int:
     logger.info("Skill spread on gsm8k: %s %.2f .. %s %.2f",
                 cheap, Handler.skill[cheap]["gsm8k"], dear, Handler.skill[dear]["gsm8k"])
 
-    srv = HTTPServer((args.host, args.port), Handler)
+    # Threaded with a deep backlog: a v3 miner keeps 40 calls in flight
+    # (config.HARNESS_CONCURRENCY), and a single-threaded server with the
+    # default backlog of 5 resets the overflow.
+    class _Server(ThreadingHTTPServer):
+        daemon_threads = True
+        request_queue_size = 512
+
+    srv = _Server((args.host, args.port), Handler)
     logger.info("Stub upstream on http://%s:%d — no API key, no spend",
                 args.host, args.port)
     try:

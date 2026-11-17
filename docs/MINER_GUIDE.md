@@ -5,6 +5,13 @@ TDX confidential VM each epoch, producing hardware-attested proofs of routing
 quality. The best router holds the champion seat and earns most of the miner
 share.
 
+> **Protocol v3 from block 9,527,760** (epoch 26466, ~2026-11-17 17:34 UTC),
+> release v0.5.0; the seat is decided on odds from block 9,530,640
+> (~2026-11-18 03:10 UTC). v3 replaces the menu, the question pool and the
+> scoring (honest odds per menu entry, Brier on random calls); see the v3
+> notes in this guide and the CHANGELOG. Re-provision on the v0.5.0 image
+> before the block.
+
 > This guide describes **protocol v2**. Until the published activation block
 > the subnet scores by the v1 rules; the differences, and how to move a running
 > v1 miner without losing epochs, are in [Moving from v1 to v2](#moving-from-v1-to-v2-before-the-activation-block)
@@ -585,11 +592,13 @@ an unbroken run (five epochs) before it can take a seat.
 
 **If the head you replace is the champion, read this first.** Committing a
 different head retires the old one: its seat becomes a 24-epoch ghost bar
-(`CHAMPION_GHOST_RETIRE`), the champion's share burns while the bar stands,
+(`CHAMPION_GHOST_RETIRE`; 8 epochs, `CHAMPION_GHOST_RETIRE_CONFIRM`, from the
+confirmation activation block), the champion's share burns while the bar stands,
 the old head does not resume, and a head takes the seat past the bar only by
 beating the ghost by the margin on at least 1,500 questions they both
 answered. A head that only started after the old one retired has no such
-pairing, so it waits out the 24 epochs (about 29 hours), and so does
+pairing, so it waits out the 24 epochs (about 29 hours; 8 epochs, under 10
+hours, from the confirmation activation block), and so does
 everyone else. The way to upgrade a champion without that gap is to run the
 new head **beside** the old one for at least five epochs, on a second hotkey
 under the same coldkey (two hashes are two heads; only the same bytes count
@@ -635,6 +644,31 @@ NV   = 100 x mean_i NV_i                          (percentage points)
   with the champion: five epochs. A head that is clearly better takes the seat
   at that floor; a head one accuracy point better takes it in about six
   epochs; an equal head almost never does.
+- **From the confirmation activation block (announced with its release), you
+  pass that test twice.** The first pass against a settled champion records
+  your head as *pending*: the champion keeps the seat and is paid. You take
+  the seat when you pass the same test again (same margin, same 99%) on
+  questions drawn after that first pass, at least
+  `CHAMPION_CONFIRM_QUESTIONS` (1500) of them, so five epochs at the
+  earliest.
+  - Why: the test runs every epoch for every challenger, so heads with no
+    real edge pass it by luck now and then, and more heads means more lucky
+    passes. Questions drawn after the pass were not part of that luck.
+  - What it costs a head that is really better: about twice the epochs. In
+    simulation with the shipped rule, a head 1.5 points better takes the seat
+    at epoch 10 instead of 5, one 0.85 points better at a median of 18 instead
+    of 8, and every such head still takes it within 150 epochs (one 0.5 points
+    better: 94% of runs).
+  - Keep serving. Your fresh questions are the epochs since your first pass
+    in your current unbroken run; one missed epoch drops the pending record,
+    and your next pass starts the count again.
+  - A seat that was filled from empty (the first champion after a reset, or a
+    take over a retired champion's ghost) can be taken by the single test in the
+    four epochs after the fill; from epoch fill + `CHAMPION_CONFIRM_OPEN_EPOCHS`
+    (5) on it is settled and a take needs confirming.
+  - You can see it: the reveal's `champion.detail` has your lines (`passed
+    the take test; …`, then `vs fresh questions, …: n=… NV=… LCB=…`), and
+    `v2_state.seat.pending` lists every waiting head and the epoch it passed.
 - Gates on a challenger, besides the margin: window accuracy at or above
   `CHAMPION_MIN_ACCURACY` = **0.30**, and at or above the high-water mark (the
   current champion's Wilson lower bound when it was seated). Once the window
@@ -696,7 +730,8 @@ epochs.
   epochs. While it stands, a challenger must beat the ghost by the margin, and
   the champion's share burns. A champion that returns inside the window
   resumes its seat and is paid at once. A champion whose owner commits a
-  different head leaves a ghost for `CHAMPION_GHOST_RETIRE` (24) epochs.
+  different head leaves a ghost for `CHAMPION_GHOST_RETIRE` (24) epochs, or
+  `CHAMPION_GHOST_RETIRE_CONFIRM` (8) from the confirmation activation block.
 
 **Exploration quota:** each epoch you also answer 5% extra questions using a
 model the *nonce* chooses, not your head. They never count toward your grades
@@ -847,14 +882,16 @@ account.
 **A low balance also throttles concurrent calls.** OpenRouter keeps an
 in-flight spending budget for prepaid accounts below a balance threshold and for
 newer accounts: every running request holds its input plus `max_tokens` at the
-endpoint's prices until it settles. From protocol v2 the harness keeps
-`HARNESS_CONCURRENCY` = 24 calls in flight at 16,384 tokens each. Computed from
-the pinned v2 prices (not measured on a live key), 24 calls hold about $2.75
-for a head that spreads evenly over the model list and about $20 for one that
-sends everything to the most expensive model; claude-fable-5.1 alone holds
-$0.82 per call. OpenRouter does not publish the fraction of the balance that
-makes up the budget, or the threshold above which it stops applying. Keep a
-balance of at least ~$25 if your head uses the expensive models. When the
+endpoint's prices until it settles. From protocol v3 the harness keeps
+`HARNESS_CONCURRENCY` = 40 calls in flight, each with its menu entry's own
+answer budget (up to 128k tokens; v2 kept 24 at 16,384). Computed from the
+pinned v3 prices and budgets (not measured on a live key), a call holds about
+$1.07 on average over the menu, so 40 calls hold about $43 for a head that
+spreads evenly, and up to about $205 for one that sends everything to Claude
+Fable 5.2 ($5.14 per call). The hold is released when the call settles; it is
+not spent. OpenRouter does not publish the fraction of the balance that makes
+up the budget, or the threshold above which it stops applying. Keep a balance
+of at least ~$50, and more if your head leans on the most expensive entries. When the
 budget is full, OpenRouter refuses with a temporary 402
 (`in_flight_budget_exhausted`). The v2 image retries that 402 like a 429 and
 logs `OpenRouter in-flight budget full`. If it is still full after the retries,

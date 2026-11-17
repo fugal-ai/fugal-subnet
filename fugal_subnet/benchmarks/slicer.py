@@ -163,14 +163,21 @@ def validate_activation_block(activation_block: int | None, blocks_per_epoch: in
         )
 
 
-def protocol_version_for_boundary(boundary_block: int, activation_block: int | None) -> int:
-    """The protocol version an epoch is scored under: 1 or 2.
+def protocol_version_for_boundary(boundary_block: int, activation_block: int | None,
+                                  v3_activation_block: int | None = None) -> int:
+    """The protocol version an epoch is scored under: 1, 2 or 3.
 
     Consensus-critical, and deliberately keyed on the epoch's BOUNDARY block:
     every block inside one epoch maps to the same boundary, so a retried
     epoch, or a validator that reaches it late, applies the same rules as
-    every peer. v2 applies from the activation boundary itself onward.
+    every peer. Each version applies from its activation boundary itself
+    onward. v3 is never before v2: a v3 block with no v2 block is refused.
     """
+    if v3_activation_block is not None:
+        if activation_block is None or int(v3_activation_block) < int(activation_block):
+            raise ValueError("protocol v3 cannot activate before protocol v2")
+        if int(boundary_block) >= int(v3_activation_block):
+            return 3
     if activation_block is None:
         return 1
     return 2 if int(boundary_block) >= int(activation_block) else 1
@@ -422,6 +429,97 @@ def select_explore_set_v2(
             b = _weighted_pick(nonce, f"explore:{c}:{slot}", live)
             out.append(ranked[b][used[b]])
             used[b] += 1
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Protocol v3: per-miner exploration.
+#
+# In v2 every miner answers the SAME exploration set, so a field of any size
+# measures 15 (question, model) pairs an epoch. v3 keeps a small shared set
+# (the cross-miner agreement check needs miners answering the same pairs) and
+# gives each miner a set of its own, derived from the epoch nonce and its
+# hotkey. Twenty operators then measure about 500 distinct pairs an epoch, and
+# a model or a benchmark added to the pool is measured within a day without
+# anyone paying for a measurement run.
+#
+# The validator derives one set per miner per epoch, so the selection must not
+# rank the whole pool as `select_explore_set_v2` does (an HMAC per question:
+# 50,000 of them per miner). `PoolIndex` is built once per pool; a draw is then
+# a category quota, a weighted benchmark pick and an index into that
+# benchmark's id-sorted list, O(slots) per miner.
+# ---------------------------------------------------------------------------
+
+
+class PoolIndex:
+    """A pool's questions by benchmark, each list in question-id order."""
+
+    def __init__(self, pool: list[dict], bench_category: dict[str, str],
+                 bench_weight: dict[str, float] | None = None):
+        by: dict[str, list[dict]] = {}
+        for item in pool:
+            by.setdefault(item.get("benchmark", ""), []).append(item)
+        self.by_bench = {b: sorted(items, key=lambda it: it["question_id"])
+                         for b, items in by.items()}
+        self.cats = _categories_of(self.by_bench, bench_category)
+        # Within-category shares from the WHOLE pool, as the scored slice uses.
+        self.shares = {c: _within_category_shares(sorted(benches), self.by_bench, bench_weight)
+                       for c, benches in self.cats.items()}
+        self.size = len(pool)
+
+
+# How many indexes are tried for one slot before the walk becomes linear. A
+# slot collides only with the scored slice, the shared set and this miner's
+# earlier picks (a few hundred questions out of thousands per benchmark).
+_PRIVATE_DRAW_TRIES = 32
+
+
+def select_private_explore(
+    nonce: bytes,
+    index: PoolIndex,
+    excluded_ids: set[str],
+    size: int,
+    targets: dict[str, float],
+) -> list[dict]:
+    """One miner's private exploration questions, disjoint from `excluded_ids`.
+
+    `nonce` is that miner's exploration nonce (exploration.private_nonce: the
+    epoch nonce and its hotkey). Category quotas at `targets` by the same
+    unbiased apportionment as the scored slice; each slot's benchmark by a
+    weighted draw on pool share within the category; the question by a keyed
+    index into the benchmark's id-ordered list, redrawn on a collision. So a
+    question's chance of being drawn equals its chance in the scored slice,
+    and the set is a function of public inputs only. Deterministic in
+    (nonce, pool, excluded_ids, size, targets).
+    """
+    if size <= 0 or not index.by_bench:
+        return []
+    cq = category_quotas(size, targets, set(index.cats), nonce, "private")
+    taken = set(excluded_ids)
+    out: list[dict] = []
+    for c in sorted(index.cats):
+        weights = [(b, index.shares[c][b]) for b in sorted(index.cats[c])]
+        for slot in range(cq[c]):
+            b = _weighted_pick(nonce, f"private:{c}:{slot}", weights)
+            items = index.by_bench[b]
+            chosen = None
+            for attempt in range(_PRIVATE_DRAW_TRIES):
+                i = int(_hmac_rank(nonce, f"private:{c}:{slot}:{attempt}"), 16) % len(items)
+                if items[i]["question_id"] not in taken:
+                    chosen = items[i]
+                    break
+            if chosen is None:
+                # Nearly everything in this benchmark is excluded: walk on from
+                # the last index, then to the category's other benchmarks.
+                order = items[i:] + items[:i]
+                for other in sorted(index.cats[c]):
+                    if other != b:
+                        order = order + index.by_bench[other]
+                chosen = next((q for q in order if q["question_id"] not in taken), None)
+            if chosen is None:
+                continue                       # the category is exhausted
+            taken.add(chosen["question_id"])
+            out.append(chosen)
     return out
 
 

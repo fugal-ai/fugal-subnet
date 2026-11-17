@@ -172,7 +172,8 @@ def test_the_epoch_commits_its_frame_its_index_and_its_v2_state():
     for line in ("scoring_state, frame = (epoch_state, epoch_frame)",
                  "prev_uids, prev_weights = (next_prev_uids, next_prev_weights)",
                  "last_epoch_index = epoch_index",
-                 "v2_window, v2_seat, v2_copy, v2_window_degraded = next_v2"):
+                 "v2_window, v2_seat, v2_copy, v2_window_degraded, v2_rules = "
+                 "(*next_v2, next_rules)"):
         assert line in commit[:commit.index("save_state(")], line
 
 

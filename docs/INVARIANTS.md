@@ -2025,11 +2025,22 @@ profitable; at a third, 15 of 17.
 Four changes, which ship together because they share the sample schema:
 
 1. **A failed call is attested as failed.** `QuestionResult.failed` is set by
-   the harness when the call did not complete (None from `_call_model`, as
-   distinct from "" for a reply with no text), is hash-bound, and is held to
+   the harness when there is no reply to grade (None from `_call_model`, as
+   distinct from "" for a reply with no text): the call did not complete, or
+   what the upstream returned carries no `choices`. The second case is an
+   error inside a 200 body (`{"error": ...}`), or a body that is not JSON or
+   is cut short. The metering proxy retries it within the same attempts and
+   wall-clock deadline as a 429/5xx status and relays only a reply that has
+   `choices`; an operator status as the body's error code (401, 403, and 402
+   other than OpenRouter's temporary in-flight-budget refusal), or an error
+   code or type naming a content-policy or moderation refusal, is not
+   retried. A reply with `choices` and no text is still a wrong answer.
+   Any 200 body that reports tokens used is metered, answered or not, so a
+   failed result can carry a cost. `failed` is hash-bound, and is held to
    its meaning by `verify_proof`: a failed result cannot be correct and cannot
    carry a reply. `failed` enters `content_hash` only when True, so a proof
-   with no failures hashes as it did before the field existed.
+   with no failures hashes as it did before the field existed. Enforced on
+   the miner side by `tests/test_proxy_error_bodies.py`.
 2. **Failing exploration is not free.** `verify_proof` rejects a proof whose
    exploration failure rate exceeds its scored failure rate by more than
    `EXPLORE_FAIL_MARGIN` (0.34, six of fifteen slots). It is the difference
@@ -2297,6 +2308,22 @@ deployed ahead of the flip, and the dangerous one after it, so the activation
 block is part of the release instructions and the digest is what makes a
 missing value visible.
 
+**After the flip, finney refuses the dangerous failures at startup**
+(`neurons/validator._check_chain_configuration`, once the chain's genesis
+hash is read; live only). Each was a configuration a mainnet validator
+actually ran with, healthy by its own log:
+- `FUGAL_V2_ACTIVATION_BLOCK` unset, or not finney's flip block
+  (`config.FINNEY_V2_ACTIVATION_BLOCK`): every epoch scored by the v1 rules.
+- No approved entry for a v2 miner image (`v2_compose_hashes`: the frozen
+  composes in the checkout that set the activation block; an approved entry's
+  second half is the sha256 of one). Every v2 proof then fails the
+  runtime-image check, the seat stays empty and all weight burns.
+- No public IPv4 in `FUGAL_VALIDATOR_IP`. Miners admit only the validator
+  addresses recorded on chain, so the validator verifies fewer proofs than
+  its peers and its seat can differ from theirs.
+Other chains and mock keep their warnings: a rehearsal legitimately runs
+without some of these. `tests/test_follower_setup.py`.
+
 The v2 scoring constants (`CHAMPION_*`, `PAYOUT_SEAT_SHARES`) are ordinary
 consensus constants from the start: in `CONSENSUS_ENV_VARS`, in the
 fingerprint's `scoring` block, and refused as live overrides on finney like
@@ -2537,7 +2564,8 @@ paired questions, hard weight 2).
   head still displaces the first champion by the margin.
 - **Ghost.** A champion that stops being live or eligible leaves a ghost bar
   for `CHAMPION_GHOST_OFF` epochs (missed) or `CHAMPION_GHOST_RETIRE` (its
-  owner serves a different head). While it stands, a challenger must beat the
+  owner serves a different head; `CHAMPION_GHOST_RETIRE_CONFIRM` from the
+  confirmation activation block, next entry). While it stands, a challenger must beat the
   ghost by the margin, the seat is otherwise empty and its share burns, and a
   champion that only missed resumes its seat if it returns inside the window.
   A missed ghost whose owner then commits a different head is upgraded to the
@@ -2657,6 +2685,112 @@ needs a hash-bound per-call latency in the proof. Until proofs carry it the
 gate is not applied, and the published policy says so.
 
 Enforced by `tests/test_champion.py`.
+
+### I3 — a take is confirmed on fresh questions (from the confirmation activation block)
+
+**The property.** Registering more heads must not buy more chances at the
+seat. The take test above is re-run every epoch for every challenger, so its
+false positives add up over epochs and over challengers: k heads with no real
+edge over the champion pass it by luck about k times as often as one does
+(the best-of-N figures above: one of ten heads with no edge took the seat in
+27% of 30-epoch runs at 99%). A pass is therefore a *selection*, and a
+selection is only evidence on data it did not see.
+
+**The rule** (`champion.seat_step`, `Pending`, `_live_pending`). From the
+first epoch whose boundary is at or after the confirmation activation block:
+
+- **Pass.** A challenger that passes every condition of a take against a
+  settled champion does not take the seat. The epoch is recorded: a *pending*
+  record (head, epoch of the pass, the champion it passed against) in the
+  seat state. The champion holds the seat and is paid.
+- **Confirm.** At a later epoch the challenger takes the seat when it again
+  passes every condition of a take on its whole run, AND passes the same
+  paired test (the same margin, confidence and resample count; a resampling
+  stream of its own, seeded with the epoch id suffixed `:confirm`) on the
+  questions of epochs AFTER the recorded one only, with at least
+  `CHAMPION_CONFIRM_QUESTIONS` (1,500) of them. Those questions were drawn
+  after the pass, so the selection never saw them. There is still one margin.
+- **A record stands** while the champion it passed against holds the seat (or
+  is a ghost that has only missed), its head is verified every epoch since
+  the pass (the comparison reads the current run only, so a miss leaves
+  nothing fresh to confirm on), and the epoch of the pass is still inside the
+  comparison window. Once the pass has left the window every question in the
+  window would count as fresh, and the second test would be the first one
+  over again; the head is recorded anew the next time it passes. A new
+  champion clears every record: each was a pass against the previous holder.
+- **A seat filled from empty is open first.** The first fill, and a take over
+  a retired ghost, beat nobody: the first fill is the best of several noisy
+  measurements. Such a seat is settled from epoch fill +
+  `CHAMPION_CONFIRM_OPEN_EPOCHS` (5) (`SeatState.confirm_from`); in the four
+  epochs between the fill and then, it can be taken by the plain test,
+  exactly as before this rule, and a head that takes it that way gets the
+  same open period from its own epoch. A champion that was itself
+  confirmed is settled at once. Without the open period the rule would also
+  protect a lucky first fill.
+- **A champion that only missed is still confirmed against.** While its ghost
+  stands as "missed" the bar is the same as when it is live, so a short
+  outage does not reopen a settled seat to one lucky pass. A **retired**
+  ghost answers no new questions, so nothing fresh can be paired with it: it
+  is beaten by the plain test.
+
+**What it buys, measured**
+(`scripts/experiments/experiment_seat_confirmation.py`: the shipped
+`seat_step` and `paired_test` with the shipped constants, except 400
+bootstrap resamples; window 48; per-question spread matched to mainnet pairs;
+60 epochs against a settled champion). Share of runs in which a challenger
+with NO edge took the seat, before and with the rule: ten near-copies, 8.3%
+and 0 of 120 runs; ten independently trained heads, 17.5% and 0 of 120; thirty
+near-copies, 22.5% and 2.5% (1 of 40).
+
+**What it costs, measured** (the same script, 120 runs each). A challenger
+with a real edge still takes the seat, in about twice the epochs (every run
+inside 150 epochs at +0.85 and above; 94% at +0.5): +1.5 points over a near-copy champion, epoch
+5 becomes 10; +0.85, median 8 becomes 18; +0.5, median 31 becomes 57 (94% of
+runs inside 150 epochs); an independently trained head +2 points better, 5
+becomes 11. On the mainnet reveals e00026349 to e00026384, the one take in
+them (+0.83 points at its pass) measured +1.06 on its first 1,500 fresh
+questions and confirms at 2,400 (eight epochs after the pass).
+
+**What it does not do.** It does not tell copies from originals, and it does
+not look at who owns a head: it is the same for everybody. Among heads of
+truly equal value, which one fills an EMPTY seat is still the best of their
+measurements. And the withholding and best-of-N residuals above apply to the
+fresh questions as they do to the run.
+
+**The retired ghost's window is shorter from the same block:**
+`CHAMPION_GHOST_RETIRE_CONFIRM` (8) epochs instead of `CHAMPION_GHOST_RETIRE`
+(24). A retired head answers nothing, so a head committed after it retired
+can never be paired with it, and for the whole window the seat can go only to
+a head that already overlapped it; otherwise the miner share burns, for up to
+about 29 hours at 24 epochs. What the window is for is giving the owner's
+replacement head time to finish burn-in (five epochs) and compete for the
+empty seat on equal terms with copies of the retired one; eight epochs is
+that plus slack for one early miss. A ghost created before the block keeps
+the expiry it was given.
+
+**Activation.** `config.confirm_activation_block(genesis)`: finney's block is
+compiled into the release (`FINNEY_CONFIRM_ACTIVATION_BLOCK`; `None` until the
+protocol v3 release sets it with the v3 and odds seat blocks: 9,527,760 in v0.5.0), and `FUGAL_CONFIRM_ACTIVATION_BLOCK` set to anything
+else on finney is refused at startup. Other chains read the variable. The
+v2 flip relied on every operator setting a variable, and a validator that had
+not set it ran the old rules with nothing in its log to say so. Which rule
+set an epoch uses is decided by its boundary block, as for v2
+(`v2_epoch.seat_params_from_config`). Both the compiled block and the
+variable are in the consensus digest (`epoch.confirm_activation_block`), with
+the three constants (`scoring`).
+
+**Determinism and rebuild (I1).** The pending records and `confirm_from` are
+part of the seat, so they are published in every reveal's `v2_state.seat`,
+are in the consensus view two validators are compared on (`v2_sync`), and are
+restored by a rebuild or a re-anchor; a validator rebuilt while a challenger
+waits confirms it at the same epoch as one that never stopped. They are
+published only when there are any, so before the block the seat is
+byte-identical to the one before this rule. Records are kept sorted by head
+hash, and a published seat is validated and bounded when read
+(`v2_epoch.seat_from_dict`).
+
+Enforced by `tests/test_seat_confirmation.py` and the `seat_confirmation`
+stage of `scripts/check_determinism.py`.
 
 ### I3 — seats, not shares: the v2 payout (v2 release; from the activation block)
 
@@ -3031,8 +3165,9 @@ ordered by epoch id and never by filesystem order:
   `explore_benchmarks`).
 
 The validator uses it at startup when it has no local v2 state, or has a
-seat but lost its window, and `FUGAL_FRAME_BOOTSTRAP` names a directory of
-reveals. Per-head v1 evidence is not rebuilt (as before); only the burn-in
+seat but lost its window, and it has reveals to rebuild from: a follower's
+reference reveals (below), or the directory a root's operator names in
+`FUGAL_FRAME_BOOTSTRAP` to rebuild from its own. Per-head v1 evidence is not rebuilt (as before); only the burn-in
 counter is restored, into fresh records.
 
 **A malformed reveal is refused by name.** The replay validates every field it
@@ -3068,8 +3203,39 @@ differing: before this, it never agreed again. Its peers' state is published
 in their reveals only after the hold, so some lag is unavoidable.
 `fugal_subnet/v2_sync.py` and `neurons/validator._v2_sync_step`:
 - **Shape: a star.** One ROOT validator (the subnet owner's) sets no
-  reference; every other validator points `FUGAL_FRAME_BOOTSTRAP` at a
-  directory synced from the root's bucket (`<netuid>/` prefix).
+  reference; every other validator verifies against the root's published
+  reveals (`<netuid>/` prefix of its bucket).
+  **A follower fetches them itself** (`fugal_subnet/reveal_sync.py`): at
+  startup and before every v2 epoch, over plain HTTPS from the public bucket,
+  into a directory beside its state. On finney the bucket is built in and a
+  follower sets nothing; the root is the validator with `FUGAL_ROOT=1`, or
+  the one whose `FUGAL_REVEAL_BUCKET` is the reference bucket. Before this
+  the operator ran a `gsutil rsync` on a timer and pointed
+  `FUGAL_FRAME_BOOTSTRAP` at the result (still honoured as it is); a mainnet
+  validator without either started with an empty seat, burned its weight and
+  logged no error. **Followers verify downloaded reveals against the root's
+  on-chain commitment** (`reveal:<epoch_id>:<sha256>`, which the root's
+  hotkey commits for the newest reveal it publishes): the reveal at the
+  committed epoch must match it; a reveal newer than the commitment is not
+  taken (and removed from disk) until the root commits it; every commitment
+  read is recorded beside the reference directory, and an older reveal with a
+  recorded commitment must match it; without a readable commitment nothing is
+  fetched. The root's hotkey is in the release on finney
+  (`config.FINNEY_ROOT_HOTKEY`, refused if `FUGAL_ROOT_HOTKEY` names another);
+  elsewhere `FUGAL_ROOT_HOTKEY`, unset meaning unverified. **Known limit:** the
+  pallet keeps one commitment per hotkey, so a reveal published before the
+  follower first ran has no recorded commitment and is accepted as before;
+  reveals that each carry the previous reveal's hash would close this
+  (planned with the protocol v3 reset). Operational, not consensus: it
+  decides which files a follower accepts, never how an epoch is scored, and
+  it changes no reveal and no digest. Otherwise the fetch adds no trust (the
+  model is the paragraph above): a file that fails the listing's size or MD5,
+  does not parse, or names another epoch never reaches disk; object names are
+  matched exactly;
+  every request and the sync as a whole are bounded; and in the epoch loop a
+  failed fetch is a log line, never the epoch's failure (I6). At startup, a
+  live follower with no reference reveals at all and no way to fetch any is
+  refused. `tests/test_follower_setup.py`.
 - **Gap.** A v2 epoch a follower did not observe (or scored nothing in), or a
   startup rebuild that ends before the present, opens a gap (`gap_until`,
   persisted). A gap changes NOTHING the validator decides: blocking its takes
@@ -3163,6 +3329,322 @@ can take a seat. Holding or resuming a seat needs no burn-in.
 
 Enforced by `tests/test_miss_rule_v2.py` (the v2 constant is used in v2 epochs,
 v1 keeps its own) and `tests/test_v2_activation.py` (in the digest).
+
+### I1 — protocol v3 activates at one named boundary, and the seat objective at another (v3 release; not scheduled)
+
+Protocol v3 changes what is asked (a new pool and a new menu), what every
+miner measures (its own exploration pairs), and what the seat is decided on
+(a head's odds). As for v2, an epoch's rules are decided by its BOUNDARY block:
+`slicer.protocol_version_for_boundary(boundary, v2_block, v3_block)` returns 3
+from the v3 block, and `v2_epoch.seat_params_from_config(...,
+odds_seat_block=)` puts the seat on odds from the odds seat block, which is
+never before the v3 block. Between the two the seat is decided on net value
+while every head's odds are computed and published, so the new objective is
+visible, to miners and across validators, before it decides anything.
+
+- **Finney's blocks are compiled in** (`config.FINNEY_V3_ACTIVATION_BLOCK`,
+  `FINNEY_ODDS_SEAT_BLOCK`; v0.5.0 schedules them: v3 from block 9,527,760, the
+  seat on odds from block 9,530,640), and the
+  variables (`FUGAL_V3_ACTIVATION_BLOCK`, `FUGAL_ODDS_SEAT_BLOCK`) cannot
+  move them there; other chains read the variables
+  (`config.v3_activation_block`, `odds_seat_block`). Both pairs are in the
+  consensus digest.
+- **A state built under other rules is not carried over**
+  (`run_v2_epoch(rules=, state_rules=)`). The first v3 epoch starts from an
+  empty window and an empty seat: v3's questions and model list are different
+  ones, so a v2 window cannot be compared with and a v2 champion was seated on
+  other questions. The first epoch on odds keeps the window and empties the
+  seat, which is then filled by the best measured skill. What a state was
+  built under is published (`v2_state.rules`) and kept with the local state,
+  so a validator that was down across either block, or rebuilt from a reveal,
+  recognises a stale state instead of carrying it. A rebuild does what the
+  live epoch did (v3 review, 2026-11-16): it replays only the reveals of the
+  newest reveal's protocol, prices them at THAT protocol's table and
+  categories (`rebuild_v2_from_reveals(tables=)`; a v3 window priced at v2's
+  table left every v3 cell unpriced and the next epoch failed), and a
+  re-anchor whose reference snapshot predates the protocol change is refused,
+  state and gap kept, until the reference publishes an epoch after it
+  (`tests/test_v3_rebuild_flip.py`).
+- **Nothing is shipped inert by accident.** A live validator with v3
+  scheduled loads the v3 pool, the v3 menu and the embeddings file at
+  startup and refuses to start without them, as for v2. Until a release pins
+  them (`routing_data/models_v3.json`, its token manifest, the v3 pool
+  manifest, `config.EMBEDDINGS_SHA256`) no chain can schedule v3.
+
+`tests/test_v3_wiring.py`, `tests/test_v3_epoch.py`.
+
+### I1 — odds are computed exactly by the validator (v3)
+
+A head's prediction for a (question, model) pair is a function of two pinned
+things: the head's bytes (attested by hash) and the question's embedding (the
+pinned embeddings file). So the validator computes it, and the proof carries
+no new field (`fugal_subnet/head_odds.py`).
+
+It must be the same integer on every host, because per-pair losses are summed
+exactly and compared with a margin. A float sigmoid of a BLAS dot product is
+not: `exp` is the platform's, and the sum depends on kernel, SIMD width and
+FMA. So p, an integer in 0..10,000, is computed with no rounding that depends
+on the host:
+
+- each product w_i·h_i is one IEEE-754 multiply, elementwise (for float32
+  inputs the product is exact in a double);
+- the sum is `math.fsum`, the correctly rounded sum of its arguments in any
+  order;
+- no exponential is evaluated: z is compared with a table of 10,000
+  thresholds, logit((k + 0.5)/10,000), built with `decimal` arithmetic and
+  pinned by digest (`THRESHOLDS_SHA256`, in the consensus digest). A host
+  that builds a different table raises instead of scoring.
+
+`HEAD_MAX_ABS_PARAM` (10^6) bounds a v3 head's weights and biases, checked
+when the proof is verified (a head outside it is refused), and the embeddings
+file is checked to hold finite values no larger than a unit vector's, so
+every logit is finite. A constant row is not refused: it is a base rate, and
+the score prices it at zero skill.
+
+The pooled pairs and every head's odds are published in the reveal
+(`exploration_pool`, `head_odds`), their hash is in `v2_state.odds_digest`,
+and `v2_state` is the consensus view validators are compared on, so two
+validators that pooled different pairs or computed one odds value differently
+differ visibly in that epoch. A rebuild reads the published odds
+(`v2_rebuild.pairs_from_reveal`, validated and bounded), so it needs neither
+the heads nor the embeddings file.
+
+`tests/test_head_odds.py`, `tests/test_v3_epoch.py`; `head_odds`,
+`explore_pool` and `odds_seat` stages of `scripts/check_determinism.py`.
+
+### I4 — every miner measures the models (v3)
+
+In v2 every miner answers the same 15 exploration pairs, so the field
+measures 15 pairs an epoch whatever its size. In v3
+(`epoch_plan.exploration_plan_v3`):
+
+- **A shared set** of `EXPLORE_SHARED_SIZE` (8) pairs, chosen as v2 chooses
+  its whole set, the same for every miner. Miners answering the same pairs is
+  what the cross-miner agreement check reads.
+- **A private set** of `EXPLORE_PRIVATE_SIZE` (24) pairs per miner, drawn from
+  the epoch nonce and the miner's hotkey (`exploration.private_nonce`,
+  `slicer.select_private_explore`): disjoint from the scored slice and the
+  shared set, on the scored slice's category mix, each sent to an entry drawn
+  by the epoch's cost-aware shares (below) with the same per-miner nonce. A
+  proof is bound to its hotkey, and the validator derives the same set from
+  the hotkey it queried, so the proof check is still an exact match of what
+  was assigned. A miner learns its set only when the epoch nonce exists.
+
+**Cost-aware exploration, unbiased by weights** (`fugal_subnet/explore_weights.py`).
+Drawn uniformly over the v3 menu (53 entries, answer budgets up to ~128k
+tokens), exploration would charge a miner as much for a Fable 5.2 @max call
+(~$5 at 128k) as for hundreds of cheap ones. So entry e is drawn with
+probability pi_e = (1 - floor) * r_e / sum(r) + floor / M, with
+r_e = (c_max / c_e)^alpha and c_e its expected dollars per call (pinned prices x
+token means). `EXPLORE_COST_FLOOR` (1/4) keeps every entry at a quarter of a
+uniform share or more; alpha is the most uniform of 0, 1/2, ... 2 whose
+EXPECTED spend for a miner's 32 calls is within `EXPLORE_SPEND_CAP_USD`
+($0.20). The questions take their entries by systematic sampling on the
+share line (uniform shares give a round-robin), so each question's entry has
+probability exactly pi_e. Each pooled pair carries w_e = 1 / (M * pi_e)
+(`weight`, WEIGHT_SCALE units, in the reveal and the window file), and
+`odds_score.brier_units` / `skill_units` multiply each pair's units by it:
+under the sampling distribution E[w] = 1, so the seat's paired test estimates
+what uniform sampling would have counted (Horvitz-Thompson), at a variance
+cost bounded by w <= 1 / floor. Pair COUNTS (min_pairs) stay counts.
+Per-entry statistics (the reference R's rate per entry and benchmark, the
+single-model table) condition on the entry and take no weight. The cap is on
+expected spend, deliberately: a rule that stopped at a realized total would
+make an entry's chance depend on the draws before it, and the weights would
+no longer undo the sampling. Everything is exact: Fraction costs, an integer
+square root, integer shares and weights (I1; `explore_weights` stage of
+`scripts/check_determinism.py`). `tests/test_explore_weights.py`.
+
+The pooled pairs (`fugal_subnet/explore_pool.py`) are built the way a shared
+grade is: failed calls dropped; one vote per coldkey per pair; the outcome
+the median across coldkeys. Two rules bound what one operator contributes:
+
+- **The cap.** An operator's private pairs are cut to `EXPLORE_COLDKEY_CAP`
+  (36) an epoch, keeping those with the lowest HMAC of the epoch nonce, the
+  coldkey and the pair, so it cannot choose which. Fifty hotkeys supply a
+  twelfth of a twenty-operator pool, not most of it.
+- **The plausibility check** (`private_implausible`). An operator whose
+  private answers are more than `EXPLORE_PRIVATE_Z` (4) standard deviations
+  from what the reference expects of those models on those kinds of question,
+  in either direction, has its pairs left out of the epoch's pool. The
+  expectation is built from EARLIER epochs only, and an answer counts only
+  once the window holds `EXPLORE_PRIVATE_MIN_TRIALS` (50) pairs of its model:
+  with no history the reference is one half, and every honest operator on a
+  90% model would be thrown out for being right.
+
+A flag, like the cap, only decides what enters the pool. It never touches the
+flagged miner's own score: its head is still scored on everyone else's pairs.
+
+**Accepted residual: a private pair usually has one voter.** Its outcome is
+then that operator's attested answer: a real model call made inside its TD,
+graded by the pinned grader. The operator cannot choose the pair, the reply or
+the grade. It can make calls fail (dropped, and bounded per proof by
+`EXPLORE_FAIL_MARGIN`), and an operator that controls where its TD's traffic
+goes is the upstream-binding question I8 already answers. What a dishonest
+operator could add is bounded by the cap and the check above.
+
+**Accepted residual: published outcomes.** Every pooled pair is published, so
+a head can memorise them. It is scored only on pairs drawn after it was
+committed (next entry), and the pool it is drawn from is the whole question
+pool times the menu, so a memorised pair almost never comes up again.
+
+`tests/test_explore_private.py`, `tests/test_odds_seat.py`.
+
+### I3 — the seat goes to honest, sharp odds (v3; from the odds seat block)
+
+**The property.** What is paid for is what the product serves: for any
+question, each model's chance of answering it correctly. With that, any
+trade between cost and quality picks correctly; a router that only names a
+model cannot be used at any other price point.
+
+**The score** (`fugal_subnet/odds_score.py`). On a pooled pair nobody chose, a
+head said p and the model was right or wrong (y): its loss is (p − y)², the
+Brier score, a proper scoring rule. Integer units throughout: p and y are in
+0..10,000, a pair's loss is an integer, and 0.01 of Brier score ("one Brier
+point") is exactly the paired test's unit, so `champion.paired_test` is used
+unchanged with a margin in Brier points.
+
+**The reference R** is what a head that does not read the question can say:
+each model's success rate on each benchmark, from the pooled pairs of the
+OTHER epochs in the window (leave one epoch out), shrunk toward the model's
+overall rate with strength `ODDS_REF_PRIOR` (20). A head's **skill** is how
+much lower its loss is than R's on the same pairs. A table of rates has about
+zero skill by construction (`test_reference_skill_gate`).
+
+**The rules** (`champion._challenge_odds`, `seat_step` with
+`SeatParams.odds`):
+
+- **Take.** All of: the challenger's odds beat the champion's by
+  `BRIER_MARGIN` (0.1 Brier points) at `CHAMPION_CONFIDENCE`, on at least
+  `ODDS_MIN_PAIRS` (1,500) pairs both were scored on; its odds beat R (the
+  same test, no margin); its net value on the scored questions has a lower
+  bound above −`NV_NONINFERIORITY` (0.5) points, so the new champion is not a
+  worse router; and the accuracy gates and burn-in as before. Fresh-data
+  confirmation applies as for net value, on `ODDS_CONFIRM_PAIRS` (1,500)
+  pairs drawn after the first pass.
+- **Hold.** A seated head loses the seat when R's odds beat its own on the
+  window's pairs by that same test (no margin). A test, not a point estimate:
+  a head whose skill is near zero would otherwise lose and regain the seat on
+  noise, and an epoch without a champion burns the miner share.
+- **First.** An empty seat goes to the highest measured skill among heads
+  with at least `ODDS_MIN_PAIRS` pairs, odds for every menu entry, and skill
+  over R that is significantly positive: the one-sided test with no margin
+  that a challenger's odds pass against R, at `CHAMPION_CONFIDENCE`. Until
+  the v3 review (2026-11-16) a point estimate of skill ≥ 0 was enough, so a
+  head with no skill could fill the seat on noise and then hold it until R
+  beat it significantly (`test_an_empty_seat_is_filled_on_odds_only_by_significant_skill`).
+- **Senior bars** (the copy rule) use the same test.
+
+**Fresh pairs only.** A head is scored on the pairs of epochs in its current
+unbroken run. It was committed on chain before each of those epochs' nonces
+existed, so it cannot have been fitted to their outcomes; earlier pairs are
+published history and are never read for it
+(`test_a_head_is_scored_only_on_pairs_from_its_own_run`).
+
+**A head gives odds for every menu entry.** A head whose rows do not cover
+the menu is published with no odds at all (every pair -1,
+`v2_epoch._pool_and_odds`), a pair whose model a head has no row for is
+scored as certainly wrong (`odds_score.head_odds_on`), and a head with any
+such pair is not eligible for the odds seat: it cannot take, confirm, fill
+or hold it (`champion._no_full_menu`, stated in its reveal detail). Until the
+v3 review (2026-11-16) a missing row was scored at R's odds. R is fitted on
+the window's outcomes, so a copy of the champion with its weakest row
+removed beat the champion with no skill of its own
+(`test_a_copy_of_the_champion_with_a_row_removed_does_not_take_the_seat`).
+R stays what heads are compared against, never what fills a head's gaps.
+
+**V is pinned in dollars from v3** (`CHAMPION_VALUE_PER_CORRECT_USD`, 0.49:
+what the v2 rule gave on the day it was pinned), so the menu can change, the
+former anchor model included, without moving the exchange rate between
+accuracy and cost.
+
+**Accepted residual: the seat can be empty.** If no head's odds beat a table
+of rates, no head takes an empty seat, and the miner share burns until one
+does. That is the rule doing what it says; it is the reason the odds are
+published for every head from the v3 block, before they decide.
+
+**Accepted residual: published odds.** Every scored head's odds on every
+pooled pair are published, so a head can be fitted to another head's
+published odds without its bytes. A faithful copy has no edge over the head
+it copies, so it does not take the seat from it (the margin, and
+confirmation); a copy that drops rows is not eligible at all (above); the
+copy rule's ownership is by exact hash, as before. A copy that ALTERS rows
+gains only where its own odds are better, which is real skill.
+
+`tests/test_odds_seat.py`, `tests/test_v3_epoch.py`.
+
+### I9 — the single-model table is measured, published, and decides nothing (v3)
+
+Every v3 reveal carries `single_model_table` (`fugal_subnet/single_model.py`):
+per model, from the window's pooled pairs, its accuracy weighted to the
+scored mix, its mean attested tokens and its spend per question at the pinned
+prices. A model with fewer than `SINGLE_MODEL_MIN_PAIRS` (300) pairs is not
+listed: it is never assumed to be perfect, or anything else, until measured.
+The table is a diagnostic. No seat and no weight reads it, because a
+per-model estimate on a few hundred pairs is too noisy to gate a payout on
+and a gate that failed closed would empty the seat. It is also where the next
+release's token statistics and menu pruning come from, at no cost to anyone.
+
+### I1/I4 — the v3 pool: what is in it, what is left out, and what pins it (v3)
+
+`loader.load_pool(3)` is the v2 sets (v2's IFEval mapping replaced by v3's), the
+v3 sets (`v3_sets.LOADERS_V3`) and the code sets (`code_sets.LOADERS_CODE`), then
+two explicit exclusion steps from `fugal_subnet/benchmarks/exclusions_v3.json`,
+each counted in the manifest (`exclusion_counts`):
+
+1. **RouterArena.** RouterArena is an evaluation-only set: routers trained on its
+   questions are rejected. Every pool question whose text matches one of its
+   8,400, and the LeetCode problems it takes from LiveCodeBench (by slug), are
+   left out, so the subnet never trains on the exam it will be measured on.
+2. **All-fail.** Questions every graded model failed on random v2 exploration
+   calls, with at least four models and two strong ones failing, are left out:
+   most are wrong answer keys, which no router can learn and the Brier score
+   punishes as noise.
+
+**Code questions are a pure function of pinned inputs.** `code_sets` turns each
+source's rows into candidates without running anything; the pinned keep-list
+`code_keep_v3.json` (built by `scripts/build_code_keep_v3.py`, which runs the
+sources' reference solutions in the grader's own sandbox) names the problems and
+test indices kept. Nothing executes at load time.
+
+**The v3 manifest hashes every field a grader reads** (`loader.content_hash_v3`):
+the id, prompt, gold, checker id, benchmark and the checker parameters
+`build_grader_task` passes on (constraints, code tests, function names,
+tolerances). `exclusions_v3.json` and `code_keep_v3.json` are also pinned by
+sha256 in `check_safety_invariants.py` and recorded in the manifest.
+
+**Categories** (`config.CATEGORY_TARGETS_V3`): knowledge .20, hard .20, math .10,
+instruction .15, everyday .15, easy maths .05, code .15. `tests/test_pool_v3.py`
+holds that the 2,500 questions with the highest share of net value (what a head
+can memorise) carry at most 15% of it.
+
+**Grading identity.** Commitments, reveals and the consensus digest carry
+`fingerprint.grader_hash()`, which names both `graders.py` and `graders_code.py`.
+A miner's harness grades a code question only after `sandbox_selftest()` passed
+(`harness.require_code_sandbox`), checked before any model call; the miner
+refuses to start on a pool with code questions if it fails.
+
+### I8 — a v3 menu entry is a pinned request (v3)
+
+From v3 a menu entry's id is `<model>@<effort>` when a model is offered at
+more than one reasoning effort. The id is what a head has a row for and what
+prices, the token manifest and every reveal are keyed on; what goes on the
+wire is the entry's request: the provider's model id, one reasoning setting,
+the answer budget and a provider order with fallbacks forbidden
+(`routing_protocol.request_for`, `validate_menu_v3`). The harness sends it as
+pinned, with one shared system prompt (`config.HARNESS_SYSTEM_PROMPT_V3`), so a
+model is measured the way it is called. The table is part of the measured image
+and of the consensus digest, like v2's.
+
+**The shared system prompt is consensus text.** Every v3 call carries it, so a
+byte change moves every v3 grade and every token mean. It is pinned as
+`SYSTEM_PROMPT_V3_SHA256` in `scripts/check_safety_invariants.py` (an empty
+prompt also fails) and ships in the measured image. The product (fugal-core)
+must send the same text, or the subnet measures models under a prompt users
+never get. It may not fight a graded answer format: fugal-core's "lead with the
+answer, then supporting detail" was dropped because `numeric_final` reads the
+last number and `letter_mcq` lost replies that open with a bold letter and then
+explain; the v3 text says a format the request asks for takes precedence.
 
 ## Attack surface by actor
 
@@ -3296,6 +3778,36 @@ execution re-includes the benchmarks in one place.
 again, in either direction. Putting them back is
 [CODE_BENCHMARK_PLAN.md](decisions/CODE_BENCHMARK_PLAN.md); its final phase needs the
 entry rotation procedure, which now exists (`docs/APPROVED_ENTRY_ROTATION.md`).
+
+**Protocol v3 code grading (built 2026-11-16, not yet active).** v3 grades code
+with a second pinned file, `fugal_subnet/graders_code.py` (`exec_stdio`,
+`exec_func`), leaving `graders.py` untouched. Its child runs under a seccomp
+filter (no sockets, no fork/exec, no open-for-write or path changes, no ptrace,
+no signals or limits on other processes), CPU-time rlimits, `-S` (stdlib only),
+a pinned hash seed and a cleared environment, and the grading process makes
+itself non-dumpable so the child cannot read the pool's gold from its memory.
+The grade is decided in the parent from exit status, measured CPU and stdout.
+Pinned as `CODE_GRADER_SHA256` in `check_safety_invariants.py` (a byte change
+fails the check); hostile programs in `fugal_subnet/attacks/run_code_attacks.py`
+(CI). Determinism rests on CPU-time limits plus calibration that keeps only tests
+a reference passes in ≤ 25% of the limit (`scripts/calibrate_code_tests.py`),
+with shared grades absorbing the borderline residual. The harness must run
+`sandbox_selftest()` at start and refuse code questions if it fails. Design:
+[CODE_GRADER_V3.md](decisions/CODE_GRADER_V3.md).
+
+The v3 review (2026-11-16) hardened it before it shipped: no priority or
+scheduling call at all and no `fchmod`/`fchown` (with `PRIO_USER` and
+`who=0`, `setpriority` reached every process of the uid); new threads get
+8 MiB stacks, two malloc arenas and a fixed CPU count of 4, so at least 64
+threads start and `ThreadPoolExecutor()` behaves the same on every TD (the
+main thread's 64 MiB stack is unchanged); the wall backstop is
+max(3 × CPU + 2 s, 20 s) a run and 60 s a question. **Release gate:** a pool
+with `exec_stdio`/`exec_func` questions is served only by an image whose
+harness grades them through `graders_code` with a working sandbox
+(`fugal_subnet/code_gate.py`: the miner refuses to start otherwise, and
+`check_safety_invariants` checks it when the v3 pool manifest holds code),
+because `graders.grade` returns 0 for both checkers
+(`tests/test_code_release_gate.py`, `tests/test_graders_code_review.py`).
 
 **The model upstream is miner-controlled (fixed 2026-10-14; was OPEN, breaks I3).**
 

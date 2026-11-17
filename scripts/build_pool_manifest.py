@@ -38,6 +38,7 @@ from fugal_subnet.benchmarks.loader import (  # noqa: E402
     _manifest_path,
     content_hash,
     manifest_path_v2,
+    manifest_path_v3,
 )
 
 __all__ = ["content_hash", "build", "effective_skip"]
@@ -117,6 +118,54 @@ def build_v2(pool: list[dict]) -> dict:
     }
 
 
+MANIFEST_PATH_V3 = manifest_path_v3()
+
+
+def build_v3(pool: list[dict], report: dict | None = None) -> dict:
+    """The v3 manifest: as v2, with the content hash over every field a grader reads
+    (loader.content_hash_v3), the code keep-list and exclusion files' sha256, and the counts
+    each exclusion step removed."""
+    import hashlib
+    from collections import Counter
+
+    from fugal_subnet.benchmarks.code_sets import CODE_LICENCES, DATASET_REVISIONS_CODE, keep_path
+    from fugal_subnet.benchmarks.loader import (
+        DATASET_REVISIONS,
+        content_hash_v3,
+        exclusions_path_v3,
+        pool_hash,
+    )
+    from fugal_subnet.benchmarks.v2_sets import V2_LICENCES
+    from fugal_subnet.benchmarks.v3_sets import DATASET_REVISIONS_V3, V3_LICENCES
+    from fugal_subnet.config import BENCHMARK_CATEGORY_V3, BENCHMARK_WEIGHT_V3, CATEGORY_TARGETS_V3
+
+    licences = {**{b: v for b, v in V2_LICENCES.items() if b != "ifeval"}, **V3_LICENCES, **CODE_LICENCES}
+    counts = Counter(q.get("benchmark", "") for q in pool)
+
+    def sha(path):
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    revisions = {k: DATASET_REVISIONS[k] for k in V2_DATASETS if k != "google/IFEval"}
+    revisions.update(DATASET_REVISIONS_V3)
+    revisions.update(DATASET_REVISIONS_CODE)
+    return {
+        "protocol": 3,
+        "n_questions": len(pool),
+        "pool_hash": pool_hash(pool),
+        "content_hash": content_hash_v3(pool),
+        "category_targets": dict(sorted(CATEGORY_TARGETS_V3.items())),
+        "per_benchmark": {b: {"n": counts[b], "category": BENCHMARK_CATEGORY_V3[b],
+                              "weight": BENCHMARK_WEIGHT_V3.get(b), "licence": licences[b]}
+                          for b in sorted(counts)},
+        "dataset_revisions": dict(sorted(revisions.items())),
+        "code_keep_sha256": sha(keep_path()),
+        "exclusions_sha256": sha(exclusions_path_v3()),
+        "exclusion_counts": {k: dict(sorted(v.items())) for k, v in sorted((report or {}).items())},
+        "gated_datasets": [],
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -124,8 +173,32 @@ def main() -> int:
     ap.add_argument("--from-file",
                     help="Use a materialised pool (JSON, or .json.gz from export_pool.py) instead of loading")
     ap.add_argument("--out", default=None)
-    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2))
+    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2, 3))
     args = ap.parse_args()
+    if args.protocol == 3:
+        from fugal_subnet.benchmarks.loader import apply_exclusions_v3, build_pool_v3
+        out = args.out or MANIFEST_PATH_V3
+        report: dict = {}
+        if args.from_file:
+            pool = apply_exclusions_v3(read_pool(args.from_file), report=report)
+        else:
+            pool = build_pool_v3(strict=True, report=report)
+        built = build_v3(pool, report)
+        print(json.dumps({k: built[k] for k in ("n_questions", "pool_hash", "content_hash",
+                                                 "exclusion_counts")}, indent=1))
+        if args.check:
+            with open(out, encoding="utf-8") as f:
+                pinned = json.load(f)
+            keys = ("n_questions", "pool_hash", "content_hash", "category_targets", "per_benchmark",
+                    "code_keep_sha256", "exclusions_sha256")
+            same = all(pinned.get(k) == built[k] for k in keys)
+            print("v3 manifest matches" if same else "v3 manifest MISMATCH")
+            return 0 if same else 1
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(built, f, indent=1, sort_keys=True)
+            f.write("\n")
+        print(f"wrote {out}")
+        return 0
     if args.protocol == 2:
         from fugal_subnet.benchmarks.loader import build_pool_v2
         out = args.out or MANIFEST_PATH_V2

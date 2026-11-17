@@ -26,6 +26,42 @@ _GUARDED = {"fugal_subnet", "neurons"}
 GRADER_SHA256 = (
     "319340e8aeaac5fedf2b488c94ad11c1e79e0606fcfc5e002552a60a4108a9d9"
 )
+# The v3 code grading contract (exec_stdio, exec_func), pinned for the same
+# reason as graders.py: a byte change changes which code answers pass, so it is
+# a consensus change and a new grader version. graders.py itself is untouched;
+# protocol v3 adds this file beside it. History:
+#   92bceddc...  2026-11-16, first version (docs/decisions/CODE_GRADER_V3.md):
+#                seccomp-filtered child, CPU-time limits, token compare.
+#   8ed4730b...  2026-11-16, v3 review finding 5: setpriority/ioprio_set/
+#                sched_* and fchmod/fchown denied for any target; new threads
+#                get 8 MiB stacks, two malloc arenas and a pinned CPU count
+#                (64+ threads, same on every TD; the main thread's stack is
+#                unchanged); wall backstop max(3x CPU + 2 s, 20 s) per run and
+#                60 s per question. CPU limits and the comparison are unchanged.
+CODE_GRADER_SHA256 = (
+    "8ed4730b532b026ea4ae41a2777a634e6b907f04d143bf9286740406cb6f9265"
+)
+# The v3 shared system prompt (config.HARNESS_SYSTEM_PROMPT_V3): every v3 model
+# call carries it, so a byte change moves every v3 grade and the token means.
+# Pinned like the graders; changing it is a deliberate act — update the hash in
+# the same commit, say why, and change fugal-core's text with it. History:
+#   7b300e49...  2026-11-16, first version: fugal-core's house prompt with
+#                "a requested answer format wins" (DRAFT, review before the v3
+#                image is frozen).
+SYSTEM_PROMPT_V3_SHA256 = (
+    "7b300e491b7a5d8cb9629b8799115c52983ddfb93f4981b145f85ce3f31591d1"
+)
+# The v3 pool's two hand-built data files. Each decides which questions are in
+# the pool (the manifest's hashes cover the result, and this pin makes an edit a
+# reviewed act). Changing either: rebuild pool_manifest_v3.json, update the pin
+# in the same commit, and say why.
+#   exclusions_v3.json  RouterArena overlap, its LeetCode slugs, the all-fail rule
+#   code_keep_v3.json   the calibrated code problems and tests
+#                       (scripts/build_code_keep_v3.py)
+POOL_V3_DATA_SHA256 = {
+    "exclusions_v3.json": "ee346f7f486372351336a6cfb23143e927a29222d47c1d41562b9de5dc1cf26e",
+    "code_keep_v3.json": "a02c71940b7765b45fcb315153f0686aeaa78d56e6180afa76aafa604a20f4bc",
+}
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole
 # subnet. Pinned for the same reason graders.py is. Changing prices is a
@@ -50,6 +86,39 @@ PINNED_PRICE_TABLE_SHA256 = (
 # other 18 rows are unchanged.
 PINNED_PRICE_TABLE_V2_SHA256 = (
     "9b18e3fbc786c3aea90966b69984717ead66c27f4bf4a98a388a9674f1be2aaa"
+)
+# Protocol v3's menu (data/models_v3.json; identical copy in
+# fugal_subnet/routing_data/). 2026-11-16, user-approved: 23 models, 53
+# `model@effort` entries = the union of the arena.ai Text, Agent and WebDev
+# Pareto frontiers available on OpenRouter (Granite 4.2 8B for 4.1) plus Qwen4
+# Max, Muse Spark 1.3 and Muse Wonder; each model at its frontier effort(s)
+# plus low and high. Every entry pins its OpenRouter hosts (same quantization,
+# no flex tiers, no fallbacks) and is priced at the dearer pinned host from
+# OpenRouter's /endpoints of 2026-11-16. Gemini 4 Carbon pins Vertex global +
+# us (Google AI Studio capped answers at 32k), so $2.2 / $11. Live-checked
+# 2026-11-16 (every entry answered; ~/projects/fugal-v2-handoff/v3-prep/
+# measurements/livecheck-2026-11-16.jsonl).
+# TODO(v3 release): `max_tokens` per entry is PROVISIONAL = min(131072, the
+# smallest answer limit of its pinned hosts). The final budgets are set from
+# the 128k measurement of 2026-11-16 (results-128k.jsonl) before the release;
+# re-pin this hash then.
+PINNED_PRICE_TABLE_V3_SHA256 = (
+    "1494ad3f597f77f20a4bafb0c7401a23c357a4afb140fcab895d49bb6b6881f2"
+)
+# Protocol v3's token manifest (the cost denominator), status `reviewed`
+# (approved by the owner 2026-11-17; live miners require a reviewed manifest).
+# 2026-11-16: 49 rows MEASURED in v3 (10 calls each, the same 10 non-code v3
+# questions for every entry, through the v3 harness path: system prompt,
+# entry budget, pinned hosts; $3.86, rows in ~/projects/fugal-v2-handoff/
+# v3-prep/measurements/tokens-2026-11-16.jsonl, none used its whole budget);
+# 3 rows kept from v2 (same model and setting, within 2x of the v3 sample);
+# mimo-v2.6-pro replaced by its v3 sample (v2 was 5.8x longer); gemma-4-31b
+# estimated (9 of 10 calls; one question's upstream kept failing). Rule:
+# scripts/build_token_manifest_v3.py. Code questions are not in the sample;
+# v3 exploration's attested token medians replace rows at the monthly menu
+# update. Pinned like the menu: a change re-prices every v3 miner's routing.
+PINNED_TOKEN_MANIFEST_V3_SHA256 = (
+    "17d362de9f5675bf3a677c5dae5fa7dc1a4363ae966e22bc73b8a91691e2526a"
 )
 
 # Google's EK/AK CA root, vendored at fugal_subnet/tee/roots/. Verifying a TPM
@@ -179,6 +248,90 @@ def check_pinned_grader(errors: list[str]) -> None:
             f"the pin {GRADER_SHA256[:16]}... — "
             "a grader change is a consensus break"
         )
+
+
+def check_pinned_code_grader(errors: list[str]) -> None:
+    path = ROOT / "fugal_subnet" / "graders_code.py"
+    actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    if actual != CODE_GRADER_SHA256:
+        errors.append(
+            f"fugal_subnet/graders_code.py: code grader hash {actual[:16]}... does not "
+            f"match the pin {CODE_GRADER_SHA256[:16]}... — a code grader change is a "
+            "consensus break"
+        )
+
+
+def check_code_questions_are_graded(errors: list[str], root: Path | None = None) -> None:
+    """A v3 pool manifest that holds code questions (exec_stdio / exec_func)
+    ships only with a harness that grades them with graders_code and a working
+    sandbox (fugal_subnet/code_gate.py; v3 review, 2026-11-16, finding 7).
+    Otherwise every code answer grades 0 and is still paid for."""
+    import sys
+
+    root = root or ROOT
+    manifest = root / "fugal_subnet" / "benchmarks" / "pool_manifest_v3.json"
+    if not manifest.is_file():
+        return
+    text = manifest.read_text(encoding="utf-8")
+    if '"exec_stdio"' not in text and '"exec_func"' not in text:
+        return
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from fugal_subnet import code_gate, graders_code
+
+    ok, why = graders_code.sandbox_selftest()
+    if not ok:
+        errors.append(f"{manifest.relative_to(root)}: code questions, but the code sandbox "
+                      f"self-test fails here: {why}")
+    ok, why = code_gate.harness_grades_code()
+    if not ok:
+        errors.append(f"{manifest.relative_to(root)}: code questions, but {why}")
+
+
+def check_pinned_system_prompt_v3(errors: list[str]) -> None:
+    from fugal_subnet import config
+
+    text = config.HARNESS_SYSTEM_PROMPT_V3
+    if not text:
+        errors.append("fugal_subnet/config.py: HARNESS_SYSTEM_PROMPT_V3 is empty; the v3 "
+                      "image must pin the shared system prompt")
+        return
+    actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if actual != SYSTEM_PROMPT_V3_SHA256:
+        errors.append(
+            f"fugal_subnet/config.py: HARNESS_SYSTEM_PROMPT_V3 hash {actual[:16]}... does "
+            f"not match the pin {SYSTEM_PROMPT_V3_SHA256[:16]}... — the shared system "
+            "prompt is part of every v3 grade; change the pin deliberately")
+
+
+def check_v3_release_pins(errors: list[str]) -> None:
+    """A release that schedules protocol v3 on finney must pin everything a v3
+    epoch reads that is not in the repository: the embeddings file (its hash, and
+    where the image build and validators fetch it from) and the shared system
+    prompt. Without them a v3 miner cannot route and a validator cannot compute
+    odds, so the flip would stall every node at the activation block."""
+    from fugal_subnet import config
+
+    if config.FINNEY_V3_ACTIVATION_BLOCK is None:
+        return
+    missing = [name for name in ("EMBEDDINGS_SHA256", "EMBEDDINGS_URL",
+                                 "HARNESS_SYSTEM_PROMPT_V3")
+               if not getattr(config, name, None)]
+    if missing:
+        errors.append("fugal_subnet/config.py: FINNEY_V3_ACTIVATION_BLOCK is set but "
+                      + ", ".join(missing) + " is not pinned; the v3 release must pin it")
+
+
+def check_pool_v3_data_pinned(errors: list[str]) -> None:
+    for name, pin in POOL_V3_DATA_SHA256.items():
+        path = ROOT / "fugal_subnet" / "benchmarks" / name
+        if not path.exists():
+            errors.append(f"fugal_subnet/benchmarks/{name} is missing")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != pin:
+            errors.append(f"fugal_subnet/benchmarks/{name}: hash {actual[:16]}... does not match "
+                          f"the pin {pin[:16]}... (it decides which questions are in the v3 pool)")
 
 
 def check_epoch_id_single_source(errors: list[str]) -> None:
@@ -575,8 +728,9 @@ def check_one_accuracy_definition_on_the_consensus_path(errors: list[str]) -> No
 
 
 ROUTING_DATA_REQUIRED = (
-    "models.json", "models_v2.json",
+    "models.json", "models_v2.json", "models_v3.json",
     "benchmark_tokens_v1.json", "benchmark_tokens_protocol_v2.json",
+    "benchmark_tokens_protocol_v3.json",
 )
 
 
@@ -625,6 +779,47 @@ def check_price_table_v2_pinned(errors: list[str]) -> None:
             or rs.get("enabled") is True
         ):
             errors.append(f"data/models_v2.json: {r.get('id')!r} must pin exactly one valid reasoning setting")
+
+
+def check_menu_v3_pinned(errors: list[str]) -> None:
+    """The v3 menu and token manifest match their pins; the menu passes
+    routing_protocol.validate_menu_v3; the manifest has exactly one row per
+    menu entry, and no row's completion mean exceeds its entry's budget."""
+    from fugal_subnet.routing_protocol import validate_menu_v3
+    from fugal_subnet.vendor import success_contract
+
+    menu_path = ROOT / "data" / "models_v3.json"
+    man_path = ROOT / "data" / "benchmark_tokens_protocol_v3.json"
+    for path, pin, what in ((menu_path, PINNED_PRICE_TABLE_V3_SHA256, "v3 menu"),
+                            (man_path, PINNED_TOKEN_MANIFEST_V3_SHA256, "v3 token manifest")):
+        if not path.exists():
+            errors.append(f"data/{path.name} is missing")
+            return
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != pin:
+            errors.append(f"data/{path.name}: hash {actual[:16]}... does not match pin "
+                          f"{pin[:16]}... (a {what} change re-scores every v3 miner)")
+    rows = json.loads(menu_path.read_text())
+    try:
+        validate_menu_v3(rows)
+    except ValueError as e:
+        errors.append(f"data/models_v3.json: {e}")
+        return
+    manifest = json.loads(man_path.read_text())
+    try:
+        success_contract.validate_manifest(manifest)
+    except (ValueError, KeyError) as e:
+        errors.append(f"data/benchmark_tokens_protocol_v3.json: {e}")
+        return
+    budget = {r["id"]: int(r.get("max_tokens") or 0) for r in rows}
+    ids = [r["id"] for r in manifest["models"]]
+    if sorted(ids) != sorted(budget):
+        errors.append("data/benchmark_tokens_protocol_v3.json: rows do not match the v3 menu "
+                      "entries one to one")
+    for r in manifest["models"]:
+        if budget.get(r["id"]) and r["mean_out_tokens"] > budget[r["id"]]:
+            errors.append(f"data/benchmark_tokens_protocol_v3.json: {r['id']} completion mean "
+                          "exceeds the entry's max_tokens")
 
 
 def check_price_table_pinned(errors: list[str]) -> None:
@@ -1086,9 +1281,14 @@ def main(argv: list[str] | None = None) -> None:
     check_runtime_annotations(errors)
     check_deserialize_contract(errors)
     check_pinned_grader(errors)
+    check_pinned_code_grader(errors)
+    check_code_questions_are_graded(errors)
+    check_pinned_system_prompt_v3(errors)
+    check_pool_v3_data_pinned(errors)
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)
+    check_menu_v3_pinned(errors)
     check_collateral_endpoint_explicit(errors)
     check_external_calls_bounded(errors)
     check_measured_registers_documented(errors)
@@ -1102,6 +1302,7 @@ def main(argv: list[str] | None = None) -> None:
     check_live_requires_app_identity(errors)
     check_live_composes_are_frozen(errors if args.release else launch_gate)
     check_release_composes_target_v2(errors if args.release else launch_gate)
+    check_v3_release_pins(errors if args.release else launch_gate)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)
     check_documented_flags(errors)

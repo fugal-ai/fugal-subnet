@@ -45,6 +45,13 @@ class EpochLog:
     # it existed.
     n_failed: dict = field(default_factory=dict)
     weights: dict = field(default_factory=dict)
+    # Per UID that has a head committed at the boundary, or answered anything:
+    # how the query to its axon ended (the dendrite's status and seconds) and
+    # what became of its proof (valid / invalid / unverifiable / absent).
+    # Diagnostics only, in no score, hash or reveal. It exists so "the
+    # validator never reached me" and "my proof was rejected" can be told
+    # apart after the fact; the count of scored miners alone cannot say which.
+    collection: dict = field(default_factory=dict)
     dedup_disqualified: list = field(default_factory=list)
     weight_capped: bool = False
     set_weights_success: bool = False

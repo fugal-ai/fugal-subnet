@@ -547,7 +547,7 @@ def _read_verified_pool_cache_v2(cache: str) -> list[dict] | None:
     return pool
 
 
-def _write_pool_cache_v2(pool: list[dict], cache: str) -> None:
+def _write_pool_cache_v2(pool: list[dict], cache: str, protocol: int = 2) -> None:
     """Write the verified pool in its load order (embeddings are indexed by position),
     atomically, so a crash mid-write leaves no partial file to fail the next read."""
     import gzip
@@ -559,9 +559,10 @@ def _write_pool_cache_v2(pool: list[dict], cache: str) -> None:
         with open(tmp, "wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as f:
             f.write(payload)
         os.replace(tmp, cache)
-        logger.info("v2 pool cached at %s for later boots", cache)
+        logger.info("v%d pool cached at %s for later boots", protocol, cache)
     except OSError as e:
-        logger.warning("Could not write the v2 pool cache %s (%s); the next boot rebuilds it", cache, e)
+        logger.warning("Could not write the v%d pool cache %s (%s); the next boot rebuilds it",
+                       protocol, cache, e)
 
 
 def load_pool(protocol_version: int, strict: bool = True) -> list[dict]:
@@ -571,4 +572,178 @@ def load_pool(protocol_version: int, strict: bool = True) -> list[dict]:
         return load_all(strict=strict)
     if protocol_version == 2:
         return load_all_v2(strict=strict)
+    if protocol_version == 3:
+        return load_all_v3(strict=strict)
     raise ValueError(f"unknown protocol version {protocol_version!r}")
+
+
+# --- Protocol v3 pool --------------------------------------------------------
+# The v2 sets except v2's IFEval mapping, the v3 sets (v3_sets.LOADERS_V3, whose `ifeval` is
+# the v3 mapping), and the code sets (code_sets.LOADERS_CODE), then the exclusion rules in
+# exclusions_v3.json, each an explicit step with its count. Verified against
+# pool_manifest_v3.json, whose content hash covers every field a grader reads.
+
+DEFAULT_POOL_FILE_V3 = os.path.join("data", "benchmarks", "pool_v3.json.gz")
+_MANIFEST_NAME_V3 = "pool_manifest_v3.json"
+_EXCLUSIONS_NAME_V3 = "exclusions_v3.json"
+
+
+def manifest_path_v3() -> str:
+    from importlib.resources import files
+    return str(files("fugal_subnet.benchmarks") / _MANIFEST_NAME_V3)
+
+
+def exclusions_path_v3() -> str:
+    from importlib.resources import files
+    return str(files("fugal_subnet.benchmarks") / _EXCLUSIONS_NAME_V3)
+
+
+def content_hash_v3(pool: list[dict]) -> str:
+    """Hash over every field a grader reads, in id order: the id, the prompt, the gold, the
+    checker id, the benchmark (it decides the category, so the slice) and the checker
+    parameters (constraints, code tests, function names, tolerances) that build_grader_task
+    passes to the grader. A change in any of them changes a score, so it changes this hash."""
+    h = hashlib.sha256()
+    for q in sorted(pool, key=lambda x: x["question_id"]):
+        checker = (q.get("metadata") or {}).get("checker")
+        h.update(json.dumps([
+            q.get("question_id", ""),
+            q.get("prompt", ""),
+            json.dumps(q.get("gold", ""), sort_keys=True, default=str),
+            q.get("grader_id", ""),
+            q.get("benchmark", ""),
+            json.dumps(checker, sort_keys=True, default=str),
+        ], separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def read_exclusions_v3(path: str | None = None) -> dict:
+    with open(path or exclusions_path_v3(), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def exclude_routerarena(pool: list[dict], excl: dict) -> tuple[list[dict], dict[str, int]]:
+    """Step 1: leave out every question RouterArena evaluates on (by question id), and the
+    LeetCode problems it takes from LiveCodeBench (by slug)."""
+    ids = set(excl["routerarena"]["question_ids"])
+    slugs = set(excl["routerarena_code"]["leetcode_slugs"])
+    kept, dropped = [], {}
+    for q in pool:
+        source = (q.get("metadata") or {}).get("source_id")
+        if q["question_id"] in ids or (q.get("benchmark") == "code_leetcode" and source in slugs):
+            dropped[q["benchmark"]] = dropped.get(q["benchmark"], 0) + 1
+        else:
+            kept.append(q)
+    return kept, dropped
+
+
+def exclude_all_fail(pool: list[dict], excl: dict) -> tuple[list[dict], dict[str, int]]:
+    """Step 2: leave out questions every graded model failed (at least four models, at least
+    two strong): most likely a wrong answer key, which no router can learn."""
+    ids = set(excl["all_fail"]["question_ids"])
+    kept, dropped = [], {}
+    for q in pool:
+        if q["question_id"] in ids:
+            dropped[q["benchmark"]] = dropped.get(q["benchmark"], 0) + 1
+        else:
+            kept.append(q)
+    return kept, dropped
+
+
+def build_pool_v3(strict: bool = True, report: dict | None = None) -> list[dict]:
+    """Load every v3 benchmark from its pinned revision (needs Hugging Face), then apply the
+    exclusion steps. `report` (optional) receives per-benchmark counts before and after."""
+    from fugal_subnet.benchmarks.code_sets import LOADERS_CODE
+    from fugal_subnet.benchmarks.v2_sets import LOADERS_V2
+    from fugal_subnet.benchmarks.v3_sets import LOADERS_V3
+
+    loaders = {b: f for b, f in LOADERS_V2.items() if b != "ifeval"}   # v3 maps IFEval anew
+    for registry in (LOADERS_V3, LOADERS_CODE):
+        overlap = set(loaders) & set(registry)
+        if overlap:
+            raise RuntimeError(f"two v3 loaders for {sorted(overlap)}")
+        loaders.update(registry)
+    pool: list[dict] = []
+    for name in sorted(loaders):
+        try:
+            items = loaders[name]()
+        except Exception as e:
+            if strict:
+                raise RuntimeError(f"v3 benchmark {name!r} failed to load: {e}") from e
+            logger.warning("Skipping v3 benchmark %s: %s", name, e)
+            continue
+        if not items and strict:
+            raise RuntimeError(f"v3 benchmark {name!r} loaded 0 questions: a silent pool divergence")
+        pool.extend(items)
+    return apply_exclusions_v3(_drop_unscoreable(pool), report=report)
+
+
+def apply_exclusions_v3(pool: list[dict], excl: dict | None = None, report: dict | None = None) -> list[dict]:
+    excl = excl if excl is not None else read_exclusions_v3()
+
+    def counts(p):
+        c: dict[str, int] = {}
+        for q in p:
+            c[q["benchmark"]] = c.get(q["benchmark"], 0) + 1
+        return c
+
+    before = counts(pool)
+    pool, ra = exclude_routerarena(pool, excl)
+    pool, af = exclude_all_fail(pool, excl)
+    if report is not None:
+        report.update({"loaded": before, "routerarena": ra, "all_fail": af, "kept": counts(pool)})
+    return sorted(pool, key=lambda q: q["question_id"])
+
+
+def _verify_against_manifest_v3(pool: list[dict], strict: bool) -> None:
+    path = manifest_path_v3()
+    if not os.path.exists(path):
+        msg = f"No v3 pool manifest at {path}: nothing verifies this v3 pool."
+        if strict:
+            raise RuntimeError(msg)
+        logger.warning("%s", msg)
+        return
+    with open(path, encoding="utf-8") as f:
+        pinned = json.load(f)
+    if pool_hash(pool) == pinned.get("pool_hash") and content_hash_v3(pool) == pinned.get("content_hash"):
+        logger.info("v3 pool matches the pinned manifest (content_hash=%s)", pinned["content_hash"][:16])
+        return
+    msg = (f"v3 benchmark pool does not match the pinned manifest: pinned n={pinned.get('n_questions')} "
+           f"pool_hash={str(pinned.get('pool_hash'))[:16]}, loaded n={len(pool)} pool_hash={pool_hash(pool)[:16]}")
+    if strict:
+        raise RuntimeError(msg)
+    logger.warning("%s", msg)
+
+
+def load_all_v3(strict: bool = True) -> list[dict]:
+    """The v3 pool: from FUGAL_BENCHMARK_POOL_V3 or data/benchmarks/pool_v3.json.gz when an
+    operator has placed one (scripts/export_pool.py --protocol 3), else from the verified cache
+    (FUGAL_POOL_CACHE_V3), else built from the pinned revisions. Verified against
+    pool_manifest_v3.json either way."""
+    path = os.getenv("FUGAL_BENCHMARK_POOL_V3", "").strip()
+    if not path and os.path.isfile(os.getenv("FUGAL_POOL_FILE_V3", DEFAULT_POOL_FILE_V3)):
+        path = os.getenv("FUGAL_POOL_FILE_V3", DEFAULT_POOL_FILE_V3)
+    cache = "" if path else os.getenv("FUGAL_POOL_CACHE_V3", "").strip()
+    if cache and os.path.isfile(cache):
+        try:
+            cached = _read_pool_file(cache)
+            _verify_against_manifest_v3(cached, strict=True)
+            _verify_pool_is_large_enough_to_be_unmemorisable(cached, strict=True)
+            logger.info("v3 pool read from the verified cache %s (%d questions)", cache, len(cached))
+            return cached
+        except Exception as e:  # noqa: BLE001 - an unverifiable cache is rebuilt, never trusted
+            logger.warning("v3 pool cache %s failed verification (%s); rebuilding", cache, str(e)[:200])
+            try:
+                os.remove(cache)
+            except OSError:
+                pass
+    pool = _drop_unscoreable(_read_pool_file(path)) if path else build_pool_v3(strict)
+    if path and _unpinned_pool_declared():
+        logger.warning("FUGAL_POOL_UNPINNED is set: the v3 pool is not verified against its manifest")
+        return pool
+    _verify_against_manifest_v3(pool, strict)
+    _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict)
+    if cache:
+        _write_pool_cache_v2(pool, cache, protocol=3)
+    return pool

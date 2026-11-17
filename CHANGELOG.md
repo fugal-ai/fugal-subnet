@@ -4,6 +4,242 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-17
+
+One upgrade for validators and miners: protocol v3 and the seat-confirmation
+rules. Finney blocks are compiled in: v3 and seat confirmation from block
+9,527,760 (epoch 26466, ~2026-11-17 17:34 UTC); the seat is decided on odds
+from block 9,530,640 (~2026-11-18 03:10 UTC). Before v3's block the release
+runs v2 exactly as v0.3.2 does.
+
+### Added — validators check the DCAP collateral endpoint at startup
+A live validator asks its collateral endpoint once at startup; on finney a
+dead endpoint refuses to start instead of leaving an epoch unverified.
+
+### Fixed — v3 log labels, dedup logging with an unknown block, verify_live_miner exit
+A v3 node's logs no longer name v2; dedup no longer fails to log a cluster
+whose commitment block is unknown; `scripts/verify_live_miner.py` exits after
+its verdict instead of hanging in interpreter teardown.
+
+
+### Fixed — a follower rebuilt across the v3 flip keeps only v3 epochs (consensus, v3)
+A live validator empties its comparison window when the protocol changes
+(v2 -> v3). A rebuild from reveals replayed every reveal in the last 48
+epochs, so a follower that rebuilt or re-anchored during the first 48 epochs
+after the flip held v2 epochs in its v3 window and decided seats and weights
+differently from its peers. `v2_rebuild` now replays only the reveals built
+under the newest reveal's protocol (`v2_state.rules`, else
+`protocol_version`); the seat-only change at the odds block keeps the
+window, as live. Found by the new in-process rehearsal
+(`scripts/rehearsal_v3.py`: v2 -> v3 -> odds seat, three validators, one
+restarted from disk and one rebuilt from reveals, 37 checks).
+
+### Fixed — v3 review, 2026-11-16 (consensus, v3; nothing here changes v2)
+- **Startup rebuild prices.** A validator rebuilt from reveals after the v3
+  flip priced the v3 epochs at v2's table, so 51 of 53 menu entries were
+  unpriced and every later epoch failed ("an answered question has no
+  cell"). A rebuild or re-anchor now prices the replayed epochs at their own
+  protocol's table and categories.
+- **Re-anchor across the flip.** A re-anchor on a reference epoch from before
+  the flip, with the validator's own epochs after it, carried the old
+  protocol's seat into the new window. It is now refused, state and gap
+  kept, until the reference publishes an epoch after the flip.
+- **A head gives odds for every menu entry.** A model a head had no row for
+  was scored at the reference's odds, so a copy of the champion with its
+  weakest row removed beat the champion with no skill of its own. A missing
+  row now scores as certainly wrong, a head that does not cover the menu is
+  published with no odds, and such a head is not eligible for the odds seat.
+- **First fill on odds needs significant skill**, the test a challenger's
+  odds pass against the reference, not a point estimate ≥ 0.
+- **Code grader** (`graders_code.py`, new pin `8ed4730b…`): priority,
+  scheduling, `fchmod` and `fchown` calls refused; thread capacity and the
+  CPU count a program sees no longer depend on the TD; wider wall backstop
+  (20 s a run, 60 s a question). CPU limits and the comparison are unchanged.
+- **Release gate for code questions** (`fugal_subnet/code_gate.py`): a v3
+  miner refuses to start with code questions in its pool unless its harness
+  grades them with the code grader and the sandbox self-test passes.
+- The validator refuses a v3 or odds-seat block that is not an epoch
+  boundary (the miner already did), and the cost-aware exploration constants
+  are in the consensus digest.
+
+### Added — the v3 image carries the shared system prompt and the embeddings file
+- `config.HARNESS_SYSTEM_PROMPT_V3`: the product's house prompt, with one
+  change so it never fights a graded answer format (a format the request
+  asks for takes precedence). Hash-pinned (`SYSTEM_PROMPT_V3_SHA256` in
+  `check_safety_invariants.py`); the product must send the same text.
+- `python -m fugal_subnet.embeddings_file fetch`: downloads the pinned
+  embeddings file from `config.EMBEDDINGS_URL` and writes it only if its
+  sha256 matches `config.EMBEDDINGS_SHA256`. The image build runs it, so the
+  file's bytes are measured; validators run it once at setup
+  (VALIDATOR_GUIDE, step 3).
+- `check_safety_invariants.py`: a release that schedules v3 on finney must
+  pin the embeddings hash and URL and the system prompt (`--release`).
+
+### Added — protocol v3, not scheduled: the seat decided on a head's odds (consensus; needs a new miner image, pool, menu and embeddings file before any chain can schedule it)
+Everything below is inert until a release pins the v3 pool, menu and
+embeddings file and compiles in finney's blocks. v2 epochs are scored exactly
+as before (the determinism check's v2 digests are unchanged).
+- **Exact odds** (`head_odds.py`): a head's chance per model, as an integer in
+  0..10,000 identical on every host: exact products, `math.fsum`, and a
+  pinned logit threshold table instead of an exponential.
+- **Every miner measures the models** (`epoch_plan.exploration_plan_v3`,
+  `slicer.select_private_explore`): 8 shared exploration pairs and 24 drawn
+  for each miner's hotkey, pooled per epoch (`explore_pool.py`) with one vote
+  per operator, a cap per operator and a plausibility check.
+- **The seat on odds** (`odds_score.py`, `champion._challenge_odds`): paired
+  Brier test with a margin, skill over a per-model, per-benchmark reference,
+  and net value kept as a guard; odds computed and published for every head
+  from the v3 block, deciding the seat from the odds seat block.
+- **Published per epoch:** `exploration_pool`, `head_odds`, `odds_shadow`,
+  `single_model_table`; `v2_state.odds_digest` and `v2_state.rules`.
+- **Menu entries as pinned requests** (`routing_protocol.request_for`):
+  `model@effort` ids, one reasoning setting, the answer budget and pinned
+  providers per entry.
+- V pinned in dollars from v3 (`CHAMPION_VALUE_PER_CORRECT_USD`).
+- **The v3 menu is pinned** (`data/models_v3.json`, hash in
+  `check_safety_invariants`): 23 models, 53 `model@effort` entries (the
+  arena.ai Text, Agent and WebDev Pareto frontiers available on OpenRouter,
+  plus Qwen4 Max, Muse Spark 1.3 and Muse Wonder), each with pinned OpenRouter
+  hosts, the dearer host's price, and its own answer budget (`max_tokens`, up
+  to 131,072; provisional until the 128k measurement).
+- **A provisional v3 token manifest** (`benchmark_tokens_protocol_v3.json`,
+  pinned, status `candidate`): no paid calls; 4 rows reused from v2's
+  measured means, 49 estimated by the rule in
+  `scripts/build_token_manifest_v3.py`. Replaced row by row from the attested
+  token medians v3 exploration publishes, at the monthly menu update.
+- **Each entry's own call deadline** (`config.call_deadline_s`): 10 min at low
+  effort, 15 at medium or none, 30 at high/xhigh/max, all inside the 36-minute
+  collection point; v1 and v2 calls keep 420 s. The harness names the entry to
+  the metering proxy (`X-Fugal-Entry`), which prices v3 calls by entry id (it
+  priced by the provider model id, which a multi-effort entry is not).
+- **Cost-aware exploration** (`explore_weights.py`): entries are drawn for
+  exploration with a probability that falls with expected cost (floor: a
+  quarter of a uniform share; exponent: the most uniform whose expected spend
+  per miner per epoch is within $0.20), and every pooled pair carries its
+  inverse-probability weight, which the odds score applies, so the seat test
+  still estimates what uniform sampling would have. Pooled pairs also publish
+  the attested call time (`latency_ms`), for routers to learn from.
+- **The v3 question pool** (`loader.load_pool(3)`, `pool_manifest_v3.json`): the
+  v2 sets, the v3 sets and code questions (LeetCodeDataset train, MBPP+,
+  HumanEval+, CodeContests train; `benchmarks/code_sets.py`), graded by the
+  pinned code grader. Categories: knowledge 20%, hard 20%, math 10%,
+  instruction 15%, everyday 15%, easy maths 5%, code 15%. Left out, each as a
+  counted step: every question RouterArena evaluates on, and questions every
+  model failed (most likely wrong answer keys). Code problems and tests are
+  fixed by a pinned keep-list built by running the sources' reference solutions
+  in the grader's sandbox (`scripts/build_code_keep_v3.py`). The v3 manifest
+  hashes every field a grader reads. The miner refuses to start if the code
+  sandbox self-test fails, and the grading identity in commitments, reveals and
+  the digest names both grader files. Pinned: 48,320 questions (pool_hash
+  546db512…, content_hash 0c02baaf…), 4,867 of them code.
+- `tests/test_head_odds.py`, `test_explore_private.py`, `test_odds_seat.py`,
+  `test_v3_epoch.py`, `test_v3_wiring.py`, `test_v3_call_budgets.py`,
+  `test_explore_weights.py`; five new stages in `scripts/check_determinism.py`.
+
+### Fixed — failed model calls in the miner harness (next miner image)
+Reported by a miner with logs and a reproduction.
+- The metering proxy's accept queue was 5 while 24 calls connect at once: the
+  first burst of an epoch could reset connections. It is 128, and the harness
+  reconnects once when not a byte of a reply arrived.
+- A 200 with a body that is not JSON, or that carries an error and no
+  `choices`, is retried within the same attempts and deadline as a 429 or 5xx,
+  and is recorded as a FAILED call when they run out. It used to be graded as
+  a wrong answer, which also voted in the shared grade other miners are
+  graded on. A content-policy or forbidden error fails at once.
+- `tests/test_proxy_error_bodies.py`.
+
+### Added — a take is confirmed on fresh questions (consensus, validators only; from an activation block compiled into the release)
+The take test runs every epoch for every challenger, so heads with no real
+edge over the champion pass it by luck now and then, and more heads means more
+lucky passes. From the confirmation activation block a challenger that beats a
+settled champion is recorded as pending, the champion keeps the seat and is
+paid, and the challenger takes the seat when it passes the same test again on
+at least 1,500 questions drawn after its first pass (INVARIANTS I3, "a take is
+confirmed on fresh questions"). No miner image changes.
+- `champion.py`: `Pending`, `SeatState.pending` / `confirm_from`,
+  `seat_step` and `_live_pending`; the fresh test is the same `paired_test`
+  on epochs after the pass, with its own resampling stream. A seat filled
+  from empty can be taken by the plain test in the 4 epochs after the fill
+  and is settled from fill + 5 (`CHAMPION_CONFIRM_OPEN_EPOCHS`). A
+  champion that only missed is still confirmed against; a retired ghost is
+  not (it answers no new questions).
+- From the same block a retired champion's ghost bars for 8 epochs
+  (`CHAMPION_GHOST_RETIRE_CONFIRM`) instead of 24: a head committed after the
+  retirement can never be paired with the ghost, so the old window could
+  leave the seat empty and burning for about 29 hours.
+- `config.confirm_activation_block`: finney's block is in the release
+  (`FINNEY_CONFIRM_ACTIVATION_BLOCK` = 9,527,760, the v3 block), and the variable
+  cannot move it there; other chains read `FUGAL_CONFIRM_ACTIVATION_BLOCK`.
+  Before the block nothing changes: the same weights and a byte-identical
+  published seat. The consensus digest changes with the release (three new
+  constants and the block).
+- Measured with the shipped rule
+  (`scripts/experiments/experiment_seat_confirmation.py`): ten challengers
+  with no edge took a settled champion's seat in 8% to 18% of 60-epoch runs
+  before and in none of 120 with the rule (thirty near-copies: 22.5% and
+  2.5%). A challenger with a real edge still takes the seat, in about twice
+  the epochs (+1.5 points: epoch 5 becomes 10; +0.85: median 8 becomes 18;
+  +0.5: 94% of runs inside 150 epochs).
+- A validator whose window is not trusted (lost or refilling) makes no take,
+  and it now also passes the pending records through as published instead of
+  judging them against that window, where every record read as a broken run.
+- The consensus digest leaves out an activation variable
+  (`FUGAL_CONFIRM_ACTIVATION_BLOCK`, `FUGAL_V3_ACTIVATION_BLOCK`,
+  `FUGAL_ODDS_SEAT_BLOCK`) equal to finney's compiled block (the only value
+  finney accepts), so two finney validators on the same rule publish the same
+  digest whether or not they set it.
+- `tests/test_seat_confirmation.py`; a `seat_confirmation` stage in
+  `scripts/check_determinism.py`.
+
+### Changed — a validator that is not the root follows it with nothing to set up, and finney refuses the configurations that failed silently (validator only; not a consensus change)
+- **Followers fetch the root's reveals themselves** (`fugal_subnet/reveal_sync.py`):
+  plain HTTPS from the public bucket, at startup and before every epoch. No
+  `gsutil` timer and no `FUGAL_FRAME_BOOTSTRAP` (both still work). The root
+  sets `FUGAL_ROOT=1`, or is recognised by publishing to the reference bucket.
+- **Followers verify downloaded reveals against the root's on-chain
+  commitment** (`reveal:<epoch>:<sha256>`): the reveal at the committed epoch
+  must match; one newer than the commitment waits for it; every commitment a
+  follower reads is recorded beside its reference directory
+  (`reference-reveals/<netuid>.pointers.json`) and older reveals with a
+  recorded commitment must match it; a reveal that differs is never used and
+  is logged as an ERROR. The root's hotkey is in the release on finney
+  (`config.FINNEY_ROOT_HOTKEY`; a different `FUGAL_ROOT_HOTKEY` is refused at
+  startup); a testnet names it in `FUGAL_ROOT_HOTKEY`. Reveals published
+  before a follower first ran have no recorded commitment and are accepted as
+  before; hash-chained reveals in the v3 reset will cover those too. Not a
+  consensus change: no reveal or digest changes.
+- **Refused at startup on finney (live):** `FUGAL_V2_ACTIVATION_BLOCK` unset
+  or not 9485640; no approved entry for a v2 miner image; no public IPv4 in
+  `FUGAL_VALIDATOR_IP`; a follower with no reference reveals and no way to
+  fetch any. Each of these used to start, look healthy and burn the
+  validator's weight.
+- **`Following root: seat uid N (head …), entries N, fugal vX (root vY),
+  reference lag K epoch(s)`** at startup and every epoch, and an ERROR naming
+  what to check when this validator's champion has differed from the root's
+  for longer than verify-and-resync takes to correct.
+- **Per-UID collection record:** one `Collection:` line per epoch naming the
+  committed miners that ended it without a valid proof and how each query
+  ended (status, seconds), and a `collection` map in the epoch log. It tells
+  "never reached" from "slow" from "refused".
+- The root's "v2 epochs … were not observed and no reference is set" ERROR
+  after an epoch with no proofs is now a WARNING that says it is harmless
+  unless the root was down. A follower without `FUGAL_REVEAL_BUCKET` is told
+  once, at INFO: only the root's reveals are read.
+- VALIDATOR_GUIDE: a "Minimum mainnet environment" box.
+- `FUGAL_ROOT` accepts only `1`, `true`, `yes`, `0`, `false`, `no` (or
+  unset); any other value is refused at startup. `FUGAL_ROOT=off` used to make
+  a validator the root.
+- The reveal sync's time budget also bounds a paged bucket listing, not only
+  the downloads after it.
+- APPROVED_ENTRY_ROTATION: a validator on finney starts only if one of its
+  approved composes is frozen in its own release, so a rotation that keeps
+  only a newer image's entry needs the validator release that ships it.
+
+### Fixed
+- `fugal_subnet.__version__` said 0.3.1 in the 0.3.2 release, so reveals named
+  the previous version (`environment.fugal_version`; not in the consensus
+  digest). A test now holds it equal to `pyproject.toml`.
+
 ## [0.3.2] - 2026-11-12
 
 ### Fixed — proof collection no longer makes miners wait behind axons that never answer (validator only; not a consensus change)
@@ -1648,7 +1884,10 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.2...v0.5.0
+[0.3.2]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/fugal-ai/fugal-subnet/releases/tag/v0.1.0

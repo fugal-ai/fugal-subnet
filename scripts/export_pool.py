@@ -47,16 +47,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=None)
-    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2),
-                    help="2: export the v2 pool (data/benchmarks/pool_v2.json.gz by default)")
+    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2, 3),
+                    help="2 or 3: export that protocol's pool (data/benchmarks/pool_v<N>.json.gz by default)")
     args = ap.parse_args()
     args.out = args.out or os.path.join(ROOT, "data", "benchmarks",
-                                        "pool_v2.json.gz" if args.protocol == 2 else "pool.json.gz")
+                                        f"pool_v{args.protocol}.json.gz" if args.protocol >= 2 else "pool.json.gz")
 
     # Build from the pinned revisions, never from an existing file: the point
     # is to produce the file, and reading one back would only copy it.
     for var in ("FUGAL_BENCHMARK_POOL", "FUGAL_POOL_FILE", "FUGAL_POOL_UNPINNED",
-                "FUGAL_BENCHMARK_POOL_V2", "FUGAL_POOL_FILE_V2"):
+                "FUGAL_BENCHMARK_POOL_V2", "FUGAL_POOL_FILE_V2", "FUGAL_BENCHMARK_POOL_V3",
+                "FUGAL_POOL_FILE_V3", "FUGAL_POOL_CACHE_V3"):
         os.environ.pop(var, None)
     # A path that cannot name a file, so the loader falls through to the pinned
     # revisions. This used to be os.devnull, which EXISTS: the loader handed
@@ -65,10 +66,11 @@ def main() -> int:
     # now also ignores anything that is not a regular file.
     os.environ["FUGAL_POOL_FILE"] = NO_POOL_FILE
     os.environ["FUGAL_POOL_FILE_V2"] = NO_POOL_FILE
+    os.environ["FUGAL_POOL_FILE_V3"] = NO_POOL_FILE
 
-    from fugal_subnet.benchmarks.loader import content_hash, load_all, load_all_v2, pool_hash
+    from fugal_subnet.benchmarks.loader import content_hash, content_hash_v3, load_pool, pool_hash
 
-    pool = load_all_v2(strict=True) if args.protocol == 2 else load_all(strict=True)
+    pool = load_pool(args.protocol, strict=True)
     pool = sorted(pool, key=lambda q: q["question_id"])
     payload = json.dumps(pool, sort_keys=True, separators=(",", ":")).encode("utf-8")
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -85,7 +87,7 @@ def main() -> int:
         digest = hashlib.sha256(f.read()).hexdigest()
     print(f"wrote {args.out}: {len(pool)} questions, {os.path.getsize(args.out)} bytes")
     print(f"pool_hash    {pool_hash(pool)}")
-    print(f"content_hash {content_hash(pool)}")
+    print(f"content_hash {(content_hash_v3 if args.protocol >= 3 else content_hash)(pool)}")
     print(f"file sha256  {digest}")
     print("Copy the file to every neuron (same path or FUGAL_POOL_FILE); load_all() "
           "verifies it against the manifest at startup.")

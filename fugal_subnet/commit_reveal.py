@@ -12,8 +12,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass
 
-from fugal_subnet.fingerprint import consensus_digest, environment_fingerprint
-from fugal_subnet.graders import grader_hash
+from fugal_subnet.fingerprint import consensus_digest, environment_fingerprint, grader_hash
 
 logger = logging.getLogger(__name__)
 

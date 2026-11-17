@@ -56,6 +56,12 @@ STAGES = (
     "scores",
     "weights",
     "v2_epoch",
+    "seat_confirmation",
+    "exploration_private",
+    "head_odds",
+    "explore_pool",
+    "odds_seat",
+    "explore_weights",
 )
 
 
@@ -389,7 +395,179 @@ def run_pipeline(seed: int) -> dict:
         "scores": _digest(scores_out),
         "weights": _digest({"uids": uids, "weights": weight_values}),
         "v2_epoch": _digest(v2_out),
+        "seat_confirmation": _digest(_seat_confirmation(seed)),
+        **{stage: _digest(value) for stage, value in _protocol_v3(seed).items()},
     }
+
+
+def _seat_confirmation(seed: int) -> list:
+    """The seat over ten epochs with fresh-data confirmation in force: a
+    challenger passes, waits as a pending record, and is confirmed on the
+    questions drawn since (its own resampling stream), with candidates fed in
+    reverse order. Every published seat and every decision line is digested.
+    """
+    import dataclasses
+
+    import numpy as np
+
+    from fugal_subnet.benchmarks.slicer import epoch_id_for_block
+    from fugal_subnet.champion import (
+        Candidate,
+        EpochSlice,
+        HeadEpoch,
+        SeatState,
+        Window,
+        seat_step,
+    )
+    from fugal_subnet.v2_epoch import seat_params_from_config, seat_to_dict
+
+    q, cats = 300, ["knowledge"] * 120 + ["math"] * 75 + ["hard"] * 90 + ["instruction"] * 15
+    params = dataclasses.replace(seat_params_from_config(1, 0), min_paired_questions=300,
+                                 confirm_questions=600, confirm_open_epochs=2)
+    heads = {"champion": 1, "challenger": 2, "equal": 1}      # the model each always routes to
+    rng = np.random.default_rng(seed)
+    window, state, out = Window.empty(6), SeatState(champion="champion", champion_since=0), []
+    for epoch in range(1, 11):
+        difficulty = rng.random(q)
+        grades = (difficulty[:, None] < np.array([0.55, 0.80, 0.84])[None, :]).astype(np.float64)
+        sl = EpochSlice(epoch=epoch, question_ids=tuple(f"e{epoch}q{i}" for i in range(q)),
+                        categories=tuple(cats), hard=tuple(c == "hard" for c in cats),
+                        grades=grades, spends=np.tile(np.array([0.0001, 0.004, 0.005]), (q, 1)))
+        window = window.add_epoch(sl, {h: HeadEpoch(np.full(q, m, dtype=np.int64),
+                                                    np.zeros(q, dtype=bool))
+                                       for h, m in heads.items()})
+        cands = {h: Candidate(h, (i,), True, 1) for i, h in reversed(list(enumerate(sorted(heads))))}
+        decision = seat_step(state, epoch, epoch_id_for_block(epoch), window, cands, params=params)
+        state = decision.state
+        out.append({"event": decision.event, "seat": seat_to_dict(state),
+                    "detail": [list(d) for d in decision.detail]})
+    return out
+
+
+def _protocol_v3(seed: int) -> dict:
+    """Protocol v3's consensus computations on synthetic inputs: each miner's
+    private exploration set, exact odds, the pooled pairs with the reference,
+    and the seat decided on odds over several epochs. Inputs are fed in a
+    seed-shuffled order wherever order must not matter.
+    """
+    import dataclasses
+    import random
+    from fractions import Fraction
+
+    import numpy as np
+
+    from fugal_subnet import config, epoch_plan, explore_weights, head_odds, odds_score
+    from fugal_subnet.champion import (
+        Candidate,
+        EpochPairs,
+        EpochSlice,
+        HeadEpoch,
+        OddsParams,
+        SeatState,
+        Window,
+        seat_step,
+    )
+    from fugal_subnet.explore_pool import ExploreAnswer, pool_pairs, private_implausible
+    from fugal_subnet.v2_epoch import odds_b64, seat_params_from_config, seat_to_dict
+
+    rnd = random.Random(seed)
+    nonce = hashlib.sha256(f"v3-{seed}".encode()).digest()
+    models = [f"vendor/model-{i:02d}@high" for i in range(9)]
+
+    # Private exploration: the plan of several hotkeys on a synthetic v3 pool.
+    pool = [{"question_id": f"{b}-{i:04d}", "benchmark": b, "prompt": f"q {b} {i}"}
+            for b in sorted(config.BENCHMARK_CATEGORY_V3) for i in range(120)]
+    rnd.shuffle(pool)
+    scored = {q["question_id"] for q in epoch_plan.scored_slice(3, nonce, pool, 300)}
+    # Cost-aware exploration: shares from exact costs, the exponent the spend
+    # cap selects, and the weights every pooled pair carries.
+    costs = {m: Fraction(3 ** i, 10_000) for i, m in enumerate(models)}
+    halves = explore_weights.choose_exponent(costs, n_calls=32, cap_usd=Fraction(1, 2),
+                                             floor=Fraction(1, 4), max_halves=4)
+    shares = explore_weights.shares(costs, exponent_halves=halves, floor=Fraction(1, 4))
+    weights = explore_weights.weights(shares)
+    weights_out = {"halves": halves, "shares": sorted(shares.items()),
+                   "weights": sorted(weights.items()),
+                   "spend": str(explore_weights.expected_spend(shares, costs, 32))}
+    plans = {hk: epoch_plan.exploration_plan(3, nonce, pool, scored, models, 0, hotkey=hk,
+                                             shares=shares)
+             for hk in ("5Fhotkey-a", "5Fhotkey-b", "5Fhotkey-c")}
+    private_out = {hk: sorted(p.items()) for hk, p in sorted(plans.items())}
+
+    # Exact odds: heads with large, cancelling weights on unit embeddings.
+    rng = np.random.default_rng(seed)
+    dim = 1024
+    heads = {}
+    for name in ("alpha", "beta", "gamma"):
+        W = (rng.standard_normal((len(models), dim)) * rng.choice([0.5, 30.0, 4000.0])).astype(np.float32)
+        b = rng.standard_normal(len(models)).astype(np.float32)
+        heads[name] = (W, b, models if name != "gamma" else models[:4])
+    hidden = rng.standard_normal((400, dim)).astype(np.float32)
+    hidden /= np.linalg.norm(hidden, axis=1, keepdims=True)
+    pair_models = [models[int(i)] for i in rng.integers(0, len(models), 400)]
+    odds_out = {name: odds_b64(head_odds.head_odds(W, b, list(m), list(hidden), pair_models))
+                for name, (W, b, m) in sorted(heads.items())}
+
+    # The pool, the reference and the seat on odds, over twelve epochs: a pass,
+    # a pending record, and the confirmation on fresh pairs.
+    q, cats = 300, ["knowledge"] * 120 + ["math"] * 75 + ["hard"] * 90 + ["instruction"] * 15
+    params = dataclasses.replace(
+        seat_params_from_config(1, 0, protocol_version=3), min_paired_questions=300,
+        resamples=400, confirm_questions=600, confirm_open_epochs=2,
+        odds=OddsParams(margin_points=0.1, min_pairs=600, nv_noninferiority=0.5, ref_prior=20,
+                        confirm_pairs=600))
+    acc = [0.55, 0.7, 0.85, 0.6, 0.9, 0.5, 0.75, 0.8, 0.65]
+    benches = sorted(set(cats))
+    window, state = Window.empty(6), SeatState(champion="blurry", champion_since=0)
+    pool_out, seat_out = [], []
+    for epoch in range(1, 13):
+        difficulty = rng.random(q)
+        grades = (difficulty[:, None] < np.array(acc[:3])[None, :]).astype(np.float64)
+        sl = EpochSlice(epoch=epoch, question_ids=tuple(f"e{epoch}q{i}" for i in range(q)),
+                        categories=tuple(cats), hard=tuple(c == "hard" for c in cats),
+                        grades=grades, spends=np.tile(np.array([0.0001, 0.004, 0.005]), (q, 1)))
+        answers = []
+        for ck in range(6):
+            for i in range(60):
+                qid, m = f"x{epoch}_{ck}_{i}", int(rng.integers(0, len(models)))
+                d = float(rng.random())
+                answers.append((ExploreAnswer(qid, models[m], f"ck{ck % 4}", d < acc[m],
+                                              failed=(i % 17 == 0), private=True,
+                                              prompt_tokens=30, completion_tokens=200 + m),
+                                d, benches[i % len(benches)]))
+        rnd.shuffle(answers)
+        flagged = private_implausible([a for a, _, _ in answers],
+                                      {(a.question_id, a.model): 6000 for a, _, _ in answers},
+                                      z=4, min_samples=8)
+        pooled = pool_pairs([a for a, _, _ in answers], nonce=nonce, coldkey_cap=36, flagged=flagged,
+                            weights=weights)
+        meta = {(a.question_id, a.model): (d, b) for a, d, b in answers}
+        pairs = EpochPairs(
+            question_ids=tuple(p.question_id for p in pooled), models=tuple(p.model for p in pooled),
+            benchmarks=tuple(meta[(p.question_id, p.model)][1] for p in pooled),
+            categories=tuple(meta[(p.question_id, p.model)][1] for p in pooled),
+            y=np.array([p.y for p in pooled], dtype=np.int32),
+            prompt_tokens=np.array([p.prompt_tokens for p in pooled], dtype=np.int32),
+            completion_tokens=np.array([p.completion_tokens for p in pooled], dtype=np.int32),
+            weight=np.array([p.weight for p in pooled], dtype=np.int64))
+        d_of = np.array([meta[(p.question_id, p.model)][0] for p in pooled])
+        a_of = np.array([acc[models.index(p.model)] for p in pooled])
+        predict = {noise_name: np.rint(10_000 / (1 + np.exp(-(a_of - d_of - shift) / width))
+                                       ).astype(np.int16)
+                   for noise_name, width, shift in (("sharp", 0.03, 0.0), ("blurry", 0.4, 0.1))}
+        window = window.add_epoch(
+            sl, {h: HeadEpoch(np.full(q, 2, dtype=np.int64), np.zeros(q, dtype=bool)) for h in predict},
+            pairs, predict)
+        cands = {h: Candidate(h, (i,), True, 1) for i, h in reversed(list(enumerate(sorted(predict))))}
+        decision = seat_step(state, epoch, f"e{epoch:08d}", window, cands, params=params)
+        state = decision.state
+        ref = odds_score.reference(window.pairs, 20)
+        pool_out.append({"pairs": [dataclasses.astuple(p) for p in pooled], "flagged": sorted(flagged),
+                         "reference": ref.of(epoch).tolist()})
+        seat_out.append({"event": decision.event, "seat": seat_to_dict(state),
+                         "detail": [list(x) for x in decision.detail]})
+    return {"exploration_private": private_out, "head_odds": odds_out,
+            "explore_pool": pool_out, "odds_seat": seat_out, "explore_weights": weights_out}
 
 
 def _child(seed: int) -> dict:

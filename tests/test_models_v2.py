@@ -19,7 +19,10 @@ def test_both_tables_ship_and_the_version_selects_one():
     assert not set(v1) & set(v2)                          # a one-time list replacement
     assert set(rp.price_table(2)) == set(v2)
     with pytest.raises(ValueError):
-        rp.price_table(3)
+        rp.price_table(4)
+    # v3 ships its own pinned table, keyed on menu entries; it is not v2's.
+    v3 = rp.models_for_protocol(3)
+    assert v3 == sorted(v3) and set(rp.price_table(3)) == set(v3) and set(v3) != set(v2)
 
 
 def test_v1_identity_is_unchanged_by_shipping_the_v2_table():

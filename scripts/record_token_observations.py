@@ -51,7 +51,8 @@ sys.path.insert(0, ROOT)
 # re-measure "resumed" past every pair already recorded there and made no calls.
 DEFAULT_OUT = os.path.join(ROOT, "results", "token_observations_protocol{protocol}.jsonl")
 MODELS_TABLE = {1: os.path.join(ROOT, "data", "models.json"),
-                2: os.path.join(ROOT, "data", "models_v2.json")}
+                2: os.path.join(ROOT, "data", "models_v2.json"),
+                3: os.path.join(ROOT, "data", "models_v3.json")}
 DEFAULT_SEED = "fugal-token-observations-2026-11"
 
 
@@ -78,7 +79,8 @@ def _git_commit() -> str:
 
 def plan(pool: list[dict], models: list[str], per_model: int, seed: str,
          categories: dict[str, str] | None = None,
-         targets: dict[str, float] | None = None) -> list[tuple[str, dict]]:
+         targets: dict[str, float] | None = None,
+         shared: bool = False) -> list[tuple[str, dict]]:
     """A deterministic, benchmark-stratified sample per model.
 
     Same nonce machinery as an epoch slice, so the sample has the pool's shape
@@ -90,6 +92,12 @@ def plan(pool: list[dict], models: list[str], per_model: int, seed: str,
 
     seed_hash = "0x" + hashlib.sha256(seed.encode()).hexdigest()
     out = []
+    if shared:
+        # Protocol v3: the SAME questions for every menu entry, so entries
+        # (one model at several efforts) are compared on identical prompts.
+        nonce = derive_nonce("obs:shared", seed_hash)
+        sample = select_slice_v2(nonce, pool, per_model, targets, categories)
+        return [(model, q) for model in models for q in sample]
     for model in models:
         nonce = derive_nonce(f"obs:{model}", seed_hash)
         # Protocol v2: the sample has the v2 slice's category mix (category-first,
@@ -147,16 +155,42 @@ def already_recorded(path: str) -> set[tuple[str, str]]:
     return seen
 
 
+def _spent(proxy) -> float:
+    """Money spent so far: the larger of the table price and what the provider
+    reported, per call, so a mispriced entry cannot run the budget over."""
+    return sum(max(r.cost_usd, r.provider_cost_usd) for r in proxy.records)
+
+
 def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
-           provenance: dict, reasoning: dict | None = None) -> dict:
-    """Make the calls through the proxy, append one JSONL row per completed call."""
+           provenance: dict, reasoning: dict | None = None, protocol: int = 1,
+           categories: dict | None = None) -> dict:
+    """Make the calls through the proxy, append one JSONL row per completed call.
+
+    Protocol 3 sends each menu entry's pinned request (routing_protocol.
+    request_for: model, effort, the entry's own answer budget, pinned
+    providers) with the v3 system prompt, exactly as a miner's harness does.
+    Its budget check reserves each in-flight call's WORST case (prompt plus
+    the entry's whole answer budget at its price): with 128k budgets one call
+    can cost dollars, so "spent so far" alone overshoots the cap by a batch.
+    """
     import threading
 
     from fugal_subnet.tee.harness import _call_model, _request_ctx
 
     totals = {"rows": 0, "failed": 0, "cost_usd": 0.0, "provider_cost_usd": 0.0}
     stop = {"budget": False}
-    gate = threading.Lock()
+    cond = threading.Condition()
+    held = {"usd": 0.0}
+    if protocol >= 3:
+        from fugal_subnet.config import HARNESS_MAX_TOKENS
+        from fugal_subnet.routing_protocol import request_for
+
+    def worst(model, q) -> float:
+        if protocol < 3:
+            return 0.0
+        pin, pout = proxy.prices.get(model, (0.0, 0.0))
+        budget = request_for(3, model, HARNESS_MAX_TOKENS)["max_tokens"]
+        return (len(q["prompt"]) // 2 + 2000) * pin + budget * pout
 
     def one(item):
         model, q = item
@@ -164,28 +198,52 @@ def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
         # thread, against the proxy's own priced records, before each call.
         # A check in the consumer loop ran behind the workers and let a whole
         # batch through after the cap (caught by the test).
-        with gate:
-            if stop["budget"]:
-                return None
-            spent = sum(r.cost_usd for r in proxy.records)
-            if spent >= max_usd:
-                stop["budget"] = True
-                print(f"budget reached: ${spent:.2f} >= ${max_usd:.2f}; no further calls",
-                      flush=True)
-                return None
+        w = worst(model, q)
+        with cond:
+            while True:
+                if stop["budget"]:
+                    return None
+                if protocol < 3:
+                    spent = sum(r.cost_usd for r in proxy.records)
+                    if spent >= max_usd:
+                        stop["budget"] = True
+                        print(f"budget reached: ${spent:.2f} >= ${max_usd:.2f}; no further calls",
+                              flush=True)
+                        return None
+                    break
+                spent = _spent(proxy)
+                if spent + held["usd"] + w <= max_usd:
+                    held["usd"] += w
+                    break
+                if held["usd"] <= 0.0:
+                    stop["budget"] = True
+                    print(f"budget reached: ${spent:.2f} spent, next call could cost ${w:.2f}, "
+                          f"cap ${max_usd:.2f}; no further calls", flush=True)
+                    return None
+                cond.wait()   # let in-flight calls settle, then look again
         rid = f"obs:{model}:{q['question_id']}"
         _request_ctx.request_id = rid
+        started = time.monotonic()
+        request = None
         try:
-            setting = (reasoning or {}).get(model)
-            # v1 runs call exactly as before; v2 adds the model's pinned reasoning setting.
-            text = _call_model(proxy, model, q, reasoning=setting) if setting else _call_model(proxy, model, q)
+            if protocol >= 3:
+                request = request_for(3, model, HARNESS_MAX_TOKENS)
+                text = _call_model(proxy, model, q, request=request)
+            else:
+                setting = (reasoning or {}).get(model)
+                # v1 runs call exactly as before; v2 adds the model's pinned reasoning setting.
+                text = _call_model(proxy, model, q, reasoning=setting) if setting else _call_model(proxy, model, q)
         finally:
             _request_ctx.request_id = ""
+            with cond:
+                held["usd"] -= w
+                cond.notify_all()
+        latency_ms = int(round((time.monotonic() - started) * 1000))
         mine = [r for r in proxy.records if r.request_id == rid]
         if text is None or not mine:
-            return (model, q["question_id"], None)
+            return (model, q, None, latency_ms, request)
         r = mine[-1]
-        return (model, q["question_id"], r)
+        return (model, q, r, latency_ms, request)
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "a", encoding="utf-8") as out, \
@@ -193,7 +251,8 @@ def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
         for res in ex.map(one, scheduled):
             if res is None:
                 continue
-            model, qid, r = res
+            model, q, r, latency_ms, request = res
+            qid = q["question_id"]
             if r is None:
                 totals["failed"] += 1
                 continue
@@ -208,6 +267,16 @@ def record(proxy, scheduled, out_path: str, max_usd: float, concurrency: int,
                 "recorded_at": int(time.time()),
                 **provenance,
             }
+            if protocol >= 3:
+                # The proxy keeps no finish reason or reasoning-token split; an answer that
+                # used its whole budget is the one finish reason that matters here (cut off).
+                row.update({
+                    "benchmark": q.get("benchmark", ""),
+                    "category": (categories or {}).get(q.get("benchmark", ""), ""),
+                    "latency_ms": latency_ms,
+                    "max_tokens": int(request["max_tokens"]),
+                    "hit_budget": int(r.completion_tokens) >= int(request["max_tokens"]),
+                })
             out.write(json.dumps(row, sort_keys=True) + "\n")
             out.flush()
             totals["rows"] += 1
@@ -251,11 +320,15 @@ def main(argv=None) -> int:
                     help="Call the real upstream [PAID]. Default is --mock, which requires "
                          "FUGAL_OPENROUTER_BASE to name a stub and refuses the real endpoint.")
     ap.add_argument("--mock", action="store_true", help="(default)")
-    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2),
+    ap.add_argument("--protocol", type=int, default=1, choices=(1, 2, 3),
                     help="2: the pinned v2 pool, the v2 table with each model's pinned `reasoning` "
                          "setting, and the v2 category mix, as a v2 miner sees them")
     ap.add_argument("--pool-file", default="",
                     help="Pool to sample from instead of the pinned one (JSON or .json.gz)")
+    ap.add_argument("--targets", default="",
+                    help="JSON {category: share} for the sample's mix (v3: required with --categories)")
+    ap.add_argument("--concurrency", type=int, default=0,
+                    help="calls in flight (default: HARNESS_CONCURRENCY)")
     ap.add_argument("--categories", default="",
                     help="JSON {benchmark: category} overriding the v2 categories (v2 default: "
                          "config.BENCHMARK_CATEGORY_V2)")
@@ -289,12 +362,26 @@ def main(argv=None) -> int:
     from fugal_subnet.config import CATEGORY_TARGETS_V2, HARNESS_CONCURRENCY
     from fugal_subnet.tee.runtime import MeteringProxy
 
+    if args.protocol == 3 and not (args.pool_file and args.categories and args.targets):
+        print("--protocol 3 needs --pool-file, --categories and --targets (the v3 pool and mix)",
+              file=sys.stderr)
+        return 2
     table, pool, categories = resolve_inputs(args.protocol, args.models, args.pool_file,
                                              args.categories)
     models = [r["id"] for r in table]
     reasoning = {r["id"]: r["reasoning"] for r in table if r.get("reasoning")} if args.protocol == 2 else None
+    if args.targets:
+        with open(args.targets, encoding="utf-8") as f:
+            targets = json.load(f)
+    else:
+        targets = CATEGORY_TARGETS_V2 if categories else None
     scheduled = plan(pool, models, args.per_model, args.seed,
-                     categories=categories, targets=CATEGORY_TARGETS_V2 if categories else None)
+                     categories=categories, targets=targets, shared=args.protocol >= 3)
+    if args.protocol >= 3:
+        # Cheapest entries first: if the cap ends the run, what is missing is the
+        # few dearest entries, not a random hole across the menu.
+        price = {r["id"]: (r["out"], r["in"]) for r in table}
+        scheduled.sort(key=lambda mq: (price[mq[0]], mq[0], mq[1]["question_id"]))
     seen = already_recorded(args.out)
     scheduled = [(m, q) for m, q in scheduled if (m, q["question_id"]) not in seen]
     print(f"{len(models)} models x {args.per_model} questions = {len(models) * args.per_model} "
@@ -317,8 +404,9 @@ def main(argv=None) -> int:
     proxy.prices = load_prices(args.models or MODELS_TABLE[args.protocol])  # the table being measured
     proxy.start()
     try:
-        totals = record(proxy, scheduled, args.out, args.max_usd, HARNESS_CONCURRENCY, provenance,
-                        reasoning=reasoning)
+        totals = record(proxy, scheduled, args.out, args.max_usd,
+                        args.concurrency or HARNESS_CONCURRENCY, provenance,
+                        reasoning=reasoning, protocol=args.protocol, categories=categories)
     finally:
         proxy.stop()
     print(f"recorded {totals['rows']} rows ({totals['failed']} failed calls), table cost "

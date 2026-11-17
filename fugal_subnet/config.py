@@ -249,14 +249,18 @@ CHAMPION_VALUE_PER_CORRECT_USD = float(os.getenv("FUGAL_CHAMPION_VALUE_PER_CORRE
 # v3 pool is pinned and its embeddings are computed; a live validator with v3
 # scheduled and no pin refuses to start. Where the file is on disk is
 # FUGAL_EMBEDDINGS_FILE (operational: the bytes are what is checked).
-EMBEDDINGS_SHA256: str | None = None
+# Pinned 2026-11-16: 48,320 rows (pool_manifest_v3.json) x 1024, 214,347,992
+# bytes; built by scripts/build_embeddings_v3.py (one prompt per row, batch 1,
+# one thread, pinned dispatch) and verified bit for bit on two CPUs.
+EMBEDDINGS_SHA256: str | None = "f64ca354a5c5fca191abd2bf6930f50e65d6af90390a46b9ebd15fc14cbe4e17"
 # Where the pinned file is published (an HTTPS URL, or file:// in tests). The
 # image build fetches it into the image (so its bytes are measured) and a
 # validator fetches it once at setup: `python -m fugal_subnet.embeddings_file
 # fetch`. The URL is only a location; the pinned hash is what is trusted, and a
 # download with another hash is refused before anything is written in place.
 # None until the v3 release publishes the file.
-EMBEDDINGS_URL: str | None = None
+EMBEDDINGS_URL: str | None = (
+    "https://storage.googleapis.com/fugal-reveals/embeddings/v3/embeddings-f64ca354a5c5fca191abd2bf6930f50e65d6af90390a46b9ebd15fc14cbe4e17.npz")
 
 
 def _chain_block(genesis_hash: str | None, finney_value: int | None, env_value: int | None,

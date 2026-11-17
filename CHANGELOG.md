@@ -4,6 +4,8 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-17
+
 ### Added — v3 menu B: seven OpenAI entries from block 9,531,000, with a 20-epoch grace (validators and miners)
 `openai/gpt-6.2-astra@{low,high,max}` ($8 / $40 per M tokens) and
 `openai/gpt-6.2-sol@{low,medium,high,max}` ($2 / $10) join the v3 menu from
@@ -1941,7 +1943,8 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.2...v0.5.0
 [0.3.2]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.0...v0.3.1

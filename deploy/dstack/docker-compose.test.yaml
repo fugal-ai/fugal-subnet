@@ -17,8 +17,10 @@
 #
 # TESTNET TWIN (test / netuid 552) of docker-compose.yaml, for the protocol
 # v2 flip rehearsal. The two files differ ONLY in FUGAL_NETWORK, FUGAL_NETUID,
-# --network/--netuid and FUGAL_V2_ACTIVATION_BLOCK (each network's own flip
-# block), so one image digest yields two compose hashes and two approved
+# --network/--netuid and the activation blocks (each network's own flip
+# blocks; testnet has no v3 block scheduled, so this twin sets none and a
+# v0.5.0 miner on netuid 552 serves v2 until one is chosen and set here and on
+# every testnet validator), so one image digest yields two compose hashes and two approved
 # entries, one per network. Keep them in lockstep: any other change to one
 # that is not made to the other is a difference between what was rehearsed
 # and what ships.

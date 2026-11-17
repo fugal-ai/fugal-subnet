@@ -1122,6 +1122,46 @@ def check_release_composes_target_v2(errors: list[str], root: Path | None = None
             errors.append(f"{name}: FUGAL_V2_ACTIVATION_BLOCK={raw!r} is not valid: {e}")
 
 
+# Blocks the MINER reads only from its compose's environment while the
+# validator has them compiled in for finney. A finney compose that leaves one
+# out makes every miner on it serve the older protocol after the block
+# (v0.5.0: the first v3 composes set FUGAL_V2_ACTIVATION_BLOCK but not
+# FUGAL_V3_ACTIVATION_BLOCK, so the image would have kept serving v2).
+MINER_COMPOSE_BLOCKS = (
+    ("FUGAL_V2_ACTIVATION_BLOCK", "FINNEY_V2_ACTIVATION_BLOCK"),
+    ("FUGAL_V3_ACTIVATION_BLOCK", "FINNEY_V3_ACTIVATION_BLOCK"),
+)
+
+
+def check_finney_compose_carries_compiled_blocks(errors: list[str], root: Path | None = None,
+                                                 cfg=None) -> None:
+    """The finney live compose must set every block in MINER_COMPOSE_BLOCKS
+    that the release compiles in, to exactly the compiled value. Always an
+    error, not only at --release: a compose without it is a miner on the
+    wrong protocol."""
+    import re
+
+    if cfg is None:
+        from fugal_subnet import config as cfg
+    root = root or ROOT
+    for live in sorted((root / "deploy" / "dstack").glob("docker-compose*.yaml")):
+        text = live.read_text(encoding="utf-8")
+        network = re.search(r"-\s*--network\s*\n\s*-\s*(\S+)", text)
+        if not network or network.group(1).strip("\"'") != "finney":
+            continue
+        env = dict(re.findall(r"^\s*-?\s*(FUGAL_[A-Z0-9_]+)\s*[=:]\s*\"?([^\"\s#]*)", text, re.M))
+        for var, compiled_name in MINER_COMPOSE_BLOCKS:
+            compiled = getattr(cfg, compiled_name, None)
+            if compiled is None:
+                continue
+            have = env.get(var, "")
+            if have != str(compiled):
+                errors.append(
+                    f"{live.relative_to(root)}: {var}={have or '(unset)'}, but the release "
+                    f"compiles {compiled_name} = {compiled}. The miner reads this block only "
+                    f"from its compose; set {var}={compiled} and re-freeze.")
+
+
 def check_live_requires_app_identity(errors: list[str]) -> None:
     """A live validator must refuse a bare base approved entry at startup.
 
@@ -1302,6 +1342,7 @@ def main(argv: list[str] | None = None) -> None:
     check_live_requires_app_identity(errors)
     check_live_composes_are_frozen(errors if args.release else launch_gate)
     check_release_composes_target_v2(errors if args.release else launch_gate)
+    check_finney_compose_carries_compiled_blocks(errors)
     check_v3_release_pins(errors if args.release else launch_gate)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)

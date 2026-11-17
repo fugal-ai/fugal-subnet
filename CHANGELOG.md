@@ -4,6 +4,22 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — the collateral startup probe only warns, and names itself (validators)
+v0.5.0's startup probe of the DCAP collateral endpoint refused to start a live
+finney validator when the probe failed. pccs.phala.network answers urllib's
+default User-Agent with 403 while serving the verifier's own requests, so the
+probe failed against a healthy endpoint and stopped the validator. The probe
+now sends a named User-Agent with a 5 s timeout, and a failed probe only logs a
+warning on every chain.
+
+### Fixed — the finney compose carries the v3 block (miners)
+The miner reads FUGAL_V3_ACTIVATION_BLOCK only from its compose; the first v3
+composes left it out, so a miner on them would have kept serving v2 after the
+v3 block. The finney compose sets it (9527760) and is re-frozen as
+`app-compose.frozen-2026-11-17b-finney.json` (image unchanged);
+check_safety_invariants now requires the finney compose to carry every block
+the miner reads from its environment at the compiled value.
+
 ## [0.5.0] - 2026-11-17
 
 One upgrade for validators and miners: protocol v3 and the seat-confirmation

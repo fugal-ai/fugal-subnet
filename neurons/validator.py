@@ -306,27 +306,30 @@ def v2_compose_hashes(activation_block: int, root: str | None = None) -> set[str
 
 
 def _check_collateral_endpoint(live: bool, on_finney: bool, probe=None) -> None:
-    """Ask the DCAP collateral endpoint once at startup instead of finding it
-    dead at the collection point, where every proof of the epoch would go
-    unverified. A live finney validator refuses to start; elsewhere (mock,
-    testnet, rehearsals) it warns. Mock never verifies quotes, so it skips the
-    probe."""
+    """Ask the DCAP collateral endpoint once at startup, so a dead one is
+    named in the log before the collection point leaves an epoch unverified.
+    ADVISORY ONLY, on every chain: it never refuses to start. The first
+    version refused on finney and took down the live root (v0.5.0), because
+    the endpoint blocked the probe's default User-Agent while serving the
+    verifier's real requests; a probe can be wrong where the verifier is not.
+    Mock never verifies quotes, so it skips the probe."""
     if not live:
         return
     from fugal_subnet import config
     from fugal_subnet.tee.attestation import probe_collateral_endpoint
 
-    ok, why = (probe or probe_collateral_endpoint)(config.TEE_PCCS_URL,
-                                                   float(config.TEE_COLLATERAL_TIMEOUT))
+    try:
+        ok, why = (probe or probe_collateral_endpoint)(config.TEE_PCCS_URL)
+    except Exception as e:  # noqa: BLE001 - an advisory probe never stops the validator
+        ok, why = False, f"the probe itself failed ({type(e).__name__}: {e})"
     if ok:
         logger.info("DCAP collateral endpoint checked: %s", why)
         return
-    msg = (f"The DCAP collateral endpoint cannot serve collateral: {why}. Every proof "
-           "would go unverified at collection. Fix FUGAL_PCCS_URL (default "
-           "https://pccs.phala.network) or start the local caching PCCS it points at.")
-    if on_finney:
-        raise click.ClickException(msg)
-    logger.warning(msg)
+    logger.warning(
+        "WARNING: the DCAP collateral endpoint did not answer the startup probe: %s. "
+        "If proofs go unverified at collection, check FUGAL_PCCS_URL (default "
+        "https://pccs.phala.network) or the local caching PCCS it points at. "
+        "Starting anyway: this probe is advisory.", why)
 
 
 def _check_chain_configuration(genesis: str | None, live: bool, approved, activation_block,

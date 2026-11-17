@@ -103,6 +103,7 @@ def test_every_expectation_reaches_the_verifier(verifier):
         mock=False,
         collateral_budget="budget",
         protocol_version=2,
+        menu=None,
     )
     assert out.proof is proof and out.head_bytes == b"head-bytes"
 

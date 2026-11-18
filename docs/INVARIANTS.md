@@ -637,6 +637,39 @@ root, the vendored files sorted by name, then the proof's own in proof order)
 and takes the first that may issue and whose signature verifies, so the
 verdict is deterministic (I1) and order-independent in outcome.
 
+**The operator's own check builds the same chain (2026-11-18).** A validator
+reads the chain from the proof. The operator has no proof yet when it checks a
+new TD (`provision.push`, `provision_td.py --inspect`), and held the TD to the
+vendored us-central1 intermediate alone: a TD in any other region was refused
+before it could be given its key and head, so it never produced a proof for a
+validator to accept (issues 129 and 179). `provision.operator_tpm_chain` now
+builds the chain a proof would carry, with `tpm.intermediates_for`, and
+`provision.unwrap_td_attestation` holds the TD to the pinned root through it.
+Nothing about what a validator accepts changed, and nothing a validator runs
+fetches (`tests/test_tpm_other_region.py` reads `verify.py` and
+`neurons/validator.py` for it). Three things are particular to the operator's
+side:
+
+- The issuer address comes from a certificate that a machine not yet
+  identified handed over, and the request is made from the machine that holds
+  the wallet. Only Google's CA content addresses are asked
+  (`tpm._GOOGLE_CA_ADDRESS`, the whole address matched), and a redirect is
+  refused, so the answer to `/provision/attest` cannot aim a request at a local
+  file, a metadata service or the operator's network. The rule decides where a
+  request may go and nothing else: anyone can publish a CA on Google's CA
+  service, and what is believed is still only what chains to the pinned root
+  by signature (`run_tee_attacks`: own CA published at a Google CA address;
+  issuer address aimed at the operator's machine).
+- `--tpm-intermediate FILE` supplies the intermediate and skips the fetch.
+  It is untrusted like the proof's own: a file that does not chain changes no
+  verdict.
+- Inside the TD the miner's fetch keeps an unrestricted host (a host rule
+  compiled into the image would stop every miner outside the vendored set the
+  day Google moved its CA content, until a new image) and takes http(s) only.
+  A miner with no chain asks again before each epoch
+  (`neurons.miner._tpm_intermediates_for_epoch`): one failed fetch at boot
+  used to mean refused proofs for the life of the process.
+
 **Signature and chain are one check, not two.** Either alone proves nothing: a
 signature without a chain accepts a quote the miner signed with their own key
 and their own certificate; a chain without a signature accepts a genuine

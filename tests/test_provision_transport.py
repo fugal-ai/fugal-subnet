@@ -122,7 +122,7 @@ class _Fake:
             rtmr3 = property(lambda s: parent._reg)
 
         monkeypatch.setattr("fugal_subnet.tee.verify.unwrap_attestation",
-                            lambda blob: (b"quote", parent._log))
+                            lambda blob, extra_certs=None: (b"quote", parent._log))
         monkeypatch.setattr("fugal_subnet.tee.attestation.parse_quote", lambda b: _Q())
         monkeypatch.setattr("fugal_subnet.tee.attestation.measurement_id",
                             lambda q: parent._meas)

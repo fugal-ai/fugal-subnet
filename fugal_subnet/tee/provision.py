@@ -520,6 +520,44 @@ def serve(store: ProvisionStore, port: int = PROVISION_PORT, host: str = "0.0.0.
     return server
 
 
+def operator_tpm_chain(blob: bytes) -> list[bytes]:
+    """The Google intermediates (DER) that take this TD's attestation key to
+    the pinned root: the chain its proofs will carry, built the same way.
+
+    A validator reads the chain from the proof. The operator has no proof yet,
+    only the TD's answer, and used to check it against the vendored
+    intermediate alone, so a TD in any region but that one was refused before
+    it could be given its key and head. Each issuer is taken from the vendored
+    set when one signed the certificate and otherwise fetched from the
+    certificate's own issuer address, from Google's CA addresses only
+    (tpm.fetch_google_ca_issuer). [] when there is no TPM half or no chain can
+    be built; the check that follows then refuses exactly as before.
+    """
+    from fugal_subnet.scale import ScaleError, decode_dstack_attestation
+    from fugal_subnet.tee import tpm
+    from fugal_subnet.tee.verify import _TDX_QUOTE_VERSIONS
+
+    if len(blob) >= 2 and int.from_bytes(blob[:2], "little") in _TDX_QUOTE_VERSIONS:
+        return []
+    try:
+        ak_cert = decode_dstack_attestation(blob)["tpm"]["ak_cert"]
+    except (ScaleError, KeyError, TypeError, ValueError):
+        return []
+    return tpm.intermediates_for(ak_cert, fetch=tpm.fetch_google_ca_issuer)
+
+
+def unwrap_td_attestation(blob: bytes, tpm_intermediates=None) -> tuple[bytes, list | None]:
+    """verify.unwrap_attestation for the operator's side: (tdx_quote, event_log),
+    with the TPM half held to the pinned Google root through `tpm_intermediates`
+    when the operator supplies them, and otherwise through operator_tpm_chain.
+    Supplied or fetched, an intermediate that does not chain to the pinned root
+    by signature changes nothing: the attestation is refused."""
+    from fugal_subnet.tee.verify import unwrap_attestation
+
+    chain = list(tpm_intermediates) if tpm_intermediates else operator_tpm_chain(blob)
+    return unwrap_attestation(blob, extra_certs=chain)
+
+
 def push(
     address: str,
     payload: dict,
@@ -528,6 +566,7 @@ def push(
     expected_app_identity: str = "",
     expected_instance_id: str = "",
     timeout: int = 30,
+    tpm_intermediates=None,
 ) -> bytes:
     """Verify a TD is what we expect, then send it per-miner data, sealed.
 
@@ -555,12 +594,15 @@ def push(
     and a correct compose hash — and a different instance-id, because they did
     not create this instance. `expected_instance_id` is the check that turns
     that from an accepted risk into a refusal, so callers should supply it.
+
+    `tpm_intermediates` (DER) are the Google intermediates for the TD's
+    attestation key, for an operator who has them and wants no fetch; without
+    them they are built as a proof's are (operator_tpm_chain).
     """
     import json
     import urllib.request
 
     from fugal_subnet.tee.attestation import measurement_id, parse_quote, replay_event_log
-    from fugal_subnet.tee.verify import unwrap_attestation
 
     validate_payload(payload)          # fail before contacting anything
     nonce = new_nonce()
@@ -586,7 +628,7 @@ def push(
             "TD returned no X25519 public key with its attestation — an old "
             "receiver that would accept plaintext. Refusing to push to it."
         )
-    quote_bytes, event_log = unwrap_attestation(blob)
+    quote_bytes, event_log = unwrap_td_attestation(blob, tpm_intermediates)
     quote = parse_quote(quote_bytes)
 
     # 1. our nonce AND the hash of the key we are about to encrypt to, both

@@ -106,15 +106,36 @@ def head_protocols(head_bytes: bytes) -> list[int]:
     return ok
 
 
-def inspect(address: str, timeout: int) -> int:
+def _read_intermediates(paths) -> list[bytes]:
+    """--tpm-intermediate files as DER. Nothing here is trusted: a certificate
+    that does not chain to the pinned Google root changes no verdict."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    out = []
+    for path in paths or []:
+        with open(os.path.expanduser(path), "rb") as f:
+            raw = f.read()
+        try:
+            cert = (x509.load_pem_x509_certificate(raw) if raw.lstrip().startswith(b"-----")
+                    else x509.load_der_x509_certificate(raw))
+        except ValueError:
+            raise SystemExit(f"--tpm-intermediate {path} is not a certificate (DER or PEM)") from None
+        out.append(cert.public_bytes(serialization.Encoding.DER))
+    return out
+
+
+def inspect(address: str, timeout: int, tpm_intermediates=None) -> int:
     import urllib.request
 
+    from fugal_subnet.scale import ScaleError, decode_dstack_attestation
     from fugal_subnet.tee.attestation import (
         measurement_id,
         parse_quote,
         replay_event_log,
     )
-    from fugal_subnet.tee.provision import new_nonce
+    from fugal_subnet.tee.provision import new_nonce, operator_tpm_chain
+    from fugal_subnet.tee.tpm import certificate_subject
     from fugal_subnet.tee.verify import unwrap_attestation
 
     nonce = new_nonce()
@@ -127,9 +148,19 @@ def inspect(address: str, timeout: int) -> int:
         answer = json.loads(r.read())
     blob = bytes.fromhex(answer["attestation"])
     pubkey = bytes.fromhex(answer.get("pubkey", ""))
-    quote_bytes, event_log = unwrap_attestation(blob)
+    # The Google intermediates for this TD's key, as its proofs will carry
+    # them: vendored, or from the certificate's own issuer address (Google's
+    # CA addresses only), or the operator's files.
+    chain = list(tpm_intermediates or []) or operator_tpm_chain(blob)
+    quote_bytes, event_log = unwrap_attestation(blob, extra_certs=chain)
     quote = parse_quote(quote_bytes)
     print(f"attestation        {len(blob)} bytes, quote {len(quote_bytes)} bytes")
+    try:
+        subject = certificate_subject(decode_dstack_attestation(blob)["tpm"]["ak_cert"])
+        print(f"tpm half           {subject}: chains to the pinned Google root "
+              f"through {len(chain)} intermediate certificate(s)")
+    except (ScaleError, KeyError, TypeError, ValueError):
+        print("tpm half           (none) — a bare quote")
     if len(pubkey) == 32:
         from fugal_subnet.tee.provision import report_data_for
         bound = quote.report_data == report_data_for(nonce, pubkey).hex()
@@ -187,13 +218,20 @@ def main() -> int:
                          "it (needs the session file); pushes nothing")
     ap.add_argument("--since", type=int, default=0, help="--logs: only lines after this sequence number")
     ap.add_argument("--timeout", type=int, default=30)
+    ap.add_argument("--tpm-intermediate", action="append", default=[], metavar="FILE",
+                    help="Google's intermediate certificate for the TD's attestation key "
+                         "(DER or PEM; repeatable). Not needed normally: it is taken from "
+                         "the vendored set or fetched from Google's CA address named in the "
+                         "TD's certificate. Use it to verify a TD with no fetch at all")
     args = ap.parse_args()
 
     from fugal_subnet.logging_setup import configure_logging
     configure_logging("INFO")
 
+    intermediates = _read_intermediates(args.tpm_intermediate)
+
     if args.inspect:
-        return inspect(args.address, args.timeout)
+        return inspect(args.address, args.timeout, intermediates)
 
     def session_path() -> str:
         if args.session_file:
@@ -269,6 +307,7 @@ def main() -> int:
         expected_app_identity=app,
         expected_instance_id=args.instance_id,
         timeout=args.timeout,
+        tpm_intermediates=intermediates,
     )
     print(f"PUSHED (sealed) to {args.address}: {sorted(payload)}")
     # The session key is what lets this operator, and nobody else, read the

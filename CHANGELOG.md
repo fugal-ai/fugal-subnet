@@ -4,6 +4,25 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Fixed — a TD outside us-central1 can be provisioned (issues 129, 179)
+- Validators have accepted an attestation key from any region since proofs
+  began to carry their Google intermediates: the chain is held to the pinned
+  EK/AK root by signature, and no region is named in it. The operator's own
+  check was not: `provision.push` and `provision_td.py --inspect` verified a TD
+  against the vendored us-central1 intermediate only, so a TD anywhere else was
+  refused before it got its key and head. They now build the chain a proof
+  would carry (`provision.operator_tpm_chain`: vendored, else fetched from the
+  issuer address in the TD's certificate, from Google's CA content addresses
+  only and never through a redirect), or take it from `--tpm-intermediate`.
+  `--inspect` prints the key's zone and chain.
+- Miner (next image): a miner whose startup fetch of its intermediates failed
+  asks again before each epoch instead of producing refused proofs until it is
+  restarted, and the fetch takes http(s) addresses only.
+- No change to what a validator accepts; nothing a validator runs fetches.
+  `run_tee_attacks` gains four cases (a certificate that may not issue, an
+  expired intermediate, a CA of the attacker's own at a Google CA address, an
+  issuer address aimed at the operator's machine).
+
 ## [0.6.0] - 2026-11-17
 
 ### Upgrade BEFORE block 9,531,000 (~2026-11-18 04:22 UTC)

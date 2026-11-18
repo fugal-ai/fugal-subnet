@@ -498,6 +498,163 @@ def a_supplied_cert_named_as_the_root():
     return _chain_verdict(leaf, [rogue_root])
 
 
+def _throwaway_chain(*, intermediate_ca=True, intermediate_expired=False):
+    """root -> intermediate -> AK, all the attacker's, every signature genuine.
+    Returns (root certificate, intermediate DER, leaf DER). Nobody holds a
+    Google key, so the rules beyond "signed by the root" can only be broken
+    one at a time under a root that stands in for the pinned one."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    day = datetime.timedelta(days=1)
+
+    def cn(name):
+        return x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, name)])
+
+    def cert(subject, issuer, key, signer, ca, until):
+        return (x509.CertificateBuilder()
+                .subject_name(cn(subject)).issuer_name(cn(issuer))
+                .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(now - 30 * day).not_valid_after(until)
+                .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+                .sign(signer, hashes.SHA256()))
+
+    root_key, mid_key, ak_key = (ec.generate_private_key(ec.SECP256R1()) for _ in range(3))
+    root = cert("stand-in root", "stand-in root", root_key, root_key, True, now + 365 * day)
+    mid = cert("EK/AK CA Intermediate", "stand-in root", mid_key, root_key, intermediate_ca,
+               now - day if intermediate_expired else now + 365 * day)
+    leaf = cert("AK", "EK/AK CA Intermediate", ak_key, mid_key, False, now + 365 * day)
+    der = serialization.Encoding.DER
+    return root, mid.public_bytes(der), leaf.public_bytes(der)
+
+
+def _under_stand_in_root(**broken):
+    """The chain verdict for a correctly signed chain that breaks one rule,
+    with the attacker's root standing in for the pinned one. The same chain
+    with nothing broken must verify first, or the case shows nothing."""
+    from fugal_subnet.tee import tpm
+
+    real = tpm._load_pinned
+    try:
+        root, mid, leaf = _throwaway_chain()
+        tpm._load_pinned = lambda *a, **k: (root, [])
+        if not tpm.verify_ak_chain(leaf, extra_certs=[mid]):
+            return verify_mod.VerifyResult(True, "the case did not run: its unbroken chain is refused")
+        root, mid, leaf = _throwaway_chain(**broken)
+        tpm._load_pinned = lambda *a, **k: (root, [])
+        return _chain_verdict(leaf, [mid])
+    finally:
+        tpm._load_pinned = real
+
+
+def a_non_ca_certificate_as_intermediate():
+    """Carry, as the intermediate, a certificate the root really signed but
+    that may not issue (a leaf). Its signature on the attestation key is
+    genuine; only the CA rule refuses it. One honest box would otherwise let
+    its owner mint attestation keys for machines they do not have."""
+    return _under_stand_in_root(intermediate_ca=False)
+
+
+def a_expired_intermediate():
+    """Carry an intermediate whose signatures all verify and whose validity
+    has ended (a retired CA key is the one most likely to have leaked)."""
+    return _under_stand_in_root(intermediate_expired=True)
+
+
+def _leaf_with_issuer_address(url):
+    """An attestation-key certificate under the attacker's CA, named like
+    Google's intermediate, whose issuer address (AIA caIssuers) is `url`.
+    Returns (leaf DER, the attacker's CA DER)."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import AuthorityInformationAccessOID
+
+    from fugal_subnet.tee.tpm import _load_pinned
+
+    name = _load_pinned()[1][0].subject
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ca = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+          .public_key(ca_key.public_key()).serial_number(2)
+          .not_valid_before(now - datetime.timedelta(days=1))
+          .not_valid_after(now + datetime.timedelta(days=365))
+          .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+          .sign(ca_key, hashes.SHA256()))
+    leaf = (x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, "attacker AK")]))
+            .issuer_name(name).public_key(ec.generate_private_key(ec.SECP256R1()).public_key())
+            .serial_number(3)
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=365))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.AuthorityInformationAccess([x509.AccessDescription(
+                AuthorityInformationAccessOID.CA_ISSUERS,
+                x509.UniformResourceIdentifier(url))]), critical=False)
+            .sign(ca_key, hashes.SHA256()))
+    der = serialization.Encoding.DER
+    return leaf.public_bytes(der), ca.public_bytes(der)
+
+
+_A_GOOGLE_CA_ADDRESS = ("http://privateca-content-00000000-0000-0000-0000-000000000000"
+                        ".storage.googleapis.com/0000/ca.crt")
+
+
+def a_own_ca_published_at_a_google_ca_address():
+    """Stand up a CA on Google's own CA service, name it like Google's
+    intermediate, and point the attestation key's issuer address at it. The
+    chain builders (the miner's at startup, the operator's before it hands a
+    TD its key) fetch the issuer from that address: fetched bytes must be
+    believed only if they chain to the pinned root."""
+    from fugal_subnet.tee.tpm import intermediates_for
+
+    leaf, own_ca = _leaf_with_issuer_address(_A_GOOGLE_CA_ADDRESS)
+    asked = []
+    chain = intermediates_for(leaf, fetch=lambda url: asked.append(url) or own_ca)
+    if asked != [_A_GOOGLE_CA_ADDRESS]:
+        return verify_mod.VerifyResult(True, f"the case did not run: fetched {asked}")
+    if chain:
+        return verify_mod.VerifyResult(True, "the fetched CA was carried as an intermediate")
+    return _chain_verdict(leaf, [own_ca])
+
+
+def a_issuer_address_aimed_at_the_operator():
+    """Answer the operator's check with a certificate whose issuer address is
+    a cloud metadata service, a local file, or a port on the operator's own
+    machine, and let its chain builder make the request for you."""
+    import urllib.request
+
+    from fugal_subnet.tee import tpm
+
+    opened = []
+
+    def refuse(*a, **k):
+        opened.append(a)
+        raise OSError("refused by the attack suite")
+
+    real = urllib.request.urlopen, urllib.request.OpenerDirector.open
+    urllib.request.urlopen, urllib.request.OpenerDirector.open = refuse, refuse
+    try:
+        for url in ("http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+                    "file:///etc/passwd", "http://127.0.0.1:8092/provision/logs",
+                    "http://privateca-content-00000000-0000-0000-0000-000000000000"
+                    ".storage.googleapis.com.attacker.example/ca.crt"):
+            leaf, _ca = _leaf_with_issuer_address(url)
+            if tpm.intermediates_for(leaf, fetch=tpm.fetch_google_ca_issuer):
+                return verify_mod.VerifyResult(True, f"a chain was built from {url}")
+    finally:
+        urllib.request.urlopen, urllib.request.OpenerDirector.open = real
+    if opened:
+        return verify_mod.VerifyResult(True, f"the operator's machine was sent to {opened[0]!r}")
+    return verify_mod.VerifyResult(False, "no address outside Google's CA content was asked")
+
+
 ATTACKS = [
     ("modified harness in a real TDX VM", "I8", a_modified_image),
     ("answer easy questions, claim the slice", "I3", a_substituted_questions),
@@ -531,6 +688,10 @@ ATTACKS = [
     ("bare base entry, miner-chosen application", "I8", a_bare_base_approves_any_app),
     ("rogue TPM intermediate carried in the proof", "I8", a_rogue_tpm_intermediate),
     ("supplied cert named as the pinned root", "I8", a_supplied_cert_named_as_the_root),
+    ("a certificate that may not issue, as intermediate", "I8", a_non_ca_certificate_as_intermediate),
+    ("an expired intermediate carried in the proof", "I8", a_expired_intermediate),
+    ("own CA published at a Google CA address", "I8", a_own_ca_published_at_a_google_ca_address),
+    ("issuer address aimed at the operator's machine", "I8", a_issuer_address_aimed_at_the_operator),
     ("a token count no call can produce", "I2", a_huge_token_count),
     ("a negative token count", "I2", a_negative_token_count),
 ]

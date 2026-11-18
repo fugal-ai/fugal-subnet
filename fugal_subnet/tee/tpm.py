@@ -22,6 +22,7 @@ import datetime
 import hashlib
 import logging
 import pathlib
+import re
 import struct
 
 logger = logging.getLogger(__name__)
@@ -342,7 +343,11 @@ def _issuer_of(cert, root, pool, at=None):
 def intermediates_for(ak_cert_der: bytes, fetch=None, at=None) -> list[bytes]:
     """The intermediates (DER) a proof must carry for its AK to chain to the root.
 
-    Run by the miner, inside its TD, once at startup. Each issuer is taken
+    Run by the miner, inside its TD, at startup (and again before an epoch
+    while it has none), and by the operator's own check of a TD before it is
+    provisioned (provision.operator_tpm_chain, with `fetch` restricted to
+    Google's CA addresses). Never by a validator: a proof carries these bytes
+    so that every validator reads the same ones. Each issuer is taken
     from the vendored intermediates when one signed the certificate, and
     otherwise fetched from the certificate's AIA caIssuers URL (plain HTTP on
     Google's CA bucket: safe, because nothing fetched is believed unless it
@@ -413,17 +418,27 @@ def _aia_certificate(cert, fetch):
 # startup for hours (independent review, 2026-11-08).
 _FETCH_DEADLINE_S = 20.0
 
+# Where Google publishes an EK/AK CA certificate: one Certificate Authority
+# Service content bucket per CA instance. Every address observed has this
+# shape (the us-central1 and us-east1 intermediates, and each one's own
+# pointer to the root). The whole address is matched, not parsed, so there is no
+# userinfo, port, query, upper case or control character to disagree about.
+_GOOGLE_CA_ADDRESS = re.compile(
+    r"https?://privateca-content-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+    r"\.storage\.googleapis\.com/[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*",
+    re.ASCII)
 
-def _fetch_ca_issuer(url: str) -> bytes:
-    """GET an AIA caIssuers URL, bounded in size and in total wall time."""
+
+def _read_bounded(url: str, open_) -> bytes:
+    """Read one certificate from `url`, bounded in size and in total wall time.
+    `open_(url, timeout=)` opens the connection."""
     import time
-    from urllib.request import urlopen
 
     from fugal_subnet.tee.proof import TPM_INTERMEDIATE_MAX_BYTES
 
     deadline = time.monotonic() + _FETCH_DEADLINE_S
     body = b""
-    with urlopen(url, timeout=5) as resp:  # noqa: S310 - Google's CA bucket, checked by signature
+    with open_(url, timeout=5) as resp:
         while len(body) <= TPM_INTERMEDIATE_MAX_BYTES:
             if time.monotonic() > deadline:
                 raise TpmError(f"issuing certificate at {url} took over {_FETCH_DEADLINE_S:.0f} s")
@@ -434,6 +449,54 @@ def _fetch_ca_issuer(url: str) -> bytes:
     if len(body) > TPM_INTERMEDIATE_MAX_BYTES:
         raise TpmError(f"issuing certificate at {url} is over {TPM_INTERMEDIATE_MAX_BYTES} bytes")
     return body
+
+
+def _fetch_ca_issuer(url: str) -> bytes:
+    """GET an AIA caIssuers URL from inside the TD (the miner's fetch).
+
+    The address comes from the certificate of this TD's own attestation key,
+    so the host is not restricted here: if Google moved its CA content, a host
+    rule compiled into the image would stop every miner outside the vendored
+    set until the next image. The scheme is restricted, because urllib opens
+    file: and ftp: addresses as readily as http:. What comes back is believed
+    only if it chains to the pinned root (intermediates_for).
+    """
+    import urllib.request
+
+    if not re.match(r"https?://", str(url)):
+        raise TpmError(f"issuing certificate address {str(url)[:80]!r} is not http(s): not fetched")
+    return _read_bounded(url, urllib.request.urlopen)  # noqa: S310 - scheme checked above
+
+
+def _open_without_redirects(url: str, timeout: float):
+    """urlopen that answers a redirect with an error instead of following it."""
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    return urllib.request.build_opener(_NoRedirect).open(url, timeout=timeout)  # noqa: S310
+
+
+def fetch_google_ca_issuer(url: str) -> bytes:
+    """GET an AIA caIssuers URL from the operator's machine (provision.push,
+    provision_td.py --inspect).
+
+    Here the address comes from a certificate that a machine we have not yet
+    identified handed us, and we are about to connect to it from a machine
+    that holds a wallet. So only Google's CA content addresses are ever asked
+    (`_GOOGLE_CA_ADDRESS`), and a redirect is refused rather than followed:
+    whatever answered /provision/attest cannot point this request at a local
+    file, a metadata service or a host on the operator's network. The rule
+    decides where a request may go and nothing else. Anyone can publish a CA
+    on Google's CA service; what is believed is still only what chains to the
+    pinned root by signature.
+    """
+    if not _GOOGLE_CA_ADDRESS.fullmatch(str(url)):
+        raise TpmError(f"issuing certificate address {str(url)[:80]!r} is not one of Google's "
+                       "CA content addresses: not fetched")
+    return _read_bounded(url, _open_without_redirects)
 
 
 def _verifier_args(cert, issuer):

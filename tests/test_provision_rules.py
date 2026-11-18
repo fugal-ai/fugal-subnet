@@ -114,7 +114,8 @@ def test_push_refuses_a_td_that_offers_no_key(monkeypatch):
 
 def test_push_refuses_an_attestation_with_no_event_log_when_identity_is_expected(monkeypatch):
     fake = _Fake(monkeypatch)
-    monkeypatch.setattr("fugal_subnet.tee.verify.unwrap_attestation", lambda blob: (b"quote", None))
+    monkeypatch.setattr("fugal_subnet.tee.verify.unwrap_attestation",
+                        lambda blob, extra_certs=None: (b"quote", None))
     try:
         with pytest.raises(ProvisionError, match="no event log"):
             _push(fake)

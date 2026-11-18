@@ -1114,7 +1114,7 @@ REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
 # typo such as FUGAL_ROOT=off cannot make a validator the root.
 
 
-def parse_root_flag(raw: str) -> bool | None:
+def _parse_optional_flag(name: str, raw: str) -> bool | None:
     value = str(raw or "").strip().lower()
     if not value:
         return None
@@ -1122,8 +1122,12 @@ def parse_root_flag(raw: str) -> bool | None:
         return True
     if value in ("0", "false", "no"):
         return False
-    raise ValueError(f"FUGAL_ROOT={raw!r} is not one of 1, true, yes, 0, false, no "
+    raise ValueError(f"{name}={raw!r} is not one of 1, true, yes, 0, false, no "
                      "(or unset). Fix it before starting the validator.")
+
+
+def parse_root_flag(raw: str) -> bool | None:
+    return _parse_optional_flag("FUGAL_ROOT", raw)
 
 
 ROOT_VALIDATOR: bool | None = parse_root_flag(os.getenv("FUGAL_ROOT", ""))
@@ -1156,11 +1160,34 @@ def root_hotkey(finney: bool, env: str | None = None) -> str | None:
         return FINNEY_ROOT_HOTKEY
     return value or None
 
+# --- Head publication (operational; nothing here reads back into a score) ---
+# Whether this validator uploads the bytes of every head it verified to its
+# reveal bucket, by sha256, once the reveal that lists them is published
+# (fugal_subnet/head_publisher.py). Unset: the root does, nobody else. 1: this
+# validator does too (it needs FUGAL_REVEAL_BUCKET). 0: off, the root
+# included. It changes no reveal, hash or score: the locations go in a
+# sidecar beside the reveal. Parsed like FUGAL_ROOT, so a typo is refused at
+# import and cannot switch it either way.
+
+
+def parse_publish_heads_flag(raw: str) -> bool | None:
+    return _parse_optional_flag("FUGAL_PUBLISH_HEADS", raw)
+
+
+PUBLISH_HEADS: bool | None = parse_publish_heads_flag(os.getenv("FUGAL_PUBLISH_HEADS", ""))
+
+
+def publish_heads_enabled(root: bool, flag: bool | None = None) -> bool:
+    """Whether verified heads are published: the switch when it is set,
+    otherwise only on the root. Call it with `flag=PUBLISH_HEADS`."""
+    return bool(root) if flag is None else bool(flag)
+
+
 # --- Head archive (operational; nothing here reads back into a score) ---
 # Directory where the validator keeps every VERIFIED miner head, raw bytes
 # named by sha256, plus an index.jsonl (fugal_subnet/head_archive.py). Private:
-# created 0700, never uploaded. Unset (default): heads are discarded after
-# verification, as before.
+# created 0700, never uploaded (head publication, above, keeps its own
+# outbox). Unset (default): heads are not archived.
 HEAD_ARCHIVE_DIR = os.getenv("FUGAL_HEAD_ARCHIVE_DIR", "").strip()
 
 # --- Chain endpoints (operational) ---
@@ -1328,6 +1355,7 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_ROOT",
     "FUGAL_REFERENCE_BUCKET",
     "FUGAL_ROOT_HOTKEY",
+    "FUGAL_PUBLISH_HEADS",
     "FUGAL_HEAD_ARCHIVE_DIR",
     "FUGAL_ARCHIVE_ENDPOINTS",
     "FUGAL_FALLBACK_ENDPOINTS",

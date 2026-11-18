@@ -109,6 +109,9 @@ def _publish(epochs, spool, store, now, delay=1, **kw):
 
 
 def test_a_head_is_named_by_its_sha256_outside_the_prefix_followers_list():
+    from fugal_subnet import reveal_publisher
+
+    assert hp.REVEAL_MARKER == reveal_publisher.MARKER
     assert hp.head_key(70, SHA_A) == f"heads/70/{SHA_A}.npz"
     assert hp.sidecar_key(70, "e00026483") == "70/e00026483/heads.json"
     # Followers list `<netuid>/` (reveal_sync.list_reveals); head objects, whose
@@ -436,6 +439,7 @@ def test_a_hanging_store_never_holds_the_epoch_longer_than_the_budget(tmp_path, 
     deadline = time.monotonic() + 10
     while pub.busy and time.monotonic() < deadline:
         time.sleep(0.02)
+    pub.budget_s = 30       # an ordinary budget: the tiny one above is for the hang
     out = pub.publish(13)
     assert out is not None and f"heads/{NETUID}/{SHA_A}.npz" in store.objects
     assert f"{NETUID}/{eid}/heads.json" in store.objects

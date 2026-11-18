@@ -243,6 +243,40 @@ def test_the_reveal_publisher_then_the_heads_end_to_end(tmp_path):
                           f"{NETUID}/{eid}/heads.json"]
 
 
+def test_over_many_epochs_the_public_heads_are_exactly_those_public_reveals_list(tmp_path):
+    """The epoch loop in miniature, with a two-epoch hold: after every epoch
+    the heads in the store are the heads the reveals in the store name, no
+    more (nothing early) and no fewer (nothing forgotten)."""
+    epochs, spool = _dirs(tmp_path)
+    store = Store()
+    pub = hp.HeadPublisher(epochs, NETUID, store, delay_epochs=2, max_bytes=CAP,
+                           spool_dir=spool, budget_s=30)
+    blobs = [bytes([i]) * 32 for i in range(8)]
+    first_served: dict[str, int] = {}
+    public: set[str] = set()
+    for k in range(10, 24):
+        # One miner changes its head every epoch, one every third epoch.
+        serving = {1: blobs[(k - 10) % 8], 2: blobs[((k - 10) // 3 + 4) % 8]}
+        hashes = {uid: hashlib.sha256(b).hexdigest() for uid, b in serving.items()}
+        for h in hashes.values():
+            first_served.setdefault(h, k)
+        pub.spool(serving, hashes)                              # after verification
+        _epoch(epochs, k, hashes, published=False)              # the reveal is written
+        publish_due_reveals(epochs, k, 2, NETUID, store)        # reveals past the hold
+        pub.publish(k)                                          # then their heads
+        listed = set()
+        for key, data in store.objects.items():
+            if key.endswith("/reveal.json"):
+                listed |= set(json.loads(data)["head_hashes"].values())
+        public = {key.rsplit("/", 1)[1][:-4] for key in store.objects if key.startswith("heads/")}
+        assert public == listed, k
+        # A head is public no sooner than the hold after it was first served.
+        assert all(first_served[h] <= k - 2 for h in public), k
+    assert f"{NETUID}/e00000021/reveal.json" in store.objects
+    assert f"{NETUID}/e00000022/reveal.json" not in store.objects
+    assert len(public) == 8
+
+
 def test_only_hashes_a_published_reveal_lists_are_uploaded(tmp_path):
     epochs, spool = _dirs(tmp_path)
     # A is in the published epoch; B was verified in a later epoch whose
@@ -281,6 +315,17 @@ def test_a_file_whose_bytes_changed_or_grew_past_the_cap_is_removed_not_uploaded
     assert sorted(json.loads(store.objects[f"{NETUID}/{eid}/heads.json"])["unavailable"]) == \
         sorted([SHA_A, SHA_B])
     assert not (Path(spool) / f"{SHA_A}.npz").exists()
+
+
+def test_the_size_cap_is_applied_again_at_upload(tmp_path):
+    epochs, spool = _dirs(tmp_path)
+    hp.spool_verified_heads(spool, {1: HEAD_A}, {1: SHA_A}, CAP)
+    eid = _epoch(epochs, 10, {1: SHA_A})
+    store = Store()
+    # The cap in force when the head is sent is smaller than the head.
+    hp.publish_due_heads(epochs, spool, 11, 1, NETUID, store, max_bytes=len(HEAD_A) - 1)
+    assert [k for k in store.objects if k.startswith("heads/")] == []
+    assert json.loads(store.objects[f"{NETUID}/{eid}/heads.json"])["unavailable"] == [SHA_A]
 
 
 def test_a_reveal_that_is_not_the_one_published_is_left_alone(tmp_path):

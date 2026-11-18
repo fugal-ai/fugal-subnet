@@ -118,14 +118,15 @@ def spool_dir_for(epoch_dir: str) -> str:
     return os.path.join(parent, "head-outbox")
 
 
-def _write_private(path: str, data: bytes) -> None:
+def _write_private(path: str, data: bytes, sync: bool = True) -> None:
     tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
-            os.fsync(f.fileno())
+            if sync:
+                os.fsync(f.fileno())
         os.replace(tmp, path)
     except BaseException:
         _remove(tmp)
@@ -191,7 +192,10 @@ def spool_verified_heads(spool_dir: str, heads: dict[int, bytes],
             os.utime(path, None)
             counts["present"] += 1
         else:
-            _write_private(path, bytes(data))
+            # No fsync: this runs before the weights are set, and a file that
+            # a crash left short fails the hash check before upload and is
+            # dropped (the head is kept again next epoch).
+            _write_private(path, bytes(data), sync=False)
             counts["kept"] += 1
     if made:
         dropped = _evict(spool_dir)

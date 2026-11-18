@@ -40,6 +40,8 @@ validator:
     rest to the burn UID; sets weights on-chain
 11. Publishes the epoch reveal artifact (shared grades, the seat decision and
     its detail, every head's routing, the weights)
+12. On the root: publishes the bytes of every verified head, by sha256, once
+    the reveal that lists them is public ("Published heads", below)
 
 ## Requirements
 
@@ -263,7 +265,10 @@ point, not a floor.
   `reveal_publisher` uses the `gcloud` CLI. Install it on the host and
   activate the bucket's writer service account **as the service user**
   (`gcloud auth activate-service-account --key-file=...`); the key file
-  belongs to that user, mode 0600, and never enters the repo.
+  belongs to that user, mode 0600, and never enters the repo. Published heads
+  use the same account and the same CLI (`gcloud storage cp --no-clobber`):
+  it must be able to create objects under `heads/` in the bucket and to see
+  whether one exists.
 - **Archive endpoint per network.** `FUGAL_ARCHIVE_ENDPOINTS` must be on the
   same chain as `FUGAL_NETWORK`: a finney archive is the wrong chain for a
   testnet subnet. Probed from the host: `wss://test.finney.opentensor.ai:443`
@@ -334,6 +339,7 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_ROOT` | unset | `1` on the ROOT validator only (the subnet owner's): it follows nobody. Unset, a validator is the root only if its `FUGAL_REVEAL_BUCKET` is the reference bucket. `0` makes even that validator a follower, for a root that is recovering lost state (see "The root"). Any value other than `1`, `true`, `yes`, `0`, `false`, `no` is refused at startup |
 | `FUGAL_REFERENCE_BUCKET` | finney: `fugal-reveals` | The root's public reveal bucket a follower fetches from. Built in on finney; set it on a testnet that has a root |
 | `FUGAL_ROOT_HOTKEY` | finney: the root's hotkey (built in) | The root validator's hotkey. A follower verifies every reveal it fetches against this hotkey's on-chain reveal commitment. Built in on finney, where any other value is refused at startup; set it on a testnet that has a root (unset there: fetched reveals are not verified, with a warning) |
+| `FUGAL_PUBLISH_HEADS` | unset (the root publishes) | Whether this validator uploads every head it verified to its reveal bucket, by sha256, once the reveal that lists them is published ("Published heads"). Unset: only the ROOT does. `1`: this validator does too (it needs `FUGAL_REVEAL_BUCKET`). `0`: off, the root included. Operational: no reveal, hash or score changes either way. Any other value is refused at startup |
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
 | `FUGAL_FRAME_BOOTSTRAP` | — | **Not needed on a follower any more**: it fetches the root's reveals itself. Still honoured: a directory of a reference validator's reveals that the operator keeps in sync, used as the v2 reference in place of the built-in fetch. On a root, a directory of its own (or a peer's) published reveals to rebuild lost state from at startup |
 | `FUGAL_POOL_FILE` | `data/benchmarks/pool.json.gz` | Where the materialised pool built by `scripts/export_pool.py` is looked for; verified against the manifest on load |
@@ -479,6 +485,48 @@ Structured JSONL logs are written to `results/epoch_logs/`. Each entry includes:
 - Anomaly flags
 - Phase timing breakdown
 - Commit-reveal verification status
+
+### Published heads
+
+The root publishes the bytes of every head it verified, so the product (and
+anyone else) can fetch the champion's head from a public place. Nothing to
+set on the root beyond what reveals already need; on any other validator it
+is off unless `FUGAL_PUBLISH_HEADS=1`.
+
+    gs://<bucket>/heads/<netuid>/<sha256>.npz      the head, as the miner served it
+    gs://<bucket>/<netuid>/<epoch_id>/heads.json   beside the reveal: where each of its heads is
+
+- **When.** An epoch's heads go up after that epoch's reveal is published,
+  never before: one epoch later at the current commit-reveal period. The
+  startup log says `Verified heads publish to gs://…/heads/<netuid>/ by
+  sha256`; each epoch logs `Heads for publication: N new, …` after
+  verification and `Epoch e…: N head(s) public by hash, M not held here` when
+  an epoch's heads are all up.
+- **What.** Only heads that verified, at most `HEAD_MAX_BYTES` each, whose
+  bytes still match their hash. Until they are sent they wait in
+  `head-outbox/` beside `FUGAL_EPOCH_DIR` (private, 0700; at most 1,024
+  heads). The private archive (`FUGAL_HEAD_ARCHIVE_DIR`) is separate and is
+  never uploaded. Existing objects are never overwritten.
+- **If the bucket fails.** Nothing else is affected. Uploading is the last
+  step of an epoch, after the weights, the reveal and the saved state, and it
+  is given 120 seconds. A failure is a WARNING (`Head … not published
+  (<error type>); will retry`, or `Head publication used its whole time
+  budget`), the heads stay in the outbox, and they are retried every epoch.
+  An epoch whose heads never all went up is dropped after 20 epochs; a head
+  that is still served goes up with a later reveal.
+- **`heads.json`** lists, per head hash of that reveal, the object's name,
+  its `gs://` URL and its size, plus `unavailable`: hashes the reveal lists
+  that this validator holds no bytes for (verified before publication was
+  switched on, or dropped from a full outbox). It is not in the reveal, so
+  reveals are identical whether or not a validator publishes heads.
+- **Reading one.** `https://storage.googleapis.com/<bucket>/heads/<netuid>/<sha256>.npz`.
+  The store is not trusted: check that the sha256 of the bytes is the hash the
+  reveal names (`fugal_subnet.reveal_sync.fetch_head` does), and load them
+  with pickle disabled, `np.load(..., allow_pickle=False)`
+  (`fugal_subnet.head_eval.load_head_from_npz` does, with the size limits).
+
+Tell miners before switching it on for the first time: their verified heads
+become public (docs/MINER_GUIDE.md, "Reading the published reveals").
 
 ### Anomaly detection
 

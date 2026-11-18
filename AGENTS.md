@@ -122,6 +122,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 5. `tee/verify.py` → verifies a proof end to end: attestation, measurement against the approved entries, nonce, questions hash, head against commitment, cost consistency
 6. `shared_grades.py` → protocol v2: one grade per (question, model) cell per epoch, shared by every head that routed there
 7. `commit_reveal.py` + `reveal_publisher.py` → the epoch artifact (commit hash on chain, then the reveal), written atomically and published to the public store
+8. `head_publisher.py` → the root publishes every verified head by sha256 once the reveal that lists it is public (operational, feeds no score; `reveal_sync.fetch_head` reads one back and checks the hash)
 
 ### Scoring, protocol v2 (`release/v2`)
 - `v2_epoch.py` → one epoch end to end: verified proofs → shared grades → the comparison window → the seat decision → the weight vector → the reveal's v2 fields

@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — verified heads are published by hash (validators; a notice for miners)
+The root validator now uploads the bytes of every head it verified to the
+reveal bucket, `heads/<netuid>/<sha256>.npz`, once the reveal that lists them
+is published (one epoch later at the current commit-reveal period), with a
+`heads.json` beside each reveal saying where each hash is. Operational: the
+reveal, its commit hash and the consensus digest are unchanged, and an upload
+failure costs a warning and a retry, never an epoch. `FUGAL_PUBLISH_HEADS`
+(unset: the root only; `1`: this validator too; `0`: off).
+`fugal_subnet/head_publisher.py`, `reveal_sync.fetch_head`,
+`docs/VALIDATOR_GUIDE.md` ("Published heads"), `docs/INVARIANTS.md`.
+- **Miners:** from this release your verified head's bytes are public, not
+  only its hash, routing and odds, whether or not it holds a seat. Scoring and
+  the copy rule are unchanged (`docs/MINER_GUIDE.md`, "Reading the published
+  reveals").
+- **Validators:** nothing to do. A validator that is not the root publishes
+  nothing unless it sets `FUGAL_PUBLISH_HEADS=1`.
+
 ## [0.6.0] - 2026-11-17
 
 ### Upgrade BEFORE block 9,531,000 (~2026-11-18 04:22 UTC)

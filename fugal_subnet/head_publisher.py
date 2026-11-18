@@ -429,8 +429,8 @@ def publish_due_heads(epoch_dir: str, spool_dir: str, current_epoch_index: int,
     A seat holder is due with the reveal that lists it; any other head once
     it is `hold_epochs` epochs past the epoch it first verified in (0: with
     the reveal). `uploader.upload_if_absent(path, key) -> url` must not
-    overwrite an existing object; `uploader.upload(path, key) -> url` sends
-    the sidecar. `deadline` is a `time.monotonic()` instant after which
+    overwrite an existing object; it sends the heads and the sidecar, so the
+    writer needs no right beyond creating objects. `deadline` is a `time.monotonic()` instant after which
     nothing more is started. Never raises for a store failure. Returns what
     happened: `epochs` settled (sidecar published), heads `uploaded`, hashes
     `not_yet_due` and `unavailable` (listed by a reveal, no bytes kept here)
@@ -514,7 +514,10 @@ def publish_due_heads(epoch_dir: str, spool_dir: str, current_epoch_index: int,
         try:
             local = os.path.join(folder, SIDECAR_NAME)
             _write_private(local, json.dumps(sidecar, sort_keys=True, indent=2).encode("utf-8"))
-            uploader.upload(local, sidecar_key(netuid, epoch_id))
+            # Create-only, like the heads: the writer's role cannot replace an
+            # object, and a sidecar already there for this epoch (sent just
+            # before a restart) is this epoch's sidecar.
+            uploader.upload_if_absent(local, sidecar_key(netuid, epoch_id))
             _write_private(os.path.join(folder, EPOCH_MARKER),
                            json.dumps({"epoch_id": epoch_id, "heads": len(records),
                                        "unavailable": len(unavailable)}).encode("utf-8"))

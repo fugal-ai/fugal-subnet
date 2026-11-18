@@ -581,6 +581,28 @@ def test_a_failed_sidecar_is_retried_without_sending_the_heads_again(tmp_path):
     assert store.sent == [f"heads/{NETUID}/{SHA_A}.npz", f"{NETUID}/{eid}/heads.json"]
 
 
+def test_a_sidecar_already_in_the_store_settles_the_epoch_for_a_create_only_writer(tmp_path):
+    """The writer's role may create objects and nothing else, so replacing an
+    object is refused by the store. A sidecar that went up just before the
+    validator stopped (no local marker yet) must not leave its epoch retrying."""
+    epochs, spool = _dirs(tmp_path)
+    _spool(spool, {1: HEAD_A}, {1: SHA_A}, CAP)
+    eid = _epoch(epochs, 10, {1: SHA_A})
+
+    class CreateOnly(Store):
+        def upload(self, path, key):
+            if key in self.objects:
+                raise PermissionError("no storage.objects.delete access")
+            return super().upload(path, key)
+
+    store = CreateOnly()
+    store.objects[f"{NETUID}/{eid}/heads.json"] = b'{"earlier": true}'
+    out = _publish(epochs, spool, store, now=11)
+    assert out["epochs"] == [eid] and out["failed"] == 0
+    assert store.objects[f"{NETUID}/{eid}/heads.json"] == b'{"earlier": true}'   # never replaced
+    assert _publish(epochs, spool, store, now=12)["epochs"] == []                # settled, not retried
+
+
 def test_a_failing_store_is_given_up_on_after_a_few_tries_in_one_run(tmp_path):
     epochs, spool = _dirs(tmp_path)
     blobs = {i: bytes([i]) * 16 for i in range(12)}

@@ -829,7 +829,7 @@ When:
 - **A head that holds or has held a seat** (the champion, a former champion
   in the seat's history, a champion's ghost): with the reveal that says so,
   one epoch after that epoch at the current commit-reveal period.
-- **Any other verified head:** 24 epochs (about 29 hours) after the epoch
+- **Any other verified head:** 32 epochs (about 38 hours) after the epoch
   the root first verified it in, with that epoch's reveal or the next one
   published. It is published then whether or not you still serve it, and
   whether or not it ever took a seat.
@@ -843,7 +843,7 @@ published head:
 where `<sha256>` is the head hash in the reveal's `head_hashes` (your
 on-chain commitment). `<epoch_id>/heads.json` beside each reveal lists the
 heads of that reveal that are public, and names the ones that are not due
-yet with the epoch they are due from. The 24 epochs are the root's setting
+yet with the epoch they are due from. The 32 epochs are the root's setting
 (`FUGAL_PUBLISH_HEADS_AFTER_EPOCHS`); `heads.json` states the value in force.
 A head that never verified is not published, and a head is not published
 before the reveal of the first epoch that scored it. Nothing in scoring
@@ -965,7 +965,7 @@ means one request is larger than the whole budget; it is logged as
   reports it, can query you; a validator permit alone does not. Your head is
   served in full to whoever can, so this is a speed bump in front of dedup,
   not the defence. From v0.6.1 a verified head is also published by the
-  root: with the reveal once it holds or has held a seat, otherwise 24 epochs
+  root: with the reveal once it holds or has held a seat, otherwise 32 epochs
   after it first verified ("Reading the published reveals").
 - **The E″ miss rule** — a missed epoch decays your evidence and restarts
   burn-in; you cannot publish only your good epochs.

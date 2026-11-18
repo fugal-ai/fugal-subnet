@@ -8,19 +8,19 @@ All notable changes to this project will be documented here. Releases follow [Se
 The root validator now uploads the bytes of every head it verified to the
 reveal bucket, `heads/<netuid>/<sha256>.npz`. A head that holds or has held a
 seat is published with the reveal that lists it (one epoch later at the
-current commit-reveal period); any other verified head 24 epochs (about 29
+current commit-reveal period); any other verified head 32 epochs (about 38
 hours) after the epoch it first verified in, whether or not it is still
 served. A `heads.json` beside each reveal says where each published hash is
 and which are not due yet. Operational: the reveal, its commit hash and the
 consensus digest are unchanged, and an upload failure costs a warning and a
 retry, never an epoch. `FUGAL_PUBLISH_HEADS` (unset: the root only; `1`: this
-validator too; `0`: off) and `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` (default 24;
+validator too; `0`: off) and `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` (default 32;
 `0`: every head with the first reveal that lists it).
 `fugal_subnet/head_publisher.py`, `reveal_sync.fetch_head`,
 `docs/VALIDATOR_GUIDE.md` ("Published heads"), `docs/INVARIANTS.md`.
 - **Miners:** from v0.6.1 your verified head's bytes become public, not only
   its hash, routing and odds: with the reveal once it holds or has held a
-  seat, otherwise 24 epochs after it first verified. Scoring and the copy
+  seat, otherwise 32 epochs after it first verified. Scoring and the copy
   rule are unchanged (`docs/MINER_GUIDE.md`, "Reading the published
   reveals").
 - **Validators:** nothing to do. A validator that is not the root publishes

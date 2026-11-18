@@ -1186,9 +1186,10 @@ def publish_heads_enabled(root: bool, flag: bool | None = None) -> bool:
 # Which heads are published when. A head that holds or has held a seat is
 # published with the reveal that says so. Any other verified head is published
 # once it is this many epochs past the epoch it first verified in, so a head
-# is measured before its bytes are public. 24 epochs is about 29 hours; a
+# is measured before its bytes are public. 32 epochs is about 38 hours; a
 # head that passes the seat test at once is seated in roughly 15 epochs at
-# the current pool rate (ODDS_MIN_PAIRS, then ODDS_CONFIRM_PAIRS). 0 publishes
+# the current pool rate (ODDS_MIN_PAIRS, then ODDS_CONFIRM_PAIRS), and in
+# about 30 if it misses one epoch on the way. 0 publishes
 # every head with the first reveal that lists it. Operational, like the
 # switch above: it decides when bytes are uploaded, never a reveal or a score.
 
@@ -1196,7 +1197,7 @@ def publish_heads_enabled(root: bool, flag: bool | None = None) -> bool:
 def parse_publish_heads_after_epochs(raw: str) -> int:
     value = str(raw or "").strip()
     if not value:
-        return 24
+        return 32
     try:
         epochs = int(value)
     except ValueError:

@@ -39,7 +39,7 @@ epoch a head first verified in on this validator:
   reveal that says so.
 - Any other verified head is published once it is `hold_epochs` epochs past
   the epoch it first verified in (`FUGAL_PUBLISH_HEADS_AFTER_EPOCHS`, default
-  24): with the reveal of that epoch, or the first one published after it. It
+  32): with the reveal of that epoch, or the first one published after it. It
   is published then whether or not it is still served. With `hold_epochs` 0
   every head is published with the first reveal that lists it.
 

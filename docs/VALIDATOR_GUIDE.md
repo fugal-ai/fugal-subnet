@@ -41,7 +41,7 @@ validator:
 11. Publishes the epoch reveal artifact (shared grades, the seat decision and
     its detail, every head's routing, the weights)
 12. On the root: publishes the bytes of verified heads, by sha256: a seat
-    holder's with the reveal that lists it, any other head 24 epochs after it
+    holder's with the reveal that lists it, any other head 32 epochs after it
     first verified ("Published heads", below)
 
 ## Requirements
@@ -341,7 +341,7 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_REFERENCE_BUCKET` | finney: `fugal-reveals` | The root's public reveal bucket a follower fetches from. Built in on finney; set it on a testnet that has a root |
 | `FUGAL_ROOT_HOTKEY` | finney: the root's hotkey (built in) | The root validator's hotkey. A follower verifies every reveal it fetches against this hotkey's on-chain reveal commitment. Built in on finney, where any other value is refused at startup; set it on a testnet that has a root (unset there: fetched reveals are not verified, with a warning) |
 | `FUGAL_PUBLISH_HEADS` | unset (the root publishes) | Whether this validator uploads the heads it verified to its reveal bucket, by sha256, with or after the reveal that lists them ("Published heads"). Unset: only the ROOT does. `1`: this validator does too (it needs `FUGAL_REVEAL_BUCKET`). `0`: off, the root included. Operational: no reveal, hash or score changes either way. Any other value is refused at startup |
-| `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` | `24` | When a head that has never held a seat is published: this many epochs after the epoch it first verified in (24 is about 29 hours). A head that holds or has held a seat is published with the reveal that lists it, whatever this is. `0`: every head with the first reveal that lists it. Operational, like `FUGAL_PUBLISH_HEADS`; a negative or non-numeric value is refused at startup |
+| `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` | `32` | When a head that has never held a seat is published: this many epochs after the epoch it first verified in (32 is about 38 hours). A head that holds or has held a seat is published with the reveal that lists it, whatever this is. `0`: every head with the first reveal that lists it. Operational, like `FUGAL_PUBLISH_HEADS`; a negative or non-numeric value is refused at startup |
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
 | `FUGAL_FRAME_BOOTSTRAP` | — | **Not needed on a follower any more**: it fetches the root's reveals itself. Still honoured: a directory of a reference validator's reveals that the operator keeps in sync, used as the v2 reference in place of the built-in fetch. On a root, a directory of its own (or a peer's) published reveals to rebuild lost state from at startup |
 | `FUGAL_POOL_FILE` | `data/benchmarks/pool.json.gz` | Where the materialised pool built by `scripts/export_pool.py` is looked for; verified against the manifest on load |
@@ -504,7 +504,7 @@ is off unless `FUGAL_PUBLISH_HEADS=1`.
     champions in the seat's history, a champion's ghost) goes up with that
     reveal;
   - **any other verified head** goes up once it is
-    `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` epochs (default 24, about 29 hours)
+    `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` epochs (default 32, about 38 hours)
     past the epoch this validator first verified it in, with that epoch's
     reveal or the next one published, whether or not it is still served.
     `0` publishes every head with the first reveal that lists it.

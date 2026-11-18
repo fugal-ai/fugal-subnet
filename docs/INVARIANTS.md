@@ -3703,7 +3703,7 @@ times:
   awaiting confirmation is not one) is published with the reveal that says
   so, at that reveal's hold;
 - **any other verified head** is published once it is
-  `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` epochs (default 24, about 29 hours) past
+  `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` epochs (default 32, about 38 hours) past
   the epoch it first verified in on the publishing validator: with the reveal
   of that epoch, or the first one published after it, whether or not the head
   is still served. So a head is measured for that long before its bytes are

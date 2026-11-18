@@ -794,7 +794,7 @@ def test_the_hold_is_operational_defaults_to_24_epochs_and_refuses_nonsense():
     name = "FUGAL_PUBLISH_HEADS_AFTER_EPOCHS"
     assert name in config.OPERATIONAL_ENV_VARS
     assert name not in config.CONSENSUS_ENV_VARS and name not in config.CONSENSUS_ENV_INPUTS
-    assert config.parse_publish_heads_after_epochs("") == 24
+    assert config.parse_publish_heads_after_epochs("") == 32
     assert config.parse_publish_heads_after_epochs("0") == 0
     assert config.parse_publish_heads_after_epochs(" 48 ") == 48
     for bad in ("-1", "soon", "1.5"):

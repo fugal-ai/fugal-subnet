@@ -41,8 +41,11 @@ def test_a_superseded_compose_is_never_approved_from_the_code():
     assert bad_test in vs.SUPERSEDED_COMPOSES
 
 
-def test_the_newest_finney_compose_is_the_corrected_v3_one():
-    assert vs.frozen_compose_entries("finney")[-1][1] == "app-compose.frozen-2026-11-17b-finney.json"
+def test_the_newest_finney_compose_is_v060_and_the_v050_one_stays_approved():
+    names = [n for _, n in vs.frozen_compose_entries("finney")]
+    assert names[-1] == "app-compose.frozen-2026-11-17c-finney.json"
+    # v0.5.0 miners (image-v2026.11.17b) stay approved until they re-provision.
+    assert "app-compose.frozen-2026-11-17b-finney.json" in names
 
 
 def test_testnet_uses_the_test_composes_and_a_local_chain_none():
@@ -94,7 +97,7 @@ def test_prepare_updates_the_running_config_in_place(monkeypatch):
     summary = vs.prepare("finney")
     assert same_list is config.TEE_APPROVED_MEASUREMENTS and same_list
     assert config.ARCHIVE_ENDPOINTS == [vs.FINNEY_DEFAULT_ARCHIVE]
-    assert summary["newest"] == "app-compose.frozen-2026-11-17b-finney.json"
+    assert summary["newest"] == "app-compose.frozen-2026-11-17c-finney.json"
     assert summary["entries"] == len(same_list) and summary["archive"]
 
 
@@ -181,7 +184,7 @@ def test_a_finney_validator_on_its_own_node_gets_the_release_entries(monkeypatch
     out = vs.apply_for_chain(config.FINNEY_GENESIS_HASH, url)
     want = f"{BASE}:{_hash('app-compose.frozen-2026-11-17b-finney.json')}"
     assert want in config.TEE_APPROVED_MEASUREMENTS
-    assert out["newest"] == "app-compose.frozen-2026-11-17b-finney.json"
+    assert out["newest"] == "app-compose.frozen-2026-11-17c-finney.json"
     assert out["endpoints_changed"]
     assert config.ARCHIVE_ENDPOINTS == [vs.FINNEY_DEFAULT_ARCHIVE]
 

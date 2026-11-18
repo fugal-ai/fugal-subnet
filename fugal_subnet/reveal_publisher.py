@@ -32,9 +32,10 @@ A `.published` marker next to each reveal records what was uploaded and
 where; the marker is written only after the upload succeeds, so a failed
 upload is retried next epoch and nothing is marked that was not sent.
 
-The heads a published reveal names go to the same store, by hash, once that
-marker exists (fugal_subnet/head_publisher.py). That is a separate step with
-its own time budget: it cannot fail or hold back a reveal.
+The heads a published reveal names go to the same store, by hash, no sooner
+than that marker exists (fugal_subnet/head_publisher.py says which and when).
+That is a separate step with its own time budget: it cannot fail or hold back
+a reveal.
 """
 from __future__ import annotations
 

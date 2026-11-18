@@ -336,8 +336,8 @@ def fetch_head(bucket: str, netuid: int, sha256: str, *, max_bytes: int | None =
                timeout: float = REQUEST_TIMEOUT_S, opener: Callable | None = None) -> bytes:
     """The bytes of a published head, checked against its hash.
 
-    Verified heads are published by sha256 with the reveal that lists them
-    (fugal_subnet/head_publisher.py). `sha256` is the head hash from a reveal's
+    Verified heads are published by sha256, with or after the reveal that
+    lists them (fugal_subnet/head_publisher.py says when). `sha256` is the head hash from a reveal's
     `head_hashes` (or its `champion`), which is also the miner's on-chain
     commitment. The store is not trusted: bytes with another sha256, or more
     than `max_bytes` (default `HEAD_MAX_BYTES`), are refused. The bytes are

@@ -40,8 +40,9 @@ validator:
     rest to the burn UID; sets weights on-chain
 11. Publishes the epoch reveal artifact (shared grades, the seat decision and
     its detail, every head's routing, the weights)
-12. On the root: publishes the bytes of every verified head, by sha256, once
-    the reveal that lists them is public ("Published heads", below)
+12. On the root: publishes the bytes of verified heads, by sha256: a seat
+    holder's with the reveal that lists it, any other head 24 epochs after it
+    first verified ("Published heads", below)
 
 ## Requirements
 
@@ -339,7 +340,8 @@ are consensus state, their values are in the digest every reveal carries, and
 | `FUGAL_ROOT` | unset | `1` on the ROOT validator only (the subnet owner's): it follows nobody. Unset, a validator is the root only if its `FUGAL_REVEAL_BUCKET` is the reference bucket. `0` makes even that validator a follower, for a root that is recovering lost state (see "The root"). Any value other than `1`, `true`, `yes`, `0`, `false`, `no` is refused at startup |
 | `FUGAL_REFERENCE_BUCKET` | finney: `fugal-reveals` | The root's public reveal bucket a follower fetches from. Built in on finney; set it on a testnet that has a root |
 | `FUGAL_ROOT_HOTKEY` | finney: the root's hotkey (built in) | The root validator's hotkey. A follower verifies every reveal it fetches against this hotkey's on-chain reveal commitment. Built in on finney, where any other value is refused at startup; set it on a testnet that has a root (unset there: fetched reveals are not verified, with a warning) |
-| `FUGAL_PUBLISH_HEADS` | unset (the root publishes) | Whether this validator uploads every head it verified to its reveal bucket, by sha256, once the reveal that lists them is published ("Published heads"). Unset: only the ROOT does. `1`: this validator does too (it needs `FUGAL_REVEAL_BUCKET`). `0`: off, the root included. Operational: no reveal, hash or score changes either way. Any other value is refused at startup |
+| `FUGAL_PUBLISH_HEADS` | unset (the root publishes) | Whether this validator uploads the heads it verified to its reveal bucket, by sha256, with or after the reveal that lists them ("Published heads"). Unset: only the ROOT does. `1`: this validator does too (it needs `FUGAL_REVEAL_BUCKET`). `0`: off, the root included. Operational: no reveal, hash or score changes either way. Any other value is refused at startup |
+| `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` | `24` | When a head that has never held a seat is published: this many epochs after the epoch it first verified in (24 is about 29 hours). A head that holds or has held a seat is published with the reveal that lists it, whatever this is. `0`: every head with the first reveal that lists it. Operational, like `FUGAL_PUBLISH_HEADS`; a negative or non-numeric value is refused at startup |
 | `FUGAL_REVEAL_DELAY_EPOCHS` | `0` (read from chain) | Epochs to hold a reveal before publishing; the chain's commit-reveal period when enabled, else 1 |
 | `FUGAL_FRAME_BOOTSTRAP` | — | **Not needed on a follower any more**: it fetches the root's reveals itself. Still honoured: a directory of a reference validator's reveals that the operator keeps in sync, used as the v2 reference in place of the built-in fetch. On a root, a directory of its own (or a peer's) published reveals to rebuild lost state from at startup |
 | `FUGAL_POOL_FILE` | `data/benchmarks/pool.json.gz` | Where the materialised pool built by `scripts/export_pool.py` is looked for; verified against the manifest on load |
@@ -496,16 +498,31 @@ is off unless `FUGAL_PUBLISH_HEADS=1`.
     gs://<bucket>/heads/<netuid>/<sha256>.npz      the head, as the miner served it
     gs://<bucket>/<netuid>/<epoch_id>/heads.json   beside the reveal: where each of its heads is
 
-- **When.** An epoch's heads go up after that epoch's reveal is published,
-  never before: one epoch later at the current commit-reveal period. The
-  startup log says `Verified heads publish to gs://…/heads/<netuid>/ by
-  sha256`; each epoch logs `Heads for publication: N new, …` after
-  verification and `Epoch e…: N head(s) public by hash, M not held here` when
-  an epoch's heads are all up.
+- **When.** Never before the reveal that lists a head is published (one
+  epoch later at the current commit-reveal period), and then:
+  - a head that **holds or has held a seat** (the champion, the former
+    champions in the seat's history, a champion's ghost) goes up with that
+    reveal;
+  - **any other verified head** goes up once it is
+    `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` epochs (default 24, about 29 hours)
+    past the epoch this validator first verified it in, with that epoch's
+    reveal or the next one published, whether or not it is still served.
+    `0` publishes every head with the first reveal that lists it.
+
+  The startup log says `Verified heads publish to gs://…/heads/<netuid>/ by
+  sha256: a seat holder's with the reveal that lists it, any other head N
+  epoch(s) after it first verified`; each epoch logs `Heads for publication:
+  N new, …` after verification, `Epoch e…: N head(s) public by hash, K not
+  yet due, M not held here` when an epoch's list is up, and `Head … is past
+  its hold and public by hash` for a head published after it stopped being
+  served. The hold counts from the first epoch a head is verified in after
+  this is switched on (or after the outbox is lost): later than the rule
+  allows at worst, never earlier.
 - **What.** Only heads that verified, at most `HEAD_MAX_BYTES` each, whose
   bytes still match their hash. Until they are sent they wait in
-  `head-outbox/` beside `FUGAL_EPOCH_DIR` (private, 0700; at most 1,024
-  heads). The private archive (`FUGAL_HEAD_ARCHIVE_DIR`) is separate and is
+  `head-outbox/` beside `FUGAL_EPOCH_DIR` (private, 0700; at most 4,096
+  heads, each with the epoch it first verified in). Keep it on durable disk
+  with the epoch directory. The private archive (`FUGAL_HEAD_ARCHIVE_DIR`) is separate and is
   never uploaded. Existing objects are never overwritten.
 - **If the bucket fails.** Nothing else is affected. Uploading is the last
   step of an epoch, after the weights, the reveal and the saved state, and it
@@ -514,11 +531,15 @@ is off unless `FUGAL_PUBLISH_HEADS=1`.
   budget`), the heads stay in the outbox, and they are retried every epoch.
   An epoch whose heads never all went up is dropped after 20 epochs; a head
   that is still served goes up with a later reveal.
-- **`heads.json`** lists, per head hash of that reveal, the object's name,
-  its `gs://` URL and its size, plus `unavailable`: hashes the reveal lists
-  that this validator holds no bytes for (verified before publication was
-  switched on, or dropped from a full outbox). It is not in the reveal, so
-  reveals are identical whether or not a validator publishes heads.
+- **`heads.json`** lists, per head hash of that reveal that is public, the
+  object's name, its `gs://` URL and its size (`heads`); the hashes that are
+  verified but not due yet, each with the index of the epoch from whose
+  reveal it is due (`not_yet_due`; the object appears at the same path
+  then); the hold in force (`hold_epochs`); and `unavailable`: hashes the
+  reveal lists that this validator holds no bytes for (verified before
+  publication was switched on, or dropped from a full outbox). It is not in
+  the reveal, so reveals are identical whether or not a validator publishes
+  heads, and whatever its hold.
 - **Reading one.** `https://storage.googleapis.com/<bucket>/heads/<netuid>/<sha256>.npz`.
   The store is not trusted: check that the sha256 of the bytes is the hash the
   reveal names (`fugal_subnet.reveal_sync.fetch_head` does), and load them
@@ -526,7 +547,8 @@ is off unless `FUGAL_PUBLISH_HEADS=1`.
   (`fugal_subnet.head_eval.load_head_from_npz` does, with the size limits).
 
 Tell miners before switching it on for the first time: their verified heads
-become public (docs/MINER_GUIDE.md, "Reading the published reveals").
+become public, a seat holder's at once and the others after the hold
+(docs/MINER_GUIDE.md, "Reading the published reveals").
 
 ### Anomaly detection
 

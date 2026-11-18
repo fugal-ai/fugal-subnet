@@ -1162,8 +1162,8 @@ def root_hotkey(finney: bool, env: str | None = None) -> str | None:
 
 # --- Head publication (operational; nothing here reads back into a score) ---
 # Whether this validator uploads the bytes of every head it verified to its
-# reveal bucket, by sha256, once the reveal that lists them is published
-# (fugal_subnet/head_publisher.py). Unset: the root does, nobody else. 1: this
+# reveal bucket, by sha256, with or after the reveal that lists them
+# (fugal_subnet/head_publisher.py; when, below). Unset: the root does, nobody else. 1: this
 # validator does too (it needs FUGAL_REVEAL_BUCKET). 0: off, the root
 # included. It changes no reveal, hash or score: the locations go in a
 # sidecar beside the reveal. Parsed like FUGAL_ROOT, so a typo is refused at

@@ -3684,7 +3684,7 @@ answer, then supporting detail" was dropped because `numeric_final` reads the
 last number and `letter_mcq` lost replies that open with a bold letter and then
 explain; the v3 text says a format the request asks for takes precedence.
 
-### I7 — verified heads are published by hash, with the reveal that lists them (operational; the validator release after v0.6.0)
+### I7 — verified heads are published by hash (operational; v0.6.1)
 
 A reveal names every verified head by its sha256 (`head_hashes`) and
 publishes how it routed and, from v3, its odds; the bytes themselves reached
@@ -3694,6 +3694,29 @@ the product, or anyone, can fetch the champion's head from a public place and
 check it against the reveal and the miner's on-chain commitment. The root
 does this by default; any validator with a reveal bucket may
 (`FUGAL_PUBLISH_HEADS`).
+
+**What is published when.** Every verified head is published, at one of two
+times:
+
+- a head that **holds or has held a seat** (the reveal's seat: the champion,
+  the former champions in its history, a champion's ghost; a challenger
+  awaiting confirmation is not one) is published with the reveal that says
+  so, at that reveal's hold;
+- **any other verified head** is published once it is
+  `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` epochs (default 24, about 29 hours) past
+  the epoch it first verified in on the publishing validator: with the reveal
+  of that epoch, or the first one published after it, whether or not the head
+  is still served. So a head is measured for that long before its bytes are
+  public, and the top result is public as soon as it is the top result.
+
+`0` publishes every head with the first reveal that lists it. The variable is
+operational, like the switch. A reveal's sidecar names the hashes of that
+reveal that are not due yet (`not_yet_due`, each with the index of the epoch
+from whose reveal it is due) instead of leaving them out
+(`test_a_head_that_never_held_a_seat_waits_the_hold_after_it_first_verified`,
+`test_a_head_that_holds_or_has_held_a_seat_is_public_with_the_reveal`,
+`test_a_held_head_that_stops_being_served_is_still_published_when_due`,
+`test_over_many_epochs_with_a_hold_nothing_is_early_and_nothing_due_is_missing`).
 
     gs://<reveal bucket>/heads/<netuid>/<sha256>.npz      the bytes the miner served
     gs://<reveal bucket>/<netuid>/<epoch_id>/heads.json   beside the reveal: where each hash is
@@ -3717,9 +3740,13 @@ are uploaded only after that epoch's reveal has its `.published` marker and
 the epoch is past the reveal's hold (`reveal_publisher.delay_epochs_for`;
 both conditions are checked by the head publisher itself), and only the
 hashes that published reveal lists. A head first verified in epoch `k` is
-therefore public when reveal `k` is, one hold later, not before
+therefore public no sooner than reveal `k` is, and later than that unless it
+holds a seat (above). The epoch a head first verified in is recorded when it
+enters the outbox and is not moved when the head is seen again; a head with
+no record is not assumed to be old
 (`test_a_head_is_not_public_before_its_reveal_is`,
-`test_only_hashes_a_published_reveal_lists_are_uploaded`).
+`test_only_hashes_a_published_reveal_lists_are_uploaded`,
+`test_the_first_verified_epoch_is_kept_and_a_head_without_one_waits`).
 
 **Only verified bytes, within the caps (I2).** The outbox is filled from the
 same `verified_heads` the reveal's `head_hashes` come from. The sha256 is
@@ -3729,7 +3756,10 @@ head is never parsed on this path. Objects are created only if absent, so one
 validator cannot replace another's object, and they carry no metadata beyond
 their name. Heads verified before the feature was switched on are not
 uploaded from the private archive (`FUGAL_HEAD_ARCHIVE_DIR`); they are
-published only if a miner serves them again.
+published only if a miner serves them again, and for a head that holds no
+seat the hold then counts from the first epoch it verified in after the
+switch. The outbox is bounded (`SPOOL_MAX_HEADS`, 4,096); past it the heads
+seen longest ago are dropped and are not published unless served again.
 
 **It cannot cost an epoch (I6).** Uploading is the last step of an epoch,
 after the weights are set, the reveal is published and the state is saved. It
@@ -3749,9 +3779,9 @@ publishing validator's on-chain commitment, as before.
 
 **What changes for miners.** Before this, the bytes of a head were held by
 its miner and by the validators that queried it; what was public was its
-hash, its routing and its odds. Now every verified head is public one reveal
-hold after each epoch in which it verified (one epoch at the current
-setting), whether or not it holds a seat or has finished burn-in. The seat
+hash, its routing and its odds. Now every verified head becomes public: with
+the reveal (one reveal hold) once it holds or has held a seat, otherwise
+`FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` epochs after it first verified. The seat
 rules are unchanged and are what applies to a head made from published
 bytes: the same bytes under another coldkey are an exact copy and are
 ineligible; different bytes are a different head, scored only on pairs drawn

@@ -822,19 +822,29 @@ published. To check an older epoch, read the commitment at a block from when it
 was current. If an upload was retried, an epoch published together with a newer
 one may never have been committed on its own. Head files are not in the reveal.
 
-**Your verified head becomes public.** From the validator release after
-v0.6.0, the root validator publishes the bytes of every head it verified, not
-only the champion's, when it publishes the reveal that lists them: one epoch
-after each epoch in which your head verified, at the current commit-reveal
-period. That includes a head that holds no seat or is still in burn-in.
-Before that release only the validators that queried you held those bytes;
-what was public was the hash, the routing and the odds. Anyone can now
-download a verified head:
+**Your verified head becomes public.** From v0.6.1 the root validator
+publishes the bytes of every head it verified, not only the champion's.
+When:
+
+- **A head that holds or has held a seat** (the champion, a former champion
+  in the seat's history, a champion's ghost): with the reveal that says so,
+  one epoch after that epoch at the current commit-reveal period.
+- **Any other verified head:** 24 epochs (about 29 hours) after the epoch
+  the root first verified it in, with that epoch's reveal or the next one
+  published. It is published then whether or not you still serve it, and
+  whether or not it ever took a seat.
+
+Before v0.6.1 only the validators that queried you held those bytes; what
+was public was the hash, the routing and the odds. Anyone can now download a
+published head:
 
     https://storage.googleapis.com/fugal-reveals/heads/70/<sha256>.npz
 
 where `<sha256>` is the head hash in the reveal's `head_hashes` (your
-on-chain commitment). `<epoch_id>/heads.json` beside each reveal lists them.
+on-chain commitment). `<epoch_id>/heads.json` beside each reveal lists the
+heads of that reveal that are public, and names the ones that are not due
+yet with the epoch they are due from. The 24 epochs are the root's setting
+(`FUGAL_PUBLISH_HEADS_AFTER_EPOCHS`); `heads.json` states the value in force.
 A head that never verified is not published, and a head is not published
 before the reveal of the first epoch that scored it. Nothing in scoring
 changed with this. The rules that already applied to copies apply to a copy
@@ -954,9 +964,9 @@ means one request is larger than the whole budget; it is logged as
   `FUGAL_MIN_VALIDATOR_STAKE` (default 50) stake on the subnet, as the chain
   reports it, can query you; a validator permit alone does not. Your head is
   served in full to whoever can, so this is a speed bump in front of dedup,
-  not the defence. From the validator release after v0.6.0 a verified head is
-  also published by the root, one epoch later ("Reading the published
-  reveals").
+  not the defence. From v0.6.1 a verified head is also published by the
+  root: with the reveal once it holds or has held a seat, otherwise 24 epochs
+  after it first verified ("Reading the published reveals").
 - **The E″ miss rule** — a missed epoch decays your evidence and restarts
   burn-in; you cannot publish only your good epochs.
 

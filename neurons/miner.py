@@ -516,6 +516,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     prices = price_table(protocol, epoch_menu)
                 else:
                     epoch_menu = None
+                # A miner whose startup fetch of its Google intermediates
+                # failed asks again here, so one bad minute at boot does not
+                # cost it every epoch until it is restarted.
+                tpm_intermediates = _tpm_intermediates_for_epoch(tpm_intermediates, tee_runtime, mock)
                 _run_epoch(
                     blocks_per_epoch=blocks_per_epoch,
                     head_data=head_data,
@@ -802,6 +806,19 @@ def _tpm_intermediates_at_startup(tee_runtime) -> list:
     else:
         logger.warning("No TPM intermediate chain could be built for this TD's key; %s", why)
     return chain
+
+
+def _tpm_intermediates_for_epoch(have: list, tee_runtime, mock: bool) -> list:
+    """The intermediates this epoch's proof carries: the chain already built,
+    or one more attempt at building it when there is none yet.
+
+    Outside the vendored set a proof without its chain is refused by every
+    validator, and the chain used to be built once: a single failed fetch at
+    boot left the miner producing refused proofs for the life of the process.
+    """
+    if mock or have:
+        return have
+    return _tpm_intermediates_at_startup(tee_runtime)
 
 
 def _run_epoch(

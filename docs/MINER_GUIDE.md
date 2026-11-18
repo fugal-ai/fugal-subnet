@@ -416,12 +416,25 @@ you to discover.
 
 Your proof carries the Google intermediate certificate(s) for your TD's
 attestation key, so it verifies in any region and across a Google rotation:
-the miner builds the chain once at startup (from the vendored intermediates,
+the miner builds the chain at startup (from the vendored intermediates,
 or from the certificate's own AIA address) and checks it against the pinned
 Google root before using it. Look for "Carrying N TPM intermediate
-certificate(s) in each v2 proof" in your log. A warning there instead means
+certificate(s) in each proof" in your log. A warning there instead means the
+fetch failed; the miner tries again before each epoch (from the image after
+v0.6.0; an earlier image tries once, so restart it), and until it succeeds
 your proofs verify only where validators have vendored your intermediate
 (us-central1 today): open an issue with the log line.
+
+**Regions.** Google signs attestation keys with a different intermediate in
+each region, all under the one root every validator pins, so no region needs
+approving. `provision_td.py` checks your TD the same way: it takes the
+intermediate from the vendored set or fetches it from Google's CA address
+named in the TD's certificate (it asks no other host), and `--inspect` prints
+the key's zone and the chain it found. To verify with no fetch at all, pass
+the certificate yourself with `--tpm-intermediate FILE`. What a region can
+still change is the **base measurement**: it follows the TDX firmware Google
+runs under your VM, not the region's name, so run `--inspect` on a new TD and
+compare `base_measurement` with the approved entry before you plan around it.
 
 ### The `app-compose.json` fields that will hurt you
 

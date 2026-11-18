@@ -852,9 +852,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
         from fugal_subnet.config import HEAD_MAX_BYTES as _head_max_bytes
         from fugal_subnet.head_publisher import HEADS_PREFIX, HeadPublisher
         head_publisher = HeadPublisher(_epoch_dir, netuid, reveal_uploader, reveal_delay,
+                                       hold_epochs=_cfg.PUBLISH_HEADS_AFTER_EPOCHS,
                                        max_bytes=_head_max_bytes)
-        logger.info("Verified heads publish to gs://%s/%s/%d/ by sha256, with the reveal "
-                    "that lists them", REVEAL_BUCKET, HEADS_PREFIX, netuid)
+        logger.info("Verified heads publish to gs://%s/%s/%d/ by sha256: a seat holder's "
+                    "with the reveal that lists it, any other head %d epoch(s) after it "
+                    "first verified", REVEAL_BUCKET, HEADS_PREFIX, netuid,
+                    _cfg.PUBLISH_HEADS_AFTER_EPOCHS)
     elif _cfg.PUBLISH_HEADS:
         logger.warning("FUGAL_PUBLISH_HEADS is set but FUGAL_REVEAL_BUCKET is not: heads "
                        "are not published")
@@ -1395,10 +1398,10 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
             # Diagnostics only: keep the verified heads on private disk. Feeds
             # no score, hash, reveal or fingerprint, and can't fail the epoch.
             _archive_heads(epoch_id, verified_heads, head_hashes, metagraph)
-            # Operational only: keep them for publication with this epoch's
-            # reveal, after its hold. Same guarantees as the archive.
+            # Operational only: keep them for publication (with a reveal that
+            # lists them, when they are due). Same guarantees as the archive.
             if head_publisher is not None:
-                head_publisher.spool(verified_heads, head_hashes)
+                head_publisher.spool(verified_heads, head_hashes, epoch_index)
             # Diagnostics only: who was reached, how long it took, and what
             # became of each proof (the epoch log keeps it per UID).
             collection, collection_line = _collection_report(
@@ -1824,7 +1827,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live):
                        v2_window=v2_window)
 
             # --- PUBLISH HEADS ---
-            # Last, after the weights, the reveal and the saved state: the
+            # Last, after the weights, the reveal and the saved state: the due
             # heads of every reveal published so far go to the store by hash.
             # Bounded in time and never raises; what is not sent is retried.
             if head_publisher is not None:

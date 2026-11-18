@@ -1183,6 +1183,34 @@ def publish_heads_enabled(root: bool, flag: bool | None = None) -> bool:
     return bool(root) if flag is None else bool(flag)
 
 
+# Which heads are published when. A head that holds or has held a seat is
+# published with the reveal that says so. Any other verified head is published
+# once it is this many epochs past the epoch it first verified in, so a head
+# is measured before its bytes are public. 24 epochs is about 29 hours; a
+# head that passes the seat test at once is seated in roughly 15 epochs at
+# the current pool rate (ODDS_MIN_PAIRS, then ODDS_CONFIRM_PAIRS). 0 publishes
+# every head with the first reveal that lists it. Operational, like the
+# switch above: it decides when bytes are uploaded, never a reveal or a score.
+
+
+def parse_publish_heads_after_epochs(raw: str) -> int:
+    value = str(raw or "").strip()
+    if not value:
+        return 24
+    try:
+        epochs = int(value)
+    except ValueError:
+        epochs = -1
+    if epochs < 0:
+        raise ValueError(f"FUGAL_PUBLISH_HEADS_AFTER_EPOCHS={raw!r} is not a whole number of "
+                         "epochs, 0 or more (or unset). Fix it before starting the validator.")
+    return epochs
+
+
+PUBLISH_HEADS_AFTER_EPOCHS: int = parse_publish_heads_after_epochs(
+    os.getenv("FUGAL_PUBLISH_HEADS_AFTER_EPOCHS", ""))
+
+
 # --- Head archive (operational; nothing here reads back into a score) ---
 # Directory where the validator keeps every VERIFIED miner head, raw bytes
 # named by sha256, plus an index.jsonl (fugal_subnet/head_archive.py). Private:
@@ -1356,6 +1384,7 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_REFERENCE_BUCKET",
     "FUGAL_ROOT_HOTKEY",
     "FUGAL_PUBLISH_HEADS",
+    "FUGAL_PUBLISH_HEADS_AFTER_EPOCHS",
     "FUGAL_HEAD_ARCHIVE_DIR",
     "FUGAL_ARCHIVE_ENDPOINTS",
     "FUGAL_FALLBACK_ENDPOINTS",

@@ -119,7 +119,7 @@ def _spool(spool, heads, hashes, cap=CAP, epoch=10):
     return hp.spool_verified_heads(str(spool), heads, hashes, cap, epoch)
 
 
-def _npz(spool):
+def _waiting(spool):
     return sorted(p.name for p in Path(spool).iterdir() if p.name.endswith(".npz"))
 
 
@@ -151,7 +151,7 @@ def test_verified_heads_are_kept_once_per_hash_and_private(tmp_path):
     assert (spool / f"{SHA_A}.npz").read_bytes() == HEAD_A
     assert stat.S_IMODE(os.stat(spool).st_mode) == 0o700
     assert stat.S_IMODE(os.stat(spool / f"{SHA_A}.npz").st_mode) == 0o600
-    assert _npz(spool) == sorted([f"{SHA_A}.npz", f"{SHA_B}.npz"])
+    assert _waiting(spool) == sorted([f"{SHA_A}.npz", f"{SHA_B}.npz"])
 
 
 def test_bytes_that_do_not_match_their_hash_or_exceed_the_cap_are_never_kept(tmp_path):
@@ -174,7 +174,7 @@ def test_the_outbox_is_bounded_and_drops_the_heads_seen_longest_ago(tmp_path, mo
     _spool(spool, {}, {}, CAP)
     last = hashlib.sha256(blobs[3]).hexdigest()
     _spool(spool, {3: blobs[3]}, {3: last}, CAP)
-    kept = _npz(spool)
+    kept = _waiting(spool)
     assert len(kept) == 2 and f"{last}.npz" in kept
     # What is dropped leaves nothing behind.
     assert {p.name.split(".")[0] for p in spool.iterdir()} == {k[:-4] for k in kept}

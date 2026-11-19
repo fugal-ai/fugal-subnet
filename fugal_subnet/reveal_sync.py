@@ -332,6 +332,33 @@ def _fetch(bucket: str, netuid: int, item: Listed, dest: str, timeout: float,
     os.replace(tmp, os.path.join(folder, "reveal.json"))
 
 
+def fetch_head(bucket: str, netuid: int, sha256: str, *, max_bytes: int | None = None,
+               timeout: float = REQUEST_TIMEOUT_S, opener: Callable | None = None) -> bytes:
+    """The bytes of a published head, checked against its hash.
+
+    Verified heads are published by sha256, with or after the reveal that
+    lists them (fugal_subnet/head_publisher.py says when). `sha256` is the head hash from a reveal's
+    `head_hashes` (or its `champion`), which is also the miner's on-chain
+    commitment. The store is not trusted: bytes with another sha256, or more
+    than `max_bytes` (default `HEAD_MAX_BYTES`), are refused. The bytes are
+    returned unparsed. Load them with pickle disabled,
+    `np.load(io.BytesIO(data), allow_pickle=False)`, or with
+    `head_eval.load_head_from_npz(data)`, which also bounds what they unpack to.
+    Raises on any failure; nothing in the epoch loop calls this.
+    """
+    from fugal_subnet.head_publisher import head_key
+
+    if not valid_bucket(bucket):
+        raise ValueError(f"{bucket!r} is not a bucket name")
+    if max_bytes is None:
+        from fugal_subnet.config import HEAD_MAX_BYTES
+        max_bytes = HEAD_MAX_BYTES
+    data = _get(f"{GCS}/{bucket}/{head_key(netuid, sha256)}", int(max_bytes), timeout, opener)
+    if hashlib.sha256(data).hexdigest() != sha256:
+        raise ValueError(f"sha256 of the fetched bytes is not {sha256[:16]}...")
+    return data
+
+
 def newest_local(dest: str) -> str | None:
     try:
         ids = [d for d in os.listdir(dest)

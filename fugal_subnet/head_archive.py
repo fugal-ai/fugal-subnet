@@ -16,8 +16,10 @@ Rules this module keeps:
 - **Only verified heads.** The caller passes heads that already passed
   `verify_proof`. The sha256 is recomputed anyway, and the result is the file
   name. A mismatch is skipped, so a miner-supplied string never becomes a path.
-- **Private.** The directory is created 0700 and files 0600. Publishing is a
-  separate, announced step; nothing here uploads.
+- **Private.** The directory is created 0700 and files 0600. Nothing here
+  uploads, and nothing uploads from this directory: publishing verified heads
+  is a separate step with its own outbox (head_publisher.py), so a head
+  archived before publication was switched on stays private.
 - **Never fatal.** Archiving is diagnostics. A disk error costs the archive
   row, not the epoch.
 """

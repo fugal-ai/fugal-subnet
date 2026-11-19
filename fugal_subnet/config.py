@@ -1114,7 +1114,7 @@ REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
 # typo such as FUGAL_ROOT=off cannot make a validator the root.
 
 
-def parse_root_flag(raw: str) -> bool | None:
+def _parse_optional_flag(name: str, raw: str) -> bool | None:
     value = str(raw or "").strip().lower()
     if not value:
         return None
@@ -1122,8 +1122,12 @@ def parse_root_flag(raw: str) -> bool | None:
         return True
     if value in ("0", "false", "no"):
         return False
-    raise ValueError(f"FUGAL_ROOT={raw!r} is not one of 1, true, yes, 0, false, no "
+    raise ValueError(f"{name}={raw!r} is not one of 1, true, yes, 0, false, no "
                      "(or unset). Fix it before starting the validator.")
+
+
+def parse_root_flag(raw: str) -> bool | None:
+    return _parse_optional_flag("FUGAL_ROOT", raw)
 
 
 ROOT_VALIDATOR: bool | None = parse_root_flag(os.getenv("FUGAL_ROOT", ""))
@@ -1156,11 +1160,63 @@ def root_hotkey(finney: bool, env: str | None = None) -> str | None:
         return FINNEY_ROOT_HOTKEY
     return value or None
 
+# --- Head publication (operational; nothing here reads back into a score) ---
+# Whether this validator uploads the bytes of every head it verified to its
+# reveal bucket, by sha256, with or after the reveal that lists them
+# (fugal_subnet/head_publisher.py; when, below). Unset: the root does, nobody else. 1: this
+# validator does too (it needs FUGAL_REVEAL_BUCKET). 0: off, the root
+# included. It changes no reveal, hash or score: the locations go in a
+# sidecar beside the reveal. Parsed like FUGAL_ROOT, so a typo is refused at
+# import and cannot switch it either way.
+
+
+def parse_publish_heads_flag(raw: str) -> bool | None:
+    return _parse_optional_flag("FUGAL_PUBLISH_HEADS", raw)
+
+
+PUBLISH_HEADS: bool | None = parse_publish_heads_flag(os.getenv("FUGAL_PUBLISH_HEADS", ""))
+
+
+def publish_heads_enabled(root: bool, flag: bool | None = None) -> bool:
+    """Whether verified heads are published: the switch when it is set,
+    otherwise only on the root. Call it with `flag=PUBLISH_HEADS`."""
+    return bool(root) if flag is None else bool(flag)
+
+
+# Which heads are published when. A head that holds or has held a seat is
+# published with the reveal that says so. Any other verified head is published
+# once it is this many epochs past the epoch it first verified in, so a head
+# is measured before its bytes are public. 32 epochs is about 38 hours; a
+# head that passes the seat test at once is seated in roughly 15 epochs at
+# the current pool rate (ODDS_MIN_PAIRS, then ODDS_CONFIRM_PAIRS), and in
+# about 30 if it misses one epoch on the way. 0 publishes
+# every head with the first reveal that lists it. Operational, like the
+# switch above: it decides when bytes are uploaded, never a reveal or a score.
+
+
+def parse_publish_heads_after_epochs(raw: str) -> int:
+    value = str(raw or "").strip()
+    if not value:
+        return 32
+    try:
+        epochs = int(value)
+    except ValueError:
+        epochs = -1
+    if epochs < 0:
+        raise ValueError(f"FUGAL_PUBLISH_HEADS_AFTER_EPOCHS={raw!r} is not a whole number of "
+                         "epochs, 0 or more (or unset). Fix it before starting the validator.")
+    return epochs
+
+
+PUBLISH_HEADS_AFTER_EPOCHS: int = parse_publish_heads_after_epochs(
+    os.getenv("FUGAL_PUBLISH_HEADS_AFTER_EPOCHS", ""))
+
+
 # --- Head archive (operational; nothing here reads back into a score) ---
 # Directory where the validator keeps every VERIFIED miner head, raw bytes
 # named by sha256, plus an index.jsonl (fugal_subnet/head_archive.py). Private:
-# created 0700, never uploaded. Unset (default): heads are discarded after
-# verification, as before.
+# created 0700, never uploaded (head publication, above, keeps its own
+# outbox). Unset (default): heads are not archived.
 HEAD_ARCHIVE_DIR = os.getenv("FUGAL_HEAD_ARCHIVE_DIR", "").strip()
 
 # --- Chain endpoints (operational) ---
@@ -1328,6 +1384,8 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_ROOT",
     "FUGAL_REFERENCE_BUCKET",
     "FUGAL_ROOT_HOTKEY",
+    "FUGAL_PUBLISH_HEADS",
+    "FUGAL_PUBLISH_HEADS_AFTER_EPOCHS",
     "FUGAL_HEAD_ARCHIVE_DIR",
     "FUGAL_ARCHIVE_ENDPOINTS",
     "FUGAL_FALLBACK_ENDPOINTS",

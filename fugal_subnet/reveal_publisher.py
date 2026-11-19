@@ -31,6 +31,11 @@ unset bucket skips with one warning so a validator without one still runs.
 A `.published` marker next to each reveal records what was uploaded and
 where; the marker is written only after the upload succeeds, so a failed
 upload is retried next epoch and nothing is marked that was not sent.
+
+The heads a published reveal names go to the same store, by hash, no sooner
+than that marker exists (fugal_subnet/head_publisher.py says which and when).
+That is a separate step with its own time budget: it cannot fail or hold back
+a reveal.
 """
 from __future__ import annotations
 
@@ -80,6 +85,38 @@ class GcsUploader:
             return url
         subprocess.run(
             ["gcloud", "storage", "cp", path, url],
+            check=True, capture_output=True, text=True, timeout=self.timeout,
+        )
+        return url
+
+    def upload_if_absent(self, path: str, key: str) -> str:
+        """Upload only if gs://bucket/<key> does not exist; never overwrite.
+
+        For content-addressed objects (head_publisher: the key is the sha256
+        of the bytes), where an existing object is already the right one. The
+        store decides, in the same request as the write, so two validators
+        sending one head cannot replace each other's object. No custom
+        metadata is set: the object carries its name, its bytes and a generic
+        content type, nothing about the host that sent it.
+        """
+        url = f"gs://{self.bucket}/{key}"
+        try:
+            from google.cloud import storage  # type: ignore
+        except ImportError:
+            storage = None
+        if storage is not None:
+            from google.api_core.exceptions import PreconditionFailed  # type: ignore
+            client = storage.Client()
+            blob = client.bucket(self.bucket).blob(key)
+            try:
+                blob.upload_from_filename(path, content_type="application/octet-stream",
+                                          if_generation_match=0, timeout=self.timeout)
+            except PreconditionFailed:
+                pass  # already there
+            return url
+        subprocess.run(
+            ["gcloud", "storage", "cp", "--no-clobber",
+             "--content-type=application/octet-stream", path, url],
             check=True, capture_output=True, text=True, timeout=self.timeout,
         )
         return url

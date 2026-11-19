@@ -835,6 +835,39 @@ published. To check an older epoch, read the commitment at a block from when it
 was current. If an upload was retried, an epoch published together with a newer
 one may never have been committed on its own. Head files are not in the reveal.
 
+**Your verified head becomes public.** From v0.6.1 the root validator
+publishes the bytes of every head it verified, not only the champion's.
+When:
+
+- **A head that holds or has held a seat** (the champion, a former champion
+  in the seat's history, a champion's ghost): with the reveal that says so,
+  one epoch after that epoch at the current commit-reveal period.
+- **Any other verified head:** 32 epochs (about 38 hours) after the epoch
+  the root first verified it in, with that epoch's reveal or the next one
+  published. It is published then whether or not you still serve it, and
+  whether or not it ever took a seat.
+
+Before v0.6.1 only the validators that queried you held those bytes; what
+was public was the hash, the routing and the odds. Anyone can now download a
+published head:
+
+    https://storage.googleapis.com/fugal-reveals/heads/70/<sha256>.npz
+
+where `<sha256>` is the head hash in the reveal's `head_hashes` (your
+on-chain commitment). `<epoch_id>/heads.json` beside each reveal lists the
+heads of that reveal that are public, and names the ones that are not due
+yet with the epoch they are due from. The 32 epochs are the root's setting
+(`FUGAL_PUBLISH_HEADS_AFTER_EPOCHS`); `heads.json` states the value in force.
+A head that never verified is not published, and a head is not published
+before the reveal of the first epoch that scored it. Nothing in scoring
+changed with this. The rules that already applied to copies apply to a copy
+made from published bytes ("Who owns a head" and "Copies cannot win", above):
+the same bytes under another coldkey are an exact copy and earn nothing, and
+a modified head is a different head that takes a seat only by beating every
+senior seat holder by the margin. If you fetch someone's head, check its
+sha256 against the reveal and load it with pickle disabled
+(`np.load(..., allow_pickle=False)`).
+
 ### When a good proof is not scored, and why it is not you
 
 Two behaviours can make a correct proof go unscored in an epoch. Neither
@@ -944,7 +977,9 @@ means one request is larger than the whole budget; it is logged as
   `FUGAL_MIN_VALIDATOR_STAKE` (default 50) stake on the subnet, as the chain
   reports it, can query you; a validator permit alone does not. Your head is
   served in full to whoever can, so this is a speed bump in front of dedup,
-  not the defence.
+  not the defence. From v0.6.1 a verified head is also published by the
+  root: with the reveal once it holds or has held a seat, otherwise 32 epochs
+  after it first verified ("Reading the published reveals").
 - **The E″ miss rule** — a missed epoch decays your evidence and restarts
   burn-in; you cannot publish only your good epochs.
 

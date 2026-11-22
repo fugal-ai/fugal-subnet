@@ -169,8 +169,8 @@ def validate_head_v4(z: dict) -> dict:
     if len(set(ids)) != len(ids) or any(not m.strip() or len(m) > _V4_MAX_ID_LEN for m in ids):
         raise ValueError("row ids must be unique, nonempty and bounded")
     n = len(ids)
-    # W and b are read by exact arithmetic on every node: only the two widths
-    # every platform decodes alike, little-endian, before any value is read.
+    # W and b are read by exact arithmetic on every node: little-endian
+    # float32 or float64 only, checked before any value is read.
     for key in ("W", "b"):
         if np.dtype(z[key].dtype).str not in V4_PARAM_DTYPES:
             raise ValueError(f"{key} must be little-endian float32 or float64, not "

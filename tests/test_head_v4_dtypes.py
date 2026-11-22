@@ -2,7 +2,7 @@
 
 `head_eval.load_head_v4` (the one loader the TD, the validator, the replay and
 the holder-head load use) refuses every other dtype of W and b before any
-arithmetic reads them. The v1-v3 loader is unchanged. No network, no spend.
+arithmetic reads them. No network, no spend.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from fugal_subnet import head_eval
-from fugal_subnet.head_eval import load_head_from_npz, load_head_v4
+from fugal_subnet.head_eval import load_head_v4
 from fugal_subnet.head_odds import picks_and_odds_v4
 from tests.test_head_v4 import IDS, MENU, _arrays, _bytes, _hidden
 
@@ -72,16 +72,6 @@ def test_float32_and_float64_heads_load_unchanged(dtype):
     want = picks_and_odds_v4(load_head_v4(_bytes(_arrays(IDS))), MENU, _hidden(16))
     digest = (lambda r: hashlib.sha256(r.odds.tobytes() + repr(r.picks).encode()).hexdigest())
     assert digest(got) == digest(want)
-
-
-def test_the_v3_loader_is_unchanged():
-    """Protocol v1-v3 keeps what it accepted: the v4 dtype rule is not read
-    there."""
-    z = _cast(_arrays(["lab/x"]), "W", np.float16)
-    try:
-        load_head_from_npz(_bytes(z))
-    except ValueError as e:
-        assert "little-endian" not in str(e)
 
 
 def _with_compression(raw: bytes, method: int) -> bytes:

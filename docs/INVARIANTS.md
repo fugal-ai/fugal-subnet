@@ -4774,8 +4774,7 @@ byte-equal to its upstream. What must stay true:
    v1-v3. Then, required: `W` (rows x 1024) and `b` (rows), each
    little-endian float32 or float64 (`V4_PARAM_DTYPES`: half, extended and
    quad precision, big-endian, complex, integer and object arrays are refused
-   before any value is read, since not every platform decodes every float
-   width alike; v1-v3 keep what they accepted), finite with every value
+   before any value is read), finite with every value
    within `HEAD_MAX_ABS_PARAM` (10^6); `models`, 1
    to `HEAD_MAX_ROWS_V4` (72: `MENU_CAP` plus `MENU_MAX_PROVISIONAL`) unique,
    non-empty ids of at most 256 characters; `contract`, `profile_id` and

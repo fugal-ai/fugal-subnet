@@ -2937,7 +2937,11 @@ def resolve_burn_uid(subtensor, netuid: int, block: int, metagraph, live: bool) 
     """
     owner = None
     try:
-        owner = subtensor.get_subnet_owner_hotkey(netuid, block=block)
+        from fugal_subnet import chain_reads
+
+        owner = chain_reads.pinned(
+            subtensor, block, lambda s: s.get_subnet_owner_hotkey(netuid, block=block),
+            what="Subnet owner", refused=chain_reads.is_zero_account)
     except Exception as e:  # noqa: BLE001 - reported below, never swallowed
         if live:
             raise RuntimeError(f"Could not read the subnet owner hotkey at block {block}: {e}") from e
@@ -3000,8 +3004,11 @@ def metagraph_at(subtensor, netuid: int, block: int, fallback) -> tuple:
     what the epoch log records as `metagraph_unpinned`, so the divergence is
     attributable from the published artifacts, not only from the console.
     """
+    from fugal_subnet import chain_reads
+
     try:
-        return subtensor.metagraph(netuid, block=block), True
+        return chain_reads.pinned(subtensor, block, lambda s: s.metagraph(netuid, block=block),
+                                  what="Metagraph"), True
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "Could not read the metagraph at block %d (%s) — using the current "
@@ -4031,10 +4038,11 @@ def _v4_chain_read(subtensor, netuid: int, *, epoch: int, blocks_per_epoch: int,
     follower's synced copies of them, checked against the root's sha), else
     fetched from the root's `bucket` or a mirror by that sha."""
     from fugal_subnet import chain_proposals as cp
-    from fugal_subnet import join_step
+    from fugal_subnet import chain_reads, join_step
 
     def coldkeys_at(block):
-        mg = subtensor.metagraph(netuid, block=block)
+        mg = chain_reads.pinned(subtensor, block, lambda s: s.metagraph(netuid, block=block),
+                                what="Metagraph")
         return {str(h): str(c) for h, c in zip(mg.hotkeys, mg.coldkeys)}
 
     return join_step.chain_read_at(
@@ -4073,9 +4081,10 @@ def _v4_proposal_fetcher(dendrite, subtensor, netuid: int, block: int):
     JOIN_FETCH_TIMEOUT_S. Every document of the epoch is fetched at once in
     one event loop (join_step.ProposalFetcher.fetch_many). The bytes are
     checked by hash by the admission."""
-    from fugal_subnet import join_step
+    from fugal_subnet import chain_reads, join_step
 
-    mg = subtensor.metagraph(netuid, block=block)
+    mg = chain_reads.pinned(subtensor, block, lambda s: s.metagraph(netuid, block=block),
+                            what="Metagraph")
     return join_step.ProposalFetcher(dendrite, {str(h): a for h, a in zip(mg.hotkeys, mg.axons)})
 
 

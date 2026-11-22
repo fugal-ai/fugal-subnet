@@ -446,9 +446,15 @@ def read_fields_at(subtensor, netuid: int, block: int) -> dict[str, tuple[str, .
     """{hotkey: its commitment's fields} for every hotkey of the subnet, read
     pinned at `block` (as commitments.get_commitments_with_blocks reads the
     first field). Raises when the chain cannot be read."""
+    from fugal_subnet import chain_reads
+
     out: dict[str, tuple[str, ...]] = {}
-    for hotkey, value in subtensor.query_map(module="Commitments", name="CommitmentOf",
-                                             params=[netuid], block=int(block)):
+    rows = chain_reads.pinned(
+        subtensor, int(block), lambda s: list(s.query_map(module="Commitments",
+                                                          name="CommitmentOf", params=[netuid],
+                                                          block=int(block))),
+        what="Commitment fields")
+    for hotkey, value in rows:
         out[str(getattr(hotkey, "value", hotkey))] = commitment_fields(value)
     return out
 

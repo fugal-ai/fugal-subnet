@@ -944,6 +944,8 @@ def _chain_endpoints(network, genesis) -> dict:
     net = validator_setup.network_for_genesis(genesis, network)
     archive, fallback, _ = validator_setup.default_endpoints(
         net, list(cfg.ARCHIVE_ENDPOINTS), list(cfg.FALLBACK_ENDPOINTS))
+    if archive and not cfg.ARCHIVE_ENDPOINTS:
+        cfg.ARCHIVE_ENDPOINTS[:] = archive     # pinned reads fall back to it (chain_reads)
     return {"archive_endpoints": archive or None, "fallback_endpoints": fallback or None}
 
 

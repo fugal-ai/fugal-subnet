@@ -459,19 +459,35 @@ class ChainSet:
         return self.view(epoch)
 
 
+# How long after the seed's `through` the startup probe still reads back to it
+# (the release gate's PUBLISHED_V4_SEED_MAX_AGE_EPOCHS plus a margin): after
+# that a node holds the set in its state and re-anchors ANCHOR_HISTORY_EPOCHS back.
+_seed_history_epochs = 200
+
+
 def history_line(subtensor, netuid: int, blocks_per_epoch: int) -> str:
-    """Whether this node's chain endpoint serves the pinned reads a v4 node
-    needs after missing epochs (ANCHOR_HISTORY_EPOCHS back), for the startup
-    and `--check` output. One pinned read of the commitments; never raises."""
+    """Whether this node's chain reads reach the history a v4 node needs, for
+    the startup and `--check` output: one pinned read of the commitments at
+    the older of the pinned seed's boundary (what the published set is read
+    from across the activation) and ANCHOR_HISTORY_EPOCHS back (a re-anchor
+    after missed epochs), through the same reader the node uses, so through
+    its archive fallback (chain_reads). Never raises."""
     from fugal_subnet.commitments import get_commitments_with_blocks
 
-    depth = ANCHOR_HISTORY_EPOCHS * int(blocks_per_epoch)
     try:
-        block = max(0, int(subtensor.get_current_block()) - depth)
+        current = int(subtensor.get_current_block())
+        block = current - ANCHOR_HISTORY_EPOCHS * int(blocks_per_epoch)
+        try:
+            seed_block = memo_v4.seed_through() * int(blocks_per_epoch)
+            if current - seed_block <= _seed_history_epochs * int(blocks_per_epoch):
+                block = min(block, seed_block)          # the activation is near: the seed's depth
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        block = max(0, block)
         get_commitments_with_blocks(subtensor, netuid, block=block)
-        return f"chain history: pinned reads {depth} blocks back are served"
+        return f"chain history: pinned reads {current - block} blocks back are served"
     except Exception as e:  # noqa: BLE001 - reported, never fatal
         why = "the endpoint no longer keeps that state" if is_pruned(e) else type(e).__name__
-        return (f"chain history: a pinned read {depth} blocks back FAILED ({why}); after missed "
-                "epochs this node cannot re-anchor: set FUGAL_ARCHIVE_ENDPOINTS to an archive "
-                "node")
+        return (f"chain history: a pinned read back to the published-set seed FAILED ({why}); "
+                "at the v4 activation this node cannot read the published set: keep an archive "
+                "endpoint in FUGAL_ARCHIVE_ENDPOINTS (finney's public archive is the default)")

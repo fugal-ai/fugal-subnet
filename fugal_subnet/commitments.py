@@ -82,7 +82,10 @@ def get_commitments_with_blocks(
     kwargs = {"module": "Commitments", "name": "CommitmentOf", "params": [netuid]}
     if block is not None:
         kwargs["block"] = int(block)
-    query = subtensor.query_map(**kwargs)
+    from fugal_subnet import chain_reads
+
+    query = chain_reads.pinned(subtensor, kwargs.get("block"),
+                               lambda s: list(s.query_map(**kwargs)), what="Commitments")
     for hotkey, value in query:
         raw = getattr(value, "value", value)
         block = 0

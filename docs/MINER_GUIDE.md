@@ -373,7 +373,11 @@ history:
   finney); across the v4 activation, before the first v4 reveal names a
   snapshot, the set is read from the release's seed, up to 150 epochs back,
   which only an archive serves. The miner logs a `chain history:` line at
-  startup saying whether its endpoint serves the three epochs.
+  startup saying whether a pinned read back to the seed's boundary (while the
+  activation is near; three epochs after) is served. A read the node no
+  longer keeps is read again from the archive endpoint
+  (`fugal_subnet/chain_reads.py`); the TD's compose names `--network finney`,
+  so it uses finney's public archive.
 - **The last resort.** If neither the kept menu nor a reveal can be had (the
   root's bucket and every mirror unreachable), hand the TD a menu file with
   `--v4-anchor` (any menu's canonical bytes, for example from a validator's

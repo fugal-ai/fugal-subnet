@@ -218,9 +218,11 @@ the release's entries and default endpoints follow the chain's genesis hash.
 >   and `wss://entrypoint-finney.opentensor.ai:443`. Set them to use your own.
 >   **What endpoint protocol v4 needs:** every v4 read of the chain is pinned
 >   to a block (the root's commitments at each boundary, the join read 30
->   blocks before it), and goes through the same connection, which switches
->   to the archive endpoint when the node answers that a block's state is
->   discarded. In steady state the reads are at most one epoch old. After
+>   blocks before it). A node that is not an archive keeps only its last few
+>   hundred blocks (finney's public entrypoint: about 256), so such a read is
+>   read again from the archive endpoint (`FUGAL_ARCHIVE_ENDPOINTS` in order,
+>   finney's public archive when unset; `fugal_subnet/chain_reads.py`) when the
+>   node answers that the block's state is discarded. In steady state the reads are at most one epoch old. After
 >   missed epochs, the published set and the menu re-anchor on the root's
 >   newest snapshot and reveal where the endpoint no longer serves the
 >   boundaries missed, which needs pinned reads three epochs back (about
@@ -228,8 +230,10 @@ the release's entries and default endpoints follow the chain's genesis hash.
 >   follower sync's ledger and leaves an epoch it cannot verify unfilled.
 >   Across the v4 activation the published set is read from the release's
 >   seed, up to 150 epochs back: only an archive serves that. `--check` and
->   the READY line say `chain history: pinned reads N blocks back are served`
->   or that they failed.
+>   the READY line make one such read, back to the seed's boundary while the
+>   activation is near, and say `chain history: pinned reads N blocks back are
+>   served` or that it FAILED; a FAILED line before the block means this
+>   validator will not read the published set at the block.
 > - **`FUGAL_VALIDATOR_IP`**: `curl -s https://ifconfig.me` from this host.
 > - **Nothing to set to follow the root.** A validator that is not the root
 >   fetches the root's published reveals itself. Only the root sets

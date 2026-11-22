@@ -127,8 +127,14 @@ def test_one_v4_epoch_at_full_size_fits_well_inside_the_epoch(shape):
     served head before it (`--served-last`, the worst shape measured), every
     served head but the holder a challenger of 1,000 questions whose picks
     and the holder's are recomputed: every stage within generous bounds, the
-    whole run_v2_epoch within fifteen minutes, and the process under 4 GiB. Single process (the comparisons use a few
-    threads)."""
+    whole run_v2_epoch within fifteen minutes, and the epoch's own memory
+    under 4 GiB. Single process (the comparisons use a few threads).
+
+    Memory is the growth of the resident set while the epoch runs, sampled,
+    over what the process held when the test began: the process's high-water
+    mark (ru_maxrss) cannot be reset and also holds whatever ran earlier in
+    the same process, so in a whole-suite run it measures the suite."""
+    import gc
     import importlib.util
 
     path = os.path.join(os.path.dirname(__file__), "..", "scripts", "experiments",
@@ -137,8 +143,11 @@ def test_one_v4_epoch_at_full_size_fits_well_inside_the_epoch(shape):
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod          # the dataclasses resolve their module through it
     spec.loader.exec_module(mod)
-    w = mod.EpochWorld(mod.Shape(served_last=shape == "served_last"))
-    out = mod.run_stages(w, whole=True, report=lambda *_a: None)
+    gc.collect()
+    before = mod.rss_mib()
+    with mod.Sampler() as memory:
+        w = mod.EpochWorld(mod.Shape(served_last=shape == "served_last"))
+        out = mod.run_stages(w, whole=True, report=lambda *_a: None)
     bounds = {"pool + current odds": 180, "add epoch + late odds": 120,
               "memorisation evidence (all kept)": 180, "standing over R (serving heads)": 120,
               "seat observe": 30, "challenges (both picks recomputed)": 180,
@@ -150,4 +159,4 @@ def test_one_v4_epoch_at_full_size_fits_well_inside_the_epoch(shape):
     assert not slow, slow
     assert out["_same_reveal"]
     assert len(w.verified) - 1 == sum(1 for p in w.verified.values() if p.scored)
-    assert mod.peak_mib() < 4 * 1024
+    assert memory.peak - before < 4 * 1024, (round(before), round(memory.peak))

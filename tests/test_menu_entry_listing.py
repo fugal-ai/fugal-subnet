@@ -26,6 +26,7 @@ from fugal_subnet import menu_inputs as mi
 from fugal_subnet import menu_rules as mr
 from fugal_subnet import menu_state as ms
 from tests import menu_fixtures as fx
+from tests.signed_list_fixtures import list_in_use_bytes
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LISTING = ROOT / "data" / "observations" / "openrouter_endpoints_2026-11-18.json"
@@ -44,7 +45,7 @@ def _endpoints():
 
 
 def _draft() -> mr.MenuAllowlist:
-    return mr.parse_unsigned_list((ROOT / "data" / "menu_allowlist.draft.json").read_bytes(),
+    return mr.parse_unsigned_list(list_in_use_bytes(ROOT),
                                   mr.KIND_MENU_ALLOWLIST)
 
 

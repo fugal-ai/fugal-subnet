@@ -72,3 +72,14 @@ def allowlist_bytes(serial=1, labs=("deepseek", "openai"), hosts=("azure", "baid
 
 def device_bytes(serial=1, devices=("ab" * 32, "cd" * 32)):
     return mr.canonical_list_bytes(mr.KIND_DEVICE_LIST, serial, devices=devices)
+
+
+def list_in_use_bytes(root) -> bytes:
+    """The lab and host list's payload a release uses: the signed list it
+    ships (fugal_subnet/signed_lists/menu_allowlist.json), or, before the
+    first one was signed, the draft under review (data/menu_allowlist.draft.json)."""
+    from pathlib import Path
+
+    shipped = Path(root) / "fugal_subnet" / "signed_lists" / "menu_allowlist.json"
+    draft = Path(root) / "data" / "menu_allowlist.draft.json"
+    return (shipped if shipped.exists() else draft).read_bytes()

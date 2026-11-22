@@ -325,7 +325,9 @@ def write_signed_list(d: str) -> dict:
     from tests.signed_list_fixtures import Signer
 
     root = Path(os.path.dirname(__file__)).parent
-    draft = json.loads((root / "data" / "menu_allowlist.draft.json").read_text())
+    shipped = root / "fugal_subnet" / "signed_lists" / "menu_allowlist.json"
+    draft = json.loads((shipped if shipped.exists()
+                        else root / "data" / "menu_allowlist.draft.json").read_text())
     payload = mr.canonical_list_bytes(mr.KIND_MENU_ALLOWLIST, 1, labs=draft["labs"],
                                       hosts=draft["hosts"],
                                       first_party=draft["first_party"])

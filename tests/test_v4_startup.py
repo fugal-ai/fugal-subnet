@@ -67,11 +67,20 @@ def test_no_v4_block_no_v4_status():
     assert st.found is None and st.missing == [] and not st.due
 
 
-def test_the_shipped_release_has_every_v4_input_but_its_list():
+def _shipped_list_label() -> str:
+    """How the READY lines name the release's lab and host list."""
+    try:
+        return f"list serial {mr.shipped_list(mr.KIND_MENU_ALLOWLIST).serial}"
+    except FileNotFoundError:
+        return "list none"
+
+
+def test_the_shipped_release_has_every_v4_input():
     st = _status()
     assert st.missing == [] and not st.due
     assert st.found.startswith(f"block {V4_BLOCK}, seed ") and "mix " in st.found
-    assert "list none" in st.found and "root hotkeys 1" in st.found and "v4 digest " in st.found
+    assert _shipped_list_label() == "list serial 1"
+    assert _shipped_list_label() in st.found and "root hotkeys 1" in st.found and "v4 digest " in st.found
     assert _status(sub=_Sub(epoch=26400)).due
     # The memorisation check's published-set seed, by hash and the reveal it
     # is observed through (the nodes fold the public reveals after it).
@@ -252,7 +261,7 @@ def test_the_miners_ready_line_names_its_v4_inputs(monkeypatch):
                                        root_hotkeys=((0, "5Froot"),))
     assert ok and line.startswith(f"READY: protocol v4 from block {block}, pool 10, seed ")
     assert f"proposal {spec.id}" in line and "ceiling" not in line
-    assert "challenge 1000" in line and "list none" in line
+    assert "challenge 1000" in line and _shipped_list_label() in line
     from fugal_subnet import memo_v4
     assert f"published seed {memo_v4.seed_label()}" in line
     ok, line = miner._miner_ready_line(4, block, root_hotkeys=())

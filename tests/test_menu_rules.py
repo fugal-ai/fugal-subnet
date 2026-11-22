@@ -14,6 +14,7 @@ import pytest
 
 from fugal_subnet import menu_rules as mr
 from fugal_subnet.routing_protocol import validate_menu_v3
+from tests.signed_list_fixtures import list_in_use_bytes
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -500,10 +501,10 @@ def test_the_draft_list_holds_everything_the_v3_menu_pins():
     dropped, and no first-party mark was lost. (The owner's reviewed, signed
     list replaces the draft, and this test goes with it.)"""
     tool = _script("signed_list")
-    draft = (ROOT / "data" / "menu_allowlist.draft.json").read_bytes()
+    draft = list_in_use_bytes(ROOT)
     derived = mr.parse_unsigned_list(tool.draft_from_menu(_v3b_rows()), mr.KIND_MENU_ALLOWLIST)
     parsed = mr.parse_unsigned_list(draft, mr.KIND_MENU_ALLOWLIST)
-    assert parsed.serial == mr.DRAFT_SERIAL == 0 and parsed.signer is None
+    assert parsed.signer is None                    # read unsigned, as a tool reads it
     rows = _v3b_rows()
     assert parsed.labs >= {r["model"].split("/")[0] for r in rows}
     assert parsed.hosts >= {mr.host_identity(h) for r in rows for h in r["provider"]["order"]}
@@ -520,7 +521,7 @@ def test_the_draft_admits_a_current_model_of_every_lab_the_review_added():
     lab's (`xai`, `mistral/zdr`), so only the first-party mark lets them pin
     no quantization; Cohere's own host is `cohere`; MiniMax, NVIDIA and
     Amazon models ride hosts that were already on the list."""
-    allow = mr.parse_unsigned_list((ROOT / "data" / "menu_allowlist.draft.json").read_bytes(),
+    allow = mr.parse_unsigned_list(list_in_use_bytes(ROOT),
                                    mr.KIND_MENU_ALLOWLIST)
     calls = [("x-ai/grok-4.7", ["xai"], "unknown"),
              ("mistralai/mistral-large-4-0", ["mistral/zdr"], "unknown"),
@@ -548,7 +549,7 @@ def test_the_draft_admits_a_current_model_of_every_lab_the_review_added():
 def test_every_v3_menu_entry_passes_the_rules_against_the_draft_list():
     """The seed of the first v4 menu is v3's entries (section 4.5): each one,
     with the quantization its pinned hosts carry, passes the compiled rules."""
-    allow = mr.parse_unsigned_list((ROOT / "data" / "menu_allowlist.draft.json").read_bytes(),
+    allow = mr.parse_unsigned_list(list_in_use_bytes(ROOT),
                                    mr.KIND_MENU_ALLOWLIST)
     rows = _v3b_rows()
     entries = []

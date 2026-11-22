@@ -311,8 +311,14 @@ PINNED_LIST_SIGNERS_SHA256 = (
 # it decides which entries every node accepts. It must verify under the
 # signers above and match its pin; `scripts/signed_list.py verify` prints the
 # digest to pin here in the commit that adds the signed file.
+# History:
+#   menu_allowlist.json e3f95a7b...  2026-11-22, v0.7.0: the first lab and host
+#       list, serial 1, signed by release@fugalai.com: 19 labs, 26 hosts, 8
+#       first-party marks (list format 2), the reviewed draft's content
+#       unchanged (`signed_list.py prepare --serial 1`). Every entry of the
+#       pinned v4 seed passes it, so it is adopted at the first v4 step.
 PINNED_SIGNED_LISTS_SHA256: dict[str, str | None] = {
-    "menu_allowlist.json": None,   # an unsigned draft is in data/ for review
+    "menu_allowlist.json": "e3f95a7b8daac512bda812146b05eb3f38e9b19759088d8b0eaec7a135166a39",
     "device_list.json": None,
 }
 

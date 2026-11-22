@@ -60,7 +60,11 @@ A list is one JSON file: a `kind`, a `serial`, and sorted arrays. A newer
 list must carry a higher serial than the one a node holds; serial 0 marks a
 draft and is refused whatever signs it.
 
-    # 1. Review the draft that is there. Today: data/menu_allowlist.draft.json,
+Shipped: `fugal_subnet/signed_lists/menu_allowlist.json`, serial 1 (v0.7.0,
+2026-11-22). The next list carries serial 2: write its draft from the shipped
+list's content (`--draft`), review it, and follow the same steps.
+
+    # 1. Review the draft. Before serial 1 it was data/menu_allowlist.draft.json,
     #    first derived from the labs and hosts data/models_v3b.json pins, then
     #    extended by review. Do not regenerate it (plain `draft` refuses to
     #    replace a draft that differs from the derivation; `--overwrite` forces).

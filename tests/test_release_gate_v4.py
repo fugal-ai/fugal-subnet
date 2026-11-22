@@ -20,7 +20,7 @@ import types
 import pytest
 
 from fugal_subnet import menu_rules as mr
-from tests.signed_list_fixtures import Signer, allowlist_bytes
+from tests.signed_list_fixtures import Signer, allowlist_bytes, list_in_use_bytes
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BPE = 360
@@ -74,7 +74,7 @@ def published_doc(through: int) -> dict:
 def seed_list_bytes(serial=1):
     """The reviewed draft's labs and hosts as a list with `serial`: every entry
     of the pinned seed passes it."""
-    draft = mr.parse_unsigned_list((ROOT / "data" / "menu_allowlist.draft.json").read_bytes(),
+    draft = mr.parse_unsigned_list(list_in_use_bytes(ROOT),
                                    mr.KIND_MENU_ALLOWLIST)
     return mr.canonical_list_bytes(mr.KIND_MENU_ALLOWLIST, serial, labs=draft.labs,
                                    hosts=draft.hosts, first_party=draft.first_party_dict())
@@ -460,7 +460,7 @@ def test_only_a_lab_the_seed_uses_matters_to_the_list_and_only_a_window_past_the
     a lab no seed entry uses still holds every entry, and a summary window of
     one epoch is one the menu step accepts. Dropping a lab the seed does use,
     or a window past the gap, is a blocker."""
-    draft = mr.parse_unsigned_list((ROOT / "data" / "menu_allowlist.draft.json").read_bytes(),
+    draft = mr.parse_unsigned_list(list_in_use_bytes(ROOT),
                                    mr.KIND_MENU_ALLOWLIST)
     seed = json.loads((tree.root / "fugal_subnet" / "routing_data" / "menu_v4_seed.json"
                        ).read_text())
@@ -554,7 +554,7 @@ def test_the_list_in_use_admits_every_entry_of_the_pinned_seed():
     try:
         allow = mr.shipped_list(mr.KIND_MENU_ALLOWLIST)
     except FileNotFoundError:
-        allow = mr.parse_unsigned_list((ROOT / "data" / "menu_allowlist.draft.json").read_bytes(),
+        allow = mr.parse_unsigned_list(list_in_use_bytes(ROOT),
                                        mr.KIND_MENU_ALLOWLIST)
     seed = json.loads((ROOT / "fugal_subnet" / "routing_data" / "menu_v4_seed.json").read_text())
     assert len(seed["entries"]) >= ms.MENU_MIN_ENTRIES
@@ -565,7 +565,7 @@ def test_the_list_in_use_admits_every_entry_of_the_pinned_seed():
 def test_a_list_that_would_strand_the_menu_is_a_blocker(tree):
     from fugal_subnet import menu_state as ms
 
-    draft = mr.parse_unsigned_list((ROOT / "data" / "menu_allowlist.draft.json").read_bytes(),
+    draft = mr.parse_unsigned_list(list_in_use_bytes(ROOT),
                                    mr.KIND_MENU_ALLOWLIST)
     seed = json.loads((tree.root / "fugal_subnet" / "routing_data" / "menu_v4_seed.json"
                        ).read_text())

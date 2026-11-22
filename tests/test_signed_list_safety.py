@@ -91,16 +91,17 @@ def test_the_shipped_signers_are_the_release_signers_with_the_list_namespace():
         assert f'namespaces="git,{NS}"' in line, line
 
 
-def test_no_list_ships_unsigned_and_the_draft_is_not_a_list():
-    """Today: a draft allowlist for the owner to review, and no signed list."""
-    draft = (ROOT / "data" / "menu_allowlist.draft.json").read_bytes()
-    assert mr.parse_unsigned_list(draft, mr.KIND_MENU_ALLOWLIST).serial == mr.DRAFT_SERIAL
-    assert not (ROOT / "data" / "menu_allowlist.draft.json.sig").exists()
-    for kind in (mr.KIND_MENU_ALLOWLIST, mr.KIND_DEVICE_LIST):
-        with pytest.raises(FileNotFoundError):
-            mr.shipped_list(kind)
-    assert sorted(p.name for p in mr.SIGNED_LISTS_DIR.iterdir()
-                  if p.name != "__pycache__") == ["allowed_signers"]
+def test_the_release_ships_the_signed_list_and_no_draft():
+    """v0.7.0: the owner's signed lab and host list (serial 1) ships with
+    its signature, verifies under the pinned signers, and the draft is gone;
+    no device list ships."""
+    allow = mr.shipped_list(mr.KIND_MENU_ALLOWLIST)
+    assert allow.serial == 1 and allow.signer is not None
+    assert not (ROOT / "data" / "menu_allowlist.draft.json").exists()
+    with pytest.raises(FileNotFoundError):
+        mr.shipped_list(mr.KIND_DEVICE_LIST)
+    assert sorted(p.name for p in mr.SIGNED_LISTS_DIR.iterdir() if p.name != "__pycache__") \
+        == ["allowed_signers", "menu_allowlist.json", "menu_allowlist.json.sig"]
 
 
 def test_the_signers_file_read_at_run_time_is_the_pinned_one(tmp_path, monkeypatch):

@@ -316,6 +316,8 @@ sys.path.insert(0, os.getcwd())
 out = {}
 try:
     from fugal_subnet import config, fingerprint
+    if len(sys.argv) > 2 and sys.argv[2] == "uncompiled":
+        config.FINNEY_V4_ACTIVATION_BLOCK = None   # as before a release compiled finney's block
     finney = config.FINNEY_GENESIS_HASH
 
     def attempt(fn):
@@ -341,7 +343,7 @@ print("PROBE " + json.dumps(out, sort_keys=True))
 '''
 
 
-def _probe_env(value: str | None) -> dict:
+def _probe_env(value: str | None, uncompiled: bool = False) -> dict:
     import os
     import subprocess
     import sys
@@ -349,7 +351,8 @@ def _probe_env(value: str | None) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith("FUGAL_")}
     if value is not None:
         env["FUGAL_V4_ACTIVATION_BLOCK"] = value
-    run = subprocess.run([sys.executable, "-c", _ENV_PROBE, _OTHER_CHAIN], cwd=_ROOT, env=env,
+    run = subprocess.run([sys.executable, "-c", _ENV_PROBE, _OTHER_CHAIN]
+                         + (["uncompiled"] if uncompiled else []), cwd=_ROOT, env=env,
                          capture_output=True, text=True, timeout=300)
     line = [ln for ln in run.stdout.splitlines() if ln.startswith("PROBE ")]
     assert line, run.stderr[-500:]
@@ -357,10 +360,10 @@ def _probe_env(value: str | None) -> dict:
 
 
 def test_a_v4_activation_variable_that_is_not_a_block_number_is_refused_by_name_off_finney():
-    clean = _probe_env(None)
+    clean = _probe_env(None, uncompiled=True)
     assert "error" not in clean and clean["finney_protocol"] == 3 and clean["malformed"] is None
     for bad in ("not-a-number", "12.5", "0x10", "1_000", "12abc", "٣٠٠", "--5", "12 34"):
-        got = _probe_env(bad)
+        got = _probe_env(bad, uncompiled=True)
         # an import never fails on it, and neither neuron module
         assert "error" not in got and got["neurons"] is True, (bad, got)
         assert got["env"] is None and got["malformed"] == bad, (bad, got)
@@ -389,6 +392,7 @@ def test_a_whitespace_only_v4_activation_variable_is_unset_and_a_number_is_a_num
 def test_a_malformed_v4_block_is_refused_on_finney_once_a_block_is_compiled(monkeypatch):
     from fugal_subnet import config
 
+    monkeypatch.setattr(config, "FINNEY_V4_ACTIVATION_BLOCK", None)
     monkeypatch.setattr(config, "V4_ACTIVATION_BLOCK_MALFORMED", "oops")
     assert config.v4_activation_block(config.FINNEY_GENESIS_HASH) is None
     monkeypatch.setattr(config, "FINNEY_V4_ACTIVATION_BLOCK", 9_600_120)
@@ -399,6 +403,7 @@ def test_a_malformed_v4_block_is_refused_on_finney_once_a_block_is_compiled(monk
 def test_both_neurons_decide_their_protocol_through_the_named_refusal(monkeypatch):
     from fugal_subnet import config
 
+    monkeypatch.setattr(config, "FINNEY_V4_ACTIVATION_BLOCK", None)
     monkeypatch.setattr(config, "V4_ACTIVATION_BLOCK_MALFORMED", "oops")
     assert validator._v4_activation_block(config, config.FINNEY_GENESIS_HASH) is None
     assert config.protocol_for_chain(config.FINNEY_GENESIS_HASH) == 3

@@ -224,6 +224,7 @@ def test_the_odds_seat_then_menu_b_apply_in_order():
 
 def test_the_miner_takes_its_protocol_and_menu_from_the_compiled_blocks(monkeypatch):
     finney, other = config.FINNEY_GENESIS_HASH, "0x" + "ab" * 32
+    monkeypatch.setattr(config, "FINNEY_V4_ACTIVATION_BLOCK", None)   # v3 and menu B only
     monkeypatch.setattr(config, "V3_ACTIVATION_BLOCK_ENV", None)
     monkeypatch.setattr(config, "MENU_B_BLOCK_ENV", None)
     assert config.protocol_for_chain(finney) == 3      # a compose with no variable is still v3

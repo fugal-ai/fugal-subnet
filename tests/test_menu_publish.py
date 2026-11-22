@@ -801,10 +801,13 @@ def _setup(tmp_path, *, period=1, root=False, bucket=BUCKET, cfg=_Cfg, live=True
         v4_block=26400 * 360, state_path=str(tmp_path / "state.json"), reveal_bucket=bucket)
 
 
-def test_no_release_schedules_v4_so_the_validator_sets_up_no_menu():
+def test_the_validator_reads_finneys_v4_block_from_the_release(monkeypatch):
     from fugal_subnet import config
     from neurons import validator
 
+    assert validator._v4_activation_block(config, config.FINNEY_GENESIS_HASH) \
+        == config.FINNEY_V4_ACTIVATION_BLOCK
+    monkeypatch.setattr(config, "FINNEY_V4_ACTIVATION_BLOCK", None)
     assert validator._v4_activation_block(config, config.FINNEY_GENESIS_HASH) is None
 
 

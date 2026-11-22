@@ -71,3 +71,21 @@ def test_the_shipped_finney_compose_passes():
     errors: list[str] = []
     _checker().check_finney_compose_carries_compiled_blocks(errors)
     assert errors == []
+
+
+def test_the_v4_block_setter_finds_one_value_in_config_and_the_finney_compose():
+    """scripts/set_v4_activation_block.py --check: the compiled block and the
+    finney compose agree, and the block is an epoch boundary."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "set_v4_activation_block.py"
+    spec = importlib.util.spec_from_file_location("set_v4_activation_block", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.check() == 0
+    from fugal_subnet import config
+
+    if config.FINNEY_V4_ACTIVATION_BLOCK is not None:
+        assert config.FINNEY_V4_ACTIVATION_BLOCK % mod.FINNEY_BLOCKS_PER_EPOCH == 0
+        assert mod.forms(9572760) == ["9,572,760", "9572760", "e00026591", "26,591", "26591"]

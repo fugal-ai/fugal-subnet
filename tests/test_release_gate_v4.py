@@ -492,29 +492,48 @@ def test_the_gate_today_lists_exactly_the_open_conditions():
     got = _checker().v4_release_blockers()
     kinds = {b.split(":", 1)[0] for b in got}
     assert kinds <= set(GATE_KINDS)
-    assert any(b.startswith("block: FINNEY_V4_ACTIVATION_BLOCK is not set") for b in got)
-    assert any(b.startswith("list: no signed lab and host list") for b in got)
+    # The release clears the conditions one at a time: the block is compiled
+    # (scripts/set_v4_activation_block.py), then the signed list ships, then
+    # the composes are frozen on the release image. Each step's blocker is
+    # listed exactly while its step is not done.
+    from fugal_subnet import config
+
+    compiled = config.FINNEY_V4_ACTIVATION_BLOCK is not None
+    assert any(b.startswith("block: FINNEY_V4_ACTIVATION_BLOCK is not set") for b in got) \
+        is not compiled
+    ships = (ROOT / "fugal_subnet" / "signed_lists" / "menu_allowlist.json").exists()
+    assert any(b.startswith("list: no signed lab and host list") for b in got) is not ships
 
 
 def test_the_plain_check_does_not_fail_on_the_v4_gate_and_release_v4_does(capsys):
     mod = _checker()
     mod.main([])
     assert "Protocol v4 release gate:" in capsys.readouterr().out
+    if not mod.v4_release_blockers():
+        return                                    # the release tree: --release-v4 passes
     with pytest.raises(SystemExit) as e:
         mod.main(["--release-v4"])
-    assert "v4 release gate: block:" in str(e.value)
+    assert "v4 release gate: " in str(e.value)
 
 
 def test_the_probe_runs_the_miners_selection_on_the_shipped_code():
-    # Today no finney block is compiled: under the shipped compose's
-    # environment the miner serves protocol 3, and a compose that sets a v4
-    # block on finney is refused by the miner itself.
+    # With no finney block compiled the miner serves protocol 3 under a
+    # compose without the variable; with one compiled it serves protocol 4
+    # from that block. Either way a compose that sets another v4 block on
+    # finney is refused by the miner itself.
+    from fugal_subnet import config
+
+    compiled = config.FINNEY_V4_ACTIVATION_BLOCK
+    assert compiled != BLOCK
     mod = _checker()
     env = dict(GOOD_ENV)
     env.pop("FUGAL_V4_ACTIVATION_BLOCK")
-    assert mod._miner_selection(ROOT, env)["protocol"] == 3
+    assert mod._miner_selection(ROOT, env)["protocol"] == (3 if compiled is None else 4)
     got = mod._miner_selection(ROOT, GOOD_ENV)
     assert "FUGAL_V4_ACTIVATION_BLOCK" in got.get("error", ""), got
+    if compiled is not None:
+        got = mod._miner_selection(ROOT, {**GOOD_ENV, "FUGAL_V4_ACTIVATION_BLOCK": str(compiled)})
+        assert got.get("protocol") == 4 and got.get("v4_block") == compiled, got
 
 
 def test_the_compose_variables_are_derived_from_the_miners_protocol_selection():

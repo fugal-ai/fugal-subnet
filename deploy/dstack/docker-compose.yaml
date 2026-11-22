@@ -59,6 +59,10 @@ services:
       # reads it only from here; validators have it compiled into v0.5.0, and
       # check_safety_invariants requires the two to be equal.
       - FUGAL_V3_ACTIVATION_BLOCK=9527760
+      # Protocol v4 switches on at this block (an epoch boundary). The miner
+      # reads it only from here; validators have it compiled into v0.7.0, and
+      # check_safety_invariants requires the two to be equal.
+      - FUGAL_V4_ACTIVATION_BLOCK=9572760
       - FUGAL_EMBEDDING_CACHE=/app/results/embeddings
       # The v2 pool after its first manifest-verified load, so a restart does not
       # need Hugging Face. Verified on every read; rebuilt if it fails.

@@ -658,7 +658,8 @@ def test_protocol_4_is_selected_only_by_the_off_finney_variable(monkeypatch):
     from fugal_subnet.benchmarks.slicer import protocol_version_for_boundary
 
     finney = config.FINNEY_GENESIS_HASH
-    assert config.FINNEY_V4_ACTIVATION_BLOCK is None          # no release schedules v4
+    # The mechanism as it was before a release compiled finney's block.
+    monkeypatch.setattr(config, "FINNEY_V4_ACTIVATION_BLOCK", None)
     monkeypatch.setattr(config, "V3_ACTIVATION_BLOCK_ENV", None)
     monkeypatch.setattr(config, "V4_ACTIVATION_BLOCK_ENV", None)
     unset = fingerprint.consensus_digest()

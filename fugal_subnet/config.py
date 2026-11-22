@@ -405,12 +405,14 @@ FINNEY_V3_ACTIVATION_BLOCK: int | None = 9527760
 FINNEY_ODDS_SEAT_BLOCK: int | None = 9530640
 _v3_activation = os.getenv("FUGAL_V3_ACTIVATION_BLOCK", "").strip()
 V3_ACTIVATION_BLOCK_ENV = int(_v3_activation) if _v3_activation else None
-# Protocol v4 (docs/decisions/LIVE_MENU_V4.md) is not scheduled on finney: no
-# release compiles a block, so there the variable may only be unset. Another
-# chain (a local chain, the rehearsals, tests) reads FUGAL_V4_ACTIVATION_BLOCK,
-# as v3's variable was read before v3's block was compiled. The activation
-# package sets FINNEY_V4_ACTIVATION_BLOCK.
-FINNEY_V4_ACTIVATION_BLOCK: int | None = None
+# Protocol v4 (docs/decisions/LIVE_MENU_V4.md) on finney: v0.7.0 compiles the
+# block below (an epoch boundary); on finney the variable may only repeat it,
+# and the finney compose must set it to the same value (the miner reads it
+# from there; check_safety_invariants). Another chain (a local chain, the
+# rehearsals, tests) reads FUGAL_V4_ACTIVATION_BLOCK. Set it only with
+# `scripts/set_v4_activation_block.py <block>`, which changes this line, the
+# finney compose and the release notes together.
+FINNEY_V4_ACTIVATION_BLOCK: int | None = 9572760
 _v4_activation = os.getenv("FUGAL_V4_ACTIVATION_BLOCK", "").strip()
 # A value that is not a block number never stops an import (v3's released code
 # ignores this variable altogether, so a stale or mistyped one on a finney

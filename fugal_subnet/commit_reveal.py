@@ -140,6 +140,10 @@ def reveal_epoch(
         return False
 
     matrix_rows = matrix.tolist() if hasattr(matrix, "tolist") else matrix
+    # A v4 epoch's record carries the v4 section (every v4 constant and
+    # pinned file, fugal_subnet/consensus_v4.py); a v1-v3 epoch's is exactly
+    # what it was before v4 was built.
+    fingerprint = environment_fingerprint(protocol_version=protocol_version)
 
     reveal = {
         "routing_protocol": identity(),
@@ -186,8 +190,8 @@ def reveal_epoch(
         # different scores for the same head can diff this to find out why;
         # without it, divergence is unfalsifiable. consensus_digest is the
         # score-affecting subset, so a mismatch is visible at a glance.
-        "environment": environment_fingerprint(),
-        "consensus_digest": consensus_digest(),
+        "environment": fingerprint,
+        "consensus_digest": consensus_digest(fingerprint),
     }
     # Protocol v2 fields are added only from the activation boundary, so a v1
     # reveal is byte-for-byte what it was. `protocol_version` says which rules
@@ -197,6 +201,10 @@ def reveal_epoch(
     # decision, so anyone can recompute every head's v2 grades and spends for
     # the epoch from this reveal alone, and the paired NV from the window's
     # reveals; a rebuild from reveals reproduces them.
+    if protocol_version >= 4:
+        # Protocol v4 runs no frame detector (SEAT_MINIMAL_V4.md 2.3 item
+        # 32): nothing is kept out of the frame, and the field is not written.
+        del reveal["frame_excluded_coldkeys"]
     if protocol_version >= 2:
         reveal["protocol_version"] = int(protocol_version)
         fields = dict(v2_fields or {})

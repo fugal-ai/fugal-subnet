@@ -205,11 +205,19 @@ def test_the_evidence_update_gets_this_epochs_shape_and_version():
 def test_the_v2_epoch_gets_the_flip_tie_break_and_the_boundary_snapshot():
     (call,) = _main_calls("run_v2_epoch")
     kw = _kw(call)
-    assert kw["seniority_floor"] == "V2_ACTIVATION_BLOCK"
+    # The flip is the v2 activation block for v2 and v3 epochs (and the v4
+    # activation block for a v4 epoch: rule C's order, SEAT_MINIMAL_V4.md 3.5).
+    assert kw["seniority_floor"] == "seniority_block"
+    tree = ast.parse(pathlib.Path(validator.__file__).read_text(encoding="utf-8"))
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    (floor,) = [ast.unparse(n.value) for n in ast.walk(main) if isinstance(n, ast.Assign)
+                and [ast.unparse(t) for t in n.targets] == ["seniority_block"]]
+    assert floor == ("v4_block if protocol_version >= 4 and v4_block is not None "
+                     "else V2_ACTIVATION_BLOCK")
     # Salted with the activation boundary's hash, which nobody knew while the
     # pre-flip commitments were being made.
     assert kw["seniority_salt"] == (
-        "_activation_block_hash(subtensor, V2_ACTIVATION_BLOCK, boundary_block, block_hash)")
+        "_activation_block_hash(subtensor, seniority_block, boundary_block, block_hash)")
     assert kw["allow_take"] == "not v2_window_degraded"
     assert kw["coldkey_of"] == "coldkey_of" and kw["commitments"] == "snapshot"
     assert kw["window"] == "v2_window" and kw["seat"] == "v2_seat"

@@ -1,0 +1,83 @@
+{
+ "first_party": {
+  "amazon": [
+   "amazon-bedrock"
+  ],
+  "anthropic": [
+   "amazon-bedrock",
+   "google-vertex/global"
+  ],
+  "google": [
+   "google-ai-studio",
+   "google-vertex/global",
+   "google-vertex/us"
+  ],
+  "meta": [
+   "google-vertex/global"
+  ],
+  "mistralai": [
+   "mistral/zdr"
+  ],
+  "openai": [
+   "azure"
+  ],
+  "qwen": [
+   "alibaba"
+  ],
+  "x-ai": [
+   "xai"
+  ]
+ },
+ "format": 2,
+ "hosts": [
+  "alibaba",
+  "amazon-bedrock",
+  "anthropic",
+  "atlas-cloud",
+  "azure",
+  "baidu",
+  "cohere",
+  "coreweave",
+  "crusoe",
+  "deepinfra",
+  "gmicloud",
+  "google-ai-studio",
+  "google-vertex/global",
+  "google-vertex/us",
+  "inference-net",
+  "meta",
+  "mistral/zdr",
+  "morph",
+  "novita",
+  "openai",
+  "seed",
+  "streamlake",
+  "tencent",
+  "wafer",
+  "xai",
+  "xiaomi"
+ ],
+ "kind": "fugal-menu-allowlist",
+ "labs": [
+  "amazon",
+  "anthropic",
+  "baidu",
+  "bytedance-seed",
+  "cohere",
+  "deepseek",
+  "google",
+  "ibm-granite",
+  "meta",
+  "minimax",
+  "mistralai",
+  "moonshotai",
+  "nvidia",
+  "openai",
+  "qwen",
+  "tencent",
+  "x-ai",
+  "xiaomi",
+  "z-ai"
+ ],
+ "serial": 0
+}

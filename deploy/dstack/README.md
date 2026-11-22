@@ -100,6 +100,11 @@ python scripts/provision_td.py --address http://<ip>:8092 \
     --api-key-file ~/.fugal/openrouter.key
 ```
 
+Under protocol v4 the miner's own options (`--v4-proposal`,
+`--v4-challenge`, `--v4-challenge-usd`) are added to that push, never to the
+compose, which must stay every miner's (MINER_GUIDE § "Protocol v4: setting
+your options in a TD"). An image from before v4 refuses a push carrying them.
+
 `deploy` refuses when the instance exists; `deploy --delete` recreates it. The
 data disk is created auto-delete, so a recreate discards the LUKS disk, the
 TPM-sealed seed (new instance id) and the embedding cache; `stop`/`start` keep

@@ -65,6 +65,14 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
 
     Validates: size cap, required arrays, shape consistency, model strings.
     """
+    z = contract.validate_head(_read_success_archive(data))
+    return HeadArtifact(z["W"], z["b"], z["models"].tolist(), "", z)
+
+
+def _read_success_archive(data: bytes) -> dict:
+    """The arrays of a success-contract head archive, read under every bound
+    that applies before any array is parsed. Shared by the v1-v3 loader and
+    the v4 one, so both refuse the same bytes for the same reasons."""
     if len(data) > HEAD_MAX_BYTES:
         raise ValueError(f"Head too large: {len(data)} bytes (max {HEAD_MAX_BYTES})")
 
@@ -92,8 +100,128 @@ def load_head_from_npz(data: bytes) -> HeadArtifact:
             "Head is not a success-contract head (no `contract` member): build it with "
             "scripts/train_head.py; heads without a cost profile cannot be scored"
         )
-    z = contract.validate_head(arrays)
+    return arrays
+
+
+# --- protocol v4 heads (docs/decisions/LIVE_MENU_V4.md, section 11) ------------
+#
+# A v4 head is today's success-head artifact: a linear layer W (rows x 1024)
+# and a bias b on the pinned question embedding, under today's contract,
+# profile and backbone. Its rows are keyed by menu entry id. It needs no
+# token means and no cost profile: a v4 pick is priced at the epoch's
+# MenuState (head_odds.picks_and_odds_v4), so those fields, when a head
+# carries them, are checked as today and never read.
+#
+# The vendored contract (vendor/success_contract.py) requires the cost fields
+# and caps a head at 64 rows, and it is byte-compared with its upstream, so
+# this acceptance sits beside it rather than in it. What the upstream
+# contract must add for the product to read a v4 head is listed in
+# LIVE_MENU_V4.md 11.2.
+
+V4_REQUIRED_FIELDS = frozenset({"W", "b", "models", "contract", "profile_id",
+                                "backbone_revision", "provenance", "lam"})
+# Optional, and never read under v4.
+V4_IGNORED_FIELDS = frozenset({"mean_in_tokens", "mean_out_tokens", "cost_profile_id"})
+# Rows a v4 head may carry: the menu's cap plus as many entries as may be
+# provisional at once (menu_state.MENU_CAP 64 + MENU_MAX_PROVISIONAL 8;
+# tests/test_head_v4.py pins the sum), so a head can hold a row for an entry
+# before it joins. A literal here so that nothing on the
+# v1-v3 path imports the menu module.
+HEAD_MAX_ROWS_V4 = 72
+_V4_DIM = 1024                 # the pinned embedding's width (contract.embed)
+# The dtypes a v4 head's W and b may have: little-endian float32 or float64.
+V4_PARAM_DTYPES = ("<f4", "<f8")
+_V4_MAX_ID_LEN = 256           # as the contract bounds a row id today
+
+
+def validate_head_v4(z: dict) -> dict:
+    """The v4 acceptance of a head's arrays, or ValueError.
+
+    Required: every field of V4_REQUIRED_FIELDS, each as the contract checks
+    it today (`contract`, `profile_id` and `backbone_revision` equal to the
+    pinned values; `provenance` a non-empty string; `lam` a finite
+    non-negative number, which no pick reads). `models`: 1 to
+    HEAD_MAX_ROWS_V4 unique, non-empty ids of at most 256 characters. `W`:
+    (rows, 1024) and `b`: (rows,), numeric, finite, every value within
+    head_odds.HEAD_MAX_ABS_PARAM. Optional: any of V4_IGNORED_FIELDS, held to
+    today's checks when present. Any other field is refused.
+    """
+    from fugal_subnet.head_odds import check_head_bounds
+
+    fields = set(z)
+    if not V4_REQUIRED_FIELDS <= fields or fields - V4_REQUIRED_FIELDS - V4_IGNORED_FIELDS:
+        raise ValueError("unsupported head fields: "
+                         f"{sorted((V4_REQUIRED_FIELDS - fields) | (fields - V4_REQUIRED_FIELDS - V4_IGNORED_FIELDS))}")
+    for key, expected in (("contract", contract.CONTRACT), ("profile_id", contract.PROFILE_ID),
+                          ("backbone_revision", contract.REVISION)):
+        if contract.scalar(z, key) != expected:
+            raise ValueError(f"unsupported {key}")
+    if not contract.scalar(z, "provenance").strip():
+        raise ValueError("missing provenance")
+    if "cost_profile_id" in z:
+        cpid = contract.scalar(z, "cost_profile_id")
+        if len(cpid) != 64 or any(ch not in "0123456789abcdef" for ch in cpid):
+            raise ValueError("invalid cost profile identity")
+    models = z["models"]
+    if models.ndim != 1 or models.dtype.kind != "U" or not 1 <= len(models) <= HEAD_MAX_ROWS_V4:
+        raise ValueError(f"a v4 head carries 1 to {HEAD_MAX_ROWS_V4} rows, keyed by entry id")
+    ids = models.tolist()
+    if len(set(ids)) != len(ids) or any(not m.strip() or len(m) > _V4_MAX_ID_LEN for m in ids):
+        raise ValueError("row ids must be unique, nonempty and bounded")
+    n = len(ids)
+    # W and b are read by exact arithmetic on every node: only the two widths
+    # every platform decodes alike, little-endian, before any value is read.
+    for key in ("W", "b"):
+        if np.dtype(z[key].dtype).str not in V4_PARAM_DTYPES:
+            raise ValueError(f"{key} must be little-endian float32 or float64, not "
+                             f"{np.dtype(z[key].dtype).str}")
+    shapes = {"W": (n, _V4_DIM), "b": (n,), "lam": (),
+              "mean_in_tokens": (n,), "mean_out_tokens": (n,)}
+    for key, shape in shapes.items():
+        if key not in z:
+            continue
+        a = z[key]
+        if a.shape != shape or a.dtype.kind not in "fi" or not np.isfinite(a).all():
+            raise ValueError(f"invalid {key}")
+        if key not in ("W", "b") and (a < 0).any():
+            raise ValueError(f"negative {key}")
+    check_head_bounds(z["W"], z["b"])
+    return z
+
+
+def load_head_v4(data: bytes) -> HeadArtifact:
+    """Load a protocol v4 head from raw .npz bytes: the same byte, archive and
+    no-pickle bounds as `load_head_from_npz`, then `validate_head_v4`."""
+    if not isinstance(data, (bytes, bytearray)):
+        raise ValueError("a head is bytes")
+    try:
+        arrays = _read_success_archive(bytes(data))
+    except ValueError:
+        raise
+    except Exception as e:  # noqa: BLE001 - miner bytes: a refusal with its reason
+        # zipfile raises NotImplementedError for a compression method it
+        # cannot unpack (and other errors for other damage): a v4 head the
+        # reader cannot unpack is refused like any other unreadable head.
+        raise ValueError(f"Head is not a readable .npz archive ({type(e).__name__}: {e})") from e
+    z = validate_head_v4(arrays)
     return HeadArtifact(z["W"], z["b"], z["models"].tolist(), "", z)
+
+
+def v4_head_verdict(head_bytes: bytes | None, state) -> str | None:
+    """None, or why a head cannot run a v4 epoch whose menu is `state`
+    (a menu_state.MenuState): it does not load as a v4 head, or it has no
+    row for any entry on the menu. Rows for other ids are never read, and an
+    entry with no row is the scoring rule's to price (grace, 9.1)."""
+    try:
+        if head_bytes is None:
+            raise ValueError("missing success head bytes")
+        head = load_head_v4(head_bytes)
+    except ValueError as e:
+        return f"Incompatible success head: {e}"
+    ids = set(state.ids())
+    if not any(m in ids for m in head.models):
+        return "Incompatible success head: no row for any entry on this epoch's menu"
+    return None
 
 
 def load_head_from_b64(b64_str: str) -> HeadArtifact:

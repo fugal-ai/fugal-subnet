@@ -198,6 +198,198 @@ EXPLORE_PRIVATE_Z = int(os.getenv("FUGAL_EXPLORE_PRIVATE_Z", "4"))
 # and every honest operator would be "implausibly" right. About four epochs
 # for a 33-entry menu at 500 pairs an epoch.
 EXPLORE_PRIVATE_MIN_TRIALS = int(os.getenv("FUGAL_EXPLORE_PRIVATE_MIN_TRIALS", "50"))
+# Exploration in protocol v4 (docs/decisions/LIVE_MENU_V4.md, section 8, at
+# the sizes of docs/decisions/SEAT_MINIMAL_V4.md, sections 5.3 and 8;
+# explore_weights.plan_shares_v4, epoch_plan.exploration_plan_v4). Read only
+# under protocol v4, which no release activates yet. There is no shared set
+# (EXPLORE_SHARED_SIZE_V4 = 0, SEAT_MINIMAL_V4.md 2.3 item 33: its only reader
+# was the cross-miner agreement detector, and a pair every operator voted on
+# judges no head). A miner's private set is EXPLORE_PRIVATE_SIZE_V4 calls in
+# two parts:
+#   - the cost-aware part, EXPLORE_COST_AWARE_SIZE_V4 calls drawn by v3's
+#     cost-aware shares on the menu state's measured costs, the exponent the
+#     most uniform whose expected spend over the shared set (none) and this
+#     part is within EXPLORE_SPEND_CAP_USD_V4 (floor and exponents as v3's);
+#   - the coverage part, EXPLORE_COVERAGE_SIZE_V4 calls, drawn toward entries
+#     with fewer than EXPLORE_COVERAGE_TARGET_V4 exploration pairs in the
+#     window as published MENU_LAG epochs back. Only the fraction
+#     min(1, sum of deficits / EXPLORE_COVERAGE_DAMP_PAIRS_V4) follows the
+#     deficits, so one entry with a deficit does not take every coverage
+#     call; the part is then mixed toward uniform until its expected spend is
+#     within EXPLORE_COVERAGE_SPEND_CAP_USD_V4.
+# Both caps are on EXPECTED spend, as v3's is. The owner's label budget is
+# 112 calls a hotkey-epoch (SEAT_MINIMAL_V4.md 5.3, about $20 a day with the
+# confidential VM): W0's setting B (24 + 16 calls with the 8 shared ones,
+# from its replay of 24 published epochs, 2026-11-18) scaled by 112 / 40
+# with the shared set removed, 68 + 44. The caps keep v3's headroom over
+# what those calls cost at measured costs ($0.35 cost-aware, $0.43 uniform
+# coverage), so the coverage cap binds only on a spike; the damping is
+# setting B's 500 scaled by the coverage calls. EXPLORE_COLDKEY_CAP_V4 is 1.5x
+# the private size, as v3's is. Compiled constants, not read from the
+# environment.
+EXPLORE_SHARED_SIZE_V4 = 0
+EXPLORE_COST_AWARE_SIZE_V4 = 68
+EXPLORE_COVERAGE_SIZE_V4 = 44
+EXPLORE_PRIVATE_SIZE_V4 = EXPLORE_COST_AWARE_SIZE_V4 + EXPLORE_COVERAGE_SIZE_V4
+EXPLORE_COLDKEY_CAP_V4 = 168
+EXPLORE_SPEND_CAP_USD_V4 = "0.55"
+EXPLORE_COVERAGE_TARGET_V4 = 100
+EXPLORE_COVERAGE_DAMP_PAIRS_V4 = 1400
+EXPLORE_COVERAGE_SPEND_CAP_USD_V4 = "1.10"
+# The question mix in protocol v4 (docs/decisions/LIVE_MENU_V4.md, section
+# 10). The mix itself is data, derived once from named published reveals by
+# scripts/build_mix_v4.py and pinned (routing_data/pool_mix_v4.json, read by
+# epoch_plan.mix_v4); these are the rule's parameters, read by that script
+# and by the checks of the pinned file. A category's share is proportional to
+# the outcome variance p(1 - p) of a uniformly drawn entry on its exploration
+# pairs, at least MIX_FLOOR_PCT_V4, rounded to MIX_STEP_PCT_V4; inside a
+# category sets split by their own p(1 - p) x pool size (a set with fewer
+# than MIX_MIN_PAIRS_V4 exploration pairs takes its category's value), and no
+# set's share of the slice exceeds pool size / (slice x MIX_CYCLE_EPOCHS_V4),
+# so none is drawn through faster than two 48-epoch windows.
+# SLICE_SIZE_V4 is the scored slice the mix is built for: 200
+# (SEAT_MINIMAL_V4.md 3.4 and 8: the real-picks check prices picks at the
+# measured pick-cost table, so 1,000 questions, five epochs of 200, are its
+# minimum; v3's slice is 300). The mix is rebuilt for it, and at 200 no
+# set's cycle cap binds. Compiled constants, not read from the environment.
+SLICE_SIZE_V4 = 200
+MIX_FLOOR_PCT_V4 = 5
+MIX_STEP_PCT_V4 = 5
+MIX_MIN_PAIRS_V4 = 100
+MIX_CYCLE_EPOCHS_V4 = 96
+# A proposed entry joins only if, on its 300-question measurement, some
+# category reaches this accuracy on at least menu_state's
+# PROPOSAL_MIN_CATEGORY_GRADED graded questions, beside the 95% answered gate
+# (docs/decisions/LIVE_MENU_V4.md, section 5), in basis points. 5000 (50%) is
+# the lead's choice pending the seat-rule package: the design names the gate
+# and not its value. Compiled, not read from the environment; a live v4
+# validator refuses to start without it (validator._v4_menu_setup).
+PROPOSAL_MIN_CATEGORY_ACCURACY_BP_V4 = 5000
+# The one bound of protocol v4 (docs/decisions/SEAT_MINIMAL_V4.md, 3.1;
+# seat_bound.lower_bound, champion.lower_bound): every v4 seat comparison is a
+# one-sided normal-mixture confidence sequence at alpha = 1% on integer items
+# of 1 / BOUND_UNITS_PER_POINT_V4 of a point. Its logarithms are replaced by
+# pinned rationals that are never below them, which only widens it:
+# BOUND_A_ALPHA_V4 >= 2 ln(1 / alpha) = 9.21034..., and BOUND_LN2_UP_V4 >= ln 2
+# times the bit length of ceil(1 + n / n0) for ln(1 + n / n0). Exact rationals,
+# compiled, not read from the environment. Read only under protocol v4.
+BOUND_A_ALPHA_V4 = "9211/1000"
+BOUND_LN2_UP_V4 = "6932/10000"
+BOUND_UNITS_PER_POINT_V4 = 1_000_000
+# The labels a v4 comparison reads are those of the last SEAT_WINDOW_EPOCHS_V4
+# epochs (docs/decisions/SEAT_MINIMAL_V4.md 3.2, condition 1; labels_v4): the
+# same 48 as v3's CHAMPION_WINDOW_EPOCHS, compiled, not read from the
+# environment. Read only under protocol v4.
+SEAT_WINDOW_EPOCHS_V4 = 48
+# The real-picks check of protocol v4 (docs/decisions/SEAT_MINIMAL_V4.md, 3.4
+# and 8; picks_v4.picks_check): a head's net value over the bar on the scored
+# questions of its answered run, at 1 / routing_protocol.BENCHMARK_LAMBDA
+# dollars a correct answer and each answered call at its entry's pick cost in
+# the question's category, every question weighted 1, passes the bound above
+# with margin -PICKS_MARGIN_POINTS_V4 points on at least
+# PICKS_MIN_QUESTIONS_V4 paired questions (n0 BOUND_N0_V4). FAIL_MAX_BP_V4 is
+# the absolute failure bound, in basis points: a proof with more than it of
+# its exploration calls failed is not counted, except in an outage epoch
+# (menu_inputs.outage); a challenge's failed calls fail closed instead
+# (picks_v4.challenge_items). Compiled, not read from the environment; read only
+# under protocol v4.
+PICKS_MARGIN_POINTS_V4 = "3/2"
+PICKS_MIN_QUESTIONS_V4 = 500
+FAIL_MAX_BP_V4 = 3400
+# The fast crown (docs/decisions/FAST_CROWN_V4.md 0, 2, 12): rules A and B tune
+# the bound's mixture to BOUND_N0_V4 items (100) instead of each rule's
+# minimum, which is worth half again the questions at the decided sizes; rule
+# A's minimum is ODDS_MIN_PAIRS_V4 (300) and rule B's PICKS_MIN_QUESTIONS_V4
+# (500). A challenger answers the first 500 or 1,000 questions
+# (CHALLENGE_SIZES_V4) of the epoch's challenge list of CHALLENGE_LIST_SIZE_V4
+# questions (epoch_plan.challenge_list_v4: the scored slice first), pairing
+# its picks with those of the seat holder the root's reveal of epoch
+# E - CHALLENGE_HOLDER_LAG_V4 names (the newest reveal at E's boundary: the
+# same lag as menu_state.MENU_LAG, for the same reason). Compiled, not read
+# from the environment; read only under protocol v4.
+BOUND_N0_V4 = 100
+CHALLENGE_SIZES_V4 = (500, 1000)
+CHALLENGE_LIST_SIZE_V4 = 1000
+CHALLENGE_HOLDER_LAG_V4 = 2
+# The TD's time budget for a challenge (FAST_CROWN_V4.md 3): no challenge
+# call is started more than CHALLENGE_BUDGET_S_V4 seconds after the epoch's
+# first call. The challenger's own calls are made first, in list order; when
+# some are not started the challenge is reported at the largest size whose own
+# calls were all made (none below 500: no challenge, an unanswered attempt), and
+# a holder-side call not started is no item (HOLDER_FAIL_CAP_BP_V4). A TD
+# constant: no validator reads it.
+CHALLENGE_BUDGET_S_V4 = 1800
+# A challenge's holder-side calls (picks_v4.challenge_verdict): a call the
+# challenger's TD did not start (cut by its time or dollar budget) is no item;
+# one made that failed scores as the holder answering right. When more than
+# HOLDER_FAIL_CAP_BP_V4 basis points (10%) of the challenge's holder-side calls
+# failed or were not made, the challenge is void: counted for and against
+# nobody, published with that reason. The measured rates (FAST_CROWN_V4.md 1):
+# no honest head-epoch failed more than 3 calls of about 1,000; the flaky
+# entries the gates admit fail 5-10%; more than 10% is an outage, a cut or a
+# deliberate failure, and then the holder's side says nothing about routing,
+# while failing it up to the cap moves the items by at most about 1.5 points
+# against the challenger (scripts/experiments/experiment_fast_crown_v4.py v).
+# A run passes through at most VOID_MAX_IN_RUN_V4 void epoch: a second one
+# restarts it like a gap, so voiding cannot select a run's good epochs.
+HOLDER_FAIL_CAP_BP_V4 = 1000
+VOID_MAX_IN_RUN_V4 = 1
+# The TD's dollar ceiling for one challenge (the operator's
+# --v4-challenge-usd, FUGAL_V4_CHALLENGE_USD, provisioning field
+# `v4_challenge_usd`: whole dollars, 1 to CHALLENGE_SPEND_MAX_USD_V4, default
+# CHALLENGE_SPEND_USD_V4). It bounds REALISED spend, with an ESTIMATE
+# pre-check. Before its first call the TD estimates the challenge's cost from
+# the epoch's pick-cost table (td_v4.challenge_estimate: every own call and
+# every holder-side call where the picks differ, each at its entry's pick
+# cost, what the challenge's items are priced at) and makes no challenge whose
+# estimate exceeds the ceiling (logged with both figures). While running it
+# starts no challenge call once the challenge's realised spend plus the
+# pick-cost estimate of its calls in flight reaches the ceiling; what is not
+# started is treated as a cut by the time budget (own-side prefix, holder-side
+# `not_started`, HOLDER_FAIL_CAP_BP_V4). Calls in flight when the ceiling is
+# reached finish and are paid: at most HARNESS_CONCURRENCY calls, each bounded
+# by its entry's max_tokens at the price ceiling (docs/MINER_GUIDE.md states
+# the estimate at seed prices and this overshoot). TD constants: no
+# validator reads them.
+CHALLENGE_SPEND_USD_V4 = 100
+CHALLENGE_SPEND_MAX_USD_V4 = 50000
+# The memorisation check of protocol v4 (docs/decisions/SEAT_MINIMAL_V4.md 6;
+# memo_v4): a head is refused when the bound says its skill over R on labels
+# of questions published before its commit exceeds its skill on the others,
+# within benchmark, by more than MEMO_MARGIN_POINTS_V4 Brier points, with
+# MEMO_MIN_LABELS_V4 labels in each part (also the bound's n0) and benchmarks
+# with fewer than MEMO_MIN_QUESTIONS_V4 questions in either part left out.
+# The unpublished reserve is rationed: an epoch draws ceil(R / FRESH_RESERVE_
+# EPOCHS_V4) fresh questions for the whole field, R the reserve, so a reserve
+# of 1,200 or more lasts 60 days at 20 epochs a day (of 2,400 or more, a
+# quarter is left then), whatever the number of hotkeys. The minimum is 500 (the design's 1,000 is out of reach of a
+# 48-epoch window once the reserve is small and the field is a few operators;
+# SEAT_MINIMAL_V4.md 6.3). Compiled, not read from the environment. Read only
+# under protocol v4.
+MEMO_MARGIN_POINTS_V4 = 1
+MEMO_MIN_LABELS_V4 = 500
+MEMO_MIN_QUESTIONS_V4 = 5
+FRESH_RESERVE_EPOCHS_V4 = 1200
+# The seat of protocol v4 (docs/decisions/SEAT_MINIMAL_V4.md 3.3 to 3.8;
+# seat_v4). Rule A, the odds test: X beats Y when the bound above passes on
+# X's Brier gain over Y with margin ODDS_MARGIN_POINTS_V4 Brier points on at
+# least ODDS_MIN_PAIRS_V4 labels (n0 BOUND_N0_V4): v3's margin, the bootstrap
+# replaced by the bound. STANDING_EPOCHS_V4 (G) is how long an absent head
+# keeps its place and the holder its seat: a head, the holder included,
+# stands while it was verified in this epoch or one of the G - 1 before it
+# (owner decision: 3; FAST_CROWN_V4.md 6).
+# LATE_ODDS_SLOTS_V4 bounds the late odds one reveal publishes (head-epochs,
+# newest epoch first, the heads in turn), so the reveal stays inside the
+# miner's holder read at 256 UIDs (tests/test_v4_reveal_budget.py); the rest
+# are computed and published in the epochs after. EXPLORE_PRIVATE_MIN_SAMPLES_V4
+# is the plausibility check's minimum sample under v4, the value v1-v3 read
+# from EXPLORE_DISAGREE_MIN_SAMPLES, whose detector v4 does not run (2.3 item
+# 32). Compiled, not read from the environment; read only under protocol v4.
+ODDS_MARGIN_POINTS_V4 = "1/10"
+ODDS_MIN_PAIRS_V4 = 300
+STANDING_EPOCHS_V4 = 3
+LATE_ODDS_SLOTS_V4 = 32
+EXPLORE_PRIVATE_MIN_SAMPLES_V4 = 8
 
 # --- Protocol v3: activation, and the seat decided on odds ---
 # Protocol v3 (a new pool, a new menu, per-miner exploration, odds computed
@@ -213,6 +405,25 @@ FINNEY_V3_ACTIVATION_BLOCK: int | None = 9527760
 FINNEY_ODDS_SEAT_BLOCK: int | None = 9530640
 _v3_activation = os.getenv("FUGAL_V3_ACTIVATION_BLOCK", "").strip()
 V3_ACTIVATION_BLOCK_ENV = int(_v3_activation) if _v3_activation else None
+# Protocol v4 (docs/decisions/LIVE_MENU_V4.md) is not scheduled on finney: no
+# release compiles a block, so there the variable may only be unset. Another
+# chain (a local chain, the rehearsals, tests) reads FUGAL_V4_ACTIVATION_BLOCK,
+# as v3's variable was read before v3's block was compiled. The activation
+# package sets FINNEY_V4_ACTIVATION_BLOCK.
+FINNEY_V4_ACTIVATION_BLOCK: int | None = None
+_v4_activation = os.getenv("FUGAL_V4_ACTIVATION_BLOCK", "").strip()
+# A value that is not a block number never stops an import (v3's released code
+# ignores this variable altogether, so a stale or mistyped one on a finney
+# neuron must not matter before a release compiles a v4 block): it is kept
+# aside and refused by name where the neuron decides its protocol,
+# v4_activation_block, off finney.
+V4_ACTIVATION_BLOCK_ENV: int | None = None
+V4_ACTIVATION_BLOCK_MALFORMED: str | None = None
+_v4_digits = _v4_activation[1:] if _v4_activation.startswith("-") else _v4_activation
+if _v4_digits.isascii() and _v4_digits.isdigit():
+    V4_ACTIVATION_BLOCK_ENV = int(_v4_activation)
+elif _v4_activation:
+    V4_ACTIVATION_BLOCK_MALFORMED = _v4_activation
 _odds_seat = os.getenv("FUGAL_ODDS_SEAT_BLOCK", "").strip()
 ODDS_SEAT_BLOCK_ENV = int(_odds_seat) if _odds_seat else None
 # --- Protocol v3, menu B: entries added at a block, with a grace period ---
@@ -312,6 +523,32 @@ def v3_activation_block(genesis_hash: str | None) -> int | None:
                         "FUGAL_V3_ACTIVATION_BLOCK")
 
 
+def v4_activation_block(genesis_hash: str | None) -> int | None:
+    """The block protocol v4 applies from on this chain, or None. Finney has
+    none in any release yet (FINNEY_V4_ACTIVATION_BLOCK), so there the
+    variable is refused unless unset; another chain reads it. Never before v3.
+
+    A value that is not a block number (V4_ACTIVATION_BLOCK_MALFORMED) is
+    refused by name on any chain but finney, and on finney while no release
+    compiles a v4 block it is ignored, as the v3 release ignores the variable."""
+    malformed = V4_ACTIVATION_BLOCK_MALFORMED
+    if malformed is not None:
+        known_finney = (genesis_hash is not None
+                        and str(genesis_hash).lower() == FINNEY_GENESIS_HASH.lower())
+        if known_finney and FINNEY_V4_ACTIVATION_BLOCK is None:
+            return None
+        raise ValueError(f"FUGAL_V4_ACTIVATION_BLOCK={malformed!r} is not a block number "
+                         "(digits only). Unset it or set the block.")
+    block = _chain_block(genesis_hash, FINNEY_V4_ACTIVATION_BLOCK, V4_ACTIVATION_BLOCK_ENV,
+                         "FUGAL_V4_ACTIVATION_BLOCK")
+    if block is not None:
+        v3 = v3_activation_block(genesis_hash)
+        if v3 is None or block < v3:
+            raise ValueError(f"the v4 activation block ({block}) must not be before the v3 "
+                             f"activation block ({v3})")
+    return block
+
+
 def menu_b_block(genesis_hash: str | None) -> int | None:
     """The block from which the v3 menu is menu B. Never before v3."""
     block = _chain_block(genesis_hash, FINNEY_MENU_B_BLOCK, MENU_B_BLOCK_ENV,
@@ -345,7 +582,10 @@ def protocol_for_chain(genesis_hash: str | None) -> int:
     compiled finney blocks (the variables only repeat them there, or set them
     on another chain). A compose that leaves a variable out can no longer
     leave a miner on the protocol before it (2026-11-17: a compose without
-    FUGAL_V3_ACTIVATION_BLOCK would have kept every miner on v2)."""
+    FUGAL_V3_ACTIVATION_BLOCK would have kept every miner on v2). v4 only
+    where a v4 block applies, which on finney no release sets."""
+    if v4_activation_block(genesis_hash) is not None:
+        return 4
     if v3_activation_block(genesis_hash) is not None:
         return 3
     return 2 if V2_ACTIVATION_BLOCK is not None else 1
@@ -1097,6 +1337,20 @@ REVEAL_BUCKET = os.getenv("FUGAL_REVEAL_BUCKET", "").strip()
 # read it from the chain.
 REVEAL_DELAY_EPOCHS = int(os.getenv("FUGAL_REVEAL_DELAY_EPOCHS", "0"))
 
+# --- Protocol v4 menu mirrors (operational; every byte read is checked by hash) ---
+# Where a reader also looks for a menu's bytes and the signed lists it names,
+# after the root's bucket: https base URLs, comma-separated, each serving the
+# root's content-addressed names (<netuid>/menus/<hash>.json, <netuid>/lists/...).
+# Any validator with a bucket mirrors what it accepted (menu_publish.Mirror).
+# Nothing depends on a mirror existing; a mirror that serves other bytes is skipped.
+
+
+def parse_menu_mirrors(text: str) -> tuple[str, ...]:
+    return tuple(m.strip().rstrip("/") for m in str(text).split(",") if m.strip())
+
+
+MENU_MIRRORS = parse_menu_mirrors(os.getenv("FUGAL_MENU_MIRRORS", ""))
+
 # --- The v2 star: root and followers (operational) ---
 # Every validator but the root verifies its v2 seat state against the root's
 # published reveals and re-anchors on them after a missed epoch
@@ -1159,6 +1413,33 @@ def root_hotkey(finney: bool, env: str | None = None) -> str | None:
                 f"fixed by the release ({FINNEY_ROOT_HOTKEY}). Unset it.")
         return FINNEY_ROOT_HOTKEY
     return value or None
+
+
+# Protocol v4 reads each epoch's menu from the root's reveal commitment, so a
+# node that rebuilds past menus (menu_publish.rebuild) must read each epoch's
+# commitment under the hotkey that was the root's for that epoch, not under
+# today's: read under one hotkey, a walk across a change of the root's key
+# ends silently on another menu. The table is (first epoch, hotkey), sorted:
+# the commitment for epoch E (the root's reveal commitment for E - MENU_LAG,
+# read at E's boundary) is read under the last row whose first epoch is at or
+# before E. A release that rotates the root's key appends a row and keeps
+# every older one; the new root's first commitment is its reveal for that
+# row's epoch minus MENU_LAG. Finney's is compiled; elsewhere
+# FUGAL_ROOT_HOTKEY names one hotkey for every epoch.
+FINNEY_ROOT_HOTKEYS_V4: tuple[tuple[int, str], ...] = ((0, FINNEY_ROOT_HOTKEY),)
+
+
+def root_hotkeys_v4(finney: bool, env: str | None = None) -> tuple[tuple[int, str], ...]:
+    """The root's hotkeys for protocol v4's menu commitments, as
+    ((first epoch, hotkey), ...): finney's compiled table (a
+    FUGAL_ROOT_HOTKEY that names another hotkey is refused, as in
+    `root_hotkey`), or the variable's one hotkey from epoch 0, or () when
+    none is known."""
+    hk = root_hotkey(finney, env)
+    if finney:
+        return FINNEY_ROOT_HOTKEYS_V4
+    return ((0, hk),) if hk else ()
+
 
 # --- Head publication (operational; nothing here reads back into a score) ---
 # Whether this validator uploads the bytes of every head it verified to its
@@ -1360,6 +1641,8 @@ CONSENSUS_ENV_INPUTS = (
     # (FINNEY_CONFIRM_ACTIVATION_BLOCK) and a different value is refused.
     "FUGAL_CONFIRM_ACTIVATION_BLOCK",
     "FUGAL_V3_ACTIVATION_BLOCK",
+    # Off finney only: finney has no v4 block, and a set variable is refused there.
+    "FUGAL_V4_ACTIVATION_BLOCK",
     "FUGAL_ODDS_SEAT_BLOCK",
     "FUGAL_MENU_B_BLOCK",
     "FUGAL_MENU_GRACE_EPOCHS",
@@ -1384,6 +1667,7 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_ROOT",
     "FUGAL_REFERENCE_BUCKET",
     "FUGAL_ROOT_HOTKEY",
+    "FUGAL_MENU_MIRRORS",
     "FUGAL_PUBLISH_HEADS",
     "FUGAL_PUBLISH_HEADS_AFTER_EPOCHS",
     "FUGAL_HEAD_ARCHIVE_DIR",
@@ -1411,6 +1695,21 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_NETUID",
     "FUGAL_WALLET_PATH",
     "FUGAL_MINER_PORT",
+    # Protocol v4, read by neurons/miner.py: the operator's own proposal and
+    # the ceiling on what it spends measuring it. A miner's own costs; the
+    # compiled rules and every validator judge the filing itself.
+    "FUGAL_V4_PROPOSAL",
+    # Where the TD keeps its last accepted menu and measurement ledger, and
+    # a menu file the operator hands in as a last-resort start: every menu
+    # is checked against the chain and the compiled rules whatever its source.
+    "FUGAL_V4_STATE_DIR",
+    "FUGAL_V4_ANCHOR",
+    # Whether the TD answers the scored questions (auto, on or off): a
+    # miner's own spend; the proof says which it did and is judged on that.
+    "FUGAL_V4_CHALLENGE",
+    # The TD's dollar budget for one challenge: a miner's own spend; what it
+    # leaves out is in the proof and judged by the rules every challenge is.
+    "FUGAL_V4_CHALLENGE_USD",
     "FUGAL_AXON_IP",
     "FUGAL_PROVISIONED_WALLET_DIR",
     "FUGAL_EMBEDDING_CACHE",

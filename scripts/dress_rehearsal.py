@@ -25,6 +25,10 @@ Scenarios
            scenario_v2_flip, and scripts/rehearsal_v2.py for the in-process half)
   v3_flip  protocol v3 across its activation and odds-seat blocks (not part of
            "all"; see scenario_v3_flip, and scripts/rehearsal_v3.py)
+  v4_flip  protocol v4 across its activation block (not part of "all"; see
+           scripts/dress_rehearsal_v4.py, and scripts/rehearsal_v4.py)
+  v4_seat_menu  the v4 fast crown and chain proposals (not part of "all"; see
+           scripts/dress_rehearsal_v4_seat.py)
 
 No API spend is possible: model replies are stubbed deterministically and
 priced through the real pinned table.
@@ -72,6 +76,15 @@ TARGET_EPOCH_SECONDS = 150
 # Scenario v2_flip runs longer epochs still: its handover needs two miners per
 # hotkey to fit inside one epoch.
 V2_FLIP_EPOCH_SECONDS = 180
+# Scenario v4_flip: the flip length. A v4 miner holding its axon until the
+# flip polls every 30 s, then sleeps 30 s more before its first epoch check:
+# up to about 62 s, 200 blocks, after the boundary. At 120 s it reached the
+# first v4 epoch 4 blocks short of the late-start margin and skipped it; at
+# 150 s it once had 56 blocks of the 60 (harmless at 3,600 s). Scenario
+# v4_seat_menu holds no axon across a flip that matters to it: the a-e length.
+# A validator's v4 step after the collection block takes seconds (a row).
+V4_FLIP_EPOCH_SECONDS = 180
+V4_SEAT_EPOCH_SECONDS = 150
 
 
 def check_late_start_headroom(epoch_interval_s: str, target_seconds: float) -> int:
@@ -157,16 +170,16 @@ def chain_running() -> bool:
     return CHAIN_NAME in out.stdout
 
 
-def start_chain() -> None:
+def start_chain(extra_ports: tuple[int, ...] = ()) -> None:
     if chain_running():
         print("  Chain already running, reusing", flush=True)
         return
     subprocess.run(["docker", "rm", "-f", CHAIN_NAME],
                    capture_output=True, text=True)
     print(f"  Starting pinned chain ({CHAIN_IMAGE})...", flush=True)
+    ports = [arg for p in (9944, 9945, *extra_ports) for arg in ("-p", f"{p}:{p}")]
     proc = subprocess.run([
-        "docker", "run", "-d", "--name", CHAIN_NAME,
-        "-p", "9944:9944", "-p", "9945:9945",
+        "docker", "run", "-d", "--name", CHAIN_NAME, *ports,
         f"{CHAIN_IMAGE}@{CHAIN_DIGEST}",
     ], capture_output=True, text=True)
     if proc.returncode != 0:
@@ -644,6 +657,9 @@ def run_scenarios(args, report: Report) -> int:
     if "v3_flip" in want:
         # A third validator, started late from the root's reveals.
         coldkeys.append("dr_val3")
+    if "v4_flip" in want or "v4_seat_menu" in want:
+        # A fourth miner: the seat needs two contenders and two labellers.
+        coldkeys.append("dr_m4")
     netuid, wallets = setup_subnet(subtensor, coldkeys)
 
     scenarios = {
@@ -658,6 +674,9 @@ def run_scenarios(args, report: Report) -> int:
                                               pool_path, p, args.v2_epochs),
         "v3_flip": lambda p: scenario_v3_flip(report, subtensor, netuid, wallets,
                                               pool_path, p, args.v3_epochs),
+        "v4_flip": lambda p: _scenario_v4_flip(report, subtensor, netuid, wallets, p, args),
+        "v4_seat_menu": lambda p: _scenario_v4_seat_menu(report, subtensor, netuid, wallets, p,
+                                                         args),
     }
 
     try:
@@ -677,6 +696,20 @@ def run_scenarios(args, report: Report) -> int:
     finally:
         stub.stop()
     return 0
+
+
+def _scenario_v4_flip(report, subtensor, netuid, wallets, procs, args):
+    from scripts import dress_rehearsal_v4
+
+    dress_rehearsal_v4.scenario_v4_flip(sys.modules[__name__], report, subtensor, netuid,
+                                        wallets, procs, args)
+
+
+def _scenario_v4_seat_menu(report, subtensor, netuid, wallets, procs, args):
+    from scripts import dress_rehearsal_v4_seat
+
+    dress_rehearsal_v4_seat.scenario_v4_seat_menu(sys.modules[__name__], report, subtensor,
+                                                  netuid, wallets, procs, args)
 
 
 def _stop(procs) -> None:
@@ -1859,7 +1892,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scenario", default="all",
-                    choices=["a", "b", "c", "d", "e", "v2_flip", "v3_flip", "all"])
+                    choices=["a", "b", "c", "d", "e", "v2_flip", "v3_flip", "v4_flip",
+                             "v4_seat_menu", "all"])
     ap.add_argument("--keep-chain", action="store_true",
                     help="Leave the chain container running afterwards")
     ap.add_argument("--epochs", type=int, default=12,
@@ -1868,7 +1902,13 @@ def main() -> int:
                     help="Most v2 epochs scenario v2_flip runs after the flip (default 16)")
     ap.add_argument("--v3-epochs", type=int, default=10,
                     help="Most v3 epochs scenario v3_flip runs after the v3 block (default 10)")
+    ap.add_argument("--v4-epoch-seconds", type=int, default=None,
+                    help=f"Epoch length for scenario v4_flip (default {V4_FLIP_EPOCH_SECONDS}) "
+                         f"or v4_seat_menu (default {V4_SEAT_EPOCH_SECONDS})")
     args = ap.parse_args()
+    if args.v4_epoch_seconds is None:
+        args.v4_epoch_seconds = (V4_SEAT_EPOCH_SECONDS if args.scenario == "v4_seat_menu"
+                                 else V4_FLIP_EPOCH_SECONDS)
 
     report = Report()
     shutil.rmtree(RESULTS, ignore_errors=True)
@@ -1879,7 +1919,9 @@ def main() -> int:
     print("=" * 78)
 
     try:
-        start_chain()
+        from scripts.dress_rehearsal_v4 import ARCHIVE_PORT
+        v4 = args.scenario in ("v4_flip", "v4_seat_menu")
+        start_chain((ARCHIVE_PORT,) if v4 else ())
         subtensor0 = wait_for_chain()
         from scripts.setup_local_testnet import calibrate_epoch_interval
         global EPOCH_INTERVAL_S
@@ -1887,6 +1929,7 @@ def main() -> int:
         # TARGET_EPOCH_SECONDS. Every scenario needs the headroom, not only
         # v2_flip (scenario a stalled at 90 s on a fast devnet).
         target = (V2_FLIP_EPOCH_SECONDS if args.scenario in ("v2_flip", "v3_flip")
+                  else args.v4_epoch_seconds if v4
                   else TARGET_EPOCH_SECONDS)
         EPOCH_INTERVAL_S = calibrate_epoch_interval(
             subtensor0, target, EPOCH_INTERVAL_S,

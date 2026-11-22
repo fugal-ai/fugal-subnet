@@ -60,3 +60,20 @@ class FugalProofSynapse(bt.Synapse):
 
     def deserialize(self) -> "FugalProofSynapse":
         return self
+
+
+# A protocol v4 proposal document, at most (chain_proposals.PROPOSAL_MAX_BYTES).
+PROPOSAL_DOC_MAX_LEN = 1024
+
+
+class FugalProposalSynapse(bt.Synapse):
+    """Protocol v4: the root asks a proposer's box for the proposal document
+    whose sha256 the proposer committed on chain (fugal_subnet/
+    chain_proposals.py). The miner returns it with `document` filled in when
+    `proposal` names the document it serves; the root checks it by hash, so
+    nothing here is trusted."""
+    proposal: str = pydantic.Field(default="", max_length=64)
+    document: str = pydantic.Field(default="", max_length=PROPOSAL_DOC_MAX_LEN)
+
+    def deserialize(self) -> "FugalProposalSynapse":
+        return self

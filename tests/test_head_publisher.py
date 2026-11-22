@@ -920,3 +920,24 @@ def test_a_fetched_head_holding_a_pickle_does_not_load_with_pickle_disabled():
     hostile = _npz(W=np.array([{"a": 1}], dtype=object))
     with np.load(io.BytesIO(hostile), allow_pickle=False) as z, pytest.raises(ValueError):
         z["W"]
+
+
+def test_a_v4_holder_and_its_successor_are_seats_from_the_reveal_that_first_verifies_them():
+    """Protocol v4: the seat state renames the holder to its successor in the
+    epoch the successor is first verified (seat_v4.observe), so that
+    epoch's reveal names the successor as the seat and the root publishes
+    its bytes with it, not after the hold: a challenge in a later epoch
+    pairs with it, and every validator must be able to have its head."""
+    from fugal_subnet import seat_v4
+
+    pred, succ, former = (hashlib.sha256(x).hexdigest() for x in (b"p", b"s", b"f"))
+    hs = seat_v4.HeadState(head=succ, owner="ck", hotkey="hk", block=50, since=5, seen=5,
+                           origin=pred, origin_block=10, origin_owner="ck",
+                           predecessors=(pred,), predecessor_since=(1,))
+    old = seat_v4.HeadState(head=former, owner="ck2", hotkey="hk2", block=3, since=1, seen=5,
+                            origin=former, origin_block=3, origin_owner="ck2")
+    state = seat_v4.SeatStateV4(champion=succ, champion_since=2, history=(former,),
+                                heads=(hs, old), epoch=5)
+    reveal = {"champion": {"champion": succ, "event": "hold"},
+              "v2_state": {"seat": seat_v4.to_dict(state)}}
+    assert hp._seat_hashes(reveal) == {succ, former}

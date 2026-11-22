@@ -121,10 +121,21 @@ def menu_for_epoch(protocol_version: int, boundary_block: int | None,
 
 
 def grace_excluded(protocol_version: int, boundary_block: int | None, menu_b_block: int | None,
-                   blocks_per_epoch: int, grace_epochs: int) -> frozenset[str]:
-    """The added entries left out of the odds score in this epoch: during the
-    grace period, the first `grace_epochs` epochs of menu B, for every head
-    alike. They are still drawn for exploration; after it they count."""
+                   blocks_per_epoch: int, grace_epochs: int, *,
+                   menu_state=None) -> frozenset[str]:
+    """The entries left out of the odds score in this epoch, for every head
+    alike: v3 menu B's added entries during the grace period, the first
+    `grace_epochs` epochs of menu B. They are still drawn for exploration
+    and pooled; after the grace they count.
+
+    v4 has no grace (docs/decisions/SEAT_MINIMAL_V4.md 4.1, 12): an entry's
+    labels are scored for every head from the epoch it joins, and a head
+    without its row is scored at the entry's measured rate during its
+    allowance (labels_v4). A v4 epoch, or a menu state, is refused here.
+    """
+    if int(protocol_version) >= 4 or menu_state is not None:
+        raise ValueError("protocol v4 has no grace: an entry's labels are scored from its join "
+                         "(labels_v4, the allowance)")
     if menu_for_epoch(protocol_version, boundary_block, menu_b_block) != MENU_B:
         return frozenset()
     first = int(menu_b_block) // int(blocks_per_epoch)
@@ -136,12 +147,15 @@ def grace_excluded(protocol_version: int, boundary_block: int | None, menu_b_blo
 
 
 def scored_menu(protocol_version: int, boundary_block: int | None, menu_b_block: int | None,
-                blocks_per_epoch: int, grace_epochs: int) -> tuple[str, ...]:
-    """The entries a head must give odds for to be eligible for the odds seat
-    this epoch: the epoch's menu without the entries in grace."""
-    menu = menu_for_epoch(protocol_version, boundary_block, menu_b_block)
+                blocks_per_epoch: int, grace_epochs: int, *,
+                menu_state=None) -> tuple[str, ...]:
+    """The entries a v3 head must give odds for to be eligible for the odds
+    seat this epoch: the epoch's menu without the entries in grace. v4 has
+    no such rule (a missing row is scored per label, labels_v4) and is
+    refused, as in `grace_excluded`."""
     out = grace_excluded(protocol_version, boundary_block, menu_b_block, blocks_per_epoch,
-                         grace_epochs)
+                         grace_epochs, menu_state=menu_state)
+    menu = menu_for_epoch(protocol_version, boundary_block, menu_b_block)
     return tuple(m for m in models_for_protocol(protocol_version, menu) if m not in out)
 
 
@@ -245,6 +259,23 @@ def identity_v3():
 
 def identity_for(version: int):
     return {1: identity, 2: identity_v2, 3: identity_v3}[int(version)]()
+
+
+def identity_v4(menu_hash: str):
+    """The v4 evidence namespace of ONE epoch (docs/decisions/LIVE_MENU_V4.md,
+    section 4.1): the hash of that epoch's menu, `menu_state.menu_hash`, in
+    place of v3's two file hashes. From v4 the menu is published state that
+    changes without a release, so the namespace is per epoch, and a proof
+    produced on any other menu fails the namespace check as a proof from
+    another table does. It takes the hash and nothing else, so there is no
+    `identity_for(4)`: a caller must say which epoch's menu it means.
+    """
+    if (not isinstance(menu_hash, str) or len(menu_hash) != 64
+            or any(c not in "0123456789abcdef" for c in menu_hash)):
+        raise ValueError(f"identity_v4 needs a menu hash (64 lowercase hex), got {menu_hash!r}")
+    return contract.digest({"protocol": "fugal-success-v4", "contract": contract.CONTRACT,
+                            "profile": contract.PROFILE_ID, "lambda": BENCHMARK_LAMBDA,
+                            "menu": menu_hash})
 
 
 def api_model_of(entry_id: str) -> str:

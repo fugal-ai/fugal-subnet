@@ -16,10 +16,13 @@ import hmac
 import http.client
 import json
 import logging
+import math
 import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from fractions import Fraction
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPHandler, Request, build_opener
 
@@ -45,7 +48,12 @@ from fugal_subnet.routing_protocol import (
     reasoning_for,
     request_for,
 )
-from fugal_subnet.tee.proof import BenchmarkProof, QuestionResult, compute_questions_hash
+from fugal_subnet.tee.proof import (
+    BenchmarkProof,
+    Challenge,
+    QuestionResult,
+    compute_questions_hash,
+)
 from fugal_subnet.tee.runtime import MeteringProxy, reply_has_choices
 from fugal_subnet.vendor import success_contract as contract
 
@@ -117,6 +125,7 @@ def run_benchmark(
     hotkey: str = "",
     protocol_version: int = 1,
     menu: str | None = None,
+    v4=None,
 ) -> BenchmarkProof:
     """Execute the routing benchmark inside the TEE.
 
@@ -136,9 +145,17 @@ def run_benchmark(
             the hardware attests whose proof this is and nobody else can
             present it. Public, so passing it in costs no confidentiality.
 
+        v4: protocol v4 only, the epoch's `td_v4.V4EpochInputs` (its menu
+            inputs, question plan, endpoint reader and proposal settings).
+
     Returns:
         BenchmarkProof with routing results and attestation.
     """
+    if protocol_version >= 4:
+        return _run_benchmark_v4(
+            nonce=nonce, head_bytes=head_bytes, benchmark_pool=benchmark_pool, proxy=proxy,
+            hidden_states=hidden_states, slice_size=slice_size, epoch_id=epoch_id,
+            source_hash=source_hash, hotkey=hotkey, v4=v4)
     head = load_head_from_npz(head_bytes)
     # v1 keeps calling benchmark_costs exactly as before; v2 prices on its own manifest and table.
     # `menu`: the epoch's v3 menu (routing_protocol.menu_for_epoch); the
@@ -278,6 +295,508 @@ def run_benchmark(
     return proof
 
 
+# --- protocol v4 (docs/decisions/LIVE_MENU_V4.md; the TD side, W3) -------------
+
+# A challenge's calls (FAST_CROWN_V4.md 2): the challenger's own pick
+# ("scored") and the holder's where it differs ("holder").
+CHALLENGE_KINDS = ("scored", "holder")
+# The harness's clock for a challenge's time budget and a provisional
+# entry's (a function, so a test can stand in for time).
+_clock = time.monotonic
+# A provisional entry's calls (FAST_CROWN_V4.md 18(d)): the proxy holds each
+# to this deadline (shorter than any entry's own), a failed call is retried
+# once, and none is started once PROVISIONAL_BUDGET_S has passed since the
+# epoch's calls began: the TD's proof goes out on time whatever a new entry's
+# host does. A call not made is reported failed; validators leave every
+# provisional call out of the exploration failure bound, the outage rule and
+# the health counts, so it moves only the entry's own answered share. A
+# provisional entry is never a challenge pick (picks_v4.challenge_picks).
+PROVISIONAL_CALL_DEADLINE_S = 300
+PROVISIONAL_BUDGET_S = 1200.0
+# What a provisional entry's EXPLORATION calls may cost one TD in one epoch,
+# all provisional entries together, in dollars of REALISED cost (the
+# exploration draw's caps are on expected cost, at the menu's median token
+# means, and a new entry's answers may be far longer). Before each attempt
+# the TD holds back the most the attempt can cost: PROXY_MAX_ATTEMPTS
+# upstream completions, each `max_tokens` completion tokens and at most the
+# prompt's UTF-8 bytes plus PROVISIONAL_PROMPT_OVERHEAD_TOKENS prompt
+# tokens, at the dearer of the entry's menu price and this TD's own read of
+# its listing (`_ProvisionalSpend`); after it, what it did cost. An attempt
+# that cannot be held back within the cap waits for calls in flight, and is
+# not made (reported failed, against the entry's answered share only) when
+# none is in flight. The cap admits one attempt of an entry at the price
+# ceiling (menu_rules.MAX_PRICE_OUT_PICO) with the largest answer limit:
+# 3 x 131,072 x $100/M is $39.32 of completion tokens, with room for a
+# prompt of about 9,000 tokens at $25/M. So a box's provisional exploration
+# spends at most $40 an epoch, whatever the entry.
+PROVISIONAL_SPEND_CAP_USD = "40"
+PROVISIONAL_PROMPT_OVERHEAD_TOKENS = 512
+
+
+@dataclass(frozen=True)
+class _Outcome:
+    """One v4 call as the proxy recorded it, attributed by request id."""
+
+    rid: str
+    text: str
+    failed: bool
+    cost: object                 # exact dollars at the epoch's prices (Fraction, or 0)
+    prompt_tokens: int
+    completion_tokens: int
+    latency_ms: int
+    billed: int | None           # the provider's billed nanodollars, summed; None if none
+    served_by: str
+    not_started: bool = False    # a challenge call not started: a budget ran out first
+    rids: tuple = ()             # every attempt's request id (a provisional call's retry too)
+
+
+def _run_benchmark_v4(*, nonce, head_bytes, benchmark_pool, proxy, hidden_states, slice_size,
+                      epoch_id, source_hash, hotkey, v4) -> BenchmarkProof:
+    """One protocol v4 epoch inside the TD.
+
+    In order, and nothing is called before the first two succeed:
+
+    1. The menu (`td_v4.epoch_menu`): the epoch's MenuState from the bytes
+       handed in, against the committed hash, with the compiled rules applied
+       to every entry. `MenuUnavailable` or `MenuRejected` propagates: no
+       calls, no proof.
+    2. The endpoint reads of every model on the menu (no spend), provisional
+       entries included; a provisional entry this read prices far above its
+       menu price is not called (`td_v4.overpriced`).
+    3. The challenge and exploration calls, each with the wire request built
+       from its entry's named fields. A challenge is made only when
+       `v4.challenge` names one (the operator's size, and the holder the
+       root's reveal of E - 2 names, its bytes checked here:
+       td_v4.ChallengePolicy; FAST_CROWN_V4.md 2): the first `size`
+       questions of the epoch's challenge list (`plan.challenge_list`, the
+       slice first), the head's own pick on each and, where the holder's
+       computed pick differs, the holder's, both over the menu's full entries
+       (picks_v4.challenge_picks). The challenger's own calls are started
+       first, in list order; then the holder-side calls and exploration,
+       interleaved in the nonce's order (picks_v4.call_order_key). No
+       challenge is made whose estimated cost (td_v4.challenge_estimate, at
+       the epoch's pick costs) exceeds the operator's dollar ceiling. No
+       challenge call is started more than `v4.challenge_budget_s` after the
+       first call, nor once the challenge's realised spend plus the estimate
+       of its calls in flight reaches the ceiling (`_call_all_v4`); a call
+       started keeps its outcome. The
+       challenge is reported at the largest size whose own calls were all
+       started (none below 500: no challenge, an unanswered attempt), and a
+       holder-side call not started is in the proof marked `not_started`
+       (no item; picks_v4.challenge_verdict decides whether the challenge
+       counts). The slice is drawn either way (exploration is drawn outside
+       it, and its hash is in the proof), and the proof's `scored` and
+       `challenge` fields say whether a challenge was answered. A
+       provisional entry's calls run on their own deadline with one retry,
+       and stop at the TD's budget (PROVISIONAL_CALL_DEADLINE_S,
+       PROVISIONAL_BUDGET_S).
+    4. The proof: `routing_protocol` is identity_v4 of the menu's hash, and
+       the v4 fields are set.
+    """
+    from fugal_subnet import menu_state as ms
+    from fugal_subnet import picks_v4
+    from fugal_subnet.head_eval import load_head_v4, v4_head_verdict
+    from fugal_subnet.routing_protocol import identity_v4
+    from fugal_subnet.tee import endpoint_reads as er
+    from fugal_subnet.tee import td_v4
+
+    if not isinstance(v4, td_v4.V4EpochInputs):
+        raise ValueError("a protocol v4 epoch needs its td_v4.V4EpochInputs")
+    if not hotkey:
+        raise ValueError("a protocol v4 proof is produced for a hotkey")
+
+    # 1. The menu first: without one there is nothing to call.
+    state = v4.menu()
+    menu_hash = ms.menu_hash(state)
+    requests = {e.id: td_v4.entry_request(state, e.id) for e in state.entries}
+
+    # The head (section 11): a v4 head, with a row for at least one entry of
+    # this menu, or nothing is read or called.
+    why = v4_head_verdict(head_bytes, state)
+    if why:
+        raise ValueError(why)
+    head = load_head_v4(head_bytes)
+    weights_hash = hashlib.sha256(head_bytes).hexdigest()
+    nonce_bytes = bytes.fromhex(nonce) if len(nonce) == 64 else nonce.encode()
+    questions = v4.plan.scored_slice(nonce_bytes, benchmark_pool, slice_size)
+    question_ids = [q["question_id"] for q in questions]
+    questions_hash = compute_questions_hash(question_ids)
+    pool_by_id = {q["question_id"]: q for q in benchmark_pool}
+    q_to_pool_idx = {q["question_id"]: i for i, q in enumerate(benchmark_pool)}
+
+    # 2. Endpoint reads, before any model call.
+    reads = er.read_endpoints(td_v4.wanted_reads(state), v4.fetch_listing)
+    provisional = frozenset(e.id for e in state.entries if e.provisional)
+    skipped = td_v4.overpriced(state, reads)
+
+    # 3. The head's picks on the menu (head_odds.picks_and_odds_v4: exact odds
+    #    minus lambda x the menu's cost, the function validators use), and
+    #    exploration.
+    scheduled: list[tuple[dict, str, str, dict, str]] = []   # (q, entry, kind, request, price key)
+    routable = []
+    for q in questions:
+        idx = q_to_pool_idx.get(q["question_id"])
+        if idx is None or idx >= hidden_states.shape[0]:
+            logger.warning("Question %s not in hidden states, skipping", q["question_id"])
+            continue
+        routable.append((q, idx))
+    challenge = v4.challenge
+    if challenge is not None:
+        listed = v4.plan.challenge_list(nonce_bytes, benchmark_pool, slice_size)[:challenge.size]
+        idx = [q_to_pool_idx.get(q["question_id"]) for q in listed]
+        if len(listed) < challenge.size or any(i is None or i >= hidden_states.shape[0]
+                                                for i in idx):
+            logger.error("Epoch %d: the challenge list does not hold %d questions this TD can "
+                         "route: no challenge this epoch", v4.epoch, challenge.size)
+            challenge = None
+    if challenge is not None:
+        hidden = hidden_states[idx]
+        own = picks_v4.challenge_picks(head, state, hidden)
+        theirs = (picks_v4.challenge_picks(challenge.holder_head, state, hidden)
+                  if challenge.holder_head is not None else (None,) * len(listed))
+        if any(mine is None for mine in own):
+            logger.error("Epoch %d: the head has odds for no full entry on some challenge "
+                         "question: no challenge this epoch", v4.epoch)
+            challenge = None
+    if challenge is not None:
+        # The dollar ceiling, checked first on the estimate: no challenge
+        # whose cost at the epoch's pick costs exceeds it.
+        estimate = td_v4.challenge_estimate(state, own, theirs)
+        if estimate > challenge.spend_usd:
+            logger.error("Epoch %d: the challenge's estimated cost, $%.2f at the epoch's pick "
+                         "costs, exceeds the operator's ceiling of $%d (FUGAL_V4_CHALLENGE_USD): "
+                         "no challenge this epoch", v4.epoch, float(estimate),
+                         challenge.spend_usd)
+            challenge = None
+    if challenge is not None:
+        for q, mine, hp in zip(listed, own, theirs):
+            scheduled.append((q, mine, "scored", requests[mine], mine))
+            if hp is not None and hp != mine:
+                scheduled.append((q, hp, "holder", requests[hp], hp))
+    del routable
+    explore_map = v4.plan.exploration(nonce_bytes, benchmark_pool, set(question_ids), state,
+                                      hotkey)
+    scored_set = set(question_ids)
+    for qid in sorted(explore_map):
+        eid = explore_map[qid]
+        if eid not in requests:
+            raise td_v4.MenuRejected(f"exploration names {eid!r}, which is not on the menu")
+        if qid in pool_by_id and qid not in scored_set:
+            scheduled.append((pool_by_id[qid], eid, "explore", requests[eid], eid))
+
+    every_question = [s[0] for s in scheduled]
+    if any(q.get("grader_id") in SANDBOXED_CODE_CHECKERS for q in every_question):
+        require_code_sandbox()
+
+    proxy.prices = td_v4.proxy_prices(state)
+    proxy.clear()
+    # The challenger's own calls are started first, in list order, so its
+    # side is never starved by the holder's; then the holder-side calls and
+    # exploration, interleaved in the nonce's order.
+    call_order = [item for item in scheduled if item[2] == "scored"] + sorted(
+        [item for item in scheduled if item[2] != "scored"],
+        key=lambda item: picks_v4.call_order_key(nonce_bytes, item[0]["question_id"]))
+    budget = v4.challenge_budget_s if challenge is not None else None
+    spend_cap = challenge.spend_usd if challenge is not None else None
+    outcomes = {(item[0]["question_id"], item[2]): o
+                for item, o in zip(call_order, _call_all_v4(
+                    proxy, call_order, epoch_id, budget_s=budget, provisional=provisional,
+                    skipped=skipped, spend_cap=spend_cap,
+                    call_estimate=ms.pick_costs(state) if spend_cap is not None else None,
+                    spend=_ProvisionalSpend(provisional_prices(state, reads))))}
+    if challenge is not None:
+        size = reported_size(challenge.size, [
+            not outcomes[(q["question_id"], "scored")].not_started for q in listed])
+        if size is None:
+            logger.error("Epoch %d: fewer than %d of the challenge's own calls were started "
+                         "inside its budget: it is not reported (an unanswered attempt)",
+                         v4.epoch, min(td_v4.CHALLENGE_CHOICES[1:]))
+            challenge = None
+            scheduled = [item for item in scheduled if item[2] not in CHALLENGE_KINDS]
+        else:
+            if size < challenge.size:
+                logger.warning("Epoch %d: the challenge's own calls past question %d were not "
+                               "all started inside its budget: it is reported at %d", v4.epoch,
+                               size, size)
+            kept_q = {q["question_id"] for q in listed[:size]}
+            scheduled = [item for item in scheduled
+                         if item[2] not in CHALLENGE_KINDS or item[0]["question_id"] in kept_q]
+            import dataclasses
+
+            challenge = dataclasses.replace(challenge, size=size)
+            cut = sum(1 for item in scheduled if item[2] == "holder"
+                      and outcomes[(item[0]["question_id"], "holder")].not_started)
+            if cut:
+                logger.warning("Epoch %d: %d holder-side challenge calls were not started "
+                               "inside the budget (no items)", v4.epoch, cut)
+
+    # 4. Grade, in the proof's order: scored, then exploration.
+    results: list[QuestionResult] = []
+    kept: set[str] = set()
+
+    def add(q: dict, eid: str, o: _Outcome, *, explore: bool, holder: bool = False):
+        kept.update(o.rids)
+        results.append(QuestionResult(
+            question_id=q["question_id"], routed_model=eid,
+            correct=(not o.failed) and grade_question(q, o.text), cost_usd=float(o.cost),
+            response_hash=hashlib.sha256(o.text.encode()).hexdigest(),
+            prompt_tokens=int(o.prompt_tokens), completion_tokens=int(o.completion_tokens),
+            is_exploration=explore, failed=o.failed, latency_ms=int(o.latency_ms),
+            provider_cost=o.billed, served_by=o.served_by,
+            holder_pick=True if holder else None,
+            not_started=True if (holder and o.not_started) else None))
+
+    for q, eid, kind, _req, _key in scheduled:
+        add(q, eid, outcomes[(q["question_id"], kind)], explore=(kind == "explore"),
+            holder=(kind == "holder"))
+
+    records = [r for r in proxy.records if r.request_id in kept]
+    by_key: dict[str, list] = {}
+    for r in records:
+        by_key.setdefault(r.model_id, []).append(r.cost_usd)
+    return BenchmarkProof(
+        hotkey=hotkey, epoch_id=epoch_id, nonce=nonce, questions_hash=questions_hash,
+        weights_hash=weights_hash, source_hash=source_hash,
+        routing_protocol=identity_v4(menu_hash), results=results,
+        total_cost_usd=math.fsum(r.cost_usd for r in records),
+        per_model_costs={k: math.fsum(v) for k, v in sorted(by_key.items())},
+        attestation_quote=b"", timestamp=time.time(),
+        menu_hash=menu_hash, endpoint_reads=reads,
+        scored=challenge is not None,
+        challenge=(Challenge(size=challenge.size, holder=challenge.holder)
+                   if challenge is not None else None))
+
+
+class _ProvisionalSpend:
+    """PROVISIONAL_SPEND_CAP_USD over one epoch's provisional exploration
+    calls: `hold(worst)` before an attempt (False: not made), `settle(worst,
+    cost)` after it. Exact dollars (Fractions)."""
+
+    def __init__(self, prices, *, cap=None):
+        from fractions import Fraction
+
+        self.prices = dict(prices)          # entry id -> (pico in, pico out, max_tokens)
+        self.cap = Fraction(PROVISIONAL_SPEND_CAP_USD if cap is None else cap)
+        self.spent = self.held = Fraction(0)
+        self._cond = threading.Condition()
+
+    def worst(self, eid: str, question: dict):
+        from fractions import Fraction
+
+        from fugal_subnet.tee.runtime import PROXY_MAX_ATTEMPTS
+
+        p_in, p_out, max_tokens = self.prices[eid]
+        prompt = (len(str(question.get("prompt", "")).encode("utf-8"))
+                  + len((HARNESS_SYSTEM_PROMPT_V3 or "").encode("utf-8"))
+                  + PROVISIONAL_PROMPT_OVERHEAD_TOKENS)
+        return Fraction(PROXY_MAX_ATTEMPTS * (p_in * prompt + p_out * max_tokens), 10**12)
+
+    def cost(self, eid: str, records):
+        from fractions import Fraction
+
+        p_in, p_out, _ = self.prices[eid]
+        return Fraction(sum(p_in * r.prompt_tokens + p_out * r.completion_tokens
+                            for r in records), 10**12)
+
+    def hold(self, worst, may_wait) -> bool:
+        with self._cond:
+            while self.spent + self.held + worst > self.cap:
+                if self.held == 0 or not may_wait():
+                    return False
+                self._cond.wait(timeout=1.0)
+            self.held += worst
+            return True
+
+    def settle(self, worst, cost) -> None:
+        with self._cond:
+            self.held -= worst
+            self.spent += cost
+            self._cond.notify_all()
+
+
+def provisional_prices(state, reads) -> dict:
+    """{entry id: (picodollars in, out, max_tokens)} of every provisional
+    entry: the dearer of its menu price and this TD's read of its listing
+    (the dearer listed pinned host), as `_ProvisionalSpend` prices it."""
+    by_model = {r.model: r for r in reads}
+    out = {}
+    for e in state.entries:
+        if not e.provisional:
+            continue
+        read = by_model.get(e.model)
+        hosts = [h for h in (read.hosts if read is not None else ())
+                 if h.listed and h.host in e.provider_order]
+        p_in = max([e.price_in] + [h.price_in for h in hosts])
+        p_out = max([e.price_out] + [h.price_out for h in hosts])
+        out[e.id] = (int(p_in), int(p_out), int(e.max_tokens))
+    return out
+
+
+def reported_size(size: int, own_started) -> int | None:
+    """The size a challenge of `size` questions is reported at, given
+    whether each of its own calls (in list order) was started: the largest
+    challenge size up to `size` whose own calls were all started, or None
+    when that is less than the smallest (no challenge)."""
+    from fugal_subnet.tee.proof import CHALLENGE_SIZES
+
+    own_started = list(own_started)
+    if all(own_started):
+        return size
+    for s in sorted((s for s in CHALLENGE_SIZES if s <= size), reverse=True):
+        if len(own_started) >= s and all(own_started[:s]):
+            return s
+    return None
+
+
+def _call_all_v4(proxy, items, epoch_id, *, budget_s=None, provisional=frozenset(),
+                 skipped=frozenset(), clock=None, spend_cap=None, call_estimate=None,
+                 spend=None) -> list[_Outcome]:
+    """Make v4 calls, HARNESS_CONCURRENCY at a time, and return their outcomes
+    in the order given. `items` are (question, entry id, kind, request, price
+    key); kind is "scored" or "holder" (a challenge's calls) or "explore".
+    Calls are started in the order given, each decided in that order: with
+    `budget_s`, no challenge call is started more than `budget_s` after the
+    first call, and once one is not started no later one is (`not_started`);
+    a call started keeps its outcome whenever it ends. With `spend_cap`
+    (dollars), likewise no challenge call is started once the challenge
+    calls' realised cost plus the estimate of those in flight (each at
+    `call_estimate[entry]`, the epoch's pick cost, until it is paid) has
+    reached it. Other calls are never cut by either. Each request
+    is sent as built (`td_v4.wire_request`), priced by the proxy under its
+    price key, and attributed by request id: tokens and cost exactly, the
+    provider's billed nanodollars summed over the call's upstream
+    completions, and the provider that served the last of them.
+
+    A call to an entry in `provisional` asks the proxy for
+    PROVISIONAL_CALL_DEADLINE_S, is retried once when it fails (its outcome
+    is the retry's; both attempts' records are kept), and is not started
+    once PROVISIONAL_BUDGET_S has passed since the first call; with `spend`
+    (a `_ProvisionalSpend`), each attempt of a provisional entry's
+    exploration call is held within its cap. A call to an entry in
+    `skipped` is not made. A call not made is failed."""
+    from fugal_subnet.tee import td_v4
+
+    clock = _clock if clock is None else clock
+    started_at = clock()
+    # Start decisions are made one at a time in the items' order, so the
+    # challenge calls not started are always the last of their order.
+    gate = threading.Condition()
+    turn = [0]
+    cut = [False]
+    spent = [Fraction(0)]                # challenge calls paid, realised
+    in_flight = [Fraction(0)]            # challenge calls started, not yet paid, estimated
+    spent_lock = threading.Lock()
+    estimates = dict(call_estimate or {})
+
+    def challenge_cut(kind: str, eid: str):
+        """(not started, the estimate held for the call while in flight)."""
+        if kind not in CHALLENGE_KINDS:
+            return False, None
+        if not cut[0] and budget_s is not None and clock() - started_at > budget_s:
+            cut[0] = True
+        held = None
+        if not cut[0] and spend_cap is not None:
+            with spent_lock:
+                if spent[0] + in_flight[0] >= spend_cap:
+                    cut[0] = True
+                else:
+                    held = Fraction(estimates.get(eid, 0))
+                    in_flight[0] += held
+        return cut[0], held
+
+    def add_spend(rid: str, held) -> None:
+        cost = sum((Fraction(r.cost_usd) for r in list(proxy.records) if r.request_id == rid),
+                   Fraction(0))
+        with spent_lock:
+            in_flight[0] -= held
+            spent[0] += cost
+
+    def rid_of(item, attempt: int = 0) -> str:
+        q, eid, kind = item[0], item[1], item[2]
+        base = f"{epoch_id}:{q['question_id']}:{eid}"
+        # A challenge question may also be one of this hotkey's exploration
+        # questions: its calls carry ids of their own.
+        if kind == "scored":
+            base = f"{base}:c"
+        elif kind == "holder":
+            base = f"{base}:h"
+        return base if attempt == 0 else f"{base}:retry"
+
+    def attempt(item, n: int, i: int | None = None):
+        eid, kind = item[1], item[2]
+        rid = rid_of(item, n)
+        charged = None
+        if i is not None:
+            with gate:
+                while turn[0] != i:
+                    gate.wait()
+                try:
+                    stop, charged = challenge_cut(kind, eid)
+                finally:
+                    turn[0] += 1
+                    gate.notify_all()
+            if stop:
+                return rid, None, 0, True        # past a budget: not called
+        try:
+            return _attempt(item, rid)
+        finally:
+            if charged is not None:
+                add_spend(rid, charged)
+
+    def _attempt(item, rid: str):
+        q, eid, kind, request, price_key = item
+        td_v4.check_wire_request(request)
+        if eid in skipped or (eid in provisional and clock() - started_at > PROVISIONAL_BUDGET_S):
+            return rid, None, 0, False
+        held = None
+        if spend is not None and kind == "explore" and eid in provisional:
+            held = spend.worst(eid, q)
+            if not spend.hold(held, lambda: clock() - started_at <= PROVISIONAL_BUDGET_S):
+                logger.warning("A provisional call (%s) is not made: the epoch's provisional "
+                               "spend cap of $%s is reached", eid, PROVISIONAL_SPEND_CAP_USD)
+                return rid, None, 0, False
+        _request_ctx.request_id = rid
+        t0 = clock()
+        try:
+            # Only a provisional entry's call asks for a deadline of its own.
+            text = _call_model(proxy, price_key, q, request=request,
+                               **({"deadline_s": PROVISIONAL_CALL_DEADLINE_S}
+                                  if eid in provisional else {}))
+        finally:
+            _request_ctx.request_id = ""
+            if held is not None:
+                spend.settle(held, spend.cost(eid, [r for r in proxy.records
+                                                    if r.request_id == rid]))
+        return rid, text, int(round((clock() - t0) * 1000)), False
+
+    def one(indexed):
+        i, item = indexed
+        rid, text, latency_ms, not_started = attempt(item, 0, i)
+        rids = (rid,)
+        if text is None and not not_started and item[1] in provisional and item[1] not in skipped:
+            rid, text, latency_ms, not_started = attempt(item, 1)
+            rids = rids + (rid,)
+        return rids, text, latency_ms, not_started
+
+    if not items:
+        return []
+    with ThreadPoolExecutor(max_workers=HARNESS_CONCURRENCY) as pool:
+        done = list(pool.map(one, enumerate(items)))
+    out = []
+    for rids, text, latency_ms, not_started in done:
+        last = [r for r in proxy.records if r.request_id == rids[-1]]
+        billed = [r.billed_nano for r in last if r.billed_nano is not None]
+        out.append(_Outcome(
+            rid=rids[-1], text="" if text is None else text, failed=text is None,
+            cost=sum((r.cost_usd for r in last), 0),
+            prompt_tokens=sum(r.prompt_tokens for r in last),
+            completion_tokens=sum(r.completion_tokens for r in last),
+            latency_ms=latency_ms, billed=sum(billed) if billed else None,
+            served_by=last[-1].served_by if last else "", not_started=bool(not_started),
+            rids=rids))
+    return out
+
+
 class CodeSandboxUnavailable(RuntimeError):
     """The code sandbox's self-test failed on this machine, so code questions cannot be graded."""
 
@@ -397,8 +916,11 @@ def _call_model(
     question: dict,
     reasoning: dict | None = None,
     request: dict | None = None,
+    deadline_s: int | None = None,
 ) -> str | None:
-    """Call a model via the MeteringProxy.
+    """Call a model via the MeteringProxy. `deadline_s` (protocol v4, a
+    provisional entry's call) asks the proxy for a shorter deadline than the
+    request's own (`X-Fugal-Deadline`); None sends no such header.
 
     Returns the reply text, "" for a reply that completed but carried no
     text, and None when there was no reply to grade: the call did not complete,
@@ -434,6 +956,9 @@ def _call_model(
         from fugal_subnet import config as _config
         headers["X-Fugal-Entry"] = model_id
         wait_s = _config.call_deadline_s(request) + _config.HARNESS_WAIT_MARGIN_S
+        if deadline_s is not None and 0 < int(deadline_s) < _config.call_deadline_s(request):
+            headers["X-Fugal-Deadline"] = str(int(deadline_s))
+            wait_s = int(deadline_s) + _config.HARNESS_WAIT_MARGIN_S
     req = Request(
         f"http://127.0.0.1:{proxy.port}/chat/completions",
         data=payload,

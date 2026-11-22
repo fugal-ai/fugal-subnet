@@ -239,8 +239,14 @@ def ensure_embeddings(path: str, pin: str | None, url: str | None, *, fetch=None
 
 
 def ready_line(*, entries: int, newest: str, v3: str, archive: bool, collateral: bool | None,
-               role: str) -> tuple[bool, str]:
-    """(ready, line). `v3` is 'ok:<pool size>', 'not scheduled', or 'failed:<why>'."""
+               role: str, v4: str | None = None, v4_missing=(), v4_due: bool = False
+               ) -> tuple[bool, str]:
+    """(ready, line). `v3` is 'ok:<pool size>', 'not scheduled', or 'failed:<why>'.
+
+    `v4` describes protocol v4's inputs when a v4 block applies (None: not
+    scheduled), `v4_missing` what it lacks. Missing v4 inputs make the line
+    NOT READY only once v4 is due (`v4_due`); before the block the validator
+    is ready for v3 and the line ends with what v4 still lacks."""
     missing = []
     if entries < 1:
         missing.append("no approved entries: update the checkout to the current release "
@@ -253,11 +259,21 @@ def ready_line(*, entries: int, newest: str, v3: str, archive: bool, collateral:
     if collateral is False:
         missing.append("DCAP collateral endpoint did not answer: check FUGAL_PCCS_URL "
                        "(default https://pccs.phala.network)")
+    v4_missing = list(v4_missing or ())
+    if v4 is not None and v4_missing and v4_due:
+        missing.append("v4 MISSING: " + "; ".join(v4_missing))
     if missing:
         return False, "NOT READY: " + "; ".join(missing)
     v3_part = (f"v3 inputs ok (pool {v3[3:]}, embeddings ok)" if v3.startswith("ok:")
                else f"v3 {v3}")
     newest_part = f" (newest {newest})" if newest else ""
     coll = "collateral ok" if collateral else "collateral not checked (mock)"
+    if v4 is None:
+        v4_part = ", v4 not scheduled"
+    elif v4_missing:
+        v4_part = (f", v4 MISSING from {v4.split(',')[0]} (runs v3 until then, stops there): "
+                   + "; ".join(v4_missing))
+    else:
+        v4_part = f", v4 ok ({v4})"
     return True, (f"READY: approved entries {entries}{newest_part}, {v3_part}, archive ok, "
-                  f"{coll}, role {role}")
+                  f"{coll}, role {role}{v4_part}")

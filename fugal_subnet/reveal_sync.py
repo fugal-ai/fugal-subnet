@@ -69,9 +69,15 @@ GCS = "https://storage.googleapis.com"
 # The root validator's public reveal bucket on finney (netuid 70). Objects are
 # `<netuid>/<epoch_id>/reveal.json` (reveal_publisher.publish_due_reveals).
 FINNEY_REFERENCE_BUCKET = "fugal-reveals"
-# A v2 reveal is about 0.6 MB; this only stops a hostile or broken object from
-# filling the disk or the process.
-MAX_REVEAL_BYTES = 64 * 1024 * 1024
+# The most bytes of one reveal any node reads: the follower sync's fetch, the
+# validator's read of its own reveal, the miner's holder read
+# (td_v4.MAX_HOLDER_REVEAL_BYTES) and the root summaries' read
+# (menu_publish.MAX_REVEAL_READ_BYTES) all name this one limit. A v2 reveal is
+# about 0.6 MB; a protocol v4 reveal at 256 UIDs is at most three quarters of
+# it (tests/test_v4_reveal_budget.py). It only stops a hostile or broken
+# object from filling the disk or the process; a reveal's content never
+# depends on it.
+MAX_REVEAL_BYTES = 96 * 1024 * 1024
 MAX_LISTING_BYTES = 8 * 1024 * 1024
 MAX_LISTING_PAGES = 64
 REQUEST_TIMEOUT_S = 30.0
@@ -79,7 +85,10 @@ REQUEST_TIMEOUT_S = 30.0
 _BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]")
 _EPOCH_ID = re.compile(r"e\d{8,12}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_POINTER = re.compile(r"reveal:(e\d{8,12}):([0-9a-f]{64})")
+# `reveal:<epoch_id>:<sha256>`, and from protocol v4 optionally `:<menu hash
+# token>` (reveal_publisher.commitment_for). The first three fields are the
+# same in both, so a follower reads the reveal pointer of either.
+_POINTER = re.compile(r"reveal:(e\d{8,12}):([0-9a-f]{64})(?::([A-Za-z0-9_-]{43}))?")
 # The recorded commitments: one per epoch the follower saw, so this bounds
 # the file at a few hundred kilobytes (about 200 days of epochs).
 MAX_POINTERS = 4096
@@ -97,11 +106,27 @@ def _epoch_index(epoch_id: str) -> int:
 
 
 def parse_pointer(data) -> tuple[str, str] | None:
-    """`reveal:<epoch_id>:<sha256>` -> (epoch_id, sha256); anything else None."""
+    """`reveal:<epoch_id>:<sha256>` (with or without a v4 menu field) ->
+    (epoch_id, sha256); anything else None."""
+    got = parse_commitment(data)
+    return (got[0], got[1]) if got is not None else None
+
+
+def parse_commitment(data) -> tuple[str, str, str | None] | None:
+    """A reveal commitment -> (epoch_id, reveal sha256, menu hash or None).
+    A fourth field that is not the canonical token of a menu hash makes the
+    whole commitment unreadable (None), never a commitment without a menu."""
+    from fugal_subnet.reveal_publisher import decode_menu_hash
+
     if not isinstance(data, str):
         return None
     m = _POINTER.fullmatch(data)
-    return (m.group(1), m.group(2)) if m else None
+    if not m:
+        return None
+    if m.group(3) is None:
+        return m.group(1), m.group(2), None
+    menu_hash = decode_menu_hash(m.group(3))
+    return (m.group(1), m.group(2), menu_hash) if menu_hash is not None else None
 
 
 def read_root_pointer(subtensor, netuid: int, hotkey: str) -> tuple[str, str] | None:
@@ -461,6 +486,152 @@ def sync(bucket: str, netuid: int, dest: str, *, since: int = 0, budget_s: float
         except Exception as e:  # noqa: BLE001 - one object, not the sync
             result.failed.append(f"{item.epoch_id}: {type(e).__name__}: {e}")
     return done()
+
+
+# --- protocol v4: menus and signed lists, by hash ------------------------------
+#
+# The root publishes each menu it commits, and each signed list a menu newly
+# names, beside its reveals (menu_publish.MenuPublisher), named by content:
+#
+#   <netuid>/menus/<menu hash>.json          the menu's canonical bytes
+#   <netuid>/lists/<kind>/<sha256>.json      a signed list's bytes
+#   <netuid>/lists/<kind>/<sha256>.json.sig  its signature
+#
+# A reader needs no listing and trusts no name: it asks for the hash the chain
+# names and checks the bytes against it. These helpers are what a miner's TD
+# (td_v4.V4Session's `menu_bytes` and `list_bytes`) and the product call.
+
+# The most bytes read for one menu. Bytes with the committed hash are the
+# committed menu whatever their size: the reader (menu_state.menu_for_epoch)
+# refuses one over its MENU_MAX_BYTES (1 MiB) unparsed and every node carries
+# the previous menu. So the fetch must read past that limit to see the hash,
+# up to a bound of its own; past this bound there are no bytes (MenuUnavailable).
+MAX_MENU_FETCH_BYTES = 4 * 1024 * 1024
+# A signed list and its signature (menu_rules.MAX_LIST_BYTES and
+# MAX_SIGNATURE_BYTES; anything larger is refused there unread).
+MAX_LIST_FETCH_BYTES = 262144
+MAX_SIGNATURE_FETCH_BYTES = 2048
+_LIST_KIND = re.compile(r"fugal-[a-z-]{1,40}")
+
+
+def menu_object(netuid: int, menu_hash: str) -> str:
+    if not _SHA256.fullmatch(str(menu_hash)):
+        raise ValueError("a menu hash is 64 lowercase hex characters")
+    return f"{int(netuid)}/menus/{menu_hash}.json"
+
+
+def list_object(netuid: int, kind: str, sha256: str) -> str:
+    if not _LIST_KIND.fullmatch(str(kind)) or not _SHA256.fullmatch(str(sha256)):
+        raise ValueError("a list is named by its kind and its sha256")
+    return f"{int(netuid)}/lists/{kind}/{sha256}.json"
+
+
+def signature_object(netuid: int, kind: str, sha256: str) -> str:
+    return list_object(netuid, kind, sha256) + ".sig"
+
+
+# A join delta (chain_proposals.DELTA_MAX_BYTES; one over it is refused there
+# unparsed, so the fetch reads to the same bound and no further).
+MAX_JOIN_FETCH_BYTES = 1_048_576
+
+
+def join_object(netuid: int, delta_hash: str) -> str:
+    """Where the root's join delta (protocol v4) with this sha256 lives."""
+    if not _SHA256.fullmatch(str(delta_hash)):
+        raise ValueError("a join delta is named by its sha256")
+    return f"{int(netuid)}/joins/{delta_hash}.json"
+
+
+def _sources(bucket: str | None, mirrors) -> list[str]:
+    """Base URLs to ask, in order: the bucket, then each https mirror.
+    `mirrors` None is config.MENU_MIRRORS (FUGAL_MENU_MIRRORS)."""
+    if mirrors is None:
+        from fugal_subnet import config
+        mirrors = config.MENU_MIRRORS
+    out = []
+    if bucket:
+        if not valid_bucket(bucket):
+            raise ValueError(f"{bucket!r} is not a bucket name")
+        out.append(f"{GCS}/{bucket}")
+    for m in mirrors or ():
+        text = str(m).rstrip("/")
+        if text.startswith("https://"):
+            out.append(text)
+        else:
+            logger.warning("Ignoring a menu mirror that is not an https URL")
+    return out
+
+
+def fetch_object(key: str, *, bucket: str | None, mirrors=None, limit: int,
+                 check: Callable[[bytes], bool], timeout: float = REQUEST_TIMEOUT_S,
+                 opener: Callable | None = None) -> bytes | None:
+    """The first bytes for `key` that pass `check`, from the bucket or a
+    mirror, in that order; None when no source serves such bytes. Never
+    raises: a source that fails, is too large or serves other bytes is
+    skipped, so one bad mirror never hides a good one."""
+    for base in _sources(bucket, mirrors):
+        url = f"{base}/{key}"
+        try:
+            data = _get(url, limit, timeout, opener)
+        except Exception as e:  # noqa: BLE001 - one source, not the read
+            logger.debug("No %s from %s: %s", key, base, type(e).__name__)
+            continue
+        if check(data):
+            return data
+        logger.warning("A source served bytes for %s that are not the ones named", key)
+    return None
+
+
+def fetch_menu_bytes(menu_hash: str, *, bucket: str | None, netuid: int, mirrors=None,
+                     timeout: float = REQUEST_TIMEOUT_S,
+                     opener: Callable | None = None) -> bytes | None:
+    """The bytes of the menu with `menu_hash`, checked against it, from the
+    root's bucket or a mirror; None when none serves them. The bytes are not
+    parsed or judged here: that is menu_state.menu_for_epoch's."""
+    return fetch_object(menu_object(netuid, menu_hash), bucket=bucket, mirrors=mirrors,
+                        limit=MAX_MENU_FETCH_BYTES, timeout=timeout, opener=opener,
+                        check=lambda b: hashlib.sha256(b).hexdigest() == menu_hash)
+
+
+def fetch_join_bytes(delta_hash: str, *, bucket: str | None, netuid: int, mirrors=None,
+                     timeout: float = REQUEST_TIMEOUT_S,
+                     opener: Callable | None = None) -> bytes | None:
+    """The bytes of the root's join delta with `delta_hash`, checked against
+    it, from the root's bucket or a mirror; None when none serves them. Not
+    parsed here: chain_proposals.check_delta judges them."""
+    return fetch_object(join_object(netuid, delta_hash), bucket=bucket, mirrors=mirrors,
+                        limit=MAX_JOIN_FETCH_BYTES, timeout=timeout, opener=opener,
+                        check=lambda b: hashlib.sha256(b).hexdigest() == delta_hash)
+
+
+def fetch_reveal_bytes(epoch_id: str, sha256: str, *, bucket: str | None, netuid: int,
+                       mirrors=None, timeout: float = REQUEST_TIMEOUT_S,
+                       opener: Callable | None = None) -> bytes | None:
+    """The bytes of the root's reveal for `epoch_id` that hash to `sha256`
+    (the root's commitment for it), from the root's bucket or a mirror;
+    None when none serves them. Not parsed here."""
+    if not _EPOCH_ID.fullmatch(str(epoch_id)) or not _SHA256.fullmatch(str(sha256)):
+        raise ValueError("a reveal is named by its epoch id and its sha256")
+    return fetch_object(f"{int(netuid)}/{epoch_id}/reveal.json", bucket=bucket, mirrors=mirrors,
+                        limit=MAX_REVEAL_BYTES, timeout=timeout, opener=opener,
+                        check=lambda b: hashlib.sha256(b).hexdigest() == sha256)
+
+
+def fetch_signed_list(kind: str, sha256: str, *, bucket: str | None, netuid: int, mirrors=None,
+                      timeout: float = REQUEST_TIMEOUT_S,
+                      opener: Callable | None = None) -> tuple[bytes, bytes] | None:
+    """(list bytes, signature) of the signed list of `kind` whose bytes hash
+    to `sha256`; None when no source serves them. The signature is not
+    checked here: the caller verifies both with menu_rules.verify_signed_list."""
+    payload = fetch_object(list_object(netuid, kind, sha256), bucket=bucket, mirrors=mirrors,
+                           limit=MAX_LIST_FETCH_BYTES, timeout=timeout, opener=opener,
+                           check=lambda b: hashlib.sha256(b).hexdigest() == sha256)
+    if payload is None:
+        return None
+    signature = fetch_object(signature_object(netuid, kind, sha256), bucket=bucket,
+                             mirrors=mirrors, limit=MAX_SIGNATURE_FETCH_BYTES, timeout=timeout,
+                             opener=opener, check=lambda b: len(b) > 0)
+    return None if signature is None else (payload, signature)
 
 
 @dataclass(frozen=True)

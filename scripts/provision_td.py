@@ -21,6 +21,24 @@ RTMR3, and the log names the approved compose hash and the instance WE created
 (`fugal_subnet.tee.provision.push`, in that order). Only then do the head, the
 hotkey keyfile, coldkeypub and the API key cross.
 
+PROTOCOL V4 OPTIONS. A miner's own v4 options travel the same way, each only
+when given (a push without them is exactly the push before protocol v4):
+
+    --v4-proposal '{"model": ..., "reasoning": [...], "provider_order": [...],
+                    "quantization": ...}'      (or @file holding that JSON)
+    --v4-challenge 1000                        [PAID: 0, 500 or 1000 questions an epoch]
+    --v4-challenge-usd 5000                    the TD's dollar budget for one challenge
+
+Each is checked here before anything is sent, and again by the TD, which
+refuses the whole push when one does not pass (fugal_subnet/tee/v4_options.py).
+A proposal is not checked against a signed lab and host list here or in the
+TD: the miner serves the document and commits its hash on chain, and the
+root admits it only under a list in force that allows it; nothing in the TD
+is called or spent for it. This script prints, as a note,
+whether the list this checkout ships allows it.
+A TD running an image from before protocol v4 refuses a push that carries
+any of them, as an unknown field; leave them out for such an image.
+
 SECRETS NEVER APPEAR ON THE COMMAND LINE. The API key is read from a file (mode
 0600, or the run refuses), the wallet from the bittensor wallet directory, and
 nothing this script prints contains either — field names and byte counts only.
@@ -91,19 +109,69 @@ def head_protocols(head_bytes: bytes) -> list[int]:
     from fugal_subnet.head_eval import load_head_from_npz
     from fugal_subnet.routing_protocol import benchmark_costs_for
 
+    ok = []
     try:
         head = load_head_from_npz(head_bytes)
     except ValueError:
-        return []          # not a head any validator loads (e.g. no success contract)
-    ok = []
-    for version in (1, 2, 3):
+        head = None        # not a head any v1-v3 validator loads (e.g. no success contract)
+    for version in (1, 2, 3) if head is not None else ():
         try:
             # v3: menu B accepts a head built for either v3 menu.
             benchmark_costs_for(head, version, menu="b" if version == 3 else None)
         except Exception:  # noqa: BLE001 - any refusal means "not this protocol"
             continue
         ok.append(version)
+    # Protocol v4: the check the miner itself makes at start in its TD
+    # (head_eval.v4_head_verdict against the pinned seed menu): a v4 head
+    # with a row for an entry on it.
+    try:
+        from fugal_subnet import menu_state
+        from fugal_subnet.head_eval import v4_head_verdict
+
+        if v4_head_verdict(head_bytes, menu_state.load_seed()) is None:
+            ok.append(4)
+    except Exception:  # noqa: BLE001 - any refusal means "not this protocol"
+        pass
     return ok
+
+
+def v4_option_fields(proposal: str | None, challenge: str | None,
+                     challenge_usd: str | None = None) -> dict:
+    """The provisioning fields of the operator's v4 options given on the
+    command line (tee/v4_options.FIELDS), each only when given: a push
+    without them carries exactly the fields it carried before protocol v4.
+    A proposal given as `@path` is read from that file."""
+    out = {}
+    if proposal:
+        if proposal.startswith("@"):
+            with open(os.path.expanduser(proposal[1:]), encoding="ascii") as f:
+                proposal = f.read().strip()
+        out["v4_proposal"] = proposal
+    if challenge:
+        out["v4_challenge"] = challenge
+    if challenge_usd:
+        out["v4_challenge_usd"] = challenge_usd
+    return out
+
+
+def _proposal_list_note(text: str) -> str:
+    """A note on whether the signed lab and host list this checkout ships
+    allows the proposal (tee/v4_options.listed_refusal). Never a refusal: the
+    TD decides at each filing, under the list in force then."""
+    from fugal_subnet import menu_rules as mr
+    from fugal_subnet.tee import v4_options
+
+    spec = v4_options.parse_proposal(text)
+    try:
+        labs = mr.shipped_list(mr.KIND_MENU_ALLOWLIST)
+    except (FileNotFoundError, mr.ListRefused, RuntimeError, ValueError):
+        return ("note: this checkout ships no signed lab and host list; the root admits the "
+                "proposal only under a list in force that allows it")
+    why = v4_options.listed_refusal(spec, labs)
+    if why is None:
+        return f"note: the shipped list serial {labs.serial} allows it"
+    return (f"note: the shipped list serial {labs.serial} does not allow it ({why}); the root "
+            "admits it only under a list in force that allows it")
 
 
 def _read_intermediates(paths) -> list[bytes]:
@@ -218,6 +286,19 @@ def main() -> int:
                          "it (needs the session file); pushes nothing")
     ap.add_argument("--since", type=int, default=0, help="--logs: only lines after this sequence number")
     ap.add_argument("--timeout", type=int, default=30)
+    ap.add_argument("--v4-proposal", default=None, metavar="JSON|@FILE",
+                    help="Protocol v4: the menu entry this miner proposes on chain, as the "
+                         "miner's --v4-proposal takes it (or @file holding it). Sent only when "
+                         "given")
+    ap.add_argument("--v4-challenge", default=None, choices=("0", "500", "1000"),
+                    help="Protocol v4: the challenge the TD answers each epoch, 0 (none), 500 "
+                         "or 1000 questions [PAID]. Sent only when given (the TD's default "
+                         "is 0)")
+    ap.add_argument("--v4-challenge-usd", default=None, metavar="DOLLARS",
+                    help="Protocol v4: the TD's dollar ceiling on one challenge's realised "
+                         "spend, whole dollars 1 to 50000 (the TD's default is 100): no "
+                         "challenge whose estimate exceeds it, no challenge call once realised "
+                         "spend plus calls in flight reach it. Sent only when given")
     ap.add_argument("--tpm-intermediate", action="append", default=[], metavar="FILE",
                     help="Google's intermediate certificate for the TD's attestation key "
                          "(DER or PEM; repeatable). Not needed normally: it is taken from "
@@ -264,15 +345,16 @@ def main() -> int:
         raise SystemExit("--approved must be <base_measurement>:<compose_hash> with a "
                          "64-hex compose hash; a bare base would push to ANY app on the image")
 
-    from fugal_subnet.tee.provision import push, validate_payload
+    from fugal_subnet.tee.provision import ProvisionError, push, validate_payload
 
     with open(args.head, "rb") as f:
         head = f.read()
     protocols = head_protocols(head)  # refuse to push a head every validator would reject
     if not protocols:
-        raise SystemExit(f"{args.head} cannot enter the benchmark under protocol v1, v2 or v3 "
-                         "(a legacy head, or one built against another manifest); every "
-                         "validator would refuse it. Rebuild it with scripts/train_head.py.")
+        raise SystemExit(f"{args.head} cannot enter the benchmark under protocol v1, v2, v3 "
+                         "or v4 (a legacy head, or one built against another manifest or "
+                         "menu); every validator would refuse it. Rebuild it with "
+                         "scripts/train_head.py.")
 
     hot, pub, ss58 = _hotkey_files(args.wallet_path, args.wallet, args.hotkey)
 
@@ -289,7 +371,12 @@ def main() -> int:
         if not key:
             raise SystemExit("API key file is empty")
         payload["openrouter_api_key"] = key
-    validate_payload(payload)
+    payload.update(v4_option_fields(args.v4_proposal, args.v4_challenge,
+                                    args.v4_challenge_usd))
+    try:
+        validate_payload(payload)
+    except ProvisionError as e:
+        raise SystemExit(f"not pushed: {e}") from None
 
     print(f"head               {len(head)} bytes sha256={hashlib.sha256(head).hexdigest()} "
           f"(valid for protocol {', '.join(f'v{v}' for v in protocols)})")
@@ -297,6 +384,11 @@ def main() -> int:
     print(f"approved entry     {base[:16]}…:{app[:16]}…")
     print(f"instance_id        {args.instance_id or '(ANY — --allow-any-instance)'}")
     print(f"fields             {sorted(payload)}")
+    for field in sorted(f for f in payload if f.startswith("v4_")):
+        # The v4 options are the operator's own settings, not secrets.
+        print(f"  {field:<18} {payload[field]}")
+    if "v4_proposal" in payload:
+        print(f"  {'':<18} {_proposal_list_note(payload['v4_proposal'])}")
     if args.dry_run:
         print("dry run: nothing sent")
         return 0

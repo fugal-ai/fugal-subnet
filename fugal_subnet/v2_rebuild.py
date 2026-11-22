@@ -108,9 +108,11 @@ def epoch_from_reveal(
     reveal: Mapping,
     prices: Mapping[str, tuple[float, float]],
     bench_category: Mapping[str, str] | None = None,
+    pick_spend: Mapping[str, tuple[float, Mapping[str, float]]] | None = None,
 ):
     """(EpochSlice, {head hash: HeadEpoch}) for one v2 reveal, exactly as the
-    live epoch built them."""
+    live epoch built them; a v4 reveal's cells priced at `pick_spend`, the
+    pick-cost table (build_epoch_slice)."""
     eid = str(reveal.get("epoch_id", "?"))
     epoch = _epoch_index(eid)
     models, questions, grades = reveal.get("models"), reveal.get("questions"), reveal.get("shared_grades")
@@ -128,7 +130,7 @@ def epoch_from_reveal(
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f"reveal {eid}: a shared_grades cell is malformed ({e})") from None
     sl = build_epoch_slice(epoch, list(questions), list(models), cells, tokens, prices,
-                           bench_category)
+                           bench_category, pick_spend=pick_spend)
 
     # routing_decisions are per uid, in the global model index space, ORDERED
     # BY QUESTION ID (validator._extract_routing_decisions); realign them to
@@ -146,6 +148,10 @@ def epoch_from_reveal(
         if uid not in decisions:
             continue
         row = decisions[uid]
+        if row == [] and by_id and _reveal_protocol(reveal) >= 4:
+            # Protocol v4: an exploration-only proof answered no scored
+            # question, so its head has no answers in the slice (as live).
+            continue
         _require(isinstance(row, list) and len(row) == len(by_id)
                  and all(isinstance(x, int) and not isinstance(x, bool) for x in row),
                  eid, f"routing_decisions[{uid}] must hold one model index per question")
@@ -190,7 +196,9 @@ def pairs_from_reveal(reveal: Mapping, answered: Mapping[str, HeadEpoch],
     # Cost-aware exploration weights (explore_weights). A reveal from before
     # them carries none: every pair weighs one.
     weights = None
-    if any("weight" in r for r in rows):
+    # A v4 epoch always pools with its weight tables, so its pairs carry
+    # weights even when the pool is empty (every operator left out), as live.
+    if any("weight" in r for r in rows) or (not rows and _reveal_protocol(reveal) >= 4):
         weights = [r.get("weight") for r in rows]
         _require(all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 10**9
                      for v in weights), eid, "exploration_pool `weight` must be positive integers")
@@ -230,6 +238,67 @@ def pairs_from_reveal(reveal: Mapping, answered: Mapping[str, HeadEpoch],
     return pairs, odds
 
 
+def labels_epoch_from_reveal(window: Window, reveal: Mapping, sl, answered: Mapping[str, HeadEpoch],
+                             pairs, picks=None) -> Window:
+    """`window` with a protocol v4 reveal's epoch added as the live epoch
+    added it (v2_epoch._add_v4_epoch): its pairs as labels_v4.LabelPairs
+    (each pair's voters and missing-row odds), every published head's odds,
+    whether or not the head answered the scored questions, and the late odds
+    the reveal published for the earlier epochs its heads missed. Every
+    field is validated; late odds for an epoch the window already holds
+    odds of the head for are refused (the live epoch computes only missing
+    ones). `picks` is the reveal's real-picks record (picks_from_reveal),
+    added with the epoch as the live epoch adds it."""
+    from fugal_subnet import labels_v4
+    from fugal_subnet.v2_epoch import odds_from_b64
+
+    eid = str(reveal.get("epoch_id", "?"))
+    _require(pairs is not None, eid, "`labels_v4` without an exploration pool")
+    try:
+        pairs = labels_v4.labels_from_reveal(reveal["labels_v4"], pairs)
+    except ValueError as e:
+        raise ValueError(f"reveal {eid}: {e}") from None
+    published = reveal.get("head_odds") or {}
+    _require(isinstance(published, Mapping), eid, "`head_odds` must be a map")
+    odds = {}
+    for h in sorted(published):
+        try:
+            odds[str(h)] = odds_from_b64(str(published[h]), len(pairs.question_ids))
+        except ValueError as e:
+            raise ValueError(f"reveal {eid}: head_odds[{str(h)[:12]}]: {e}") from None
+    out = window.add_epoch(sl, answered, pairs, {h: o for h, o in odds.items() if h in answered},
+                           picks=picks)
+    out = labels_v4.with_odds(out, {h: {sl.epoch: o} for h, o in odds.items()
+                                    if h not in answered})
+    try:
+        late = labels_v4.late_from_reveal(reveal.get("late_odds") or {}, out)
+    except ValueError as e:
+        raise ValueError(f"reveal {eid}: {e}") from None
+    for h, per in late.items():
+        _require(not set(per) & set(out.odds.get(h, {})), eid,
+                 f"late_odds[{h[:12]}] names an epoch whose odds the window already holds")
+    return labels_v4.with_odds(out, late)
+
+
+def picks_from_reveal(reveal: Mapping, sl):
+    """A v4 reveal's real-picks record (picks_v4.PicksEpoch) as published, on
+    the reveal's own slice and categories, or None for a reveal without one.
+    The values are read as published (each answered call priced at its own
+    epoch's pick-cost table when it was scored), so a rebuild needs neither
+    the menus nor the proofs; `picks_digest` in the reveal's `v2_state` is
+    the publishing validator's commitment to them."""
+    from fugal_subnet import picks_v4
+
+    block = reveal.get(picks_v4.REVEAL_KEY)
+    if block is None:
+        return None
+    eid = str(reveal.get("epoch_id", "?"))
+    try:
+        return picks_v4.epoch_from_reveal(block, sl.epoch, sl.categories)
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"reveal {eid}: `picks_v4` is malformed ({e})") from None
+
+
 def rebuild_v2_from_reveals(
     source: str | os.PathLike | Iterable[str],
     *,
@@ -237,8 +306,7 @@ def rebuild_v2_from_reveals(
     prices: Mapping[str, tuple[float, float]],
     bench_category: Mapping[str, str] | None = None,
     snapshot_epoch_id: str | None = None,
-    tables: Mapping[int, tuple[Mapping[str, tuple[float, float]], Mapping[str, str] | None]]
-    | None = None,
+    tables: Mapping[int, tuple] | None = None,
 ) -> V2Rebuild:
     """Rebuild the v2 window and decision state from published v2 reveals.
 
@@ -251,7 +319,9 @@ def rebuild_v2_from_reveals(
     The replayed reveals are priced at THEIR protocol's table: `tables` maps a
     protocol to (prices, bench_category), and a protocol not in it (or
     `tables` None) uses `prices` and `bench_category`. A v3 window priced at
-    v2's table left every v3 cell unpriced (v3 review, finding 1).
+    v2's table left every v3 cell unpriced (v3 review, finding 1). A
+    protocol's entry may carry a third member, the pick-cost table its
+    slices are priced at (protocol v4, build_epoch_slice's `pick_spend`).
     """
     reveals = sorted(_load(source), key=lambda r: _epoch_index(r["epoch_id"]))
     ids = [r["epoch_id"] for r in reveals]
@@ -286,16 +356,21 @@ def rebuild_v2_from_reveals(
             "after the protocol change")
     window = Window.empty(window_size)
     replayed = 0
-    p_prices, p_cat = (tables or {}).get(newest_protocol, (prices, bench_category))
+    p_prices, p_cat, *p_pick = (tables or {}).get(newest_protocol, (prices, bench_category))
+    p_pick = p_pick[0] if p_pick else None
     for r in reveals:
         if _epoch_index(r["epoch_id"]) < oldest_kept:
             continue
         if _reveal_protocol(r) != newest_protocol:
             continue
         try:
-            sl, answers = epoch_from_reveal(r, p_prices, p_cat)
+            sl, answers = epoch_from_reveal(r, p_prices, p_cat, pick_spend=p_pick)
             pairs, odds = pairs_from_reveal(r, answers, p_cat)
-            window = window.add_epoch(sl, answers, pairs, odds)
+            picks = picks_from_reveal(r, sl)
+            if "labels_v4" in r:
+                window = labels_epoch_from_reveal(window, r, sl, answers, pairs, picks=picks)
+            else:
+                window = window.add_epoch(sl, answers, pairs, odds, picks=picks)
         except ValueError as e:
             # Fail closed, by name: a window missing one epoch is a different
             # window from every peer's (I1), so the operator fixes the file.

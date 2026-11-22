@@ -46,6 +46,14 @@ WHAT MAY CROSS, and this list is the security boundary:
                     nobody else's — the same blast radius as the API key.
     coldkeypub      public. The SDK's serve_axon reads the coldkey ADDRESS
                     off the wallet, so the hotkey alone does not serve.
+    v4 options      protocol v4 only, each optional: the proposal this miner
+                    files, its measurement spend ceiling, and whether it
+                    answers the scored questions (tee/v4_options.py). One
+                    operator's own choices, so they cannot be in the shared,
+                    hashed compose. None is an input of the grader, the pool,
+                    the slice, the menu or the cost model; each is checked
+                    strictly HERE, at the boundary, and a push with a value
+                    that fails is refused whole.
 
 WHAT MUST NEVER CROSS: the model upstream, the pool, the grader, or anything
 else `runtime_identity()` covers. Those are inside the measurement precisely so
@@ -96,7 +104,22 @@ ALLOWED_FIELDS = frozenset({
     "openrouter_api_key",
     "hotkey_keyfile_b64",
     "coldkeypub_b64",
+    # Protocol v4, the operator's own options (tee/v4_options.FIELDS), each
+    # optional and checked by validate_payload before anything is kept.
+    "v4_proposal",
+    "v4_challenge",
+    "v4_challenge_usd",
 })
+
+# Fields an earlier v4 build took and the final one does not, each with what
+# replaced it: a push still carrying one is refused with that reason (the
+# operator's tooling is out of date), never silently ignored.
+REMOVED_FIELDS = {
+    "v4_scored": 'replaced by v4_challenge ("0", "500" or "1000": the challenge the TD '
+                 "answers each epoch)",
+    "v4_measure_cap_usd": "removed: a proposal is filed on chain and measured by the "
+                          "field's exploration, so the TD spends nothing measuring it",
+}
 
 # Nonce the miner chooses per provisioning attempt. The TD signs it into
 # report_data, which is what makes a captured attestation useless later: a
@@ -120,12 +143,22 @@ def validate_payload(payload: dict) -> dict[str, str]:
     rejects unknown keys rather than ignoring them — an ignored extra is a
     channel quietly acquiring a second purpose.
 
-    Values are returned as-is. This function decides WHAT may cross, never
-    whether a particular value is sensible; that belongs to whoever consumes it.
+    Values are returned as-is. This function decides WHAT may cross; whether
+    a value is sensible belongs to whoever consumes it, with one exception:
+    the protocol v4 options (tee/v4_options.py) are checked here in full,
+    since each bounds what the TD does on its operator's behalf and a TD
+    must never run with one it would refuse. A refusal names the field and
+    the rule, never the value.
     """
     if not isinstance(payload, dict):
         raise ProvisionError(f"payload must be an object, got {type(payload).__name__}")
 
+    removed = sorted(set(payload) & set(REMOVED_FIELDS))
+    if removed:
+        raise ProvisionError(
+            "refusing removed provisioning field(s): "
+            + "; ".join(f"{name} is no longer an option, {REMOVED_FIELDS[name]}"
+                        for name in removed))
     unknown = set(payload) - ALLOWED_FIELDS
     if unknown:
         # Names only. A rejected field's VALUE never reaches a log, because the
@@ -140,7 +173,25 @@ def validate_payload(payload: dict) -> dict[str, str]:
             raise ProvisionError(
                 f"field {name!r} must be a string, got {type(value).__name__}"
             )
+    if any(name.startswith("v4_") for name in payload):
+        from fugal_subnet.tee import v4_options
+
+        try:
+            v4_options.check_pushed(payload)
+        except v4_options.OptionRefused as e:
+            raise ProvisionError(f"refusing a protocol v4 option: {e}") from None
     return dict(payload)
+
+
+def _no_repeated_keys(pairs):
+    """json object hook: a field sent twice is refused, never resolved to
+    one of its values."""
+    seen = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ProvisionError(f"field {key!r} is sent twice")
+        seen[key] = value
+    return seen
 
 
 # --- transport -------------------------------------------------------------
@@ -276,7 +327,9 @@ def unseal(td_private, envelope: dict) -> tuple[dict, bytes]:
     except Exception as e:  # noqa: BLE001 - one error class, no detail leaks
         raise ProvisionError("envelope does not decrypt: wrong key, or tampered") from e
     try:
-        payload = json.loads(plaintext)
+        payload = json.loads(plaintext, object_pairs_hook=_no_repeated_keys)
+    except ProvisionError:
+        raise
     except ValueError as e:
         raise ProvisionError("decrypted payload is not JSON") from e
     return validate_payload(payload), key

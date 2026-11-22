@@ -88,7 +88,10 @@ include = ["fugal_subnet*", "neurons*"]
 # cannot be verified without them, so they have to be in the wheel. An install
 # that silently omits them fails only at the moment a real proof arrives.
 [tool.setuptools.package-data]
-"fugal_subnet" = ["routing_data/*.json", "vendor/SOURCE.json", "vendor/conformance.json", "vendor/LICENSE", "vendor/NOTICE"]
+# signed_lists/ holds the list signers (a trust root read at verification) and,
+# from the release that ships them, the signed lists and their signatures.
+"fugal_subnet" = ["routing_data/*.json", "vendor/SOURCE.json", "vendor/conformance.json", "vendor/LICENSE", "vendor/NOTICE",
+                  "signed_lists/*", "consensus_v4_pre.json"]
 "fugal_subnet.tee" = ["roots/*.der"]
 # The pinned pool manifests are read at startup (load_all for v1,
 # load_pool(2) for v2). Left out of the wheel the v1 one does not fail — it

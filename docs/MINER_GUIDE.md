@@ -133,6 +133,24 @@ was reviewed on 2026-11-09 from 758 metered calls at the v2 answer budget (the
 record is inside the file); your head's token statistics must match it exactly,
 which `--manifest data/benchmark_tokens_protocol_v2.json` does for you.
 
+### Protocol v4 heads (no activation block is set yet)
+
+The v4 head is the same format: a linear layer `W` (rows x 1024) and bias
+`b` on the same pinned embedding. Its rows are keyed by menu entry id, up to
+72 of them; rows for ids not on an epoch's menu are ignored, and an entry you
+have no row for is never routed to (from its `scored_from` epoch, a missing
+row costs you the odds seat). Token means and the cost profile are optional
+and ignored: picks are priced at the epoch's published menu costs. Details:
+`docs/decisions/LIVE_MENU_V4.md`, section 11.
+
+A training note, from an offline study on published v3 epochs: rows fitted
+as one shared direction plus a per-entry part (`W_m = w0 + V_m`, trained
+jointly) predicted better than rows fitted independently, by 0.40 Brier
+points (95% interval 0.12 to 0.68) on the seat's pooled pairs and 0.68 (0.52
+to 0.84) on raw exploration cells. Today's format holds such a head as it
+is: export `w0 + V_m` as row m. A 64-wide hidden layer or a different
+embedding model did not help at public-data scale.
+
 ## Step 4: Run the Miner
 
 There are two ways to run the miner and they are not interchangeable:
@@ -198,6 +216,351 @@ container inside a confidential VM.
 | `--benchmark-pool` | (optional) | Local pool JSON. Defaults to the same `load_all()` the validator uses, which is what you want on mainnet — override only for offline or local runs. The flag routes through the same loader, so it cannot disagree with a validator reading the same file. |
 | `--mock/--live` | `--mock` | Mock (default) or live TDX attestation |
 | `--log-level` | `INFO` | Logging level |
+| `--v4-proposal` | unset | Protocol v4 only: a menu entry this miner proposes (JSON). The miner serves it as a document and commits its hash beside its head (below); the root admits it at the next boundary when the rules pass it. Proposing costs nothing: the field measures the entry |
+| `--v4-state-dir` | `results/v4` | Protocol v4 only: where the TD keeps its last accepted menu and the published set (`FUGAL_V4_STATE_DIR`) |
+| `--v4-anchor` | unset | Protocol v4 only, a last resort: a menu file to start from (`FUGAL_V4_ANCHOR`) |
+| `--v4-challenge` | `0` | Protocol v4 only [PAID when not 0]: the challenge the TD answers each epoch, 0 (none), 500 or 1000 questions (`FUGAL_V4_CHALLENGE`; below) |
+| `--check` | off | Run the startup checks (chain, protocol, v4 options and files, pool, code sandbox, registration), print the `READY:` line and exit (0 when ready); waits for no provisioning, embeds and serves nothing. Every start logs the same line (under v4: the seed, mix and list found, the published-set seed and the reveal it is observed through, the root's hotkey for the first v4 epoch, your proposal and challenge size, and whether the list the image ships allows your proposal) |
+
+### Protocol v4: setting your options in a TD (no activation block is set yet)
+
+A TD runs the frozen compose every miner shares, which sets none of your own
+options and accepts no environment of its own. Your three v4 options travel
+with the head and the key, over the attested, sealed provisioning push:
+
+```bash
+python scripts/provision_td.py --address http://<ip>:8092 \
+    --approved <base>:<compose_hash> --instance-id <id> \
+    --head <your v4 head>.npz --wallet <wallet> --hotkey <hotkey> \
+    --api-key-file ~/.fugal/openrouter.key \
+    --v4-proposal '{"model": "<lab>/<name>", "reasoning": ["effort", "high"],
+                    "provider_order": ["<host>/<quant>"], "quantization": "<quant>"}' \
+    --v4-challenge 1000
+```
+
+| Push option | Field | Accepted values |
+|---|---|---|
+| `--v4-proposal` (or `@file`) | `v4_proposal` | The JSON object `--v4-proposal` takes, at most 1,024 printable ASCII characters, no key twice. It must pass every compiled entry rule that does not depend on a list: a reasoning setting of the fixed set, at most two pinned hosts, none twice, with one quantization and no service tier. Its lab and hosts are checked by the root at admission against the signed list in force then, not at the push |
+| `--v4-challenge` | `v4_challenge` | Exactly `0`, `500` or `1000` [PAID when not 0] |
+| `--v4-challenge-usd` | `v4_challenge_usd` | Whole dollars, `1` to `50000` (default `100`): the TD's dollar ceiling on one challenge's realised spend, checked first on its estimate |
+
+A push that still names `v4_scored` or `v4_measure_cap_usd` (fields of
+earlier v4 builds) is refused, naming the field and what replaced it.
+
+- **Each is sent only when you give it.** Leave them all out and the push
+  is exactly the push before protocol v4; the TD then runs with no proposal,
+  no challenge (`0`) and the default ceiling of $100.
+- **The TD checks every value before it keeps anything.** A value that fails
+  (an empty one, a reasoning setting outside the fixed set, a field sent
+  twice, an unknown `v4_` field, `v4_measure_cap_usd` included) refuses the
+  whole push, naming the
+  option and the rule, never the value: the TD stays unprovisioned, and you
+  push again. `provision_td.py` runs the same checks before it sends anything.
+- **How a proposal joins.** The miner serves the proposal as a small
+  document (your hotkey, the model, the reasoning, the pinned hosts and the
+  quantization; no price) and commits its hash as the second field of its
+  commitment, beside its head, in one transaction. Commit it early in an
+  epoch in which your miner also served a verified proof in the epoch
+  before: the root reads every commitment about 30 blocks before the next
+  boundary, fetches your document from your axon by its hash and the
+  model's public listing, and admits proposals in an order drawn from that
+  block's hash. One proposal per coldkey an epoch; one join an epoch below
+  ten serving hotkeys, two from ten. An admitted entry is on the menu of the
+  next epoch as provisional: every miner's exploration is aimed at it, its
+  labels score no head, and the step two epochs on decides it on the
+  field's labels (answered share, a category at the accuracy floor, not
+  clearly worse than an entry costing no more, not a copy of another
+  setting of its model already on the menu). It is then full, or retired
+  with a cooldown on its id and your coldkey. A proposal that finds no
+  place stays on chain and is considered at each boundary while your
+  commitment carries it.
+- **The lab and host list is checked by the root, not at the push.** Signed
+  lists change without a release, so you can push a proposal for a lab or
+  host that a newer list adds before your image ships that list. The root
+  admits it only under the list in force at that boundary; until then the
+  delta it publishes names your proposal with `refused:lab_not_allowed`
+  (or `host_not_allowed`, and so on). `provision_td.py` prints a note
+  saying whether the list your checkout ships allows the proposal; after the
+  push, the miner's `READY:` line says the same for the list the image ships:
+  `proposal not allowed by the shipped list serial N (the compiled entry
+  rule lab_not_allowed): admitted only under a list in force that allows
+  it`. The miner stays ready either way. An effort (`["effort", ...]`) is
+  admitted only on hosts whose listing takes `reasoning_effort`, and a host
+  is first-party only for the labs the list marks it for: on any other host
+  pin a quantization.
+- **One source.** Under `--await-provisioning` the TD takes these options
+  from the push only: a value given both in the push and on the miner's own
+  command line or environment stops the miner at start.
+- **Changing them** means a new push, which a TD takes once per start: stop
+  and start the instance, then push again.
+- **An image from before protocol v4** refuses a push that carries any of
+  them, as an unknown field. Push such an image without them.
+- **What you see.** After the push the miner logs its `READY:` line with the
+  options in force and `options from provisioning`. `--check` in a TD runs
+  before any push, so it says the options are pushed at provisioning.
+- **What they cannot do.** None of them is an input of the grader, the pool,
+  the slice, the menu or the cost model, and none changes the compose hash or
+  the image your approved entry names. A proposal still joins only when the
+  root's admission passes it, which every node re-runs.
+
+### Protocol v4: what the TD keeps, and starting late (no activation block is set yet)
+
+Under protocol v4 the menu is published state that changes without a release
+(`docs/decisions/LIVE_MENU_V4.md`). Your TD reads each epoch's menu from the
+root validator's commitment and checks it itself. You do not need to keep it
+running from the activation block onwards, and a restart does not replay
+history:
+
+- **What it keeps.** In its state directory (`--v4-state-dir`, default
+  `results/v4` under the working directory, which in the image is
+  `/app/results/v4` on dstack's encrypted data volume): `menu.json`, the
+  canonical bytes of the last menu it accepted (with any entries the root's
+  join delta added), and `published_v4.json` (below). Neither file holds a
+  key, a question or an answer.
+- **Where an epoch starts.** From that kept menu when it is recent (at most 8
+  epochs old). Otherwise from the root's newest published reveal: the TD reads
+  the root's commitment at the epoch's boundary block, fetches the reveal it
+  names from the root's bucket (or a mirror in `FUGAL_MENU_MIRRORS`), checks
+  it against the commitment, takes the menu that reveal's epoch ran on,
+  checks those bytes against their hash, the caps and the compiled rules,
+  and walks the two epochs from there with every check a validator makes. A
+  miner started thousands of epochs after activation proves on its first
+  full epoch.
+- **Your chain endpoint.** Those reads are pinned to epoch boundary blocks, as
+  a validator's are. The miner connects with `FUGAL_ARCHIVE_ENDPOINTS` and
+  `FUGAL_FALLBACK_ENDPOINTS` (finney's public endpoints by default). On a
+  node that keeps only the last ~300 blocks, a boundary more than one epoch
+  back cannot be read: after a restart or a skipped epoch that costs at most
+  one epoch, and the next epoch starts from a newer reveal. A failed read
+  never costs more than its own epoch. The TD's published set does the same:
+  where the endpoint no longer serves the boundaries it missed, it
+  re-anchors on the root's newest snapshot, which needs pinned reads three
+  epochs back (`memo_sync.ANCHOR_HISTORY_EPOCHS`, about 1,100 blocks on
+  finney). **What endpoint a v4 miner needs:** one that serves pinned reads
+  at least three epochs back, or an archive behind it (the default on
+  finney); across the v4 activation, before the first v4 reveal names a
+  snapshot, the set is read from the release's seed, up to 150 epochs back,
+  which only an archive serves. The miner logs a `chain history:` line at
+  startup saying whether its endpoint serves the three epochs.
+- **The last resort.** If neither the kept menu nor a reveal can be had (the
+  root's bucket and every mirror unreachable), hand the TD a menu file with
+  `--v4-anchor` (any menu's canonical bytes, for example from a validator's
+  mirror). It is checked like every menu and used only when the others fail.
+- **The published set.** Each epoch's questions are drawn on the questions
+  whose outcomes the root's committed reveals have published
+  (`docs/decisions/SEAT_MINIMAL_V4.md` 6), and every validator checks your
+  proof against that draw. Your TD advances the set itself: at each epoch's
+  boundary it reads the root's commitment (pinned, as for the menu) and folds
+  the reveal it newly names (the one it already reads for the menu and the
+  seat holder, checked against the commitment); when the root is down
+  nothing moves and the TD proves on the set it holds. It keeps the set in
+  `published_v4.json` in the same state directory (question ids and epochs,
+  nothing secret). Started with nothing kept, it takes the root's snapshot of
+  the set the named reveal names (`<netuid>/published/<digest>.json` in the
+  root's bucket, about 1-1.5 MB, checked against the digest) and reads the
+  boundaries after it. Across the v4 activation, before any v4 reveal names a
+  snapshot, it reads every boundary from the release's seed: about 1.4 MB and
+  one pinned chain read per v3 reveal (the seed is at most 150 epochs old).
+  The TD never takes a set from you, and makes no proof on a root reveal that
+  contradicts its own state.
+- **A provisional entry's calls.** Your TD calls a provisional entry like
+  any other, on a deadline of its own (300 s a call, one retry), and starts
+  none of them after 20 minutes of the epoch's calls: a new entry's slow
+  host never holds your proof back. Validators leave those calls out of
+  your failure bound.
+- **What a provisional entry can cost you, at most.** No entry joins above
+  the price ceiling of $25 per million prompt tokens and $100 per million
+  completion tokens (today's dearest entries list $8 / $40), and an entry
+  whose price would rise above it at a refresh leaves the menu. Your TD
+  also caps what a provisional entry's exploration calls actually cost, all
+  provisional entries together: at most **$40 an epoch** (before each call
+  it holds back the most the call could cost, its answer limit of
+  completion tokens times the higher of the menu's and the listing's price,
+  three upstream attempts, and counts what the call did cost once it is
+  back; calls past the cap are not made and count only against the entry's
+  own answered share). A real entry costs cents a call, so the cap binds
+  only on an entry whose answers run to their limit at a high price. The
+  exploration draw's own caps ($0.55 cost-aware, $1.10 coverage) are on
+  expected cost. **Set a spending limit on your own provider key** that
+  resets daily (or weekly), above your normal bill plus these worst cases,
+  so a bad epoch cannot drain the account; a total limit that never resets
+  fails every call once reached (see the OpenRouter notes below).
+
+### Protocol v4: the challenge, and a holder that only explores (no activation block is set yet)
+
+Under protocol v4 (`docs/decisions/SEAT_MINIMAL_V4.md` 3, as
+`docs/decisions/FAST_CROWN_V4.md` changes it) your head is scored on odds,
+which validators compute themselves from its committed bytes. Real calls
+routed by your head are needed only to take the seat, in a **challenge**:
+`--v4-challenge` (`FUGAL_V4_CHALLENGE`) chooses, each epoch, how many
+questions of the epoch's challenge list your TD answers:
+
+| Value | What the TD does | When to use it |
+|---|---|---|
+| `0` (default) | No challenge; every proof is exploration only | Far from the seat, and as the holder (it answers nothing) |
+| `500` | The first 500 questions [PAID, about $16 an attempt] | Cheaper attempts, for a head well ahead on odds |
+| `1000` | The first 1,000 questions [PAID, about $32 an attempt] | The epochs you expect to beat the holder on odds |
+
+- **What a challenge is.** Each epoch has a list of 1,000 published
+  questions on the scored mix, the 200 scored questions first. On each of
+  the first 500 or 1,000 your TD calls your head's pick and, where the seat
+  holder's pick differs, the holder's: the holder is the one the root's
+  reveal of two epochs back names, and your TD reads its published head
+  bytes and checks them against that hash. Both picks are taken over the
+  menu's full entries only: a provisional entry is never a challenge pick,
+  yours or the holder's. Each validator recomputes both
+  picks; a challenge that pairs with another holder or states another pick
+  is not counted. A question where both picks are the same entry counts 0;
+  otherwise your value minus the holder's, at $1 a correct answer and each
+  call at the menu's pick cost of its entry and category. A call that fails
+  counts against you: your own as wrong, the holder's as right. A
+  holder-side call your TD did not start (its time or dollar budget ran out)
+  counts for no one. If more than 10% of the holder-side calls failed or
+  were not started, the challenge is **void**: it counts for and against no
+  one, `picks_v4.void` says why, and your run goes on through it, once (a
+  second void epoch in the same run restarts it, as a gap does).
+- **Time.** Your TD starts your own calls first, then the holder's with its
+  exploration, 40 calls in flight; no challenge call is started more than
+  30 minutes after its first call of the epoch, and a call started is
+  counted whenever it ends. If some of your own calls were not started the
+  challenge is reported at 500 when those 500 were all made, else not at all
+  (an unanswered attempt: your proof is exploration only and your run
+  restarts). The TD also makes no challenge in an epoch whose holder it
+  cannot read and check (the root's reveal not to be had).
+- **The dollar ceiling.** `--v4-challenge-usd` (`FUGAL_V4_CHALLENGE_USD`,
+  provisioning field `v4_challenge_usd`; whole dollars, default **100**, at
+  most 50,000) bounds what one challenge spends. It works in two steps:
+  - **Estimate first.** Before its first call the TD estimates the
+    challenge's cost from the epoch's pick-cost table (the cost each
+    challenge item is priced at): your pick on every question, plus the
+    holder's pick wherever it differs from yours. If the estimate exceeds
+    the ceiling there is no challenge that epoch (your proof is exploration
+    only and your run restarts); the TD logs the estimate and the ceiling.
+  - **Realised spend while running.** No challenge call is started once
+    what the challenge has actually cost so far, plus the estimate of its
+    calls still in flight, reaches the ceiling. What is not started is
+    treated exactly as a time cut (below): your own calls by the reported
+    size, the holder's as not started, and the void rule.
+
+  The READY line shows the ceiling in force. The estimate at the seed
+  menu's pick costs, with your pick and the holder's differing on 87% of
+  questions (as measured):
+
+  | Challenge | Mean seed entry ($0.0147 a call) | Every pick the median entry | Every pick the dearest entry ($0.157 a call) |
+  |---|---|---|---|
+  | 500 (about 935 calls) | about $14 | about $3 | about $147 |
+  | 1,000 (about 1,870 calls) | about $28 | about $6 | about $294 |
+
+  A measured challenge cost about $16 (500) or $32 (1,000). So the default
+  $100 admits a typical challenge, and refuses one whose picks (yours or the
+  holder's) lean on the dearest entries: raise it for those epochs.
+
+  **What can still go over.** The ceiling stops new calls; it cannot stop
+  calls already in flight, which finish and are paid. At most 40 challenge
+  calls are in flight at once, and each is bounded by its entry's
+  `max_tokens` at its price, which the menu holds under the price ceiling
+  ($25 in / $100 out per million tokens). At the seed menu's dearest entry
+  ($40 out per million, a 131,072-token limit) a call's answer costs at most
+  about $5.24, so the overshoot is at most about $210 (40 calls); at the
+  price ceiling it is at most about $13.11 a call, $524 for 40, and the
+  proxy may retry an upstream call up to three times, each billed (up to
+  about $1,573 if all 40 calls ran to their limit three times). Real answers
+  are far shorter (the measured challenge spend above). **Set a spending
+  limit on your own provider key** (daily or weekly, above your normal bill
+  plus these figures): it is the only bound that holds whatever the TD does.
+- **What you pay and what counts.** You pay for every call your TD
+  started, your own and the holder's, answered or failed. A counted
+  challenge counts every own call and every holder-side call made; a void
+  one counts nothing but keeps your run; a challenge not reported counts
+  nothing and restarts your run.
+- **What an odds-only miner runs and spends.** With no challenge your TD
+  still runs every epoch: the menu, the endpoint reads, its 112 exploration
+  calls (68 cost-aware, 44 coverage) and any measurement of your own
+  proposal. The bill is the exploration (about $0.78 an epoch at measured
+  costs) plus the confidential VM (about $0.25 an epoch): about $20 a day.
+- **When to challenge.** Every reveal publishes where your head stands on
+  odds (`odds_v4`, and its bound against the holder in `seat_v4`). The
+  real-picks check (rule B) reads your unbroken run of epochs with a counted
+  challenge and needs 500 questions: one challenge of 1,000 can take the
+  seat in the epoch it is answered, if your odds beat the holder's then. An
+  epoch without a counted challenge restarts the run. Your head passes when
+  the bound on its items over the holder is above -1.5 points. Each
+  reveal's `picks_v4.evidence` shows your run and the bound; `picks_v4.refused`
+  says why a challenge was not counted, `picks_v4.void` why one was void.
+- **What the holder does.** Nothing beyond its exploration: it stands while
+  verified in one of the last three epochs and is paid each epoch it is
+  verified, R does not beat it and the memorisation check does not refuse
+  it. Set `--v4-challenge 0` once you hold the seat.
+- **Failures.** A proof with more than 34% of its exploration calls failed
+  is not counted at all, unless the epoch is an outage (most operators
+  failing more than 30% of their exploration calls).
+
+### Protocol v4: how a head wins and keeps the seat (no activation block is set yet)
+
+Under protocol v4 (`docs/decisions/SEAT_MINIMAL_V4.md`, 3.3 to 3.8 and 4)
+the seat is decided by three rules, every epoch, by every validator from
+the same published data:
+
+1. **Better odds (rule A).** Your head must beat the bar on odds by 0.1
+   Brier points, on at least 300 labels drawn after both heads were
+   committed and supplied by neither head's operator. The bar is the seat
+   holder; when the holder is away too long, or the reference (R, the
+   entry's success rate) beats it, the bar is R and the seat is open. Your
+   own exploration calls never judge your own head, and your odds are
+   computed for every epoch after your commit whether or not you served it,
+   so skipping an epoch changes nothing about your evidence.
+2. **Real picks no worse (rule B).** Your head must answer a challenge
+   (above), and its items over the holder (at $1 a correct answer, each
+   call priced at the menu's pick cost) must have a bound above -1.5 points
+   on 500 questions of your unbroken run of challenge epochs: one challenge
+   of 500 or 1,000 can be enough.
+3. **Precedence (rule C).** Heads are ordered by first commit (heads
+   committed at or before the v4 activation block tie there, ordered by a
+   digest of its block hash). Your head must also beat on odds, by the same
+   0.1 points, every earlier head still in the race (a "contender": it was
+   verified in the last three epochs, has a counted challenge in one of
+   them, beats the bar and is not shown to route worse than the holder).
+   A copy of an earlier head, however altered, is not 0.1 points better than
+   it, so it never passes it, even in an epoch the earlier head misses. An
+   earlier head that never challenges bars no one.
+
+Of the heads that pass all three this epoch, the one committed **last**
+takes the seat. If none passes, the holder keeps it, even when it is not
+paid: a seat is never emptied without a replacement. At the v4 activation
+the seat starts empty and stays empty (the miner share burns) until a head
+has 300 labels over R and a challenge of 500 questions.
+
+- **Keeping the seat.** Keep serving your exploration proofs: the holder
+  answers no challenge, and keeps its seat while verified in this epoch or
+  one of the two before it: miss one or two epochs and you keep the seat,
+  unpaid for those
+  epochs; miss three and the seat goes that epoch to the latest head that
+  passes the three rules. It also opens when R beats your odds (for
+  example, when your head lacks a row for an entry whose 20-epoch
+  allowance has ended) or when the memorisation check refuses your head.
+- **Adding a row keeps your place (succession).** Commit, from the same
+  hotkey and coldkey, a head whose existing rows are byte for byte the old
+  head's (weights and bias) and which only adds rows (or drops rows of
+  entries that left the menu): it is the same head for the seat (its seat,
+  its precedence, its standing and its evidence carry over; the new rows
+  count from the new commit). Change any existing row and it is a new head
+  with a new place at the back of the order. The seat state publishes each
+  head's row digests, so you can check before you commit.
+- **Copies.** The same bytes under another coldkey are not a head at all
+  (not scored, seated or paid); your second hotkey on your own head earns
+  nothing.
+- **Pay.** 85% to the holder, 10% and 5% to the two holders before it, each
+  paid in an epoch only when its head is verified (the holder with its
+  scored answers), R does not beat it and the memorisation check does not
+  refuse it. An unpaid former holder's share goes to the holder; an unpaid
+  holder's share burns. There is no ramp: a new holder is paid its full
+  share from the epoch it takes the seat.
+- **Where to look.** Each reveal's `seat_v4` block shows the bar, whether
+  the seat is open, the precedence order, and for your head: whether it
+  stands, its bound over the bar, its picks check, each earlier contender it
+  was tested against, and in words why it did not qualify. The holder is
+  `champion.champion`; the seat state, with every head's row digests, is
+  `v2_state.seat`.
 
 ## Running Under dstack (required for `--live`)
 

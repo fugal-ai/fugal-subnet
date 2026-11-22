@@ -655,6 +655,462 @@ def a_issuer_address_aimed_at_the_operator():
     return verify_mod.VerifyResult(False, "no address outside Google's CA content was asked")
 
 
+# --- protocol v4: the epoch's menu and its draws ---------------------------------
+#
+# docs/decisions/LIVE_MENU_V4.md, sections 4.1, 5, 8 and 14 (A7, A9). A v4
+# proof names the menu it ran on and carries exploration drawn by the menu's
+# shares. No proof measures a proposal: proposals are filed on chain and a
+# new entry is measured by the whole field's coverage in its join epoch
+# (FAST_CROWN_V4.md 18), so a proof that carries a proposal or a result
+# that claims to measure one is refused as it is read. Every case
+# below is a proof whose attestation is genuine; what refuses it is the
+# comparison with what the epoch's menu and nonce assign (verify.V4Expected).
+# Gold is supplied for the whole pool, so no case is refused for a question
+# merely lacking gold: each is refused by the v4 rule it tests.
+
+V4_EPOCH = 1000
+V4_NONCE_HEX = hashlib.sha256(b"v4 attack epoch").hexdigest()
+V4_SLICE_SIZE = 20
+V4_PROPOSAL_MODEL = "lab-new/model-x"
+
+
+def _v4_world() -> dict:
+    """The pinned seed menu at V4_EPOCH, a pool, the slice, the honest
+    hotkey's expectation and a head with rows on the menu. Built once."""
+    if "world" in _V4_CACHE:
+        return _V4_CACHE["world"]
+    from fugal_subnet import config, epoch_plan
+    from fugal_subnet import menu_state as ms
+
+    state = ms.seed_state(V4_EPOCH)
+    ms.validate(state)
+    pool = [{"question_id": f"{b}-{i:04d}", "benchmark": b}
+            for b in sorted(config.BENCHMARK_CATEGORY_V3) for i in range(120)]
+    nonce = bytes.fromhex(V4_NONCE_HEX)
+    plan = epoch_plan.plan_v4(pool)
+    index = plan.pool_index
+    slice_ids = [q["question_id"] for q in epoch_plan.scored_slice(3, nonce, pool, V4_SLICE_SIZE)]
+    # The epoch's challenge list (the slice first): this world's slice is not
+    # the plan's size, so the list is laid out here, 1,000 questions of the pool.
+    listed = slice_ids + [q["question_id"] for q in pool if q["question_id"] not in slice_ids]
+    expected = verify_mod.expected_v4(
+        state, epoch=V4_EPOCH, nonce=nonce, pool=pool, scored_ids=slice_ids,
+        hotkey=HONEST_HOTKEY, plan=plan, challenge_ids=listed[:1000])
+    rows = list(state.ids()[:3])
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    manifest["models"] = [{"id": m, "samples": 1, "mean_in_tokens": 100.0,
+                           "mean_out_tokens": 100.0} for m in rows]
+    buf = io.BytesIO()
+    np.savez(buf, **contract.make_head(np.zeros((len(rows), 1024)), np.zeros(len(rows)), rows,
+                                       manifest, "synthetic-test-only v4 attack control"))
+    head = buf.getvalue()
+    world = dict(state=state, pool=pool, nonce=nonce, index=index, plan=plan,
+                 slice=slice_ids, expected=expected, head=head,
+                 head_hash=hashlib.sha256(head).hexdigest(), rows=rows,
+                 gold={q["question_id"]: {"question_id": q["question_id"]} for q in pool})
+    _V4_CACHE["world"] = world
+    return world
+
+
+_V4_CACHE: dict = {}
+
+
+def _v4_results(world=None) -> list[QuestionResult]:
+    """The honest v4 result list: a 500-question challenge with no holder
+    (the open form: the first 500 of the epoch's list, the slice first), then
+    the exploration exactly as drawn."""
+    w = world or _v4_world()
+    x = w["expected"]
+    out = [_qr(q, w["rows"][0]) for q in x.challenge[:500]]
+    out += [_qr(q, m, explore=True) for q, m in sorted(x.exploration.items())]
+    return out
+
+
+def _v4_proof(results=None, *, menu_hash=None, namespace=None, world=None, scored=True,
+              challenge=None):
+    from fugal_subnet.routing_protocol import identity_v4
+    from fugal_subnet.tee.proof import Challenge
+
+    w = world or _v4_world()
+    results = _v4_results(w) if results is None else results
+    menu_hash = w["expected"].menu_hash if menu_hash is None else menu_hash
+    per_model: dict[str, float] = {}
+    for r in results:
+        per_model[r.routed_model] = per_model.get(r.routed_model, 0.0) + r.cost_usd
+    p = BenchmarkProof(
+        epoch_id=f"e{V4_EPOCH:08d}", nonce=V4_NONCE_HEX,
+        questions_hash=compute_questions_hash(w["slice"]), weights_hash=w["head_hash"],
+        source_hash="a" * 64, results=results, total_cost_usd=sum(r.cost_usd for r in results),
+        per_model_costs=per_model, attestation_quote=b"", timestamp=1.0, hotkey=HONEST_HOTKEY,
+        routing_protocol=namespace or identity_v4(menu_hash), menu_hash=menu_hash,
+        endpoint_reads=(), scored=scored,
+        challenge=(challenge or Challenge(500, None)) if scored else None)
+    p.attestation_quote = _quote(bytes.fromhex(p.content_hash()), HONEST_MRTD, HONEST_RTMR3)
+    return p
+
+
+def _holder_call(q, entry):
+    r = _qr(q, entry)
+    return QuestionResult(r.question_id, r.routed_model, r.correct, r.cost_usd, r.response_hash,
+                          prompt_tokens=r.prompt_tokens, completion_tokens=r.completion_tokens,
+                          latency_ms=r.latency_ms, provider_cost=r.provider_cost,
+                          served_by=r.served_by, holder_pick=True)
+
+
+def a_v4_challenge_of_another_size():
+    """A challenge that says it answered 750 questions (not 500 or 1,000)."""
+    from fugal_subnet.tee.proof import Challenge
+
+    w = _v4_world()
+    results = [_qr(q, w["rows"][0]) for q in w["expected"].challenge[:750]]
+    results += [r for r in _v4_results() if r.is_exploration]
+    return _v4_verify(_v4_proof(results, challenge=Challenge(750, None)))
+
+
+def a_v4_challenge_not_a_prefix():
+    """500 questions of the list, but not its first 500 (one swapped for the
+    501st)."""
+    w = _v4_world()
+    lst = w["expected"].challenge
+    results = [_qr(q, w["rows"][0]) for q in lst[1:501]]
+    results += [r for r in _v4_results() if r.is_exploration]
+    return _v4_verify(_v4_proof(results))
+
+
+def a_v4_holder_call_to_its_own_pick():
+    """A holder-side call on a question to the proof's own pick there."""
+    from fugal_subnet.tee.proof import Challenge
+
+    w = _v4_world()
+    q = w["expected"].challenge[0]
+    results = _v4_results() + [_holder_call(q, w["rows"][0])]
+    return _v4_verify(_v4_proof(results, challenge=Challenge(500, "ab" * 32)))
+
+
+def a_v4_holder_calls_with_no_holder():
+    """Holder-side calls in a challenge that names no holder."""
+    w = _v4_world()
+    q = w["expected"].challenge[0]
+    return _v4_verify(_v4_proof(_v4_results() + [_holder_call(q, w["rows"][1])]))
+
+
+def _v4_verify(proof, *, world=None, **over):
+    w = world or _v4_world()
+    kw = dict(
+        approved_measurements=APPROVED,
+        expected_questions_hash=compute_questions_hash(w["slice"]),
+        expected_nonce=V4_NONCE_HEX, gold_answers=w["gold"],
+        expected_question_ids=set(w["slice"]), expected_weights_hash=w["head_hash"],
+        expected_hotkey=HONEST_HOTKEY, head_bytes=w["head"], event_log=_HONEST_LOG,
+        mock=False, protocol_version=4, v4=w["expected"])
+    kw.update(over)
+    kw.setdefault("expected_proof_hash", proof.content_hash())
+    return verify_mod.verify_proof(proof, **kw)
+
+
+def a_v4_stale_menu():
+    """Run the epoch on last epoch's menu (a TD that did not fetch the new
+    bytes), and name it honestly: its hash is not the epoch's (A7)."""
+    import dataclasses
+
+    from fugal_subnet import menu_state as ms
+    w = _v4_world()
+    stale = dataclasses.replace(w["state"], epoch=V4_EPOCH - 1)
+    return _v4_verify(_v4_proof(menu_hash=ms.menu_hash(stale)))
+
+
+def a_v4_foreign_menu():
+    """Run on a menu of the miner's own, priced to suit its head (A7)."""
+    import dataclasses
+
+    from fugal_subnet import menu_state as ms
+    w = _v4_world()
+    mine = dataclasses.replace(w["state"], entries=tuple(
+        dataclasses.replace(e, price_out=1) for e in w["state"].entries))
+    return _v4_verify(_v4_proof(menu_hash=ms.menu_hash(mine)))
+
+
+def a_v4_namespace_of_another_menu():
+    """Name the epoch's menu hash, but bind the namespace to another menu."""
+    from fugal_subnet.routing_protocol import identity_v4
+    return _v4_verify(_v4_proof(namespace=identity_v4("ee" * 32)))
+
+
+def a_v4_route_off_the_menu():
+    """Route a scored question to an entry the epoch's menu does not offer."""
+    results = _v4_results()
+    results[0] = _qr(results[0].question_id, "lab-new/not-on-the-menu")
+    return _v4_verify(_v4_proof(results))
+
+
+def _v4_read_back(d: dict):
+    """Read a proof's wire form the way a validator does (BenchmarkProof.from_dict),
+    then verify it. BLOCKED when reading refuses it."""
+    try:
+        proof = BenchmarkProof.from_dict(d)
+    except (ValueError, KeyError, TypeError) as e:
+        return verify_mod.VerifyResult(False, f"refused as read: {e}")
+    return _v4_verify(proof)
+
+
+def a_v4_proof_carrying_a_proposal():
+    """A v4 proof that carries a proposal for a validator to file, as v4
+    drafts once had it: proposals are filed on chain only."""
+    d = _v4_proof().to_dict()
+    d["proposal"] = {"id": "lab-new/model-x@high", "model": "lab-new/model-x",
+                     "reasoning": ["effort", "high"], "provider_order": ["deepinfra/fp8"],
+                     "quantization": "fp8"}
+    return _v4_read_back(d)
+
+
+def a_v4_result_claiming_a_measurement():
+    """Exploration answers that claim to measure a proposal, so a validator
+    would count them toward it and not toward the field's coverage."""
+    d = _v4_proof().to_dict()
+    for r in d["results"]:
+        if r.get("is_exploration"):
+            r["measure_for"] = "ab" * 32
+    return _v4_read_back(d)
+
+
+def dataclasses_replace(obj, **changes):
+    import dataclasses
+    return dataclasses.replace(obj, **changes)
+
+
+# --- protocol v4: an operator's own options, pushed into its TD -----------------
+#
+# A miner in a TD sets its v4 options (the proposal it serves and commits,
+# whether it answers the scored questions) over the sealed
+# provisioning channel (tee/provision.py, tee/v4_options.py). The operator
+# is the attacker here: the push is sealed to a genuine TD's key, so the
+# receiver's checks are all that stand between a crafted value and the TD.
+# A case is BLOCKED when the receiver refuses the push (the TD keeps
+# nothing) and EXPLOITED when the TD keeps the value; except the two cases of
+# a proposal the signed lab and host list does not allow, which provisioning
+# accepts (lists change without a release, so the list is checked where the
+# root admits proposals): those are BLOCKED when the root's admission refuses
+# it under a list in force of labs lab-a and lab-c and hosts host-a and
+# host-b, and admits it under a list that adds its lab and host.
+
+_OPTION_LIST = None
+_OPTION_PROPOSAL = {"model": "lab-c/model-new", "reasoning": ["effort", "high"],
+                    "provider_order": ["host-a/fp8"], "quantization": "fp8"}
+_OPTION_BASE = {"head_b64": "aGVhZA==", "hotkey_ss58": HONEST_HOTKEY}
+
+
+def _option_list():
+    from fugal_subnet import menu_rules as mr
+
+    return mr.MenuAllowlist(serial=1, labs=frozenset({"lab-a", "lab-c"}),
+                            hosts=frozenset({"host-a", "host-b"}),
+                            sha256="ab" * 32)
+
+
+def _push_options(plaintext: bytes):
+    """Seal `plaintext` (any bytes, past the operator's own check) to a fresh
+    TD key, then run the TD's side: unseal and the store's accept. The
+    verdict's `valid` is True when the TD kept the push."""
+    store, why = _receive_push(plaintext)
+    if store is None:
+        return verify_mod.VerifyResult(False, why)
+    from fugal_subnet.tee import v4_options
+
+    kept = {f: store.get(f) for f in v4_options.FIELDS.values() if store.get(f)}
+    return verify_mod.VerifyResult(True, f"the TD kept {sorted(kept)}")
+
+
+def _receive_push(plaintext: bytes):
+    """(the TD's store after it took the push, None) or (None, why it was
+    refused): `_push_options`'s seal, unseal and accept."""
+    import os
+
+    from cryptography.hazmat.primitives.asymmetric import x25519
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+
+    from fugal_subnet.tee import provision
+
+    td = x25519.X25519PrivateKey.generate()
+    td_pub = td.public_key().public_bytes_raw()
+    nonce = provision.new_nonce()
+    eph = x25519.X25519PrivateKey.generate()
+    key = provision._derive(eph.exchange(x25519.X25519PublicKey.from_public_bytes(td_pub)),
+                            bytes.fromhex(nonce), provision._HKDF_INFO_KEY)
+    iv = os.urandom(12)
+    envelope = {"nonce": nonce, "epk": eph.public_key().public_bytes_raw().hex(),
+                "iv": iv.hex(), "ct": ChaCha20Poly1305(key).encrypt(iv, plaintext,
+                                                                    bytes.fromhex(nonce)).hex()}
+    try:
+        values, session = provision.unseal(td, envelope)
+        store = provision.ProvisionStore()
+        store.accept(values, session)
+    except provision.ProvisionError as e:
+        return None, str(e)
+    return store, ""
+
+
+def _push_fields(**fields):
+    return _push_options(json.dumps({**_OPTION_BASE, **fields}).encode())
+
+
+def _proposal(**over):
+    return json.dumps({**_OPTION_PROPOSAL, **over})
+
+
+def a_v4_option_oversized_proposal():
+    """A proposal padded to 64 kB, inside the 3 MB body the receiver reads."""
+    return _push_fields(v4_proposal=_proposal(model="lab-c/" + "m" * 65536))
+
+
+def a_v4_option_wrong_types():
+    """Each option as a JSON value of another type, and a challenge ceiling out of
+    its range or not whole dollars."""
+    for fields in ({"v4_proposal": 25}, {"v4_challenge": 1000},
+                   {"v4_proposal": _OPTION_PROPOSAL}, {"v4_challenge": None},
+                   {"v4_challenge_usd": 100}, {"v4_challenge_usd": "0"},
+                   {"v4_challenge_usd": "50001"}, {"v4_challenge_usd": "100.5"}):
+        got = _push_fields(**fields)
+        if got.valid:
+            return got
+    return verify_mod.VerifyResult(False, "every wrong type refused")
+
+
+def _off_the_list(**over):
+    """Push a proposal the list in force does not allow, then run the root's
+    admission of it (chain_proposals.admit) at the next boundary: committed by
+    a serving hotkey, its document served, its hosts listed. BLOCKED when
+    provisioning keeps it (the list is not checked there), admission refuses
+    it under the list in force, and admits it under a list that adds its lab
+    and host (the case tests the list)."""
+    import dataclasses
+
+    from fugal_subnet import chain_proposals as cp
+    from fugal_subnet import menu_rules as mr
+    from fugal_subnet import menu_state as ms
+    from fugal_subnet.tee import v4_options
+
+    store, why = _receive_push(json.dumps({**_OPTION_BASE,
+                                           "v4_proposal": _proposal(**over)}).encode())
+    if store is None:
+        return verify_mod.VerifyResult(True, f"provisioning refused it ({why}); the list is "
+                                             "checked at admission, not at provisioning")
+    spec = v4_options.parse_proposal(store.get("v4_proposal"))
+    raw = cp.document_bytes(cp.ProposalDoc(
+        proposer=HONEST_HOTKEY, model=spec.model, reasoning=tuple(spec.reasoning),
+        provider_order=tuple(spec.provider_order), quantization=spec.quantization))
+    h = cp.proposal_hash(raw)
+    base = _v4_world()["state"]
+    read = cp.ChainRead(epoch=base.epoch, block=0, block_hash="ab" * 32,
+                        proposals=((HONEST_HOTKEY, h),), coldkey_of={HONEST_HOTKEY: "5HonestCk"},
+                        serving=frozenset({HONEST_HOTKEY}), reveal=None)
+    listing = {h: tuple(cp.HostListing(x, True, 200_000, 800_000, 65536, True)
+                        for x in sorted(spec.provider_order))}
+
+    def verdict(allow):
+        # the menu names the list in force (the base menu's list judges joins)
+        named = dataclasses.replace(base, labs=ms.AllowlistRef(allow.serial, allow.sha256))
+        (c,) = cp.admit(named, read, {h: raw}, listing, allow).considered
+        return c.verdict
+
+    narrow = verdict(_option_list())
+    if narrow == cp.JOINED:
+        return verify_mod.VerifyResult(True, "admitted under a list that does not allow it")
+    wider = mr.MenuAllowlist(serial=2, labs=frozenset({"lab-a", "lab-c", "lab-x"}),
+                             hosts=frozenset({"host-a", "host-b", "host-x"}),
+                             sha256="cd" * 32)
+    if verdict(wider) != cp.JOINED:
+        return verify_mod.VerifyResult(True, f"not admitted under a list that allows it either "
+                                             f"({verdict(wider)}): the case tests nothing")
+    return verify_mod.VerifyResult(False, (
+        f"kept at provisioning; admission refused it under list serial 1 ({narrow}); "
+        "admitted under a list that adds it"))
+
+
+def a_v4_option_lab_off_the_list():
+    """Propose a model of a lab the signed list in force does not allow."""
+    return _off_the_list(model="lab-x/model-new")
+
+
+def a_v4_option_host_off_the_list():
+    """Propose an allowed lab's model on a host the signed list in force does
+    not allow."""
+    return _off_the_list(provider_order=["host-x/fp8"])
+
+
+def a_v4_option_control_characters():
+    """Control characters in a proposal (a NUL, a terminal escape, a newline)."""
+    for model in ("lab-c/model\x00new", "lab-c/model\x1b[2Jnew", "lab-c/model\nnew"):
+        got = _push_fields(v4_proposal=_proposal(model=model))
+        if got.valid:
+            return got
+    return verify_mod.VerifyResult(False, "every control character refused")
+
+
+def a_v4_option_sent_twice():
+    """The scored mode sent twice, off then on: a reader that keeps the last
+    value would answer the scored questions the first said it would not."""
+    body = json.dumps(_OPTION_BASE)[:-1] + ', "v4_challenge": "0", "v4_challenge": "1000"}'
+    return _push_options(body.encode())
+
+
+def a_v4_option_unknown_fields():
+    """v4 settings the TD reads and checks itself (its menu anchor, its state
+    directory, the activation block), pushed as options; and the spending
+    ceiling of v4 drafts, which no TD reads (nothing is measured by a proposer)."""
+    for fields in ({"v4_anchor": "menu.json"}, {"v4_state_dir": "/tmp"},
+                   {"v4_activation_block": "1"}, {"v4_menu": "{}"},
+                   {"v4_measure_cap_usd": "25"}):
+        got = _push_fields(**fields)
+        if got.valid:
+            return got
+    return verify_mod.VerifyResult(False, "every unknown v4 field refused")
+
+
+def a_v4_option_scored_not_a_mode():
+    """A scored mode outside auto, on and off."""
+    return _push_fields(v4_challenge="750")
+
+
+V4_OPTION_ATTACKS = [
+    ("v4 option: an oversized proposal", "I2", a_v4_option_oversized_proposal),
+    ("v4 option: values of the wrong type", "I2", a_v4_option_wrong_types),
+    ("v4 option: a proposal of a lab off the list", "I8", a_v4_option_lab_off_the_list),
+    ("v4 option: a proposal on a host off the list", "I8", a_v4_option_host_off_the_list),
+    ("v4 option: control characters in a proposal", "I2", a_v4_option_control_characters),
+    ("v4 option: a field sent twice", "I8", a_v4_option_sent_twice),
+    ("v4 option: unknown v4 fields", "I8", a_v4_option_unknown_fields),
+    ("v4 option: a challenge size that is not one", "I3", a_v4_option_scored_not_a_mode),
+]
+
+
+V4_ATTACKS = [
+    ("v4: a proof on last epoch's menu", "I1", a_v4_stale_menu),
+    ("v4: a proof on a menu of the miner's own", "I1", a_v4_foreign_menu),
+    ("v4: the namespace of another menu", "I1", a_v4_namespace_of_another_menu),
+    ("v4: a scored route off the epoch's menu", "I3", a_v4_route_off_the_menu),
+    ("v4: a proof that carries a proposal", "I4", a_v4_proof_carrying_a_proposal),
+    ("v4: exploration that claims to measure a proposal", "I4",
+     a_v4_result_claiming_a_measurement),
+    ("v4: a challenge of another size", "I3", a_v4_challenge_of_another_size),
+    ("v4: a challenge that is not the list's prefix", "I3", a_v4_challenge_not_a_prefix),
+    ("v4: a holder-side call to the proof's own pick", "I3", a_v4_holder_call_to_its_own_pick),
+    ("v4: holder-side calls with no holder named", "I3", a_v4_holder_calls_with_no_holder),
+]
+
+
+def _v4_control():
+    r = _v4_verify(_v4_proof())
+    return {"name": "control: honest v4 proof verifies", "invariant": "—",
+            "verdict": "CONTROL" if r.valid else "BROKEN", "detail": r.reason, "secs": 0.0}
+
+
+def _v4_option_control():
+    """An honest push of both options is kept."""
+    r = _push_fields(v4_proposal=_proposal(), v4_challenge="1000")
+    return {"name": "control: honest v4 options are kept", "invariant": "—",
+            "verdict": "CONTROL" if r.valid else "BROKEN", "detail": r.reason, "secs": 0.0}
+
+
 ATTACKS = [
     ("modified harness in a real TDX VM", "I8", a_modified_image),
     ("answer easy questions, claim the slice", "I3", a_substituted_questions),
@@ -694,6 +1150,8 @@ ATTACKS = [
     ("issuer address aimed at the operator's machine", "I8", a_issuer_address_aimed_at_the_operator),
     ("a token count no call can produce", "I2", a_huge_token_count),
     ("a negative token count", "I2", a_negative_token_count),
+    *V4_ATTACKS,
+    *V4_OPTION_ATTACKS,
 ]
 
 
@@ -729,6 +1187,8 @@ def main() -> int:
         results.append({"name": name, "invariant": inv, "verdict": verdict,
                         "detail": detail, "secs": time.time() - t0})
     results.append(_control())
+    results.append(_v4_control())
+    results.append(_v4_option_control())
 
     print()
     print(f"{'TEE ATTACK SUITE':<50}{'INV':<5}{'VERDICT':<11}{'SECS':>6}")

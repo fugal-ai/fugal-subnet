@@ -82,7 +82,7 @@ def test_the_safety_check_reads_a_v3_manifest_with_code(tmp_path, monkeypatch):
 
 def test_the_miner_runs_the_gate_on_its_pool():
     src = (ROOT / "neurons" / "miner.py").read_text()
-    load = src.index("pool = load_pool(protocol)")
+    load = src.index("pool = load_pool(pool_protocol)")   # v4 runs on v3's pool
     gate = src.index("code_errors = release_errors(pool)")
     assert load < gate < src.index("Benchmark pool: %d questions")
     assert "if not mock:\n            raise click.ClickException(msg)" in src

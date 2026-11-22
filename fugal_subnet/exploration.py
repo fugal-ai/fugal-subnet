@@ -49,6 +49,28 @@ def private_nonce(nonce: bytes, hotkey: str) -> bytes:
     return hashlib.sha256(nonce + b":explore:" + hotkey.encode("utf-8")).digest()
 
 
+def private_parts(nonce: bytes, chosen: list[dict], first: int) -> tuple[list[dict], list[dict]]:
+    """A private set split into its two parts (protocol v4): the questions
+    ranked by HMAC(the miner's exploration nonce, "part:" + question id), the
+    first `first` to the cost-aware part and the rest to the coverage part.
+    The rank is a keyed function of the id alone, so every question of the set
+    falls in each part with the same chance (`first` / len(chosen)), whatever
+    its benchmark: that is what makes the private set's mixture the exact
+    probability of a private pair's entry (explore_weights.SharesV4)."""
+    ranked = sorted(chosen, key=lambda q: (hmac.new(
+        nonce, f"part:{q['question_id']}".encode("utf-8"), hashlib.sha256).digest(),
+        q["question_id"]))
+    k = max(0, int(first))
+    return ranked[:k], ranked[k:]
+
+
+def coverage_nonce(nonce: bytes) -> bytes:
+    """The key of a miner's coverage-part draw (protocol v4): its exploration
+    nonce, domain-separated, so the coverage part's entry order and start are
+    independent of the cost-aware part's."""
+    return hashlib.sha256(nonce + b":coverage").digest()
+
+
 def select_explore_set(
     nonce: bytes,
     pool: list[dict],

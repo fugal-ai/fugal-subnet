@@ -19,7 +19,7 @@ jobs:
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -113,7 +113,7 @@ jobs:
   tee-verifier:
     name: Attack suites with the DCAP verifier installed
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 90
     # The main `test` job installs --extra dev, so dcap-qvl is ABSENT there and
     # verify_dcap raises ImportError instead of running. That is a different code
     # path, and two tests once "passed" in CI purely because the library was

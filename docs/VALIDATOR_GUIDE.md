@@ -169,6 +169,20 @@ committed in the release (`fugal_subnet/validator_setup.py`), the embeddings
 file is fetched and verified, and on finney the archive and fallback endpoints
 default to OpenTensor's when unset.
 
+**v0.7.0 (protocol v4) timing:** update and restart **before block
+9,572,760** (the boundary of epoch 26591), at or after the merge that adds
+the v0.7.0 frozen composes, so the v4 miner image is approved. Every
+validator must run v0.7.0 before the root's first v4 commitment, which
+older releases cannot read. `--check` should end `v4 ok (block 9572760, seed
+a9fc6275, mix e2146137, list serial 1, published seed 2aa4da74 through
+e00026509, root hotkeys 1, chain history: ..., v4 digest ...)`; `v4 MISSING`
+names each fix, and the validator keeps running v3 until the block. Across
+the block the validator reads the published set from that seed forward, one
+pinned chain read per epoch since e00026509: keep the default archive
+endpoint (or your own archive node) in `FUGAL_ARCHIVE_ENDPOINTS`. The
+`chain history:` line checks three epochs back only. No new variable; the
+seat and window start empty at the block.
+
 **v0.6.0 (menu B) timing:** update and restart **before block 9,531,000**
 (~2026-11-18 04:22 UTC), at or after the composes PR merge, so the new miner
 image is approved; a validator still on v0.5.0 after the block keeps the old
@@ -613,7 +627,7 @@ The validator automatically flags:
   boundary; commitments at or before the activation block tie and are ordered
   by a salted hash, so nothing can be gamed by committing early
 
-## Protocol v4: the seat (no activation block is set yet)
+## Protocol v4: the seat (from block 9,572,760, epoch 26591)
 
 From a v4 activation block (`docs/decisions/SEAT_MINIMAL_V4.md`; the rules
 are `fugal_subnet/seat_v4.py`) your validator decides the seat by three
@@ -668,7 +682,7 @@ rules on one statistical bound, each a pure function of published data:
   activation the seat is empty and the miner share burns for about five
   epochs, until the first head qualifies.
 
-## Protocol v4: new menu entries (no activation block is set yet)
+## Protocol v4: new menu entries (from block 9,572,760, epoch 26591)
 
 Under protocol v4 a miner proposes a menu entry by committing the hash of a
 small proposal document beside its head and serving the document from its

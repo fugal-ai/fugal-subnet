@@ -4,6 +4,55 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-22
+
+### Upgrade BEFORE block 9,572,760 (epoch 26591): protocol v4
+- **Protocol v4 switches on at block 9,572,760** (compiled as
+  `FINNEY_V4_ACTIVATION_BLOCK`; the finney compose sets
+  `FUGAL_V4_ACTIVATION_BLOCK` to the same value). Until the block everything
+  runs v3 exactly.
+- **Validators:** update to `main` at or after the merge that adds the
+  v0.7.0 frozen composes, run `uv sync --locked --extra tee`, then
+  `python neurons/validator.py --check` (exit 0, a `READY:` line ending
+  `v4 ok (block 9572760, ...)`), then restart, before the block. Every
+  validator must run v0.7.0 before the root's first v4 commitment. Keep an
+  archive endpoint (finney's default) behind the connection: across the
+  block the published set is read from the release's seed forward.
+- **Miners:** provision a TD on the v0.7.0 image with its frozen finney
+  compose before the block, with a v4 head (rows keyed by menu entry id);
+  keep the v3 TD serving until the block (`docs/MINER_GUIDE.md`, "Moving to
+  protocol v4").
+- At the block the seat and the evidence window start empty.
+
+### Added — protocol v4 (consensus; from block 9,572,760)
+- **A live menu.** The menu starts as the pinned seed
+  (`menu_v4_seed.json`, a9fc6275..., 59 entries) and changes by published
+  rules: provider prices followed at refresh epochs, failing entries
+  retired, and new entries proposed on chain by any miner from a lab and
+  host on the signed list, measured by the field and joined without a
+  release (`docs/decisions/LIVE_MENU_V4.md`, `docs/decisions/FAST_CROWN_V4.md`).
+- **The first signed lab and host list** ships:
+  `fugal_subnet/signed_lists/menu_allowlist.json`, serial 1, 19 labs and 26
+  hosts, signed by the release key under `fugal-list@fugalai.com`.
+- **The seat on odds, with an optional challenge.** A head takes the seat by
+  beating the holder (or the reference) on odds over fresh labels, showing
+  its real picks are not worse in a challenge of 500 or 1,000 questions it
+  chooses to pay for, and beating earlier contenders
+  (`docs/decisions/SEAT_MINIMAL_V4.md`). Every miner answers exploration
+  each epoch (about $0.78 of measured calls); the 200 daily scored questions
+  go away.
+- **Measured costs.** Routing is priced from the menu's measured costs, not
+  a fixed table.
+- **Miner options** over provisioning: `--v4-challenge` (0, 500, 1000),
+  `--v4-challenge-usd` (the dollar ceiling on a challenge's realised spend,
+  default 100, checked against an estimate first) and `--v4-proposal`.
+- **A memorisation check** on questions published before a head's commit,
+  from the published-set seed (`published_v4.json`, through e00026509),
+  brought forward by the root's reveals.
+- **`--check`** on both neurons, and READY lines that say what v4 needs.
+- `scripts/set_v4_activation_block.py` sets the block in the code, the
+  finney compose and these notes together.
+
 ### Added — verified heads are published by hash (validators; a notice for miners)
 The root validator now uploads the bytes of every head it verified to the
 reveal bucket, `heads/<netuid>/<sha256>.npz`. A head that holds or has held a
@@ -2041,7 +2090,8 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.2...v0.5.0
 [0.3.2]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.1...v0.3.2

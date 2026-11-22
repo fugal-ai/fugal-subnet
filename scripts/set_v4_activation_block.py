@@ -43,7 +43,7 @@ _COMPOSE_LINE = re.compile(r"^(\s*- FUGAL_V4_ACTIVATION_BLOCK=)(\d+)$", re.M)
 
 
 def _compiled(name: str, text: str) -> int | None:
-    m = re.search(rf"^{name}: int \| None = (None|\d+)$", text, re.M)
+    m = re.search(rf"^{name}(?:: int \| None)? = (None|\d+)$", text, re.M)
     if not m:
         raise SystemExit(f"config.py: no `{name}: int | None = ...` line")
     return None if m.group(1) == "None" else int(m.group(1))
@@ -56,10 +56,16 @@ def forms(block: int) -> list[str]:
     return [f"{block:,}", str(block), f"e{epoch:08d}", f"{epoch:,}", str(epoch)]
 
 
+def _bounded(form: str) -> str:
+    """`form` as a whole number: not inside a longer number (a digit, or a
+    thousands comma and a digit, on either side), but before prose commas."""
+    return rf"(?<!\d)(?<!\d,){re.escape(form)}(?!\d)(?!,\d)"
+
+
 def _replace(text: str, old: int, new: int) -> tuple[str, int]:
     count = 0
     for a, b in zip(forms(old), forms(new)):
-        text, n = re.subn(rf"(?<![\d,]){re.escape(a)}(?![\d,])", b, text)
+        text, n = re.subn(_bounded(a), b, text)
         count += n
     return text, count
 
@@ -75,7 +81,7 @@ def check() -> int:
     if compiled is not None:
         for path in DOCS:
             text = path.read_text(encoding="utf-8")
-            hits = {f: len(re.findall(rf"(?<![\d,]){re.escape(f)}(?![\d,])", text))
+            hits = {f: len(re.findall(_bounded(f), text))
                     for f in forms(compiled)}
             print(f"{path.relative_to(ROOT)!s:<24}" + ", ".join(f"{f} x{n}" for f, n in hits.items()))
         print(f"epoch e{compiled // FINNEY_BLOCKS_PER_EPOCH:08d}; boundary: "

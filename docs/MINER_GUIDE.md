@@ -133,7 +133,7 @@ was reviewed on 2026-11-09 from 758 metered calls at the v2 answer budget (the
 record is inside the file); your head's token statistics must match it exactly,
 which `--manifest data/benchmark_tokens_protocol_v2.json` does for you.
 
-### Protocol v4 heads (no activation block is set yet)
+### Protocol v4 heads (from block 9,572,760, epoch 26591)
 
 The v4 head is the same format: a linear layer `W` (rows x 1024) and bias
 `b` on the same pinned embedding. Its rows are keyed by menu entry id, up to
@@ -222,7 +222,39 @@ container inside a confidential VM.
 | `--v4-challenge` | `0` | Protocol v4 only [PAID when not 0]: the challenge the TD answers each epoch, 0 (none), 500 or 1000 questions (`FUGAL_V4_CHALLENGE`; below) |
 | `--check` | off | Run the startup checks (chain, protocol, v4 options and files, pool, code sandbox, registration), print the `READY:` line and exit (0 when ready); waits for no provisioning, embeds and serves nothing. Every start logs the same line (under v4: the seed, mix and list found, the published-set seed and the reveal it is observed through, the root's hotkey for the first v4 epoch, your proposal and challenge size, and whether the list the image ships allows your proposal) |
 
-### Protocol v4: setting your options in a TD (no activation block is set yet)
+### Moving to protocol v4 (v0.7.0, block 9,572,760)
+
+v0.7.0 switches finney to protocol v4 at block 9,572,760 (the boundary of
+epoch 26591). Until that block everything runs v3 exactly.
+
+1. **A v4 head.** Rows keyed by the entry ids of the first v4 menu
+   (`fugal_subnet/routing_data/menu_v4_seed.json`), up to 72 rows, W and b
+   as float32 or float64 (above). Check it with `python neurons/miner.py
+   --check --head-path <head>.npz ...`: it prints the `READY:` line the TD
+   will print, or `NOT READY: ...` with each reason.
+2. **A new TD on the v0.7.0 image, before the block.** Deploy it with the
+   v0.7.0 frozen finney compose (the newest `deploy/dstack/
+   app-compose.frozen-*-finney.json` in the release; its image is the one
+   in the signed `image-v*` release of v0.7.0) and push the head, key and
+   options with `provision_td.py` (below). A v4 TD started before the block
+   waits for the last boundary before it, commits the v4 head then, and
+   serves from the block; started after the block it commits at once and
+   counts from the next boundary it is read at. `provision_td.py --logs`
+   shows `READY: protocol v4 from block 9572760, ...`.
+3. **Keep the v3 TD serving until the block.** Proofs from the v3 image
+   fail from the block; then stop it.
+4. **Endpoint.** Across the block the TD reads the published set from the
+   release's seed forward, which needs an archive endpoint behind its
+   connection: keep the default (finney's public archive) unless you have
+   your own archive node.
+5. **Spend.** Exploration only, about $0.78 an epoch of measured calls plus
+   the confidential VM, unless you choose a challenge (below), whose dollar
+   ceiling defaults to $100 of realised spend.
+
+At the block the seat and the evidence window start empty; the first head
+that passes the seat rules takes it, and the miner share burns until then.
+
+### Protocol v4: setting your options in a TD (from block 9,572,760, epoch 26591)
 
 A TD runs the frozen compose every miner shares, which sets none of your own
 options and accepts no environment of its own. Your three v4 options travel
@@ -303,7 +335,7 @@ earlier v4 builds) is refused, naming the field and what replaced it.
   the image your approved entry names. A proposal still joins only when the
   root's admission passes it, which every node re-runs.
 
-### Protocol v4: what the TD keeps, and starting late (no activation block is set yet)
+### Protocol v4: what the TD keeps, and starting late (from block 9,572,760, epoch 26591)
 
 Under protocol v4 the menu is published state that changes without a release
 (`docs/decisions/LIVE_MENU_V4.md`). Your TD reads each epoch's menu from the
@@ -386,7 +418,7 @@ history:
   so a bad epoch cannot drain the account; a total limit that never resets
   fails every call once reached (see the OpenRouter notes below).
 
-### Protocol v4: the challenge, and a holder that only explores (no activation block is set yet)
+### Protocol v4: the challenge, and a holder that only explores (from block 9,572,760, epoch 26591)
 
 Under protocol v4 (`docs/decisions/SEAT_MINIMAL_V4.md` 3, as
 `docs/decisions/FAST_CROWN_V4.md` changes it) your head is scored on odds,
@@ -495,7 +527,7 @@ questions of the epoch's challenge list your TD answers:
   is not counted at all, unless the epoch is an outage (most operators
   failing more than 30% of their exploration calls).
 
-### Protocol v4: how a head wins and keeps the seat (no activation block is set yet)
+### Protocol v4: how a head wins and keeps the seat (from block 9,572,760, epoch 26591)
 
 Under protocol v4 (`docs/decisions/SEAT_MINIMAL_V4.md`, 3.3 to 3.8 and 4)
 the seat is decided by three rules, every epoch, by every validator from

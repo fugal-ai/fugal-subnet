@@ -26,8 +26,8 @@ here, and a check that enforces it.**
 
 | | Invariant | Enforced by |
 |---|---|---|
-| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 13 stages covering the live path), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
-| **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `check_safety_invariants.py` (no-pickle) |
+| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 35 stages: the live path, and `menu_derivation`, `seat_v4`, `explore_shares_v4`, `endpoint_vote`, `token_means`, `provisional_gates`, `retirement`, `menu_publication`, `head_odds_v4`, `pool_mix_v4`, `bound_v4`, `pick_cost_v4`, `picks_v4`, `memo_v4`, `v4_replay` and `published_v4` for the v4 menu state, the labels, odds and seat, exploration, the menu step's inputs, the menu's publication, heads, the question mix, the seat's one bound, the pick-cost table, the real-picks check, the memorisation check, a re-anchor's replay of its own epochs and the published set as nodes move it, built ahead of v4), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
+| **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `tests/test_head_v4.py`, `check_safety_invariants.py` (no-pickle) |
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), the v2 copy rule (`copy_rule.py`, `tests/test_copy_rule.py`), the v2 champion rule (`champion.py`, `tests/test_champion.py`; constant policies are no longer zero by construction in v2, see its entry), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time, coldkey-median shared grades from v2 (`tests/test_shared_grades.py`) |
 | **I5** | **Bounded spend.** No miner behavior can make a validator exceed its budget. Validators verify proofs — zero inference cost. | TEE architecture (miners pay their own inference), `tests/test_paid_safety.py` |
@@ -2163,6 +2163,8 @@ Enforced by `tests/test_finding4_two_sided_detector.py`.
 
 ### I3 — copy-and-tweak (fixed 2026-10-14)
 
+*Protocol v4:* v1 dedup is not run for a v4 epoch (`validator.main`); a near-copy is held by rule C, precedence (the entry "I3 — v4: the seat in three rules" (package S4)).
+
 Any registered hotkey could pull a miner's full head off its axon, because the
 stake needed to query defaulted to zero; dedup compared routing decisions at
 cosine ≥ 0.99, and a copy that rerouted 3 of 300 questions passed (measured
@@ -2500,6 +2502,8 @@ Enforced by `tests/test_shared_grades.py` and the `shared_grades` stage of
 
 ### I3 — one champion; taking the seat needs the margin, holding it needs none (v2 release; from the activation block)
 
+*Protocol v4:* none of this entry's v2/v3 rules decides a v4 epoch's seat (the bootstrap test, ghosts and resume, the high-water marks, the accuracy floor, the hard weight, the first-fill ranking): the entry "I3 — v4: the seat in three rules" (package S4). It stays while a v3 epoch can still be rebuilt.
+
 From protocol v2 the miner share is not proportional to score. It goes to a
 **champion** (and, from the payout change, to the last three champions), and
 the seat changes hands by a paired test (`fugal_subnet/champion.py`):
@@ -2723,6 +2727,8 @@ Enforced by `tests/test_champion.py`.
 
 ### I3 — a take is confirmed on fresh questions (from the confirmation activation block)
 
+*Protocol v4:* there is no confirmation phase, pending record or open period in a v4 epoch: the bound is valid at every look (the entry "I3 — v4: the seat in three rules" (package S4); I1/I3 "v4: one bound").
+
 **The property.** Registering more heads must not buy more chances at the
 seat. The take test above is re-run every epoch for every challenger, so its
 false positives add up over epochs and over challengers: k heads with no real
@@ -2829,6 +2835,8 @@ stage of `scripts/check_determinism.py`.
 
 ### I3 — seats, not shares: the v2 payout (v2 release; from the activation block)
 
+*Protocol v4:* the shares are the same 85 / 10 / 5; a seat pays while its head is live (verified; the holder with its scored answers), R does not beat it and the memorisation verdict does not refuse it; no ghost keeps seat 1, there is no weight ramp, and `MAX_WEIGHT_DELTA` is not applied to a v4 vector (the entry "I3 — v4: the seat in three rules" (package S4)).
+
 From protocol v2 the miner share is split across **seats** held by the last three champions
 (`fugal_subnet/payout.py`, `PAYOUT_SEAT_SHARES` 0.85 / 0.10 / 0.05: current,
 previous, the one before), never across the field.
@@ -2862,6 +2870,8 @@ negative share, or pays a later seat more than an earlier one.
 Enforced by `tests/test_payout.py`.
 
 ### I3 — the v2 miss rule (E'') (v2 release; from the activation block)
+
+*Protocol v4:* there is no burn-in counter and no miss rule in a v4 epoch: odds are computed for every epoch after a head's commit whether or not it served, and rule B reads the head's answered run (the entry "I3 — v4: the seat in three rules" (package S4)). The reveal carries no `burn_in`.
 
 v1's miss rule (`apply_miss`) is replaced from protocol v2: it recovers too
 slowly from an honest outage. A miss cannot be free either: an operator sees
@@ -3049,6 +3059,8 @@ Enforced by `tests/test_v2_epoch_inputs.py` and the `epoch_plan_v2` stage of
 `scripts/check_determinism.py`.
 
 ### I3/I4 — the v2 copy rule: a head must beat every senior seat holder by the margin (v2 release; from the activation block)
+
+*Protocol v4:* the senior bars are not a separate rule in a v4 epoch; ownership, first commit and the salted tie at the (v4) activation block stay, and rule C protects every earlier contender, not only seat holders (the entry "I3 — v4: the seat in three rules" (package S4)).
 
 v1 recognised copies by resemblance (`dedup.py`) and ordered seniority by
 registration (`commitments.seniority_key`). v2 replaces both: seniority is
@@ -3287,6 +3299,103 @@ in their reveals only after the hold, so some lag is unavoidable.
 - **Verify.** The gap closes on a match at an epoch at or after both the gap
   and the last re-anchor; a mismatch there re-anchors again. A gap is bounded
   by one window, after which it closes with a warning.
+- **Under protocol v4 a re-anchor replays its own epochs; it never keeps
+  them** (2026-11-20; `fugal_subnet/v4_replay.py`,
+  `neurons/validator._v4_reanchor`). A v4 epoch's label pool depends on the
+  window it is pooled on (the plausibility check's reference R is fitted on
+  the window's earlier pairs), and so do its late odds and its seat step, so
+  an epoch first run on a window that differed is a different epoch: kept,
+  it carried the difference past every re-anchor (a follower that missed
+  the first v4 epoch re-anchored every two epochs and agreed again only when
+  the root's exclusions stopped changing). So a v4 follower records each
+  epoch's inputs to `run_v2_epoch` beside its state once it is scored (the
+  slice and menu tables, every verified proof's scored results, every
+  exploration answer with its coldkey and private flag, every verified
+  head's bytes once by hash, the boundary commitments, the nonce, the
+  weight tables, the menu state, the real-picks input, the seniority floor
+  and salt; the pinned embeddings and question sets are the release's; the
+  reveal publishes only the pool, not the answers it was drawn from, and no
+  head bytes), and a re-anchor on the reference's state at k rebuilds the
+  reference's whole window at k (its reveals k-47 .. k) and runs each own
+  epoch k+1 .. now-1 again through `run_v2_epoch`, in order, on it. The
+  result is the state a validator that ran every epoch holds, copy-rule and
+  seat events included; the replayed epochs' weights and reveals are
+  dropped (nothing is republished, recommitted or set again: the reveals
+  published for them stand as published), and the reveal of the epoch the
+  state was replaced in says so (`v2_sync.reanchored`: the reference epoch
+  and the epochs replayed; per-validator, outside the compared view). A
+  span longer than the bound below, or with an epoch whose record or heads
+  do not read back, replaces nothing: the state is kept, the error log names
+  the epochs, and the gap moves past them, so the next re-anchor is on a
+  later reference epoch (never a silent keep). Records are kept for the
+  window plus two epochs; a replay holds one epoch's inputs at a time and
+  costs one `run_v2_epoch` per replayed epoch. **It replays at most three
+  epochs, or the reveal hold if longer** (`neurons/validator._v4_replay_span`;
+  the steady state's span is the hold). The arithmetic: one replayed epoch
+  costs what the live epoch costs, measured at 256 UIDs on the adversarial
+  shapes of `scripts/experiments/time_v4_epoch.py` (2026-11-21, after the
+  batched comparisons, vectorised odds and the v4 window file) at 6.5
+  minutes (the ladder) to about 7.5 (every served head a rule C candidate
+  against all 768 kept heads, `--served-last`); with 8 minutes an epoch,
+  three replayed epochs and the live step take about 32 of the 72 minutes,
+  under half the epoch, and a fourth would leave less than half for
+  everything else the epoch does. A window's worth (48) could never run
+  inside an epoch. A longer span (the reference's reveals behind, or read
+  late) waits for a later reference epoch. **Bound, measured in the shipped loops**
+  (`tests/test_v4_resync_replay.py`, `tests/test_v4_flip.py`): a follower
+  whose last missed epoch is b publishes the root's whole consensus state
+  and sets the root's weights from b + 2 on, after one re-anchor, whether
+  it missed the first v4 epoch, a later one in which the root's check left
+  operators out, five in a row, or nine while the root's seat was filled
+  two epochs after its return (before this, that follower filled the seat an
+  epoch early and set different weights). Epoch b + 1 is run before the
+  root's reveal of b can be read, so it may differ. v1-v3 re-anchors keep
+  their own epochs as before (same code path, same bytes).
+  **Under v4 two more events are re-anchor points, without waiting for
+  drift detection** (`neurons/validator._root_came_back`, `reanchor_now`):
+  (1) the root's first reveal after a gap in its own reveals (an epoch this
+  follower ran and the root did not: the root was down). During the outage
+  each follower publishes and sets its own best knowledge, as any node with
+  no reference does; the root's reveal of its first epoch back, k, is read
+  from k + 2, and a follower re-anchors on it and replays its own epochs
+  since, whether or not the views compared at k differ (its window holds
+  epochs the root's does not), so from k + 2 it publishes the root's state
+  and weights (a take the followers saw while the root was down and the root
+  did not is undone then: the root is the reference). (2) A follower restarted
+  without its window file (its state kept) rebuilds from the root's newest
+  reveal and at once re-anchors on it, replaying its own epochs since from
+  their records, so it publishes the root's state from its first epoch back;
+  its own reveals from before the restart verify nothing (`anchor_at` is the
+  epoch it came back in). `tests/test_v4_reanchor_points.py`.
+  **A replayed epoch's holder head** comes, when the replayed seat names a
+  holder the epoch's record does not hold (the reference's holder, not this
+  node's), from the node's head store and then the root's head publication,
+  checked by hash, as the live epoch seeks it (`v4_replay._holder_heads`);
+  without it the epoch is `Missing` and nothing is replaced.
+  The determinism stage `v4_replay` (I1) replays twenty live v4 epochs
+  (a seat fill, late odds, an entry joining and leaving, each epoch's
+  memorisation memo) from three anchor epochs; each replay must end in the
+  live state byte for byte, and the stage's digest must be the same on both
+  hosts.
+  **Each replayed epoch runs with the memo the epoch loop built for it**
+  (`neurons/validator._v4_memo_for`, the replay's `memo_for(epoch, its
+  recorded nonce)`): `memo_v4.epoch_memo` on the published set as of the
+  epoch (`memo_sync.ChainSet.view`: the chain's word at the boundaries
+  through the epoch's, the same whatever the node has read since; the set
+  is brought forward to the current epoch before the sync step), the plan
+  `epoch_plan.plan_v4(pool, published=<that view>, epoch=j)` on the epoch's
+  pool object, and the nonce the record kept. Nothing is folded during a
+  replay, and the set never comes from the node's own reveals; a set not
+  read through the epoch's boundary is `Missing` (nothing replaced). Held
+  in the shipped loops: every epoch a follower replays ran with the root's
+  memo for it (`tests/v4_world.check_replayed_memos`) in the flip and resync
+  worlds and in the memorisation scenario with the follower down for five
+  epochs while the root's check first refuses the holder, where it agrees
+  from b + 2 (`tests/test_v4_replay_seat.py`); with the function removed
+  each of those tests fails. A refusal opens the seat without changing its
+  state, so in these runs the follower's state and weights agree even
+  without the memo; the memo decides the replayed epoch's seat evidence and
+  any take of the opened seat.
 - **Followers converge on the root; the root never marks itself
   unverified.** A follower with no gap that disagrees with its reference logs
   an alarm; once it has differed on `v2_sync.DRIFT_CHECKS` (3) consecutive
@@ -3306,7 +3415,9 @@ in their reveals only after the hold, so some lag is unavoidable.
   capped all-burn vector (`neurons/validator._burn_epoch_weights`); it used
   to set nothing, which left the last vector on chain and, at the flip, kept
   paying the v1 winners until the first v2 proof verified (Fable review,
-  item 6). v1 epochs keep main's behaviour.
+  item 6). v1 epochs keep main's behaviour. A v4 epoch sets it uncapped (no
+  v4 vector is capped): the burn uid at 1.0, the same on every validator
+  whatever each set before.
 - **Never stops an epoch (I6).** Any failure (a malformed reference reveal
   included) keeps the state and the gap.
 - **Zero weights are not compared.** The weight cap keeps, at 0.0, every
@@ -3320,8 +3431,9 @@ in their reveals only after the hold, so some lag is unavoidable.
 Measured (`tests/test_v2_sync.py`): without it a validator that missed one
 epoch never agreed again; with it, it agrees exactly again from `hold` epochs
 after the gap after one re-anchor (holds 1-6), including a validator started
-from a rebuild of the root's reveals. Seat or copy-rule events inside the
-re-anchor span are applied late, so **convergence needs a stretch of about
+from a rebuild of the root's reveals. Through v3, seat or copy-rule events
+inside the re-anchor span are applied late (v4 replays them on time, above),
+so **convergence needs a stretch of about
 twice the hold with no seat change**: with a change every 6 epochs and a hold
 of 4 it took 14-34 epochs and 3-7 re-anchors; with a change every 4 epochs
 and a hold of 2-3 it did not converge inside the window (the gap then closes
@@ -3347,6 +3459,8 @@ from its own state, reveal order does not matter, later v2 fields are carried
 verbatim, and the frame rebuild reproduces the weighted frame.
 
 ### I3 — v2 burn-in is 1,500 questions, and the flip starts with an empty seat (v2 release; from the activation block)
+
+*Protocol v4:* no burn-in; the v4 activation starts an empty seat, filled by the first qualifier (the entry "I3 — v4: the seat in three rules" (package S4)).
 
 Every miner serves a new head at the flip, so every evidence record starts
 from zero and no head can take a seat until it has completed v2 burn-in:
@@ -3444,6 +3558,370 @@ menu B files are in the consensus digest. The rationale is in
 
 `tests/test_v3_menu_b.py`.
 
+### I3 — v4 grace is per entry (REPLACED for v4 by "new entries are usable at once", package S2)
+
+This entry described a v4 rule that no longer exists. Protocol v4 had made
+menu B's grace general: each entry's pairs pooled but scored for no head
+until its own `scored_from`, and a head without its row disqualified from
+the odds seat after it. `docs/decisions/SEAT_MINIMAL_V4.md` (4.1, 12)
+replaces it, and the v4 code no longer has it: `routing_protocol.grace_excluded`
+and `scored_menu` refuse a v4 epoch (and any menu state), a v4 odds input
+names no `menu` and no `unscored` entries, and no v4 pair is masked. What
+holds instead is the I3/I4 entries "v4: the labels a head is scored on" and
+"v4: new entries are usable at once" below. For v1-v3 the two functions are
+what they were: v3 menu B's tests run unchanged, and a v3 run across the menu
+B block and its grace publishes the same reveals and weights byte for byte
+(`tests/test_v4_labels.py::test_v3_epochs_score_byte_for_byte_as_before`).
+`scored_from` stays in the hashed menu state with a new meaning: the end of
+the entry's allowance. The `grace_scoring` determinism stage is replaced by
+`seat_v4`.
+
+### I1 — the menu of an epoch is a pure function of published inputs, read through one function (v4; built ahead of v4, nothing reads it before a v4 activation block)
+
+Protocol v4 (`docs/decisions/LIVE_MENU_V4.md`, section 4) makes the menu a
+value, `MenuState`, that changes by one step an epoch without a release. Its
+hash is in every v4 proof's namespace, so two nodes that hold different menus
+for an epoch refuse each other's proofs. `fugal_subnet/menu_state.py` is that
+value and the two functions that decide it. No v1-v3 code path imports it, no
+release has set a v4 block, and `identity()`, `identity_v2()`, `identity_v3()`
+and `identity_for` are unchanged. This entry records what must stay true when
+the rest of v4 is wired to it.
+
+1. **One value, one encoding, one hash.** A state holds integers and strings
+   only (two fixed booleans aside: `allow_fallbacks`, always false, and a
+   `reasoning` of `enabled`): prices are integer picodollars per token, token
+   means integer milli-tokens, every integer below 2^53. `canonical_json` is
+   sorted keys, no whitespace, ASCII; `menu_hash` is its sha256; `from_json`
+   accepts those bytes and no others (no fractional number, no repeated
+   field, no other layout), so a hash names exactly one state.
+   `routing_protocol.identity_v4(menu_hash)` is the proof namespace of the
+   epoch that runs on it.
+2. **One step, pure and exact.**
+   `MenuState(k + MENU_LAG) = step(MenuState(k + MENU_LAG - 1), inputs(k), params)`
+   reads its three arguments and nothing else: no clock, network, chain, file
+   or environment variable. The inputs are plain values (the signed list the
+   node holds, voted endpoint reads, token sums, health statistics, the
+   gates' reads of provisional entries, the epoch's nonce), read by key, so
+   the order they arrive in cannot change the result; a key given twice is
+   an error, never resolved by order. All arithmetic is on integers and
+   Fractions and every rounding is half up. No entry joins in a step: new
+   entries join at the boundary, from the root's join delta (the entry "v4:
+   the menu lifecycle" below), and the step decides them.
+3. **The compiled rules are applied, never reported.** The step is handed the
+   signed lab and host list (the one the state names, or a newer one) and
+   calls `menu_rules` itself: when a newer list is adopted, `check_entry` on
+   every entry, provisional ones included. (A proposal is judged under the
+   list in force by `chain_proposals.admit`, at the boundary.)
+   Which entries a list refuses is never an input, so two validators cannot
+   be told different things about the same list. The list's hash is
+   recomputed from its content before it is used, so the hash the state
+   names is the list the rules were applied under. A state that names no
+   list (the seed) adopts one in its first step; no step runs without one.
+4. **One rule for which menu an epoch runs on**, `menu_state.menu_for_epoch`:
+   with no commitment by the root for the epoch, the previous menu carried
+   unchanged; with a commitment to the carried menu, that menu; with a
+   commitment to another, the state whose hash it names, accepted from any
+   source because the bytes are checked against the hash, **and only if it
+   can follow the previous one**: at most `MENU_MAX_BYTES` (refused before
+   it is parsed, by the reader and by every lookup of the list the bytes
+   name), this epoch, the next serial, the lists in force or newer ones
+   (never none, never an older one), within the compiled caps
+   (`check_caps`: at least `MENU_MIN_ENTRIES` (8) full entries, provisional
+   ones not counted, and at most `MENU_CAP`
+   entries, every entry with an expected cost a call above zero; at most
+   `MENU_MAX_PROVISIONAL` (8) provisional entries, each with its record
+   (`MenuState.provisional`); at most `RETIRED_KEEP` records in `retired` and
+   `coldkey_cooldown_cap` (400) coldkeys in cooldown, so every list in a
+   menu is capped and the largest document stays under `MENU_MAX_BYTES`),
+   one step on from the previous menu (`check_transition`:
+   no entry joins in a step (`joins in a step`); a provisional entry that
+   joined by the scored epoch is decided in it, full from the new epoch
+   (`scored_from`, its measured rate from its labels) or retired with its
+   gate's record, and one that joined after it stays provisional; no full
+   entry's `joined_epoch` or `scored_from` moves; an entry made full starts
+   at its call cost (no pick table); an entry leaves only with the
+   `retired` record a retirement writes (why, this epoch, the full
+   cooldown), at most `health_retirement_bound` (max(2, a tenth of the
+   menu)) of them for health, a displacement only from a menu the step
+   leaves one below its cap and never of a shielded entry (provisional, or
+   full for fewer than `ENTRY_SHIELD_EPOCHS`, 20); `retired` and the
+   coldkeys' cooldowns are exactly what the step leaves (`_records_follow`:
+   a record new or changed only for an id that left in this step, at this
+   epoch, for a reason the step gives that, with exactly the compiled
+   cooldown; a coldkey's only by a failed gate in this step; a record
+   dropped only by the step's own pruning or because its id joined), so no
+   running cooldown is dropped or shortened and none is invented or
+   lengthened;
+   prices, answer limits, token means and exploration-pair counts move
+   only at the refresh cadence, a price by at most `MENU_PRICE_STEP` (4) up
+   or down, item 8), and the compiled rules passed under the list it names,
+   where what leaves for a list reason is what that list refuses for that
+   reason (`_list_verdicts`, which needs the list). All but the list's
+   verdicts and the rules are decided on the bytes and the previous menu
+   alone. A newer
+   list, lab and host or device, is adopted only with the list itself
+   (`held_list`, `held_device_list`: its content hashes to the reference),
+   never from a reference. **Any bytes that are not a menu that passes
+   these checks are `MenuRefused`**, whatever they make a check raise (a
+   value of another type anywhere is a refusal, never an error), which
+   names the carried menu as the one the epoch runs on: the verdict depends
+   on the bytes, the previous menu and the list alone, so every node holding
+   them carries the same menu and logs an alarm. A miner's TD checks the
+   carried menu under the list the menu it holds names (`td_v4.epoch_menu`'s
+   `held_allowlist`), never under one the refused bytes name, so a refused
+   menu costs every node one epoch of menu changes and nothing else. A node
+   without the bytes for the committed hash, or without the list the menu
+   names, gets `MenuUnavailable` and no menu: it never guesses, and a
+   miner's TD in that state produces no valid proof for the epoch.
+   `MenuUnavailable` means only that. A second way to obtain an
+   epoch's menu is a consensus break of the same kind as a second epoch-id
+   format. Every menu the step derives is accepted by this reader. What the
+   step derives from the root's own proofs (prices, answer limits, token
+   means, each entry's exploration-pair count `explore_pairs`, retirements,
+   gate verdicts) is not checked against anything a node could recompute:
+   it is the publisher's, and other validators' `menu_audit` shows a
+   difference. `LIVE_MENU_V4.md` 4.3 lists what the root can still do.
+5. **Who may propose is part of the hashed state.** The ids in cooldown
+   (`retired`) and the proposers' coldkeys in cooldown (`coldkey_cooldowns`)
+   are in the state, so two validators cannot disagree on whether a
+   proposal is refused. `retired` has a fixed size and never drops a
+   cooldown that is still running: only records whose cooldown has run out
+   make room, and a proposal whose id would have no place in the record
+   finds no place. A coldkey's cooldown is written only by a failed gate
+   and leaves when it can no longer refuse a join, so at most
+   `coldkey_cooldown_cap` are held. Every node holds a committed menu's
+   records and cooldowns to exactly those the step leaves (item 4), so one
+   published menu cannot ban an id or a coldkey beyond the compiled
+   cooldown.
+6. **No proposer measures, and nothing waits.** A proposal is measured by
+   the field's own exploration in its join epoch (coverage aimed first at
+   it); there is no measurement report, spend ceiling, make-up epoch,
+   pending list or queue. An epoch the root published no step for leaves a
+   provisional entry provisional (it is decided by the next step that runs,
+   on the labels of its join epoch onward), and a boundary with no join
+   pointer adds nothing: the proposals stay on chain and are considered at
+   the next boundary.
+7. **The seed is pinned.** The first v4 epoch's menu is
+   `routing_data/menu_v4_seed.json` at that epoch (`seed_state`). The file is
+   hash-pinned, mirrored under `data/`, and rebuilt byte for byte by
+   `scripts/build_menu_v4_seed.py` from two committed input files (a saved
+   public listing and integer sums from named published reveals). Every
+   entry in it passes the compiled rules as an entry on the menu, against
+   that listing and the lab and host list (the signed list a release ships;
+   the draft under review until the first is signed). Its entries are
+   full from the first v4 epoch: a seed entry is never provisional. No v4 menu
+   document other than the seed ships in the package
+   (`check_safety_invariants.check_no_other_v4_menu_ships`).
+8. **Refreshes follow a compiled cadence.** Prices, answer limits, token
+   means, exploration-pair counts and pick-cost tables (and provisional
+   entries' prices and limits) move in the published state only in a step
+   whose new epoch is a multiple of `menu_state.MENU_REFRESH_EPOCHS` (20,
+   about a day). The one exception is the entry the gates make full in that
+   step, which takes its own measured values and no pick-cost table (the
+   W13 entry); a structural change does not license a refresh of anything
+   else. A refreshed price moves by at most a factor of
+   `MENU_PRICE_STEP` (4) up or down (`price_step`), so one published state
+   can do that much to a price and a larger real move arrives over
+   consecutive refreshes. A refreshed price above the price ceiling
+   (`menu_rules.check_price`: $25 / $100 per million prompt / completion
+   tokens) is never taken: the entry leaves the menu (reason
+   `price_ceiling`, its id's cooldown), unless that would leave fewer than
+   `min_entries`, when nothing about it moves; the reader accepts that
+   reason only in a refresh step whose price move could pass the ceiling.
+   An entry the gates make full is not priced above it either (the next
+   refresh retires it). A voted price of 0 is no change, and token means
+   that would make a call cost nothing are not taken. The cadence is read
+   from the state's own epoch, so the step stays pure, and every node checks
+   it from the two menus (`check_transition`). It keeps the menu hash, and
+   so the bytes a miner's box must fetch, unchanged in most epochs.
+9. **Every menu the reader accepts can run an epoch.** The exploration
+   draw (`epoch_plan.explore_shares_v4`) and every head's picks
+   (`head_odds.picks_and_odds_v4`) need a non-empty menu and a positive
+   expected cost for every entry; `check_caps` holds both, so they compute
+   for any menu it passes. The step keeps them: it never leaves fewer than
+   `MENU_MIN_ENTRIES` full entries. Provisional entries do not count toward
+   the minimum, since the gates may retire them all in one step whatever
+   else it does: health and price-ceiling retirements and displacement of
+   a full entry wait when they would go below it (`retire_waits`,
+   `menu_full`), it retires at most
+   `health_retirement_bound` entries for health a step, holds back a newer
+   list that would leave fewer than the minimum of full entries (joins meanwhile are
+   judged under the list in force, the base menu's, and the newer list is
+   adopted in the first step where it leaves enough; until then the entries
+   it would refuse stay on the menu), keeps one place free for a join on a
+   full menu by displacing its least-used unshielded entry, and fails a
+   provisional entry whose measured call costs nothing (`gate_cost`). "Gone"
+   has an outage guard like "failing": an epoch whose decided listing reads
+   show more than `RETIRE_OUTAGE_RATE_BP` of hosts unlisted is not counted
+   (`menu_inputs.listing_outage`).
+
+Enforced by `tests/test_menu_refresh.py` (the cadence in the step and the
+reader, and an honest walk across a refresh epoch), `tests/test_menu_reader_checks.py` (each cap, each transition
+check and each list rule, every menu an honest step derives over twenty
+steps read back through them, and a one-value mutation fuzz of committed
+bytes: the menu or `MenuRefused`, nothing else), `tests/test_menu_root_limits.py`
+(each thing 4.3 says a root cannot do), `tests/test_menu_liveness.py`
+(item 9, with the property that every menu `check_caps` passes draws and
+picks), the root's-menu cases of `run_miner_attacks` (through the miner's
+own TD session: a moved scored epoch, a refresh outside the cadence, a
+dropped cooldown, an entry added in a step, bytes over the limit unread),
+`tests/test_menu_state.py` and
+`tests/test_menu_step.py` (one
+encoding per state, the same bytes under key reordering, input reordering and
+in a second process; every derived state passes the compiled rules and the
+reader), `tests/test_v4_budget.py` (filed at k, on the menu of k + 1,
+full from k + 3), `tests/test_menu_v4_seed.py`, the
+`menu_derivation` stage of `scripts/check_determinism.py` (the seed and ten
+steps across a refresh epoch, each followed by the root's join step at the
+boundary and the delta every node checks, with every input collection reversed under
+`--perturb`, every derived menu read back through `menu_for_epoch` from the
+menu it followed, and a guard that the steps exercise a refresh epoch, a
+quiet step that refreshes nothing and structural steps) and
+`check_safety_invariants.check_menu_v4_seed_pinned`.
+
+Not yet enforced, because the code does not exist yet: that no code path
+other than `menu_state.menu_for_epoch` produces a menu (a static
+single-reader check, like the one for epoch ids; the chain read that feeds
+it on a validator is now `menu_publish.read_menu_commitment`, the entry
+below); that the validator hands the step the aggregations over its
+verified proofs (`menu_inputs.step_inputs`, with its own determinism
+stages: `endpoint_vote`, `token_means`, `provisional_gates`,
+`retirement`); that the lists handed to the step and to the reader came
+from `verify_signed_list` (both kinds must be the list itself, with a
+signer named and a hash that matches the content, which a caller could
+still construct; a bare reference is refused; on a validator they come
+from `menu_publish.ListBook`, which holds only lists it verified);
+and that the step's constants (`menu_state.MENU_LAG`, `MENU_CAP`,
+`MENU_REFRESH_EPOCHS` and the rest) are in the consensus digest. Until those
+land this module is inert. Publish before commit is enforced (the entry
+below).
+
+### I1/I6/I7 — the v4 menu is published before its hash is committed, read at the boundary, audited, and rebuilt by walking the chain (v4; built ahead of v4, nothing reaches it before a v4 activation block)
+
+`fugal_subnet/menu_publish.py` moves the menu between nodes
+(`LIVE_MENU_V4.md` 4.3). The validator reaches it only in its `_v4_`
+helpers, under protocol version 4 and a v4 activation block that no release
+sets; nothing on the v1-v3 path imports it.
+
+1. **The commitment.** The root's reveal commitment for epoch k is
+   `reveal:<epoch_id>:<reveal sha256>:<menu hash token>`
+   (`reveal_publisher.commitment_for`): the menu hash as its 32 bytes in
+   unpadded base64url, 43 characters, one token per hash
+   (`decode_menu_hash` refuses any other spelling). In hex it would be 146
+   bytes, and `set_commitment` writes one `Raw<len>` field of at most 128
+   bytes (`COMMITMENT_MAX_BYTES`); the token form is 125 for every epoch id
+   of the next 10^8 epochs. The first three fields are v3's, so a follower
+   reads the reveal pointer of either form (`reveal_sync.parse_pointer`). A
+   commitment without the fourth field, for another epoch, or that does
+   not parse, names no menu.
+2. **Publish before commit.** `publish_due_reveals` asks its `menu` hook
+   (`MenuPublisher`) for a hash only for the newest reveal it commits, only
+   when that reveal carries `menu_next`. The hook returns the hash only
+   when the document is the one the reveal names by hash, for epoch k + 2;
+   it follows, through `menu_for_epoch`, from the menu this node read from
+   the chain for k + 1 (the root never commits a menu its own reader would
+   refuse or could not check); the menu bytes and every signed list it
+   newly names are put in the store create-only, named by hash
+   (`<netuid>/menus/<hash>.json`, `<netuid>/lists/<kind>/<sha256>.json` and
+   `.json.sig`); and each is read back from the public store, byte for
+   byte, within `PUBLISH_BUDGET_S`. Anything else, or any exception, and the
+   commitment goes out without the hash: the menu carries, and no epoch,
+   reveal or weight waits on it (I6). The marker records the hash and
+   whether the commitment was made, which is how the root knows which menu
+   the chain will hold at k + 1 when it steps for k.
+3. **The boundary read.** Every node reads the root's commitment for
+   E - MENU_LAG pinned at E's boundary block (`read_menu_commitment`), finds
+   bytes for a changed hash (its own copy, the store, a mirror:
+   `reveal_sync.fetch_menu_bytes` checks them against the hash), and calls
+   `menu_for_epoch` (`read_epoch_menu`): no commitment, carried; refused,
+   carried with an alarm; no bytes or no list, no menu, every offered proof
+   counted unverifiable, and the epoch log says `menu_unavailable`. A chain
+   read that fails is not "no commitment" (that would carry on this node
+   while its peers moved): it fails the epoch, which is retried, as for head
+   commitments.
+4. **The root steps after it publishes.** In a v4 epoch the root publishes
+   its due reveals before it writes reveal k, then steps from MenuState(k+1)
+   as the chain will hold it (MenuState(k) and its own recorded commitment
+   for k - 1). A prediction the chain does not bear out (a commitment that
+   landed after the boundary) is caught by item 2 at the next publication:
+   the menu is not committed, never refused.
+5. **The audit.** Every other validator keeps epoch k's step inputs and, at
+   the boundary of k + 2, steps from MenuState(k + 1) and publishes how its
+   result differs from the root's committed menu as `menu_audit` (paths
+   into the published document, no secret), with an alarm when it differs.
+   With no commitment for k + 2 (the root published no step for k: it was
+   down, or its publication failed) the epoch runs on the carried menu by
+   rule, and there is no root step to compare with: the audit compares the
+   menu the epoch runs on with the carry of MenuState(k + 1), says why in
+   `why`, and still publishes its own step's hash (`own`); an alarm there
+   means the node's own record is inconsistent. It runs on the root's menu
+   either way. `tests/test_menu_audit_carried.py`; `scripts/rehearsal_v4.py`
+   fails when any validator logs an alarm in a scenario that expects none.
+   `menu`, the menu an epoch ran on, is `{epoch, hash, source: {epoch,
+   hash}}`: `source` is the last published menu it was carried from (the
+   first epoch at which its content, `epoch` aside, was held: a committed
+   menu, in the store before its commitment, or the pinned seed, which the
+   root also puts there), so any reader rebuilds a carried epoch's menu from
+   one reveal and the store and checks it against `hash`
+   (`menu_from_field`). Each node derives it from the menus it held
+   (`MenuBook.source_of`, kept in `sources.json` beside `held.json`, and
+   built link by link by a rebuild), so root and followers publish the same
+   bytes (`tests/test_menu_source.py`). `menu`, the menu an epoch ran on, joins the view validators
+   are compared on (`v2_sync.consensus_view`); the role fields (`menu_next`,
+   its hash, the events, the lists, the audit) are left out of it.
+6. **The rebuild.** A node with no menu for E - 1 walks the root's
+   commitments forward from the last menu it holds, or from the pinned seed
+   at the first v4 epoch (`rebuild`), each link a pinned read through
+   `read_epoch_menu`, at most `REBUILD_MAX_LINKS` a call. Each epoch's
+   commitment is read under the root hotkey in force for that epoch: the
+   root's hotkeys are a compiled table of (first epoch, hotkey)
+   (`config.FINNEY_ROOT_HOTKEYS_V4`, `root_hotkeys_v4`;
+   `menu_publish.hotkey_for_epoch`), so a walk across a change of the
+   root's key reaches the menus the live nodes ran on. A link it cannot
+   verify (a read that fails, an epoch no row of the table covers, bytes or
+   a list it cannot get) stops the walk there and says why: it holds every
+   menu before and none from it on, since every later menu follows from
+   that one, never goes on from a menu it could not verify, and goes on from
+   there at the next boundary. The root also puts the bytes of the menu
+   each reveal's epoch ran on in its store (`MenuPublisher`, best effort,
+   after the menu it commits), so a TD can anchor on its newest reveal.
+7. **Startup.** A validator refuses to run v4 (live) when the chain holds
+   reveals longer than MENU_LAG - 1 epochs, when a root delays its own
+   reveals longer, when no root hotkey is known, when the commitment would
+   not fit one field, when a root has no bucket, or when the step's mix is
+   not pinned (`startup_refusals`, `_v4_menu_setup`).
+
+Enforced by `tests/test_menu_publish.py` (on a fake store and a fake chain
+that keeps one commitment per hotkey: the order upload, put, read back,
+commit, and a chain that refuses any commitment whose bytes a reader cannot
+fetch at that moment; a store that fails, reads back other bytes or hangs,
+and a list the root cannot publish, each costing only the menu change; an
+absent root; a menu every node refuses; a missing link; a follower with the
+root's proofs and with another proof set; a restart; a rebuild after a gap;
+the cadence across a refresh epoch, where a follower fetches bytes once;
+a v3 reveal published and committed exactly as before) and the
+`menu_publication` stage of `scripts/check_determinism.py` (two validators
+given the same proofs in opposite orders derive the same `menu_next` bytes,
+and a follower's audit of the honest root is empty, across a refresh epoch).
+
+The step's inputs are W4a's (`menu_inputs`, `tee/verify.expected_v4`,
+`explore_pool.pool_pairs` with both weight tables), called in the
+validator's `_v4_` helpers in this order: each proof verified against its
+hotkey's `expected_v4` on MenuState(k); the epoch's pairs pooled with v4's
+weights and operator cap; the epoch summarised (`summarize_epoch`, each
+proof with the coldkey of the metagraph pinned at the collection block) and
+kept in a window beside the validator's state; and the step's inputs
+(`step_inputs(start, MenuState(k), window, proofs_k, ...)`) built as a
+function of `start`, which the root calls with the MenuState(k + 1) it
+predicts and every other validator with the one the chain gave, at k + 2.
+The window is not rebuilt after a lost state: it refills over
+CHAMPION_WINDOW_EPOCHS, and until then this validator's own step (the
+root's menu, or another validator's audit) reads fewer epochs than its
+peers'. The step's mix and floor (`config.MENU_STEP_PARAMS_V4`) and the
+scored category mix (`config.CATEGORY_TARGETS_V4`) are not pinned yet; a
+live v4 validator refuses to start without them. Mirrors are a parameter of
+the read helpers and are not configured on a validator.
+
 ### I1 — odds are computed exactly by the validator (v3)
 
 A head's prediction for a (question, model) pair is a function of two pinned
@@ -3465,6 +3943,21 @@ on the host:
   thresholds, logit((k + 0.5)/10,000), built with `decimal` arithmetic and
   pinned by digest (`THRESHOLDS_SHA256`, in the consensus digest). A host
   that builds a different table raises instead of scoring.
+
+Under protocol v4 a validator computes millions of these an epoch, so the v4
+callers (`pair_odds_v4`, `pair_odds_v4_many`, `picks_and_odds_v4`,
+`labels_v4.odds_on`) compute them many at a time (`head_odds.odds_matrix`,
+`odds_grid`): every logit by float64 matrix products (any BLAS, any order,
+any threads), with a proven bound E on its distance from the exact path's
+logit (2u(n + 8)(||w||_1 ||h||_inf + |b|) doubled, plus 2^-50 |z| and an
+absolute term for flushed subnormals; the proof is in `head_odds`). Where no
+threshold lies within E of the float logit its count of thresholds is the
+exact one; elsewhere (and wherever anything is not finite) the exact path
+above computes it. So every integer is the exact path's by construction;
+the v1-v3 path (`head_odds.head_odds`) is unchanged. Enforced by
+`tests/test_head_odds_vectorised.py` (320,000 random cells, heads at the
+10^6 limits and built to cancel, logits on and beside thresholds, which must
+take the exact path, and the pinned embeddings file when present).
 
 `HEAD_MAX_ABS_PARAM` (10^6) bounds a v3 head's weights and biases, checked
 when the proof is verified (a head outside it is refused), and the embeddings
@@ -3562,6 +4055,8 @@ pool times the menu, so a memorised pair almost never comes up again.
 `tests/test_explore_private.py`, `tests/test_odds_seat.py`.
 
 ### I3 — the seat goes to honest, sharp odds (v3; from the odds seat block)
+
+*Protocol v4:* a v4 epoch's seat is decided by `seat_v4`, not by this entry's rules (the net-value guard as described here, the senior bars, ghosts, the high-water marks): the entry "I3 — v4: the seat in three rules" (package S4).
 
 **The property.** What is paid for is what the product serves: for any
 question, each model's chance of answering it correctly. With that, any
@@ -3803,6 +4298,12 @@ and a head that is still served is kept again every epoch and goes up with a
 later reveal (`test_a_failing_store_costs_nothing_and_is_retried_on_a_later_epoch`,
 `test_a_hanging_store_never_holds_the_epoch_longer_than_the_budget`).
 
+Under protocol v4 heads are files as they are under v3, and the step is the
+same one: the root's v4 epoch spools the heads it verified and publishes the
+due ones last, after its reveals and saved state (`tests/test_v4_loop.py`
+checks that every head the published v4 reveals list is in the store by
+its hash, with its sidecar, and no other head is).
+
 **Readers do not trust the store.** A fetched head must have the sha256 the
 reveal names (which is the object's name and the miner's commitment) and must
 be loaded with pickle disabled, `np.load(..., allow_pickle=False)`, within
@@ -3824,6 +4325,1707 @@ accepted residuals recorded above for published routing ("a champion kept
 offline") and published odds are to be read with this: a copy can now be made
 from the bytes rather than fitted to what was published.
 
+### I8 — v4 entry rules and signed lists (built ahead of v4; nothing reads them before a v4 activation block)
+
+Protocol v4 (`docs/decisions/LIVE_MENU_V4.md`) moves the menu out of the image
+and into published state, so the image carries the **rules** an entry must
+pass instead of the entries. The first piece is in the tree and inert:
+`fugal_subnet/menu_rules.py`. No v1-v3 code path imports it, and no release
+has set a v4 block. This entry records what it must keep true when the rest
+of v4 is wired to it.
+
+1. **A rule's verdict is a function of its arguments.** `check_entry`,
+   `check_menu` and `check_proposal` read no clock, no network and no
+   environment variable, and their constants are compiled, not
+   env-overridable. The same entry, list and state view give the same
+   `Refusal` (code and detail) on every node, because the refusal of a
+   proposal is published in reveals. Each constant has one definition: the
+   rules' (`MAX_ANSWER_TOKENS`, `MENU_MAX_HOSTS`) here, the state's
+   (`MENU_CAP`, `MENU_MAX_PROVISIONAL`, `MENU_LAG`, `ENTRY_SHIELD_EPOCHS`) in
+   `menu_state`, and a test holds that neither module restates the other's.
+   A new proposal and an entry already on the menu differ in one rule only:
+   a proposal needs every pinned host listed with an answer limit
+   (`check_request`, `check_proposal`), while an entry is limited by its
+   pinned hosts that are still listed, provided one is (`check_entry`).
+2. **A list is trusted only through `verify_signed_list`.** It checks, in
+   process and offline, an OpenSSH signature over the list's exact bytes:
+   namespace `fugal-list@fugalai.com`, a key that
+   `fugal_subnet/signed_lists/allowed_signers` lists for that namespace by
+   name, Ed25519 over SHA-512. The check is not delegated to an installed
+   `ssh-keygen`: a verdict that depended on each node's OpenSSH would be a
+   consensus input nobody pinned. `cryptography` is pinned exactly, for the
+   reason given under "why `cryptography` is pinned".
+3. **One content, one byte string.** A list is refused unless its bytes are
+   the canonical encoding of its content, with no repeated key or item, so
+   its sha256 names it and two parsers cannot read it differently.
+4. **Serials only go up.** A list is adopted only above the serial held;
+   serial 0 is a draft and is refused whatever signs it. The kind of list is
+   inside the signed bytes, so a device list is never a menu allowlist.
+5. **The list signers are a trust root.** They are a byte-identical copy of
+   `deploy/keys/allowed_signers`, pinned in `menu_rules.LIST_SIGNERS_SHA256`
+   and in `scripts/check_safety_invariants.py`, and inside the measured image.
+   Changing who may sign a list is a release and a new image.
+
+Enforced by `tests/test_menu_rules.py`, `tests/test_signed_lists.py` (which
+holds the verifier to OpenSSH's own verdicts on real `ssh-keygen` output) and
+`check_safety_invariants.check_signed_lists`
+(`tests/test_signed_list_safety.py`). The menu's own two functions call the
+rules themselves (`menu_state.step` and `menu_state.menu_for_epoch`, the I1
+entry above), and the `menu_derivation` determinism stage runs them. The TD
+reaches its menu and files its proposal through them (the next entry, W3).
+Not yet enforced, because the code does not exist yet: that the validator does
+the same (work package W4).
+
+### I2/I5/I8 — the v4 TD runs on its menu, reads the listing, and attests what it was billed (built ahead of v4; nothing reaches it before a v4 activation block)
+
+Work package W3 of `docs/decisions/LIVE_MENU_V4.md`: the miner's side of
+protocol v4, in `fugal_subnet/tee/td_v4.py`, `fugal_subnet/tee/endpoint_reads.py`
+and the protocol v4 path of `tee/harness.py` (`run_benchmark(protocol_version=4,
+v4=...)`). No release sets a v4 block, the miner's `main()` never selects
+protocol 4, and the v1-v3 path imports none of the v4 menu modules
+(`tests/test_harness_v4.py` checks the import graph). What must stay true:
+
+1. **The TD runs an epoch on the menu its state names, or on none** (I8).
+   Before any model call or listing read, the harness reads the epoch's menu
+   through `menu_state.menu_for_epoch` against the committed hash, from bytes
+   of any source, and then applies the compiled rules to every entry and
+   every proposal itself (`td_v4.check_menu_in_td`; a state that names no
+   signed list must be the pinned seed). A committed menu the reader refuses
+   is carried, as on every node, and checked in the TD under the list the
+   menu it holds names (`V4EpochInputs.held_allowlist`, which the session
+   picks itself), never under one the refused bytes name. A menu the TD
+   cannot check
+   (`MenuUnavailable`: no bytes for the hash, or not the list the menu names)
+   or that fails the rules inside the TD (`MenuRejected`: an operator-held
+   menu with a forbidden entry) ends the epoch with no call and no proof. The
+   lists themselves, lab and host and (for a menu that newly names one)
+   device, are trusted only through `menu_rules.verify_signed_list`. Bytes
+   that carry the committed hash reach the reader whatever their size, so a
+   document over `MENU_MAX_BYTES` is refused and carried in the TD exactly
+   as on every node, never treated as missing.
+2. **What goes on the wire is the entry's named fields** (I8): `model`,
+   `reasoning`, `max_tokens`, and `provider` with the pinned order and
+   fallbacks forbidden (`td_v4.wire_request`, equal to `menu_state.request_for`
+   for an entry), plus the harness's `messages`. Every request is checked for
+   exactly those keys before it is sent.
+3. **The listing read is bounded and keyless** (I2, I6). One GET per model
+   under the TD's one base URL, with no key, the model id checked before it
+   enters the path, no redirect followed, the body capped and the read held
+   to a deadline (`runtime.fetch_endpoints_page`). A page is parsed strictly
+   (`endpoint_reads.parse_listing`): size, endpoint count, one entry per host,
+   string shapes and number ranges; prices are decimal strings converted to
+   integer picodollars with integer arithmetic. A read that fails leaves no
+   record (no vote) and the epoch goes on.
+4. **Billed cost is read exactly** (I1). `usage.cost` is read from the
+   reply's own text, not through a float, as integer nanodollars rounded half
+   up (`runtime.billed_nanodollars`); the serving host is the provider the
+   reply names, bounded. Both are attested per result; neither decides a score.
+5. **A TD measures no proposal; a provisional entry's calls are bounded**
+   (I3, I5, I6). There is no measurement in a v4 proof and no spending
+   ceiling: a proof that carries a proposal, or a result with
+   `measure_for`, is refused as it is read (`proof.BenchmarkProof.from_dict`).
+   A provisional entry is called like any other (its exploration draw,
+   aimed first at it in its join epoch), with three limits of the TD's own
+   (`harness._call_all_v4`): each call asks the proxy for
+   `PROVISIONAL_CALL_DEADLINE_S` (300 s, shorter than any entry's own; the
+   proxy honours only a shorter deadline, `runtime._shorter_deadline`), a
+   failed call is retried once, and no call starts once
+   `PROVISIONAL_BUDGET_S` (1200 s) has passed since the epoch's calls began;
+   a call not made is reported failed. An entry whose price on the TD's own
+   listing read is more than four times its menu price is not called
+   (`td_v4.overpriced`). Validators leave every provisional call out of
+   the exploration failure bound, the outage rule and the health counts
+   (`menu_inputs`), so a slow or broken new host moves only its own gates.
+6. **A TD that starts or falls behind does not replay history** (I6).
+   `td_v4.V4Session` starts each epoch's walk from the first of: the last
+   menu it accepted (kept in memory and as `<state dir>/menu.json`, its
+   canonical bytes), when at most `RESUME_MAX_EPOCHS` old; the menu the
+   root's newest reveal says its epoch ran on (the reveal verified against
+   the root's commitment read pinned at the epoch's boundary, its `menu`
+   field's bytes against the hash, the compiled caps and the rules in the
+   TD: `menu_publish.read_root_anchor`); the operator's anchor
+   (`--v4-anchor`); the kept menu however old; the seed. It then walks
+   forward with the full reader checks. Each pinned commitment read is
+   kept, and the epoch's own menu is kept when it is read, so a node that
+   serves only recent blocks costs at most the epoch whose older boundary
+   it cannot read; the session never goes on from a menu it could not
+   verify. The miner connects with the archive and fallback endpoints the
+   validator uses (`FUGAL_ARCHIVE_ENDPOINTS`, `FUGAL_FALLBACK_ENDPOINTS`).
+   **How far back a v4 node reads, pinned.** Every v4 chain read (the
+   published set's commitment reads, the menu walk and the join pointer,
+   the window fill's reveal hashes, the root's join read at B, the TD's
+   anchor) goes through the neuron's one `bt.Subtensor`, built with the
+   archive endpoints, whose connection switches to the archive when a node
+   answers that a block's state is discarded (the real-chain rehearsal's
+   "the localnet node refuses, the archive serves"). Steady state: at most
+   one epoch back (the current boundary, B). After missed epochs, where a
+   read of an old boundary fails as pruned (`memo_sync.is_pruned`, told apart
+   from a transient failure, which still raises as before), the published
+   set re-anchors once on the root's newest snapshot named by the current
+   commitment (`ChainSet.advance_to`), and a validator's menu walk on the
+   menu the root's newest reveal names (`MenuNode._anchor`, the TD's
+   anchor rule, held to the caps and the compiled rules): each needs pinned
+   reads `memo_sync.ANCHOR_HISTORY_EPOCHS` (3) epochs back; when even that
+   fails the set is `PublishedUnavailable` (no proof checked or made that
+   epoch) and the menu unavailable, saying an archive endpoint is needed,
+   and the next epoch tries again from a newer anchor. Across the v4
+   activation (no snapshot named yet) the set is read from the release's
+   seed, up to `PUBLISHED_V4_SEED_MAX_AGE_EPOCHS` (150) epochs back: an
+   archive. A node on a full-history endpoint never re-anchors and reaches
+   the same states as before (tests/test_memo_sync.py,
+   tests/test_menu_publish.py, tests/test_v4_pruned_loop.py).
+   Trust: an anchored TD takes the root's word for the menu its newest
+   reveal's epoch ran on (the same root whose commitments name every
+   menu); the menu is still held to the caps and the compiled rules.
+7. **A TD applies the root's join delta as every node does.** The epoch's
+   menu is the base menu (the committed or carried one) with the entries of
+   the delta the root's join pointer names at the boundary
+   (`td_v4.epoch_menu`, `chain_proposals.check_delta` on the delta's own
+   contents); no pointer, a pointer to no joins, or a delta the check
+   refuses is the base menu. A TD without the bytes of a named delta has no
+   menu (no proof), like one without a committed menu's bytes.
+8. **A v4 field never changes an earlier proof** (I1, I7). Each v4 field
+   (`menu_hash`, `endpoint_reads`; per result `provider_cost`, `served_by`)
+   is hashed and serialised only when present,
+   bounded, and has one encoding. A v1, v2 or v3 proof keeps its bytes and
+   its `content_hash` (pinned at their pre-v4 values), and the largest v4
+   proof fits `PROOF_JSON_MAX_LEN`. A proof whose `routing_protocol` names a
+   v1-v3 namespace is read as before the fields existed: its v4 keys are not
+   read at all, so a validator on this release and one on the release before
+   reach the same verdict on it whatever such keys hold.
+
+Enforced by `tests/test_proof_v4_fields.py`, `tests/test_endpoint_reads.py`
+(every page of the committed listing snapshot, and hostile pages),
+`tests/test_runtime_v4.py` (a loopback upstream: redirects, oversize, deadline,
+no key), `tests/test_harness_v4.py` (including a run through the real proxy),
+`tests/test_td_v4_session.py` and `run_miner_attacks.py` (v4 proof fields,
+listing pages, menu bytes). The validator's side of these checks (the v4
+fields required, the namespace against the epoch's menu) is the entry
+"I1/I3/I4 — a v4 proof is checked against the epoch's
+menu" below. Not yet enforced, because the code does not exist yet: the
+slice mix (W8), which the harness takes through `td_v4.V4Plan`. The exploration a
+TD runs is W5's draw on the epoch's menu alone (`td_v4.exploration_v4`,
+`epoch_plan.explore_shares_v4(state)`).
+
+### I8 — a TD miner's own v4 options cross the attested channel, checked at the boundary (built ahead of v4; nothing reaches it before a v4 activation block)
+
+A miner in a TD reads nothing of its own from its compose: the frozen compose
+is every miner's, its hash is the approved identity, and it allows no
+environment (`allowed_envs: []`, I8 above). Its two v4 options, the
+proposal it serves and commits (`FUGAL_V4_PROPOSAL`) and whether it answers
+the scored questions (`FUGAL_V4_SCORED`), therefore join `ALLOWED_FIELDS` as
+`v4_proposal` and `v4_scored` (`tee/v4_options.FIELDS`), strings, each
+optional. (A spending ceiling was an option of v4 drafts; with no proposer
+measurement there is none, and the field is refused as unknown.)
+
+1. **Checked at the boundary, whole.** `provision.validate_payload` checks
+   each value with `tee/v4_options` before the store keeps anything, on the
+   operator's side before sending and in the TD on receipt, and refuses the
+   whole push when one fails, naming the option and the rule, never the
+   value. A proposal: printable ASCII, at most `MAX_PROPOSAL_CHARS`, JSON
+   with no key twice and no NaN, exactly its four keys, and every compiled
+   entry rule that does not depend on a list (`menu_rules.check_request`:
+   the model's form, the reasoning setting, at most two hosts, none twice,
+   no service tier, one quantization). It is not checked against a signed
+   lab and host list at provisioning, on either side: lists change without
+   a release, so a lab or host a newer signed list adds can be proposed from
+   an image that predates it. The list check is the root's, at admission
+   (item 2). Scored: `auto`, `on` or `off`. A field sent twice in the sealed payload is
+   refused (`unseal`), for every field.
+2. **Their effect is the option's and nothing else.** None is an input of the
+   grader, the pool, the slice, the menu or the cost model. The miner serves
+   the proposal as a document (`chain_proposals.ProposalDoc`, over the
+   `FugalProposalSynapse`) and commits its hash beside its head in one
+   transaction; the root admits it only under the signed list in force at
+   that boundary (`chain_proposals.admit`). Where the image ships a list,
+   the READY line says whether that list allows the proposal and why not
+   (`v4_options.listed_refusal`, informational); the scored mode is visible
+   in every proof (`scored`). The compose hash and the image do not depend on them.
+3. **One source, one push.** The miner takes them from the push only under
+   `--await-provisioning` and refuses to start when one is also set on its
+   own command line or environment (`neurons/miner._v4_pushed_options`). The
+   TD takes one push per start, so changing an option is a stop/start and a
+   new push.
+4. **The channel before v4 is unchanged.** A push without them is the push
+   before v4, accepted by the old receiver; the new receiver accepts the old
+   push and the miner runs with no proposal and `auto`. An old
+   receiver refuses a push that carries one, as an unknown field.
+
+Enforced by `tests/test_td_v4_options.py` (every rule, the real receiver,
+the miner's resolution, both directions against the v0.6.0 module where the
+checkout has its tag), `tests/test_provision_schema.py` (the allow-list
+literal), the `v4 option:` cases of `fugal_subnet/attacks/run_tee_attacks.py`,
+and the release gate (`check_safety_invariants --release-v4`,
+`_td_option_gaps`): every `FUGAL_V4_` option the miner reads, other than the
+two with an image default, must map to a field in `v4_options.FIELDS`, be in
+`ALLOWED_FIELDS`, have a parser in `v4_options.PARSERS`, and be handed on and
+applied by the miner's provisioning path; a new option without that path is a
+blocker (`tests/test_release_gate_v4.py`).
+
+### I4/I5 — v4 exploration measures every entry, and each pair is weighted by its own draw (built ahead of v4; nothing reads it before a v4 activation block)
+
+v3's exploration (the I4 entry "every miner measures the models") draws dear
+entries at a quarter of a uniform share, so on a 60-entry menu a dear entry
+collects about one pair an epoch. Protocol v4
+(`docs/decisions/LIVE_MENU_V4.md`, section 8, at the sizes of
+`docs/decisions/SEAT_MINIMAL_V4.md`, sections 5.3 and 8: the owner's label
+budget of 112 calls a hotkey-epoch) drops v3's shared set and draws each
+miner's private set in a cost-aware part and a coverage part. The code is in
+the tree and reached only with protocol version 4
+(`epoch_plan.exploration_plan(4, ...)`, `explore_shares_v4`,
+`exploration_plan_v4`; `explore_weights.plan_shares_v4`):
+
+- **No shared set** (`EXPLORE_SHARED_SIZE_V4` = 0; v3's `EXPLORE_SHARED_SIZE`,
+  8, is read by v1-v3 only). Its only reader was the cross-miner agreement
+  detector, and a pair every operator voted on judges no head (SEAT_MINIMAL_V4
+  2.3 item 33).
+- **Cost shares** are v3's rule on the epoch's menu state's measured costs
+  (`menu_state.costs`), with `EXPLORE_SPEND_CAP_USD_V4` ($0.55) over the
+  calls they draw: the cost-aware part (`EXPLORE_COST_AWARE_SIZE_V4`, 68)
+  and the shared set (none).
+- **Coverage shares** (`explore_weights.coverage_draw`, 44 calls):
+  d_e = max(0, 100 - n_e), with n_e the entry's exploration pairs (never a
+  proposer's measurement pairs) in the window as published `MENU_LAG` epochs
+  back, read from the epoch's menu (`MenuState.explore_pairs()`, which
+  `explore_shares_v4(state)` reads and nothing else); f = min(1, sum d / 1,400); q_e = f d_e / sum d + (1 - f) / M; then
+  pi_e = t q_e + (1 - t) / M with t the largest value in [0, 1] whose
+  expected spend is within `EXPLORE_COVERAGE_SPEND_CAP_USD_V4` ($1.10). When
+  uniform coverage alone costs more than the cap, no t meets it and t is the
+  end with the lower expected spend.
+- **The split.** A miner's 112 private questions are drawn as v3 draws its 24,
+  then ranked by HMAC(its exploration nonce, the question id): the first 68
+  take entries by the cost shares, the rest by the coverage shares
+  (`exploration.private_parts`, `coverage_nonce`).
+
+**Weights stay exact inverse probabilities (I1, I3).** A shared pair (none
+under v4; the table is kept, and pooling refuses a pair answered in both
+sets) carries v3's weight, 1 / (M pi_cost). A private question is in the
+cost-aware part with probability 68/112 whatever its benchmark (the split is
+keyed on its id alone), so its entry was drawn with
+pi_private = (68 pi_cost + 44 pi_cov) / 112 exactly, and a private pair
+carries 1 / (M pi_private). Weighting a private
+pair by its part's probability alone would not be unbiased: a coverage part
+can give an entry probability zero (f = 1 and the entry at target), and two
+miners can answer the same pair from different parts. Every probability is a
+Fraction and every share an integer (`exact_shares` puts the coverage
+probabilities over their common denominator, so the cap holds exactly). No
+weight exceeds 112 / (68 x 1/4) = 6.6; at the W0 replay's measured costs the
+largest is 4.8 (the dearest entry at target while the others are short) and
+in steady state the design effect of the pool is 1.11 against v3's 1.31.
+
+**Spend (I5).** A miner's expected exploration spend is at most $0.55 for the
+calls drawn by the cost shares and $1.10 for the coverage part, whenever the
+menu's uniform cost allows each cap to be met (v3's cost-aware cap has the
+same limit: with no exponent within it, the largest exponent is used). That
+and its VM is the whole bill of an odds-only miner (the scored questions
+off, the default for a head that does not hold the seat: the S3 entry
+below); the scored questions add about $4.65 an epoch, only in the epochs a
+miner answers them.
+Both caps are on expected spend, for the reason v3 gives: a rule that stopped
+at a realised total would make an entry's chance depend on the draws before
+it, and the weights would no longer undo the sampling. At the replay's costs
+(W0's model re-run on these sizes, SEAT_MINIMAL_V4.md 5.6) the cost-aware part
+costs $0.35, uniform coverage $0.43, the steady state $0.78 an epoch
+(0.67-0.91), and the dearest entry joining costs $1.15 at its worst epoch:
+its damped draw ($0.81 of coverage) is under the cap, which at these sizes
+binds only when a dozen or more of the menu's dearest entries are short at
+once.
+
+The validator pools a pair with the weight of the set it was drawn in:
+`explore_pool.pool_pairs(weights=SharesV4.shared_weights(),
+private_weights=SharesV4.private_weights())` gives a pair on a question of
+the miner's private set (`verify.V4Expected.private_ids`) the private
+mixture's weight and any other the shared set's, and refuses a pair answered
+in both sets (every node draws them disjoint). `explore_pool.coldkey_cap(4)`
+is `EXPLORE_COLDKEY_CAP_V4` (168, 1.5 private sets). Without `private_weights`
+pooling is v3's, byte for byte.
+
+n_e is each entry's `explore_pairs`, published in the epoch's `MenuState`
+(`MenuState.explore_pairs()`, which `epoch_plan.explore_shares_v4(state)`
+reads and nothing else; measurement pairs never count). The validator's
+epoch passes both weight tables and `coldkey_cap(4)` to the menu step's
+pool (`validator._v4_pool`) and to the seat's (`validator._v4_odds_input`).
+The sets are drawn on the pinned v4 mix (the next entry).
+
+**Not yet enforced, because the code does not exist yet:** the v4 constants
+are compiled and not yet in the consensus digest (W11 adds them at
+activation).
+
+Enforced by `tests/test_explore_v4.py` (the sizes and caps, probabilities,
+exact weights as a property test, the damping and the cap on the replay's
+worked cases, v3's weights against every weight published in reveals
+e00026466..e00026489), `tests/test_v4_budget.py` (section 8's sizes end to
+end),
+`tests/test_explore_pool_v4.py` (each set's weight on a pooled pair, the v4
+cap, and v3's pooled rows under every published v3 weight, pinned before the
+v4 tables were added), the `explore_shares_v4` stage of
+`scripts/check_determinism.py`, and its v4 input stage, which stops unless
+every pooled pair weighs its own set's table and some private pair weighs a
+private weight that differs from the shared one.
+
+### I1/I3/I4 — a v4 proof is checked against the epoch's menu, and the menu step's inputs are votes of operators (built ahead of v4; nothing reads it before a v4 activation block)
+
+Work package W4 of `docs/decisions/LIVE_MENU_V4.md`, its verification and
+aggregation half: `verify_proof(protocol_version=4, v4=...)` in
+`fugal_subnet/tee/verify.py`, and `fugal_subnet/menu_inputs.py`. No release
+sets a v4 block, and nothing on the v1-v3 path imports `menu_inputs`,
+`menu_state` or `td_v4` (`tests/test_menu_inputs.py`,
+`tests/test_harness_v4.py` check the import graph). What must stay true:
+
+1. **A v4 proof is judged against the epoch's menu and nothing the miner
+   says about it** (A7). `verify.expected_v4(MenuState(E), ...)` gives one
+   hotkey's `V4Expected`: the menu and its hash, the exploration the nonce,
+   the hotkey and the menu's shares assign (the shared set, the cost-aware
+   part, the coverage part, aimed first at the entries that joined
+   provisional in E: the TD's own `td_v4.exploration_v4`). Under protocol 4
+   `verify_proof` requires it (a caller error otherwise) and refuses a proof
+   whose `menu_hash` is not the epoch's, whose namespace is not
+   `identity_v4` of it, or that carries no `endpoint_reads`; a scored route
+   to an id off the menu; exploration that is not exactly the assigned set;
+   a proposal or a measurement in the proof (refused as it is read); a
+   scored set that is not the
+   whole slice or none, or that disagrees with the proof's `scored` field
+   (the S3 entry below); and a head with no row on the menu. v1-v3 proofs
+   are verified as before.
+2. **One coldkey is one voter.** Every vote and count an operator could
+   inflate with hotkeys is taken per coldkey, the coldkey being the one the
+   chain names for the proof's hotkey (`menu_inputs.VerifiedProof`; no proof
+   field names one). The endpoint vote (section 7.1): per coldkey, its
+   hotkeys' reads of a host are one vote (listed when at least half read it
+   listed, then the median of their values); across coldkeys the host is
+   listed when at least half vote it listed, `voters` is then the coldkeys
+   voting it listed and each value their median, rounded half up to a whole
+   picodollar. The step moves nothing on fewer than `ENDPOINT_MIN_VOTERS`.
+   A read that is not in the field's one shape (a host twice, a value that
+   is not an integer in range) is no vote, here as in the parser.
+3. **Health is the replay's rule** (section 9.2). Over the last
+   `RETIRE_WINDOW_EPOCHS` (12) counted epochs, an epoch being an outage and
+   not counted when its median coldkey failed more than
+   `RETIRE_OUTAGE_RATE_BP` (30%) of all its exploration calls: a coldkey
+   with at least `RETIRE_MIN_CALLS` (5) calls to an entry's current revision
+   is eligible, and failing when more than `RETIRE_FAIL_RATE_BP` (30%) of
+   them failed in at least `RETIRE_FAIL_MIN_EPOCHS` (3) distinct epochs; the
+   step (`menu_state.health_retires`) retires the entry when at least
+   `RETIRE_FAIL_MIN_COLDKEYS` (4) are eligible and more than half fail. Gone
+   is `RETIRE_GONE_EPOCHS` (6) consecutive epochs, ending with the scored
+   one, in which the vote shows every pinned host unlisted by at least
+   `ENDPOINT_MIN_VOTERS` coldkeys. In a field smaller than those minimums
+   need, both follow it (`menu_state.retire_minimum`): a majority of the
+   coldkeys serving, never more than the compiled minimum and never fewer
+   than `RETIRE_MIN_FLOOR` (2), so one operator never retires an entry
+   alone (its listing reads are attested; it can only drop its own calls,
+   one failing coldkey). An epoch whose decided reads show more
+   than `RETIRE_OUTAGE_RATE_BP` of all hosts unlisted is a listing outage
+   and is not counted (`listing_outage`). The step retires at most
+   `health_retirement_bound` entries for health a step, never below
+   `MENU_MIN_ENTRIES`; the rest wait for later steps. A published summary
+   is read strictly (`summary_from_dict`: each field of exactly its type),
+   so one that is not well-typed is refused whole and its epoch is absent
+   from a window rebuilt from it. A provisional entry's calls count toward
+   its gates only (each coldkey's calls and failures, `gate_stats`), never
+   toward health or the outage rule.
+4. **Pairs belong to one run of an id.** An entry's exploration-pair count
+   (section 8's n_e) is its pooled exploration pairs of its current revision
+   in the window, and its token sums and accuracy are over those. Pairs from
+   before an entry's `joined_epoch` belong to an earlier run of the id and
+   are not counted.
+5. **Exact and order-free.** Medians of Fractions rounded half up once; the
+   useful gate's bounds are Wilson's at z = 1.645 on the mix-weighted rate
+   with the stratified effective size, through an integer square root
+   (lower bound rounded down, upper rounded up, in ppm); every collection is
+   read sorted by its key. A window summary (`EpochSummary`) has one JSON
+   form, read back strictly.
+6. **A proposer's coldkey is the chain's** at the root's pinned read
+   (`chain_proposals.ChainRead.coldkey_of`), and whether a proposal passes
+   the compiled rules (no duplicate, no cooldown, room) is the admission's
+   verdict, which every node re-runs on the delta (the lifecycle entry).
+
+Enforced by `tests/test_verify_v4.py` (the honest proof; each refusal, and
+each attack verifying once the one rule that refuses it is taken out),
+`tests/test_menu_inputs.py`, `tests/test_v4_input_attacks.py` (each step-input
+attack breaking once its rule is taken out), `tests/test_menu_step.py` (the
+step's health rule), `run_tee_attacks.py` (stale and foreign menus, a route
+off the menu, a proof that carries a proposal or a measurement) and
+`run_miner_attacks.py` (one operator's hotkeys on a price and a listing,
+forged reads, one coldkey failing an entry, three epochs of failed calls),
+`tests/test_menu_retire_field.py` (the field-sized minimums), and the
+`endpoint_vote`, `token_means`, `provisional_gates` and
+`retirement` stages of `scripts/check_determinism.py`.
+
+Not yet enforced, because the code does not exist yet: that the validator's
+epoch builds `V4Expected` for every hotkey it verifies, keeps an
+`EpochSummary` per epoch in its window and hands the step
+`menu_inputs.step_inputs(...)` (the wiring, W4b); which heads count for use
+(`counted_heads`: those that held the seat or were senior bars) is the seat
+machine's to name.
+
+### I1/I2 — a v4 head's odds and picks are one exact function of its bytes and the epoch's menu (built ahead of v4; nothing reaches it before a v4 activation block)
+
+Protocol v4 keeps today's head format (`docs/decisions/LIVE_MENU_V4.md`,
+11.2) and changes how a head meets the menu and its costs (11.1, 7.3). The
+code is reached only from the v4 path of the harness (`run_benchmark(
+protocol_version=4)`); `load_head_from_npz`, `head_odds.head_odds` and the
+v3 picks are unchanged, and the vendored contract is unchanged and still
+byte-equal to its upstream. What must stay true:
+
+1. **What a v4 head is** (I2; `head_eval.load_head_v4`). Today's byte and
+   archive bounds first (`HEAD_MAX_BYTES`, the expanded-size cap, at most 32
+   `.npy` members, no object dtype, no pickle), through the same reader as
+   v1-v3. Then, required: `W` (rows x 1024) and `b` (rows), each
+   little-endian float32 or float64 (`V4_PARAM_DTYPES`: half, extended and
+   quad precision, big-endian, complex, integer and object arrays are refused
+   before any value is read), finite with every value
+   within `HEAD_MAX_ABS_PARAM` (10^6); `models`, 1
+   to `HEAD_MAX_ROWS_V4` (72: `MENU_CAP` plus `MENU_MAX_PROVISIONAL`) unique,
+   non-empty ids of at most 256 characters; `contract`, `profile_id` and
+   `backbone_revision` equal to the pinned values; a non-empty `provenance`;
+   a finite non-negative `lam`. Optional: `mean_in_tokens`,
+   `mean_out_tokens` and `cost_profile_id`, checked as today when present
+   and never read. Any other field is refused. Every head valid today
+   with float32 or float64 parameters is a valid v4 head.
+2. **Rows are matched by entry id, to the epoch's menu**
+   (`head_odds.menu_rows`). Odds are computed for the MenuState's entries in
+   the state's order; a row's position in the head never matters; a row
+   for an id not on the menu is never read; an entry with no row has no odds
+   (-1), which the grace rule prices (the I3 per-entry grace entry), never an
+   exception; a request update keeps the id and so the row.
+3. **One function, exact** (I1; `head_odds.picks_and_odds_v4`). The odds are
+   v3's exact integers (`head_odds.odds`). A pick maximises
+   odds / 10,000 - lambda x cost over the entries with odds, where cost is
+   `menu_state.pick_costs(state)` (prices x the token means of the entry's
+   graded scored-question cells, shrunk toward its call cost: the W13 entry
+   below; a Fraction) and lambda `routing_protocol.BENCHMARK_LAMBDA` as a Fraction: no float enters
+   the comparison, and equal utilities go to the first entry in the state's
+   order. The TD's harness routes with it; a validator recomputing a pick
+   calls it, and scores pooled pairs with `pair_odds_v4`, which gives the
+   same cells. Nothing the head says about cost is read.
+4. **The TD checks the head before anything else of the epoch** (I8): a
+   head that does not load as a v4 head, or has no row for any entry on the
+   epoch's menu (`head_eval.v4_head_verdict`), stops the epoch before any
+   listing read or model call.
+
+Enforced by `tests/test_head_v4.py` (the fields, every bound, rows in any
+order, extra and missing rows, a request update, picks that follow a state
+price and not the head's own token means, exact ties, and property tests on
+random menus, rows and bytes), `tests/test_harness_v4.py` (the TD's scored
+routes equal the shared function's picks), the v4 cases of
+`run_miner_attacks.py`, and the `head_odds_v4` stage of
+`scripts/check_determinism.py`. Not yet enforced, because the code is in
+other packages: that the validator's v4 head check (W4) is
+`v4_head_verdict` rather than the v1-v3 loader, which refuses a head
+without token means; that the v4 epoch's pooled odds (W4/W11) come from
+`pair_odds_v4`; that `HEAD_MAX_ROWS_V4` is in the consensus digest (W11);
+and the product's parity with these picks (W10, after fugal-core's contract
+accepts a v4 head; `LIVE_MENU_V4.md` 11.2).
+
+### I1/I4 — v4 prices a pick at the measured pick cost, and exploration at the call cost (W13; built ahead of v4, nothing reaches it before a v4 activation block)
+
+An entry has two measured costs, and v4 keeps both in the published menu
+(`docs/decisions/SEAT_MINIMAL_V4.md` 3.4 and 8; the earlier seat design's
+8.1-8.4, kept as designed). The **call cost** (`menu_state.costs`: prices
+x token means over the entry's exploration pairs) is what one call costs on
+a question drawn at random; the **pick cost** (`menu_state.pick_costs`,
+`pick_cost`) is what a call costs on the questions routers actually send the
+entry. On the published v3 reveals a call cost under-states the cost of the
+cells heads picked about twofold, while the pick-cost table is within about
+7% of it (leaving one epoch out, e00026466..e00026502: real over predicted
+1.058 on the champion's picks and 1.066 on every head's, against 2.36 and
+2.04 for the exploration mean per entry; `scripts/build_menu_v4_seed.py
+accuracy`, `tests/test_pick_cost_accuracy.py`). What must stay true:
+
+1. **Who reads which.** Exploration's shares, weights and spend caps read
+   the call cost (`epoch_plan.explore_shares_v4`). A head's pick
+   (`head_odds.picks_and_odds_v4`: the TD routes with it, a validator
+   recomputes with it, the product reads the same per-entry table) reads
+   the pick cost per entry, because a pick is made without knowing a
+   question's category. Net value on the scored questions prices each
+   answered call at its entry's pick cost in the question's category, the
+   entry's own where the table does not list the category
+   (`v2_epoch.build_epoch_slice(pick_spend=)`, built by the validator's
+   `_v4_tables` from the epoch's menu; a rebuild prices a v4 reveal the
+   same way), never at the call's own tokens. Changing the pick table
+   changes picks and not exploration; changing the call table changes
+   exploration and not picks (`tests/test_menu_pick_cost.py`).
+2. **The cells are votes of operators** (I4; `menu_inputs.graded_cells`).
+   A graded cell is a (question, entry) of the scored questions some
+   verified proof answered without failing. Each coldkey's answers to it
+   are one vote (the mean over its hotkeys); its prompt and completion
+   tokens are the median across coldkeys, rounded half up, and no cell
+   counts more completion tokens than the entry's answer limit on the
+   epoch's menu, nor more prompt tokens than the answer cap
+   (`menu_rules.MAX_ANSWER_TOKENS`). So one operator's many hotkeys are one
+   vote in a cell, and a cell one operator answered alone moves a table by
+   a bounded amount. The epoch summary keeps them per (entry, revision,
+   category) as counts and token sums (`EpochSummary.graded`, strictly typed
+   by `summary_from_dict`, which refuses a row with more tokens than its
+   cells hold at the cap); `pick_stats` sums the window's for each entry's
+   current revision from its join epoch and hands them to the step.
+3. **The table, exactly** (I1; `menu_state.pick_table`). Per token kind, in
+   milli-tokens: pick = (1000 x T + 30 x the call mean) / (n + 30), and per
+   category pick_c = (1000 x T_c + 20 x pick) / (n_c + 20), each rounded half
+   up, the category shrinking toward the entry's published value
+   (`PICK_COST_PRIOR_CELLS_ENTRY`, `PICK_COST_PRIOR_CELLS_CATEGORY`, also in
+   `MenuParams`). An entry with no graded cell of its revision has no table
+   and is priced at its call cost; a category the table does not list is
+   priced at the entry's pick cost; means that would make a pick cost
+   nothing are not taken. The table is an optional `pick` object on an
+   entry (cells, means, at most `PICK_MAX_CATEGORIES` (8) categories named
+   in at most `PICK_CATEGORY_MAX_CHARS` (32), sorted, each with a cell,
+   adding up to the table's), absent while the entry has none, so a state
+   still has one document and is hashed whole.
+4. **Refreshed at the cadence, reset by a join or an update.** The step
+   recomputes every table at a refresh (`refresh_due`) from `pick_stats`,
+   after the token means it shrinks toward; outside a refresh every table
+   stays as published. An entry that joins, and a request update, start
+   with no table. The reader holds both from the two menus
+   (`check_transition`: a table that moves outside a refresh epoch, or one
+   on a joining or updated entry, is refused) and holds every table to
+   what its cells could give (`check_caps`: between its prior's share of
+   what it shrinks toward and that share plus every cell at the answer cap,
+   and never a pick that costs nothing). Like the call means, a table's
+   values at a refresh are the publisher's, from its own proofs; a price
+   moves the pick cost and the call cost alike and is held to
+   `MENU_PRICE_STEP`.
+5. **The seed's tables are measured.** Each seed entry's table is the
+   step's rule on its graded cells in the 44 published v3 reveals
+   e00026466..e00026509 (`data/observations/
+   menu_v4_seed_picks_e00026466-e00026509.json`, built by
+   `scripts/build_menu_v4_seed.py picks`), the prompt side at the call mean
+   (a v3 reveal publishes no prompt tokens for a cell), and the safety check
+   holds the seed to the compiled caps.
+
+Enforced by `tests/test_menu_pick_cost.py` (the shrinkage's arithmetic, the
+call-cost fallback, the encoding and its bounds, the step at and outside the
+cadence, the reader's checks, an honest twenty-step walk with tables, picks
+against exploration), `tests/test_pick_cost_inputs.py` (the coldkey median,
+failed calls, the bounds on a cell, the summary's form and types, the window
+sums), `tests/test_pick_cost_net_value.py`, `tests/test_menu_v4_seed.py`,
+`tests/test_pick_cost_accuracy.py`, the pick-cost cases of
+`run_miner_attacks.py` (one operator's twenty hotkeys on every cell; a cell
+past every bound; a root repricing the table outside a refresh epoch,
+beyond what its cells could give, or on a joining entry), and the
+`pick_cost_v4` stage of `scripts/check_determinism.py` (six epochs of
+proofs with failures, a request update mid-window and an unrouted entry,
+every input reversed under `--perturb`). Not yet enforced, because the code
+is in other packages: the seat step reading the real-picks check (S3 built
+it, `picks_v4.picks_check`, pricing each answered call at
+`menu_state.pick_cost` per (entry, category) of its own epoch's menu; S4
+wires it); fugal-core's selector reading
+the per-entry table (W10); and the constants in the consensus digest with
+the step's others.
+
+### I1/I4 — the v4 question mix is derived from named reveals, pinned, and read through one plan (built ahead of v4; nothing reads it before a v4 activation block)
+
+Protocol v4 (`docs/decisions/LIVE_MENU_V4.md`, section 10) draws its scored
+slice, its exploration (shared set and both private parts) and every
+proposal's measurement questions on one mix, which is data:
+`routing_data/pool_mix_v4.json` (reviewed copy `data/pool_mix_v4.json`,
+byte-identical, sha256 pinned in `scripts/check_safety_invariants.py`), read
+by `epoch_plan.mix_v4`. Integers only: each category's target in whole
+per-cents, each question set's share in millionths of the slice, summing
+within a category to its target exactly, so every node draws on the same
+exact proportions.
+
+- **The rule** (`scripts/build_mix_v4.py`, run once, never at run time: a
+  mix that moved with the window would be a feedback loop inside a
+  consensus input). A category's target is proportional to p(1 - p), p the
+  accuracy of an entry drawn uniformly from the seed menu on the category's
+  exploration pairs, each pair weighted by the inverse of its published
+  draw probability; at least `MIX_FLOOR_PCT_V4` (5%); rounded to
+  `MIX_STEP_PCT_V4` (5%) by largest remainder. Inside a category sets split
+  by their own p(1 - p) x pool size (the category's value for a set with
+  fewer than `MIX_MIN_PAIRS_V4`, 100, pairs), and no set's share of the slice
+  exceeds pool size / (slice x `MIX_CYCLE_EPOCHS_V4`): no set is drawn
+  through faster than two 48-epoch windows. A category that cannot place its
+  share under the caps, or a set that would get no share, stops the build.
+  All of it is exact rational arithmetic.
+- **Its inputs are files.** The observations
+  (`data/observations/mix_v4_cells_e00026466-e00026489.json`) are integer
+  sums reduced from the 24 published v3 reveals the W0 replay used, each
+  named with its sha256; `build --check` rebuilds the mix byte for byte.
+  From them the rule gives the replay's targets: hard 30, code 15, math 15,
+  knowledge 15, instruction 15, easy maths 5, everyday 5.
+- **Built for 200 questions, where no cycle cap binds.** `SLICE_SIZE_V4` is
+  200 (SEAT_MINIMAL_V4.md 8: the real-picks check prices picks at the
+  measured pick-cost table, so 1,000 questions, five epochs, are its
+  minimum), and the mix was rebuilt for it (`build --slice 200`, re-pinned
+  2026-11-19). The targets do not depend on the slice; inside a category the
+  sets take their uncapped shares (`supergpqa_hard` 52 questions an epoch,
+  the whole set about every 131 epochs). At 300 every hard set but `aime`
+  and two code sets were held at their caps. A different slice size needs a
+  rebuild: the mix records the slice it was built for, and
+  `scored_slice(4, ...)` and `plan_v4` refuse another. The miner and the
+  validator pass `SLICE_SIZE_V4`, not v1-v3's `SLICE_SIZE`, for a v4 epoch.
+- **No question leaves the pool for being answered by every entry.** The
+  mix holds every set of the v3 pool at its full size with a positive
+  share; a saturated set is held at the floor (ARC) or keeps its share
+  (`aime25`, `code_humanevalplus`, every observed pair right).
+- **One plan.** `epoch_plan.plan_v4(pool)` is the one constructor of a v4
+  epoch's `td_v4.V4Plan`: the scored slice, the exploration on the plan's
+  pool index, and the index and targets the measurement draw reads
+  (`V4Plan.measurement`, which the TD's harness calls and a verifier calls
+  for the same proposal). A second way to build the index or the targets
+  is a consensus break of the same kind as a second epoch-id format: the TD
+  and the validator would disagree on every measured question.
+- **v3 is untouched.** `scored_slice(3, ...)`, `pool_index_v3` and v3's
+  exploration read `config`'s v3 mix and never the v4 file.
+
+Not yet enforced: W4's verification passes the index and the targets as two
+arguments; it should take them from `plan_v4`. The v4 token means and
+proposal gates (`menu_state.MenuParams.mix`) are weighted to "the scored
+mix", which under v4 is `mix_v4().menu_mix()`; the seed's token means are
+still weighted to v3's and are rebuilt with the seed.
+
+Enforced by `tests/test_pool_mix_v4.py` (the rebuild, the replay's targets,
+each step of the rule on hand-made inputs, the cycle cap on a small set, no
+cap binding at 200, every draw on the pinned mix, and the TD and a verifier
+drawing the same measurement questions through `plan_v4`) and the
+`pool_mix_v4` stage of `scripts/check_determinism.py`.
+
+### I1/I4 — the v4 epoch runs through the shipped loops, on one menu and one pool (built ahead of v4; reached only off finney, through FUGAL_V4_ACTIVATION_BLOCK)
+
+Protocol v4 is selected as v3 was before its block was compiled:
+`config.v4_activation_block(genesis)` is `FINNEY_V4_ACTIVATION_BLOCK` on finney
+(None: no release schedules v4, and a set `FUGAL_V4_ACTIVATION_BLOCK` is
+refused there, as v3's variables are when they differ from the compiled
+block) and the variable on any other chain, never before v3's block. A value
+that is not a block number never stops an import
+(`config.V4_ACTIVATION_BLOCK_MALFORMED`): where the protocol is decided it is
+refused by name on every chain but finney, and on finney while no release
+compiles a v4 block it is ignored, as the v3 release ignores the variable;
+`slicer.protocol_version_for_boundary(..., v4_activation_block=)` returns 4
+from it and `config.protocol_for_chain` gives a miner image 4. The variable is
+a consensus input; the digest records it only when it is set, so every
+neuron without it publishes the digest it published before.
+
+Under protocol 4 the validator's epoch (`neurons/validator.main`) is:
+
+- the menu at the boundary (`MenuNode.at_boundary`), and from it the epoch's
+  tables (`_v4_tables`): entries and prices from the MenuState, categories
+  and targets from the pinned v4 mix; the exploration shares once
+  (`explore_shares_v4`);
+- the scored slice from the plan built once for the v3 pool (`plan_v4`,
+  `_epoch_slice_v4`), at `SLICE_SIZE_V4` (200; the miner's TD runs the same
+  size), never v1-v3's env-overridable `SLICE_SIZE`; v4 runs on the v3 pool
+  and its embeddings, which the mix was built on;
+- each proof checked against `verify.expected_v4` with that plan and those
+  shares (`verify_proof(protocol_version=4)`);
+- the seat: v3's rules on v4's inputs (categories, targets and net value at
+  the menu's prices; odds by `pair_odds_v4` on the menu state, pooled with
+  both weight tables and `coldkey_cap(4)`), on odds from the v4 block, from
+  an empty window and seat;
+- the menu step or its audit (`_v4_menu_epoch`) on **the pool the seat's
+  odds were scored on** (`V2EpochResult.pooled`): the frame detectors' and
+  the implausibility check's exclusions both apply, so the menu's counts and
+  summary never pool a set the odds left out;
+- the reveal with its v4 fields, publication before commitment, weights.
+
+The miner builds its `td_v4.V4Session` from the root's pinned menu
+commitment, the root's bucket and mirrors (`neurons/miner._v4_session`) on the
+v3 pool, and runs every epoch through it, applying the root's join delta at
+each boundary; its proposal is `FUGAL_V4_PROPOSAL` (operational; in a TD,
+pushed at provisioning, the entry on a TD miner's own v4 options above),
+served as a document and committed by hash beside its head. The validator
+root runs the join step after its weights and before writing its reveal;
+followers audit it at the boundary. The gates' category floor is
+`config.PROPOSAL_MIN_CATEGORY_ACCURACY_BP_V4` = 5000.
+
+Enforced by `tests/test_v4_loop.py`, which runs `validator.main` for a root and
+a follower concurrently over nine epochs and the miner's `_run_epoch` on the
+sessions `_v4_session` builds, with stand-ins only for the chain, the
+transport, the public store and the model provider: every node on one menu,
+a proposal filed, measured and joined, the same seat state and weights on
+both validators, the reveals published before their commitments, a failed
+pinned metagraph read retried, an empty audit, a too-good TD left out of
+the menu step's pool where only the implausibility check catches it, and
+every head the published reveals list published by hash.
+
+Not yet: v4 reveals replayed by a rebuild or re-anchor are priced at the
+current menu's prices (`_rebuild_tables`), not each reveal's own menu; the
+window's model axis follows each epoch's menu and its consumers are not yet
+shown to align by entry id across a menu change; the seat rules are v3's
+until the seat-rule package.
+
+### I1 — a v4 epoch's digest covers every v4 constant and pinned file; a v1-v3 epoch's is unchanged (activation package)
+
+Two validators compare `consensus_digest` to explain a divergence. Every
+constant that decides a v4 score, the menu, exploration, the proof schema's
+bounds or verification, and every pinned file v4 reads (the menu seed, the
+mix, the list signers, the shipped signed lists, and any file a later
+package pins), is in it for a v4 epoch: the fingerprint of an epoch at or
+after the v4 block (`environment_fingerprint(protocol_version=4)`, which
+`commit_reveal.reveal_epoch` takes with the epoch's version) carries a `v4`
+section (`fugal_subnet/consensus_v4.section`: the activation block, the
+registered constants in an exact canonical form, the files' sha256), and the
+digest's material gains that section. Below v4 there is no section, and the
+digest is computed from exactly the material it always was: the v3 digest
+and the 19 v1-v3 determinism stages are unchanged.
+
+The registry is held complete, not remembered. Every UPPER_CASE binding of
+every module the scan reads is registered, or named in `NOT_V4` with the
+reason it decides nothing a v4 epoch publishes (a path whose bytes are
+pinned, a local timing or retention bound, a pool-building value the pinned
+manifest checks), or is a name the v3 release (origin/main) had with the
+same statements (`PRE_V4`, held to `fugal_subnet/consensus_v4_pre.json`,
+generated by `scripts/pin_pre_v4_names.py`, and checked against origin/main
+where git has it). A binding is read in every statement form at module level
+(plain, tuple, starred, annotated and augmented assignments; `for`, `with`,
+`except` and `match` targets; walrus; `def`; `global` declarations; also
+under `if`/`try`/`with`), and the constants a class defined in the module
+sets, as `Class.NAME`; a module that writes names the scan cannot read
+(`globals()`, `exec`, `sys.modules[__name__]`) is refused. The modules read
+are the transitive import closure of `neurons/`, the v4-named modules and the
+importers of the v4 core (every import in the file, a string literal naming a
+module included), not a list: a module leaves the scan only by an entry in
+`NOT_SCANNED` with its reason (the hash-pinned graders), and one that imports
+by a computed name only by an entry in `DYNAMIC_IMPORTS`. `NOT_V4` and
+`PRE_V4` need a reason per name, and `CLASS_PINS` pins, per module, the hash
+of the names in each class: moving a name into either class is a deliberate
+edit of that pin, with the reason. Every file under `routing_data/` and
+`signed_lists/` is in `PINNED_FILES` or `V1_V3_DATA`. A constant a later
+package adds, a new module the scan reaches, or a new data file fails
+`consensus_v4.problems` (`check_safety_invariants`,
+`tests/test_consensus_v4.py`) until it is classified. `check_determinism`
+asserts in every child that one differing v4 constant (a menu, a config, a
+seat and a memorisation constant) moves the v4 digest and leaves the v3
+digest as it is, and prints both.
+
+The seat (`seat_v4`, its `config` values) and the memorisation check
+(`memo_v4`, its `config` values) are registered, and the published-set seed
+(`routing_data/published_v4.json`) is a required pinned file. The names v1-v3
+read and the v4 path stopped reading when the seat package removed their
+rules (the v1-v3 seat's parameters, burn-in, the agreement detector, v1's
+copy detection, net value's units, the pending-record bound, the weight cap)
+are in `NOT_V4`
+with that reason; they stay in the v1-v3 digest's scoring block, which a v4
+digest also covers. The attack suites' worlds are tooling and not scanned.
+
+Chosen: the compiled finney v4 block is recorded in the v4 section, not in
+the epoch block, so a release that compiles it changes no v3 epoch's digest.
+A validator that never installed the release is therefore not visible in the
+digest until the first v4 epoch, where its reveal says protocol 3 and its
+digest is the v3 one.
+
+### I1/I3/I6 — the v4 flip: what resets, what carries, and what appears only from the block (activation package)
+
+At the first v4 epoch (the boundary at `v4_activation_block`, read through
+`slicer.protocol_version_for_boundary`, the epoch id from
+`slicer.epoch_id_for_block` as always):
+
+- **Resets.** The comparison window and the seat start empty (the `rules`
+  tag changes to protocol 4, as at v2 and v3; SEAT_MINIMAL_V4.md 2.1 #24):
+  no v3 slice, answer, pair, odds or picks record is read by a v4 epoch. The
+  first v4 epoch publishes a protocol 4 seat state (`v2_state.seat`, marked
+  `"protocol": 4`) with no holder and no history, holding only the heads
+  `seat_v4.observe` saw at that epoch (each with `since` and `seen` the
+  first v4 epoch, no predecessor); no v3 head and no v1-v3 seat field
+  (pending record, ghosts, high-water marks, burn-in) is carried, and no v4
+  reveal carries burn-in. The real-picks records start with the window. The
+  menu is the pinned seed (`menu_state.seed_state`), and the menu step's
+  summaries, exploration counts and token means start from the seed's; no
+  menu is held for any epoch before the block.
+- **Carries.** The copy rule's ownership state (who first committed each
+  hash, and when): a v3 head's owner still owns it. From the block a
+  retired head's record is kept for `STANDING_EPOCHS_V4` epochs, not v1-v3's
+  ghost window, so a v3 head its owner stopped serving at the block lapses
+  that many epochs after it. The reference frame and the v1 evidence records
+  carry as before; no frame or agreement detector feeds a v4 epoch's label
+  pool (`OddsInput.flagged` is empty), whose only exclusion is the
+  plausibility check against R.
+- **Brought across from the seed.** The memorisation check's published set:
+  every validator and TD starts from the release's seed and reads the root's
+  commitments at every boundary after it, folding the v3 reveals they name,
+  so the first v4 epoch draws on, and judges heads by, the set the chain
+  gives at its boundary; every v4 reveal carries `memo_v4` (its view's
+  digest, through `memo_digest` in `v2_state`) from the first v4 epoch on
+  (memo_sync; the memorisation entry below, 6). Before the block a validator
+  reads and publishes nothing of it.
+- **Only from the block.** The four-field commitment
+  (`reveal:<epoch>:<sha256>:<menu hash>`), every v4 reveal field (`menu*`,
+  `odds_v4`, `labels_v4`, `late_odds`, `picks_v4`) and the fingerprint's
+  `v4` section. A v3 epoch's reveal on a release that schedules v4 is the
+  reveal of one that does not, except, off finney, the epoch block's record
+  of `FUGAL_V4_ACTIVATION_BLOCK` (finney's compiled block is recorded only in
+  the v4 section).
+- **A validator with no state after the block** rebuilds from the root's
+  reveals at its first v4 boundary, not at startup: a v4 reveal is priced at
+  its epoch's menu, which is read there (`neurons/validator._rebuild_v2_state`).
+
+Enforced by `tests/test_v4_flip.py` (the shipped loops across the block: a
+root and a follower crossing it, a follower restarted at the block, one
+that misses the first v4 epoch and one that misses the second, a follower
+with no state syncing across it, a control whose release schedules no v4)
+and by `scripts/check_v3_equivalence.py` (a v3 scenario on two trees).
+The published set crosses the block from the seed on every node
+(`test_the_published_set_crosses_the_block_from_the_seed`), and the epochs
+the late followers replay run with the root's memo.
+
+A follower that misses the first v4 epoch agrees with the root again, on its
+whole consensus state and its weights, from the second v4 epoch after it
+(F + 2), as one that misses any later epoch does from two epochs after it:
+its first v4 epoch was pooled on a window without the root's first, and the
+re-anchor replays it on the root's state instead of keeping it ("Under
+protocol v4 a re-anchor replays its own epochs", in the verify-and-resync
+entry). `tests/test_v4_flip.py` holds it with no allowance: the follower
+that missed F agrees from F + 2, the one that missed F + 1 and the one that
+started with no state at F + 2 from F + 3.
+
+**The release gate.** `scripts/check_safety_invariants.py --release-v4` (and
+`--release` once `FINNEY_V4_ACTIVATION_BLOCK` is set) refuses a v4 release
+unless: the block is set, epoch-aligned and after every earlier compiled
+block; a signed lab and host list ships, verifies under the shipped signers,
+is not the draft, and the pinned seed names it; that list (until one
+ships, the draft under review) admits every entry of the pinned seed, so
+the first signed list is adopted at the first step and can never be held
+back for leaving fewer than `MENU_MIN_ENTRIES` (8), which would leave the
+menu naming no list and every proposal refused; every seed entry is within
+the price ceiling; the proposals' category
+floor and the other values a v4 validator refuses to start without are
+pinned, and the published-set seed ships, matches its pin and is observed
+no more than `PUBLISHED_V4_SEED_MAX_AGE_EPOCHS` (150) epochs before the
+activation epoch and through no later than the epoch the first v4 epoch
+reads (`memo_v4.READ_LAG`): the seed is a starting point, which validators
+and TDs bring forward by folding the root's reveals the chain names at each
+boundary after it (item 6 of the memorisation entry), as they do after the
+activation; the newest frozen finney compose is the live
+one, sets every variable the miner's protocol selection reads
+(`config.protocol_for_chain`, walked in config.py) to the compiled value,
+sets nothing the compose checks forbid, and runs the miner on protocol 4 at
+the block when the miner's own selection is executed on its environment;
+every file v4 reads is in the package the image copies; the root's hotkey
+table is one the menu reads can use (integer first epochs from 0, strictly
+increasing, one canonical SS58 hotkey per row) and covers the first v4 epoch
+(`tests/test_release_gate_v4.py`). The published-set seed is parsed with the
+validator's own reader (`memo_v4.check_seed`), the shipped signers file is
+the one `menu_rules.LIST_SIGNERS_SHA256` pins, the block must be an integer,
+and the frozen compose's epoch interval is finney's (4320 s). The plain
+check reports only how many of these are open.
+
+### I1/I3 — v4: one bound (built ahead of v4; nothing reads it before a v4 activation block)
+
+Every v4 seat decision (`docs/decisions/SEAT_MINIMAL_V4.md` 3.1: the odds
+test, the real-picks check, the memorisation check) will be the bound of
+`champion.lower_bound` (`fugal_subnet/seat_bound.py`, re-exported by
+`champion`) on exact integer items: a margin, a minimum, the stratified
+variance, and the pinned rational constants `A_ALPHA` and `LN2_UP`; no random
+stream. Package S1 builds the function; the seat packages wire it in. What
+must stay true:
+
+1. **One formula, exact.** Items are ints in millionths of a point
+   (`config.BOUND_UNITS_PER_POINT_V4`) grouped by category (strings). With
+   n items, S their sum, D = S - margin x n, V the within-category sum of
+   squared deviations (a Fraction) and rho = V n0 / n, the bound passes when
+   n >= n_min, D > 0 and
+   D^2 > (V + rho)(`BOUND_A_ALPHA_V4` + `BOUND_LN2_UP_V4` x
+   bit_length(ceil(1 + n / n0))), evaluated in integers and Fractions. No
+   float, no random stream, no numpy: the verdict cannot depend on a CPU, a
+   library version or the order of items or categories. A window kept as
+   per-category sums (`seat_bound.Stratum`, added and subtracted epoch by
+   epoch) gives exactly the bound of its items.
+2. **Never tighter than the mixture bound.** It is the one-sided
+   normal-mixture confidence sequence at alpha = 1% with the variance
+   estimated from the items, whose logarithms `9211/1000` (>= 2 ln 100) and
+   `6932/10000` x the bit length (>= ln(1 + n / n0)) only widen: whenever it
+   passes, the boundary with the true logarithms passes too. From n = n0
+   (every rule's minimum is its n0) the widening is at most 8% of the log
+   term.
+3. **For a true mean at the margin the chance of ever passing is at most
+   about alpha over any number of epochs**, so it is re-run every epoch with
+   no confirmation phase. A mean exactly at the margin never passes (D = 0),
+   and fewer items than the minimum never pass.
+4. **What is published** is `Bound.lower`, the bound itself rounded down to
+   a unit; the verdict is `Bound.passes`, the inequality above exactly (a
+   margin at or above `lower + 1` never passes; one below `lower` always
+   does once the minimum is met).
+5. **A residual of the plug-in variance**: a category with one item carries
+   no spread. The rules read a handful of categories with minimums of 1,000
+   and 1,500 items; a rule that stratified finely would need a per-stratum
+   minimum (the memorisation check leaves out benchmarks with fewer than 5).
+
+Enforced by `tests/test_bound_v4.py` (the design's inequality exactly; the
+result's types; the same verdict under key and item permutation, from sums
+kept epoch by epoch, and in a second process; the rounded bound against a
+high-precision reference and the float formula within one unit; never
+passing where the 80-digit mixture boundary fails; the constants never below
+their logarithms; a mean at the margin, a count short of the minimum, a
+translation, a raised category, a lower margin or minimum, scaling and
+doubled evidence; zero variance, one label, no items, a trillion labels and
+values past 64 bits, negative gains, and every malformed input refused; and
+3.9's simulations at a modest scale with fixed seeds: no head with no edge
+seated in 300 epochs at sigma 4, 8 and 12 points and 160 to 2,000 labels an
+epoch, nor any of 30 such heads, a head at the margin passing within 300
+epochs at most 1.5% of the time (1.2% of 600 runs; the design measured
+1.0%), and the median epochs to a take within max(1 epoch, 10%) of 3.9's
+speed table, which states no tolerance (50 / 15 / 5 at 370 labels an epoch
+against 51 / 15 / 5, and 20 / 6 / 2 at 1,000 against 19 / 6 / 2)), and the
+`bound_v4` stage of `scripts/check_determinism.py` (adversarial items:
+margins on the bound itself, a mean at the margin, no spread, single-label
+categories, values past 64 bits, negative gains, a count one short, a
+sliding window of sums; every category and item reversed under
+`--perturb`).
+
+Not yet enforced, because the code is in later packages: that the
+memorisation check calls it (S5; the odds test and precedence, S4, call it
+through `seat_bound.bound_from_strata` in `seat_v4.decide`, and the
+real-picks check, S3, through `picks_v4.picks_check`); that `BOUND_A_ALPHA_V4`, `BOUND_LN2_UP_V4` and
+`BOUND_UNITS_PER_POINT_V4` are in the consensus digest (with the other v4
+constants at activation, W11: adding them now would change the digest every
+v3 validator publishes).
+
+### I3/I4 — v4: the labels a head is scored on (package S2; built ahead of v4, nothing reads it before a v4 activation block)
+
+`docs/decisions/SEAT_MINIMAL_V4.md` 3.2; `fugal_subnet/labels_v4.py`. A v4
+comparison of two heads X and Y (Y may be the reference R) reads a pooled
+label only if (1) it was drawn in the last `SEAT_WINDOW_EPOCHS_V4` (48)
+epochs; (2) it was drawn at or after both rows it reads count from: a head's
+rows count from the first epoch whose boundary is at or after its first
+commit (`copy_rule.first_epoch`; the seat package passes an earlier epoch for
+a row a successor inherited, `Side.rows_since`), and a missing row counts
+from the head's commit; (3) no coldkey that voted on it is X's or Y's owner
+(R has no owner and no commit); (4) it is no proposal measurement pair (as
+built, measurement results never enter the pool). What must stay true:
+
+1. **Evidence is a function of the head, not of its serving.** A head's odds
+   are computed for every epoch's pairs from its commit on, whether or not it
+   served: in the epoch it is verified, and, for the window epochs it was not
+   verified in, from its bytes and the stored pairs in the epoch it is next
+   verified (`labels_v4.late_odds`), published in that reveal (`late_odds`).
+   They are the same integers they would have been had it served
+   (`head_odds.head_odds` by entry id equals `pair_odds_v4` on the epoch's
+   menu, whose pairs hold only that menu's entries). A head is given odds
+   whether or not it answered the scored questions.
+2. **No head is judged on labels its operator supplied.** Each pair carries
+   its voting coldkeys (`explore_pool.pair_voters`, the same filtering as
+   `pool_pairs`), stored with the pairs and published (`labels_v4` in the
+   reveal); a label any of them voted on is read for neither head.
+3. **The sums are exact.** `labels_v4.gain_items` gives per category the
+   label's weighted Brier loss of Y minus X's (explore_weights.apply), ints in
+   millionths of a Brier point (the bound's unit); `gain_strata` gives the
+   `seat_bound.Stratum` sums `seat_bound.bound_from_strata` reads. An epoch
+   for which a node holds no odds of a head yet is read once it does.
+   `gain_strata_many` gives the same sums for many pairs at once (the seat's
+   comparisons, the published standing): each head's packed losses are
+   computed once per epoch, a pair's items are the high words of one int64
+   difference (the weighted rounding is exact: the proof is in `labels_v4`),
+   squares are summed in int64 chunks sized by a bound on the items and
+   carried in two limbs, and an epoch whose values leave the packed range
+   is summed the per-pair way. The bound itself is evaluated in Python ints
+   (one quotient, no per-term Fractions). Enforced by
+   `tests/test_seat_v4_batched.py`: the sums against `gain_strata`, the
+   bound against the Fraction one, and every seat decision (its published
+   evidence byte for byte) against the previous `decide`, kept in the test.
+4. **What is stored is what is published.** Per v4 epoch the window holds
+   `labels_v4.LabelPairs` (the pairs, their voters, the odds a missing row is
+   scored at) and per head one int16 per pair; the window file keeps both,
+   including heads with no scored answers (`v2_epoch.save_window`; a v4
+   window in its own layout, `V4_WINDOW_FORMAT`: 24 concatenated arrays with
+   an index and one string table, uncompressed, every member's dtype and
+   declared size checked against the archive before anything is read and
+   every index against what it addresses, so a damaged or hostile file is
+   refused before it allocates; a v1-v3 window is written and read exactly as
+   before; `tests/test_v4_window_file.py`), the reveal
+   publishes both (`labels_v4`, `head_odds`, `late_odds`, with
+   `labels_digest` in `v2_state`), and `v2_rebuild` reads them back, refusing
+   late odds for an epoch the window already holds odds of the head for.
+5. **R is the earliest head of all**: `labels_v4.reference` (each entry's rate
+   per benchmark over the window's pooled labels, shrunk to its overall rate,
+   leave one epoch out; `odds_score.reference`), `labels_v4.REFERENCE` as a
+   side with no owner and no commit.
+
+Enforced by `tests/test_v4_labels.py` (each condition alone; the exact items
+and their sums; odds for missed epochs equal to those served and published
+then, from the commit and never before, for a head with no scored answers
+too; the window file and the rebuild against the live window; a reveal
+repeating an epoch's odds refused) and the `seat_v4` stage of
+`scripts/check_determinism.py` (twenty epochs of the live epoch with misses
+and late odds, an entry joining with heads with and without its row, one
+whose allowance ends, one retired in its own, a head without scored answers;
+the labels, every head's odds, the late odds and every pair's strata; every
+input collection reversed under `--perturb`).
+
+Not built here: R reading the proposal measurement labels and leaving out
+pairs of an entry's older revisions (4.5; the window holds neither). The seat,
+succession (a successor's inherited rows count from its predecessor's,
+`Side.rows_since`) and the publication of each comparison's bound are package
+S4's (the entry "I3 — v4: the seat in three rules").
+
+### I3 — v4: new entries are usable at once (REPLACED for v4 by "the menu lifecycle", FAST_CROWN_V4.md 18)
+
+This entry described a 20-epoch allowance in which a head without a new
+entry's row was scored at the entry's measured rate. Section 18 replaces it:
+an entry joins provisional, its labels drawn while it is provisional are
+scored for no head (`labels_v4.PROVISIONAL_LABEL`, read by no comparison),
+and from the epoch the gates make it full a head without its row is scored
+at odds 0, "never answers correctly", 100 y^2 a label (`labels_v4._scored`).
+What holds instead is the entry "I1/I3/I4/I6 — v4: the menu lifecycle" below.
+The label's own epoch still decides, through that epoch's menu, and the value
+is stored with the pair (`LabelPairs.missing`); a row for an entry not on
+the epoch's menu is still never read.
+
+### I2/I3/I4/I5 — v4: the scored questions are optional, all or none; rule B prices real picks at the epoch's table; the failure bound is absolute (package S3; built ahead of v4, nothing reaches it before a v4 activation block)
+
+(Items 1, 2 and rule B's reading here are superseded by the fast crown's
+one-epoch challenge: the entry "v4: the fast crown" below.)
+
+Protocol v4 (`docs/decisions/SEAT_MINIMAL_V4.md` 3.4, 3.7, 5.4, 8) makes the
+200 scored questions optional, checks a head about to take the seat on them
+(rule B, the real-picks check), and replaces v3's comparison of exploration
+with scored failures, which cannot be made without scored answers, by an
+absolute bound. Package S3 builds the proof field, the TD's choice, the
+verification, the bound, rule B as pure functions and their publication
+(`fugal_subnet/picks_v4.py`); the seat package (S4) reads them. Nothing here
+decides the seat. What must stay true:
+
+1. **All of the slice or none, and the proof says which** (I3;
+   `BenchmarkProof.scored`, `verify._v4_scored_check`). Every v4 proof
+   carries its exploration (and any measurement due). Its `scored` field,
+   in `content_hash` and so attested, says whether the TD answered the
+   epoch's scored questions: true, and the scored results are exactly the
+   slice, each question once; false, and there is no scored result at all.
+   A v4 proof without the field, one with part of the slice whatever it
+   says, and one that says false and carries scored results (another
+   epoch's answers, say) are refused. The TD draws the slice either way
+   (exploration and measurement are drawn outside it; its hash is in the
+   proof). v1-v3 proofs never read the field: its key on one is neither
+   hashed nor refused, and their bytes and hashes are pinned
+   (`tests/test_proof_v4_fields.py`).
+2. **The miner chooses, and the holder answers every epoch.** `--v4-scored`
+   / `FUGAL_V4_SCORED` (operational; `td_v4.ScoredPolicy`): "auto", the
+   default, answers only while the newest root reveal verified at the
+   epoch's boundary names this miner's head as the seat holder
+   (`td_v4.seat_holder_from_reveal`: the reveal's `champion.champion`,
+   its bytes checked against the root's committed sha256), keeping its last
+   answer when the read fails; "on" answers every epoch (a challenger, from
+   about five epochs before it expects to beat the holder on odds); "off"
+   never (an odds-only miner). A head that is not the holder is off by
+   default.
+3. **The failure bound is absolute, and an outage waives it** (I4;
+   `picks_v4.failure_refusals`, `validator._v4_failure_bound`). A v4 proof
+   with more than `FAIL_MAX_BP_V4` (34%) of its exploration calls failed is
+   not counted (removed from the epoch's verified proofs before the pool,
+   the cells, the menu step and the seat; published in `picks_v4.
+   failure_refused`), and an epoch with more than 34% of a head's scored
+   calls failed is not an answered epoch for it (`picks_v4.answered`), both
+   except in an outage epoch. The outage is `menu_inputs.outage`, the menu
+   step's health rule (the median coldkey failed more than
+   `RETIRE_OUTAGE_RATE_BP`, 30%, of all its exploration calls), taken over
+   the same verified proofs with the chain's coldkeys, so one operator's
+   hotkeys are one voice in it. The v1-v3 relative check is not made on a
+   v4 proof.
+4. **Rule B, exactly** (I1, I3; `picks_v4.picks_check`). For each v4 epoch
+   the validator records every serving head that answered with its value
+   on each scored question: 100 x (g - t / V) points as an integer in
+   millionths of a point, rounded half to even once (`call_value`), where g
+   is the exact shared cell grade (`picks_v4.cell_grades`: the coldkey
+   median of Fractions), t the epoch's pick cost of the routed entry in the
+   question's category (`menu_state.pick_cost` on that epoch's MenuState,
+   never the call's own tokens or the head's token means) and
+   V = 1 / `routing_protocol.BENCHMARK_LAMBDA`; a failed call is 0. NV_i is
+   the head's value minus the bar's, every question weighted 1, so
+   identical heads give exactly 0 and the sign flips with the pair. The
+   items, stratified by category, over the epochs of the head's answered
+   run that the bar also answered, go to `seat_bound.lower_bound` with
+   margin -`PICKS_MARGIN_POINTS_V4` (1.5 points), `PICKS_MIN_QUESTIONS_V4`
+   (1,000) and n0 the same; with no bar (an open seat) the check is that
+   the run holds 1,000 questions (`open_seat_check` compares with the last
+   holder when 1,000 questions are paired with it). An epoch is priced when
+   it is scored and its record is kept: a pick-cost refresh moves the price
+   of later epochs only.
+5. **A missed epoch restarts the run.** The answered run is the recorded
+   epochs in which the head answered, back from the newest to the first it
+   missed (`answered_run`): an exploration-only proof, a refused or absent
+   proof, or too many failed scored calls is a miss. An epoch with no
+   verified proof at all is not recorded and breaks nobody's run (as v3's
+   `Window.current_run`). A holder's missed epoch is a fact the seat
+   package reads (`answered_in`, and `answered` in the published evidence);
+   this package does not act on it.
+6. **The same cells.** The cells rule B grades with are those the pick-cost
+   table's inputs count (`menu_inputs.graded_cells`): a scored (question,
+   entry) some verified proof answered without failing, one vote per
+   coldkey, over the same verified proofs (after the failure bound).
+7. **Published and rebuilt** (I7). The window keeps each epoch's record
+   (`Window.picks`, in the window file only when present); the reveal's
+   `picks_v4` field carries the outage flag, the proofs not counted, each
+   answered head's values (int64, base64) and every serving head's evidence
+   (whether it answered, its run's first epoch and length, its questions,
+   the bar, the paired epochs and questions, `passes` and the bound's
+   published `lower`), and `v2_state.picks_digest` hashes it. A rebuild
+   reads the records back from the reveals (`v2_rebuild.picks_from_reveal`),
+   and reads an exploration-only head's empty routing row in a v4 reveal as
+   no answers (in a v1-v3 reveal it is still refused). v1-v3 windows and
+   reveals carry nothing new.
+
+**Spend (I5).** An odds-only miner's bill is its exploration (the entry
+"v4 exploration measures every entry": at most $0.55 expected for the
+cost-aware part and $1.10 for coverage) plus its VM; answering the scored
+questions adds about $4.65 an epoch at the v4 mix (SEAT_MINIMAL_V4.md 5.1),
+only in the epochs the miner chooses or holds the seat.
+
+Enforced by `tests/test_scored_optional_v4.py` (the field, its hash and
+strict read; v1-v3 proofs unread; full and exploration-only proofs verify;
+partial, unsaid and mismatched ones refused; the TD's exploration-only run
+making no scored call; the miner's modes and its holder read),
+`tests/test_picks_v4.py` (the constants; V from `BENCHMARK_LAMBDA` alone;
+the arithmetic on a hand-worked case; identical heads; failed calls; the
+exact cells equal the shared grades and the pick-cost table's cells; the
+run, its restart, the open seat; each epoch at its own table across a
+refresh; the failure bound, the outage, one operator's hotkeys; the
+published form, the window file and the rebuild; run_v2_epoch end to end;
+and the design's pass rates for routers one point better, equal and one
+point worse reproduced at 1,000 seeded runs within five percentage
+points), `tests/test_picks_v4_attacks.py` with the five picks cases of
+`run_miner_attacks.py` (a partial scored set, foreign scored results on an
+exploration-only proof, a holder that stops answering, answering only the
+epochs that suit, junk exploration past the bound), each broken once its
+rule is taken out, `tests/test_v4_loop.py` (a holder answering every epoch,
+a miner switching on mid-run and an odds-only miner through both
+validators' loops, every proof verified, the evidence identical on both
+and rebuilt from the root's reveals), and the `picks_v4` stage of
+`scripts/check_determinism.py`.
+
+The seat step (S4, the entry "I3 — v4: the seat in three rules") reads
+`picks_check`, `answered_run` and `answered_in`; the `picks_v4` evidence is
+still published against the holder going into the epoch, and the seat's
+own rule B verdict, against the bar it decides, is in `seat_v4`. Not yet
+enforced, because the code is in another package: the S3 constants in the
+consensus digest (W11, at activation, with the other v4 constants: adding
+them now would change the digest every v3 validator publishes). Odds for
+heads that did not answer the scored questions are S2's (the labels entry
+above): every verified head has odds every epoch, an odds-only miner
+included, and has no picks record.
+
+### I3/I4 — v4: the memorisation check, and the unpublished reserve it reads (package S5; built ahead of v4, nothing reads it before a v4 activation block)
+
+`docs/decisions/SEAT_MINIMAL_V4.md` 6; `fugal_subnet/memo_v4.py`. A head is
+small on purpose; this is the second line against one whose skill comes from
+outcomes already published. What must stay true:
+
+1. **The published set is consensus state** (I1, I7). Per pool question, the
+   first epoch whose reveal published an outcome on it (`memo_v4.Published`;
+   `published_ids`: a scored question, any exploration answer, a pooled
+   label). It is seeded at the activation from the pinned
+   `routing_data/published_v4.json` (reviewed copy `data/published_v4.json`,
+   sha256 pinned in `scripts/check_safety_invariants.py`; built by
+   `scripts/build_published_v4.py` from the named reveals e00026189..e00026509
+   with each reveal's sha256 in `data/observations/
+   published_v4_e00026189-e00026509.json`, and `build --check` rebuilds it
+   byte for byte), then brought forward by the one rule of item 6: the
+   root's reveals, each folded at the epoch the chain names it, on every
+   node and TD alike (`memo_sync.ChainSet`; never a node's own reveals).
+   Epochs fold in order; a retry of a folded epoch changes nothing and one
+   that would is refused. An epoch reads the set as of E - 2
+   (`Published.view`), whatever a node has folded since, and that view's
+   digest is in the epoch's reveal (`memo_v4.published_digest`) and, through
+   `memo_digest`, in `v2_state`, the consensus view: a node with another
+   published set differs there in the epoch it diverges.
+2. **The reserve is spent by one draw, rationed for the whole field.** Epoch E
+   spends F = ceil(R / `FRESH_RESERVE_EPOCHS_V4`) (1,200) of the R questions
+   not published through E - 2, drawn by the epoch nonce alone on the pinned
+   mix over the categories that still have a reserve
+   (`memo_v4.fresh_questions`), and every hotkey's private set holds all of
+   them. The number of hotkeys never changes F: a reserve of 1,200 or more
+   lasts 60 days with no new questions. Every other draw of the epoch reads
+   only questions published through E - 2 (`epoch_plan.plan_v4` with the
+   published set, whose `pool_index` is a `memo_v4.ReserveIndex`: the scored
+   slice, the rest of each private set, proposal measurement), and a
+   category with fewer published questions than one draw can take
+   (`PUBLISHED_MIN_PER_CATEGORY`, 463) is left out of them, so no draw comes
+   back short. `plan_v4` is still the one constructor, and a plan built with
+   the published set refuses another pool.
+3. **Weights stay exact** (I1, I3). The fresh questions are members of the
+   private set like any other: it keeps its 112 questions, they are split
+   68 / 44 by the miner's keyed rank of every question, and each part's
+   entries are its shares' draw (`explore_weights.assign_by_share`), so a
+   private pair's weight is 1 / (M pi_private) exactly, fresh or not. No miner
+   chooses which of its questions are fresh: the verifier's expectation
+   (`verify.expected_v4` on the epoch's plan) holds the epoch's fresh set, and
+   a proof answering another set fails the exploration check.
+4. **The check, exactly** (`memo_v4.memo_evidence`). A head's labels against R
+   (`labels_v4.eligible`) split into seen (the question was first published
+   before the epoch its row counts from, `Side.row_since`) and unseen. Within
+   each benchmark with at least `MEMO_MIN_QUESTIONS_V4` (5) questions in both
+   parts, the gap is mean skill on seen minus unseen labels, weighted across
+   benchmarks by 1 / (1/n_seen + 1/n_unseen). The bound's items are the
+   questions (every operator answers every fresh question, so a question's
+   labels move together), scaled by a common integer so that
+   `seat_bound.bound_from_strata` evaluates the bound's inequality on the gap
+   itself, in integers and Fractions. A head is refused when, with
+   `MEMO_MIN_LABELS_V4` (500) labels in each part, the bound passes at
+   `MEMO_MARGIN_POINTS_V4` (1 point). Comparing within benchmark is
+   load-bearing: on the published v3 epochs two heads would be refused if the
+   benchmarks were pooled, none is within them.
+5. **The seat reads the verdict it publishes.** When `run_v2_epoch` is
+   handed the epoch's memo (`memo_v4.EpochMemo`), every head the v4 seat
+   keeps after `seat_v4.observe` (the holder, the history and every
+   standing head, serving this epoch or not) is judged once, on the window
+   holding the epoch, through the seat's own view of it (`seat_v4.side_of`:
+   a successor's inherited rows count from its predecessor's commit, so
+   succession does not restart the split) (`memo_v4.verdicts`). The refused
+   heads are `seat_v4.decide`'s `memo_refused`; the same evidence is the
+   reveal's `memo_v4` (`memo_for_reveal`, every head the seat keeps), with
+   `memo_digest` and `seat_digest` (whose evidence carries each head's
+   `refused` flag) in `v2_state`. Without a memo no head is refused and no
+   memorisation field is written, the epoch exactly as before.
+
+Enforced by `tests/test_memo_v4.py` (the fold, its retry and its refusals; the
+view and its digest; the state document read strictly; what a reveal
+publishes; a rebuild equal to the live fold; the seed's rebuild from the
+committed observations, its counts on the pinned pool, and its reading for
+a pool; F and the 60-day reserve whatever the hotkeys; the fresh questions
+unpublished, the same on every node and for every hotkey, in every private
+set; the scored slice, the rest of the private set and measurement
+published only; the parts' sizes and entry draws unchanged; a fresh
+question in the cost-aware part at 68/112; a category without a reserve and
+one with too few published questions; the gap and the verdict against the
+formula in Fractions; benchmarks left out, the minimum, questions as items,
+eligibility, seen by row; and on the 44 published v3 epochs, from
+`data/observations/memo_v4_labels_e00026466-e00026509.json`, no head refused
+and two refused only when pooled), `tests/test_memo_v4_attacks.py` (a planted
+memoriser refused once 500 unseen labels are in while an honest head of the
+same overall skill is not; an honest head skilled on one benchmark not
+refused; a proof that answers other questions than the fresh ones refused;
+a validator with a different published set visible in `v2_state`; each
+shown to get through with its rule taken out), the `memo_v4` stage of
+`scripts/check_determinism.py`, and `check_safety_invariants
+.check_published_v4_pinned`.
+
+With the optional scored questions and rule B (the S3 entry above):
+`tests/test_memo_v4_with_picks.py` (the TD's harness on an epoch's plan
+with the published set makes a proof with the scored questions on and one
+with them off, both verified against one expectation, whose exploration,
+the fresh questions included, is each TD's own draw; the absolute failure
+bound counts a failed fresh question like any other exploration call; a
+window with labels, odds-only heads and picks records reads back with the
+same memorisation evidence, and a v1-v3 window file holds nothing of v4;
+one epoch given both `picks` and `memo` publishes both blocks and digests,
+each input adding only its own fields), and `tests/test_v4_loop.py` (the
+loop passes the memo every v4 epoch: the root and the follower publish the
+same `memo_v4` and `memo_digest`, the published set each holds holding every
+question a proof carried an outcome on). The seat's reading of the verdict (5): `tests/test_v4_seat_memo.py`
+(v4 epochs through `run_v2_epoch` on a constructed window,
+`fugal_subnet/attacks/memo_seat_world.py`: a refused holder is not the bar,
+the seat opens to R and it is not paid, and the same epoch without the memo
+holds it; a refused head cannot fill the seat or stand in rule C's order; a
+holder not serving is still judged, and loses the seat to an honest
+qualifier; a successor is refused from its inherited rows, where its own
+commit would give it almost no labels; a follower handed every input in
+reverse, its window and seat read back from file, publishes the same
+`memo_v4`, `seat_v4`, `v2_state` and weights), the third scenario of
+`tests/test_v4_seat_loop.py` (both validators' real loops, nothing handed to
+them: the seed publishes the half of the pool a sharp head is confident on,
+the fresh draws spend the other half, and the holder is refused once its
+unseen labels are in, the seat open and unpaid on both, byte for byte),
+`tests/test_v4_reveal_budget.py` (`memo_v4` at its largest shape inside the
+reveal read bound), and the third part of the `seat_v4` stage of
+`scripts/check_determinism.py` (those epochs with a refused head, inputs
+reversed under `--perturb`).
+
+6. **The set advances only by root reveals the chain names, the same on every
+   node, and never waits on the root** (`fugal_subnet/memo_sync.py`,
+   `ChainSet`; package W16). At each epoch boundary b every node (the root,
+   every other validator, every miner's TD) reads the root's reveal
+   commitment pinned at b's block (the read the menu makes); when it names a
+   reveal newer than every one folded, that reveal's questions (its bytes
+   hashing to the committed sha256) are folded as first published at
+   b - 2, else nothing is. The set as of epoch E is the state after E's
+   boundary: in steady state the root's reveals through E - 2, each at its
+   own epoch. One view per epoch: E's plan (`epoch_plan.plan_v4(pool,
+   published=<the view>, epoch=E)`, on the one pool object every draw of
+   the epoch reads) and E's verdicts (`memo_v4.epoch_memo` on the plan's
+   reserve index and the same view) read the same set, and the reveal names
+   it (`memo_v4.published_digest`). Consequences:
+   - *A root that is down or late moves nothing*: the set stays as it was and
+     every TD proves, and every validator checks, on it. Its backlog is
+     folded at the first boundary whose pinned read names it, on every node
+     at once. A reveal never named at a boundary (published in a batch whose
+     newest alone was committed, or behind a failed commitment) is never
+     folded; a commitment naming a reveal older than one folded is ignored.
+   - *Kept and restarted*: the state (set, newest reveal folded, last
+     boundary read; `memo_sync.HELD_FORMAT`) is beside a validator's state
+     file (`<state>.published_v4.json`, written atomically before it) and in
+     a TD's state directory; a restart reads only the boundaries since. A
+     node with no state anchors on the snapshot the reveal its current read
+     names (then reads the boundaries after it), else starts from the seed
+     and reads every boundary after it (across the block: the root's v3
+     reveals). At most `MAX_FOLD_EPOCHS` boundaries are read in one go.
+   - *The root publishes the snapshot* (`memo_sync.SnapshotPublisher`):
+     before committing a reveal whose `memo_v4` names a view, it puts that
+     view's canonical bytes (`memo_v4.snapshot_bytes`, whose sha256 is the
+     named digest) in its store at `<netuid>/published/<digest>.json`,
+     create-only, and reads them back. A reader takes bytes only when they
+     hash to the digest, are at most `memo_v4.MAX_SNAPSHOT_BYTES` (8 MiB; the
+     whole pinned pool published is about 1.5 MB), are the canonical
+     document, name only this pool's questions and are the view named
+     (`memo_v4.published_from_snapshot`).
+   - *Every node checks the root*: a reveal it folds whose named view differs
+     from its own state is an ALARM (a validator goes on with the chain's
+     set; a TD makes no proof on it). The only epochs a node cannot check
+     are those whose named reveal it cannot obtain (no bytes from the root's
+     store or a mirror), as a menu whose bytes cannot be had: the anomaly
+     `published_set_unavailable`. A failed pinned read fails the epoch,
+     which is retried, as for the menu.
+
+Enforced (6) by `tests/test_memo_sync.py` (the snapshot's bytes and their
+strict reading; the snapshot published before the commitment; the rule:
+steady state, the root down and its backlog, a stray older commitment, a
+named reveal that cannot be had, a failed read, the state kept across a
+restart, a snapshot anchor and tampered snapshot bytes, an ALARM and a TD
+stopping on a contradicted named view, the TD's plan per epoch), the loops:
+`tests/test_v4_loop.py` (every reveal carries `memo_v4` and the same
+`memo_digest` on root and follower, the named digest the chain's view, the
+epoch's fresh questions in every miner's exploration, the snapshot at its
+digest, no ALARM), `tests/test_v4_published_loop.py` (the root down for one,
+three and eight epochs: every TD proves and every follower checks every
+proof every epoch, the backlog folded when named, a failed commitment and a
+stray older one, a follower restarted during the outage and one restarted
+without its set, a TD restarted with nothing kept, a `--once` retry; every
+node's set the chain's and every reveal's `memo_v4` the same), the root's
+outage in `scripts/rehearsal_v4.py` (proofs and checks through it),
+`tests/test_v4_flip.py` (the set crosses the block from the seed), the third
+scenario of `tests/test_v4_seat_loop.py` (a holder that memorises is refused
+and the seat opens, nothing handed to the loops), the `published_v4` stage
+of `scripts/check_determinism.py`, and the published-set cases of
+`fugal_subnet/attacks/run_miner_attacks.py` (snapshot bytes past the cap,
+another set's bytes, malformed, foreign ids, a question twice, a reveal
+naming a set that leaves out published questions; each shown to get through
+with its rule taken out in `tests/test_memo_sync.py`).
+
+Still open: one view per epoch means a question first published in the
+reveal of E - 1 counts as unpublished in E's verdicts for a head whose row
+counts from E (its labels on it are unseen until the next epoch's view);
+the window is judged again every epoch. While the root is down, questions
+the followers' own reveals publish are not in the set (only the root's
+committed reveals count), and a reveal never named at a boundary is never
+folded: such questions stay in the reserve and may be drawn as fresh again
+(at most F a epoch, about 14 at the pinned pool). A node with no state that
+anchors exactly while the root's commitments are out of order (an older
+reveal committed after a newer one) takes the newest reveal folded from the
+commitment at the anchor's boundary; the root's own publisher never commits
+out of order. The label, odds and seat digests of a validator after a missed
+epoch are verify-and-resync's to bring back ("the v4 flip" above); its
+published set agrees from its first v4 epoch. The v4 constants are in the
+consensus digest (activation package). Residual: the check sees only
+outcomes the subnet published; a miner who pays to label reserve questions
+itself is not seen (about $560 for a 7,000-question reserve on a dozen
+entries).
+
+### I1/I3/I4/I6 — v4: the menu lifecycle: proposals filed on chain join first, provisional, and the field decides them (FAST_CROWN_V4.md 18; built ahead of v4, nothing reaches it before a v4 activation block)
+
+`fugal_subnet/chain_proposals.py` (the documents, the commitment fields,
+the admission and the delta), `fugal_subnet/join_step.py` (the root's step
+and the followers' audit), `menu_state` (provisional records, the gates),
+`menu_publish` and `td_v4` (every reader applying the delta). Epoch by
+epoch, for a proposal filed in epoch k:
+
+- **k: filed.** The miner serves a proposal document (canonical JSON, at
+  most `PROPOSAL_MAX_BYTES`: its hotkey, model, reasoning, at most two
+  pinned hosts, one quantization; no price, no limit) and commits
+  `proposal:<sha256>` as its commitment's second field, beside its head in
+  the first, one transaction (`set_commitment_fields`). The first field is
+  the one every reader before v4 reads (`decode_metadata` reads field 0
+  only), so a pre-v4 node reads every commitment as before.
+- **k, block B: the root's pinned read.** B is `join_margin` blocks before
+  the boundary of k + 1 (min(30, max(2, blocks per epoch / 5)); on finney
+  30 blocks, 360 s, against a budget of 12 s of reads, 60 s of fetches,
+  90 s of publication, 48 s for the commit and a 5-block slack:
+  `commit_slack`). The root reads every commitment at B, the hotkeys its
+  reveal of k - 1 lists as verified (`served_v4`: a proposer must have
+  served the epoch before; of the well-formed proposals of hotkeys
+  registered at B that served it, the `MAX_CONSIDERED` lowest hotkeys are
+  considered, the cut made after that filter, `chain_proposals.candidates`),
+  fetches each document by hash from the
+  proposer's axon and each model's public listing, and admits in the order
+  (the documents all at once, in one event loop with its own HTTP session,
+  `join_step.ProposalFetcher`: each within `JOIN_FETCH_TIMEOUT_S` and
+  `RESPONSE_MAX_BYTES`, no redirect followed, the whole within
+  `JOIN_FETCH_BUDGET_S`; a box that hangs, refuses or sends too much costs
+  only its own proposal, `unfetched`, which waits on chain;
+  tests/test_v4_join_fetch.py on loopback servers),
+  HMAC(block B's hash, proposal hash), which nobody chooses: one proposal
+  per coldkey an epoch; cooldowns (id and coldkey); at most one join below
+  ten serving hotkeys, two from ten; the cap and `MENU_MAX_PROVISIONAL`;
+  an effort only on hosts whose listing takes `reasoning_effort`; a listed
+  price within the ceiling (`menu_rules.MAX_PRICE_IN_PICO`,
+  `MAX_PRICE_OUT_PICO`: $25 / $100 per million tokens, against $8 / $40
+  for the pinned seed's dearest entries; `refused:price_above_ceiling`,
+  re-run by every node's and TD's `check_delta`); the
+  compiled rules under the list the base menu names. Each verdict is in the
+  delta (`joined`, `not_served`, `unfetched`, `unread`, `malformed`,
+  `coldkey_once`, `no_place`, `refused:<code>`), with the documents and the
+  listing reads it used.
+- **k, before the boundary: published, then committed.** The delta is put
+  in the store by its hash and read back, then the root commits
+  `join:<epoch id>:<sha256>` beside its reveal pointer (`RootFields`: each
+  write carries the newest of both). A root that is late, absent or
+  refused commits nothing for k + 1: every node applies an empty delta and
+  the proposals stay on chain for the next boundary.
+- **k + 1: provisional.** Every node and TD reads the root's join pointer
+  at the boundary and applies the delta to the base menu
+  (`chain_proposals.check_delta`: bytes within `DELTA_MAX_BYTES`, at most
+  `MAX_SERVING` (65,536) serving hotkeys stated, canonical,
+  for this base menu and this block, and the admission re-run on the
+  delta's own contents gives exactly the delta). A refused delta is an
+  empty one. The new entry is provisional (`scored_from` =
+  `PROVISIONAL`, a record in `MenuState.provisional`), priced from the
+  root's listing read, with the menu's median token means; every miner's
+  coverage is aimed first at it (`explore_weights.coverage_first`); its
+  calls run on the TD's own deadline and budget and are left out of the
+  failure bound, the outage rule and health; its labels score no head. A
+  TD does not call it when its own listing read prices it above the menu
+  price by more than the price step or above the ceiling
+  (`td_v4.overpriced`), and its exploration calls stop at
+  `harness.PROVISIONAL_SPEND_CAP_USD` ($40) a box an epoch of REALISED
+  cost, all provisional entries together (each attempt held back at its
+  worst case first: `PROXY_MAX_ATTEMPTS` x (answer limit x output price +
+  prompt bound x input price), at the dearer of menu and listing price).
+  Followers recompute the admission from their own chain read and fetches
+  and publish the differences (`join_audit`; ALARM like the menu audit).
+- **k + 2: still provisional;** the step scoring k + 1 decides it.
+- **k + 3: full or gone.** The gates read the field's labels from its join
+  through the scored epoch: the median coldkey's answered share (each failed
+  call retried once) at least `min_answered_bp`; its measured call costs
+  something; some category at the accuracy floor; no full entry clearly
+  better at no greater cost; no full sibling of the same model within
+  `SIBLING_MARGIN_PPM` (2 points) of its accuracy unless more than
+  `SIBLING_CHEAPER_BP` (20%) cheaper. Passing, it is full from the new
+  epoch: its measured rate and (from 30 pairs) token means from its labels,
+  its price from the epoch's votes, a missing row then scored at odds 0,
+  and the 20-epoch displacement shield runs. A missing row counts from the
+  head's LINE (`labels_v4.Side.line_since`: the earliest epoch any of its
+  rows counts from, which is its own commit, or for a successor its line's
+  origin commit while an origin row is on the menu), so re-committing a
+  successor with the same rows does not restart it; a row a head adds
+  counts from its commit (`Side.added`: the line's earlier epochs are
+  missing), and a changed row or a head under another coldkey inherits
+  nothing (`tests/test_v4_missing_row_line.py`). Every node derives the line
+  from the published seat state (`since`, `rows_since`). Failing, it is retired with
+  its gate's record and its proposer's coldkey waits the cooldown.
+
+Removed with this: the proposer's measurement, its ledger and spending
+ceiling, make-up epochs, the pending list and the queue, the proof's
+`proposal` and `measure_for` fields. Where each concern lives now: a
+cherry-picked or partial measurement (the field's draw, exploration
+verified exactly; a proof with a measurement is refused as read); a
+proposer's unbounded spend (no proposer spends; a dead new host costs a TD
+at most `PROVISIONAL_BUDGET_S`); one coldkey filling the pipeline (one
+admission per coldkey an epoch, the join limit, the provisional cap);
+re-filing at once (id and coldkey cooldowns); a filing off the list (the
+admission under the list in force); a root that lies about joins (every
+node re-runs the admission on the delta; followers audit the chain read).
+
+Enforced by `tests/test_v4_chain_proposals.py`, `tests/test_v4_join_loop.py`
+and `tests/test_v4_loop.py` (through the shipped loops),
+`tests/test_menu_entry_listing.py` (efforts, siblings, first-party marks
+and tiers against the recorded listing), `tests/test_reveal_read_limit.py`
+(one reveal size limit for every reader), the root-delta and proposal cases
+of `run_miner_attacks.py`, the `menu_derivation` and `provisional_gates`
+stages of `scripts/check_determinism.py`, and `scripts/rehearsal_v4.py`
+(filed at F+1, provisional at F+2, full from F+4).
+
+### I3 — v4: the seat in three rules (package S4; built ahead of v4, nothing reaches it before a v4 activation block)
+
+`docs/decisions/SEAT_MINIMAL_V4.md` 3.3 to 3.8, 4.3, 4.4;
+`fugal_subnet/seat_v4.py`, called by `run_v2_epoch` for a v4 epoch. One
+pure step an epoch, `seat_v4.seat_step(prev, epoch=, window=, serving=, rows=,
+copy_state=, menu_ids=, blocks_per_epoch=, floor_block=, salt=,
+memo_refused=, allow_take=)`: `observe` (the epoch's heads: seen, new, or a
+successor), then `decide`. What must stay true:
+
+1. **The bar.** The holder is the bar when it stands (it answered the
+   scored questions, at most 34% failed, in this epoch or one of the
+   `STANDING_EPOCHS_V4` - 1 = 2 before it), R does not beat it (rule A) and
+   the memorisation verdict does not refuse it; otherwise the bar is R and
+   the seat is open.
+2. **Rule A, the odds test.** X beats Y when `seat_bound` passes on X's Brier
+   gain over Y on their labels (the entry "v4: the labels a head is scored
+   on"), margin `ODDS_MARGIN_POINTS_V4` (0.1 Brier points),
+   `ODDS_MIN_PAIRS_V4` (1,500) labels and n0 the same.
+3. **Contenders.** A head other than the holder is a contender when it
+   stands (verified in this epoch or one of the two before it, itself or a
+   predecessor it succeeded), answered the scored questions in one of those
+   epochs, is not refused, beats the bar (A), and is not shown to route
+   worse than the holder (the bound of the holder's net value over it, margin
+   +1.5 points, on its answered run, does not pass). R is the earliest
+   contender of all. A head that never answers the scored questions bars no
+   one.
+4. **Qualifiers and rule C.** A qualifier is a contender that answered the
+   scored questions this epoch, passes rule B against the holder (or, with
+   the seat open, against the last holder if 1,000 of its questions are
+   paired with it, else the count of 1,000 alone), and beats (A) every
+   contender earlier than it, R first (`seat_v4.must_beat`). Precedence is the
+   first commit of the head or of its earliest predecessor; commits at or
+   before the v4 activation block tie at it and are ordered by the digest
+   salted with its block hash (`copy_rule.seniority`); then the head's hash.
+5. **The seat.** If there are qualifiers the one committed last takes the
+   seat; it is unique (every other qualifier is a contender earlier than it,
+   so it beat each of them), and the holder it replaces goes to the history.
+   Otherwise the holder keeps the seat, open or not: a seat is never emptied
+   without a replacement. At the v4 activation the seat is empty, and the
+   miner share burns until the first qualifier (about five epochs: 1,500
+   labels over R and a 1,000-question run). No arrival order, no random
+   stream and no ranking of margins is read.
+6. **Pay.** 85 / 10 / 5 (`PAYOUT_SEAT_SHARES`) over the holder and the two
+   holders before it, to the UID serving the seat's head or its successor. A
+   seat pays when its head is live (verified; the holder with its scored
+   answers this epoch), R does not beat it and the memorisation verdict does
+   not refuse it; an unpaid seat's share goes to the holder, an unpaid
+   holder's share burns. No weight ramp, and `MAX_WEIGHT_DELTA` is not
+   applied to a v4 vector.
+7. **Ownership.** `copy_rule.classify`, unchanged: an exact copy under
+   another coldkey is not a head (not scored, seated or paid). Under v4 the
+   copy rule keeps a retired head's record for `STANDING_EPOCHS_V4` epochs,
+   and the seat serves only a head whose record names the first commit it
+   recorded (`seat_v4.seat_serving`).
+8. **Succession.** A head first seen this epoch is the successor of the
+   newest head its hotkey committed before it when both belong to the same
+   coldkey, that head is not served this epoch, and every row it has for an
+   entry on this epoch's menu is in the new head byte for byte (per-row
+   digests `sha256(entry id || 0x00 || weights || bias)`, little-endian
+   float64, published in the seat state). A successor inherits the seat or
+   history seat, the precedence, the standing and the evidence: each
+   inherited row counts from its predecessor's (`rows_since`, so its odds are
+   computed from there), and its predecessors' real-picks answers are read as
+   its own (`lineage_records`, at most `MAX_PREDECESSORS` back: the evidence
+   window, `SEAT_WINDOW_EPOCHS_V4` (48); each predecessor was its line's head
+   for at least one epoch, so one it no longer keeps was head only in epochs
+   that have left the window, however often the line is re-committed). Its
+   new rows count from its own commit. A head that changes an existing row is a
+   new head; one under another coldkey or hotkey inherits nothing.
+   **A successor's odds before its own commit are its predecessors' stored
+   odds** (`labels_v4.predecessor_odds`, read by `labels_v4._scored`, so by
+   rules A and C, R's test and the memorisation check alike): for an epoch
+   before its commit, the odds of the most recent of its `MAX_PREDECESSORS`
+   predecessors that has odds for that epoch and was the line's head then
+   (the epoch is before the `since` of the head after it; the seat state
+   keeps each predecessor's own `since`, `HeadState.predecessor_since`,
+   published as `"hash:since"`). They are exact on every label the successor
+   is scored on: before its commit those are the labels of its inherited
+   rows, each byte for byte in every head of the line since the one that
+   added it, and a head's odds on a pair depend only on the row for its
+   entry. A predecessor's odds for an epoch after it was succeeded (its
+   bytes served again) are not read, a gap in a predecessor's own epochs is
+   not filled from an older one, and an epoch no predecessor covers (a gap,
+   or older than the oldest predecessor kept) is computed from the successor's
+   own bytes as late odds; `v2_epoch.late_epochs` lists only those. Nothing
+   new is published for an epoch read this way: the odds are the ones the
+   predecessor's reveals published, which a rebuild and a replay hold for as
+   long as the epoch is in the window (the window drops an epoch's odds and
+   its labels together). A head with no predecessor reads and publishes
+   exactly what it did before.
+9. **A holder lacking a row when an allowance ends** is scored certainly
+   wrong on that entry's labels; once R beats it the seat is open, and the
+   latest qualifier takes it that epoch; with none the holder keeps the seat,
+   unpaid while R beats it. No ghost and no burn while a qualifier exists. A
+   holder that adds the row by succession keeps everything.
+10. **The memorisation verdict is an input** (`memo_refused`, head hashes):
+    a refused holder opens the seat, a refused head is neither a contender
+    nor a qualifier, and is not paid. `run_v2_epoch` computes it when handed
+    the epoch's memo, for every head `observe` keeps, through `side_of` (the
+    memorisation entry above, item 5); without a memo it is empty.
+11. **Published and rebuilt.** The seat state is `v2_state.seat`
+    (`seat_v4.to_dict`, marked `"protocol": 4`: the holder as `champion`, the
+    epoch it took the seat, the history, and every head the seat keeps with
+    its owner, hotkey, first commit, `since`, `seen`, origin, inherited rows,
+    predecessors and row digests); the evidence is the reveal's `seat_v4`
+    block (the bar, whether the seat is open, the holder's standing and R's
+    bound over it, the precedence order, and per head its precedence,
+    standing, rule A against the bar, the reverse picks bound, rule B, each
+    rule C comparison as `index:labels:bound:passes`, whether it qualifies
+    and the reasons it did not, in words), hashed in `v2_state.seat_digest`;
+    the reveal's `champion` block names the holder (`champion.champion`,
+    which `td_v4.seat_holder_from_reveal` reads) and the event. A v4 reveal
+    writes no `pending`, `confirm_from`, `ghosts`, `high_water`, `burn_in`,
+    `odds_shadow` or `frame_excluded_coldkeys`. A rebuild from the root's
+    reveals reproduces the seat state and window; a follower's re-anchor
+    takes the reference's state and replays its own epochs after the
+    snapshot on it (`v4_replay`, "Verify-and-resync" above;
+    `seat_v4.carry_seen` serves only a re-anchor made without the epochs'
+    records, which the validator does not make). Late odds are published at
+    most `LATE_ODDS_SLOTS_V4` (32) head-epochs a reveal, newest first, the
+    heads in an order that turns with the epoch; the rest follow in the next
+    epochs. **The heads a seat decision reads take their rounds first**
+    (`seat_v4.late_odds_first`, passed to `v2_epoch.late_epochs` as
+    `first`): the seat holder and every head that, itself or through a
+    predecessor it succeeded, has a counted challenge in this epoch or one
+    of the `STANDING_EPOCHS_V4 - 1` before it (`seat_v4.challenged_recently`,
+    the same predicate that makes a head a contender), in
+    the schedule's order among themselves; every other head then takes its
+    rounds with the slots left. A pure function of the window and the seat
+    state, so every node chooses the same; with no such head, or slots for
+    every head-epoch, the choice is what it was without the priority
+    (`tests/test_v4_late_odds_priority.py`; the fourth part of the `seat_v4`
+    determinism stage holds a returning head that answers against two that
+    owe nine epochs each). A successor takes none for an epoch its predecessors' odds stand
+    for (item 8). **One read bound for a reveal**: every reader of a reveal
+    names `reveal_sync.MAX_REVEAL_BYTES` (96 MiB), defined there once: the
+    follower sync's fetch, the validator's read of its own reveal, the
+    miner's holder read (`td_v4.MAX_HOLDER_REVEAL_BYTES`) and the root
+    summaries' read (`menu_publish.MAX_REVEAL_READ_BYTES`), so no node refuses
+    a reveal another reads. A worst-case reveal at 256 UIDs is held to three
+    quarters of it (72 MiB; `tests/test_v4_reveal_budget.py`), so growth is
+    noticed with room to spare. The bound decides no reveal's content: the
+    v1-v3 reveals the same fetch reads are about 0.6 MB, and a larger bound
+    only lets a node read more of an object it then hashes and checks as
+    before.
+12. **What v4 does not run** (section 12): the bootstrap, the confirmation
+    phase, ghosts and resume, the high-water marks, the accuracy floor, the
+    hard weight, the first-fill ranking, the burn-in counter, the senior bars
+    as a separate rule, v1 dedup, the v1-frame and agreement detectors (the
+    plausibility check reads `EXPLORE_PRIVATE_MIN_SAMPLES_V4`), and the
+    weight cap. The v1-v3 path is unchanged.
+
+**Residuals, accepted (3.9).** A copy of a head absent for more than
+`STANDING_EPOCHS_V4` epochs is no longer barred by it
+(`tests/test_v4_seat_attacks.py` documents it); the holder withholding its
+scored answers is unpaid for each such epoch; an earlier contender can fit a
+later head's new row from its published odds and add it by succession (4.4).
+
+Enforced by `tests/test_seat_v4.py` (every clause on the seat's synthetic
+world, `fugal_subnet/attacks/seat_v4_world.py`, at the design's constants:
+the fill, the bar, one, two and three missed epochs, an open seat with and
+without a qualifier, R beating the holder, the memorisation verdict, the
+latest qualifier unique and order-independent, equal heads, a near-copy
+through a miss, a contender that stops answering or routes worse, an earlier
+head that never answers, picks two points worse, the salted tie, an
+untrusted window, 85 / 10 / 5 with unpaid shares, succession and its three
+refusals, a successor contender against a later near-copy, the three cases of
+4.3, the published state and its refusals, a re-anchor, and that the v4 seat
+names none of the removed rules' constants), `tests/test_v4_successor_odds.py`
+(the predecessors' odds two and eight deep and not beyond, a predecessor
+with gaps, odds after a succession not read, a successor that added rows, a
+changed row, another coldkey or hotkey reading nothing, the evidence read
+through the predecessors equal to the successor's own, `late_epochs` never
+listing a covered epoch, and at the design's late-odds bound a challenger
+taking, and R opening the seat, in the same epoch whether the holder is
+re-committed each epoch or not), `tests/test_v4_successor_odds_loop.py`
+(the same take through the real loops, root and follower agreeing, the
+rebuild and a replay across the successions), `tests/test_v4_seat_attacks.py`
+with the four seat cases of `run_miner_attacks.py` (a near-copy of an
+earlier head, the same while the original misses, a changed head borrowing
+an earlier commit's precedence, a head that is re-committed each epoch
+keeping its evidence), each broken once its rule is taken out (rule C, the
+standing window, byte-identical succession, the predecessors' odds),
+`tests/test_v4_seat_loop.py`
+(the scenarios of section 11 through a root's and a follower's real loops and
+real miner epochs, the follower given every input in reverse order: the fill,
+an odds-only miner turning its scored questions on and taking the seat, a
+near-copy and an exact copy never winning, a new entry joining with heads
+with and without its row, the holder adding the row by succession, two
+missed epochs kept and three lost to the latest qualifier; the rebuild from
+the root's reveals, the miner's holder read), `tests/test_v4_reveal_budget.py`
+(the worst-case reveal), `tests/test_seat_v4_simulation.py` (no head with
+zero edge seated, and a head 0.5 points better seated in about eight epochs
+at the recommended budget; `scripts/experiments/experiment_seat_v4.py`), and
+the `seat_v4` stage of `scripts/check_determinism.py`.
+
+Not yet enforced, because the code is in other packages: a memo handed to
+the live epoch (the validator, its sync and its rebuild pass none today, so
+`memo_refused` is empty on every live path; the memorisation entry above);
+and the S4 constants (`ODDS_MARGIN_POINTS_V4`,
+`ODDS_MIN_PAIRS_V4`, `STANDING_EPOCHS_V4`, `LATE_ODDS_SLOTS_V4`,
+`EXPLORE_PRIVATE_MIN_SAMPLES_V4`) in the consensus digest (W11, at
+activation, with the other v4 constants).
+
 ## Attack surface by actor
 
 **Miners** control: the bytes their axon returns, their head weights, when they
@@ -3831,7 +6033,9 @@ commit, and how many identities they register. TEE constrains them: results are
 hardware-attested, costs are metered, and the runtime image is measurement-pinned.
 
 **Other validators** control: their own published reveals and weights. Yuma
-consensus plus `MAX_WEIGHT_DELTA` bound the damage; `consensus.py` detects it.
+consensus plus `MAX_WEIGHT_DELTA` bound the damage (for a v4 vector Yuma
+alone: every input to it is a published consensus decision); `consensus.py`
+detects it.
 
 **TEE escape:** If a miner breaks out of TDX (extremely unlikely — Intel
 patches are fast), they could fabricate results. Defense: measurement pinning
@@ -4053,6 +6257,214 @@ same mechanism that lets a miner substitute it in production. Building the
 exploit as a convenience and never naming it as one is how a hole this size
 stays invisible.
 
+### I1/I2/I3 — v4: the fast crown: a one-epoch challenge, the holder on exploration, one bound tuned to 100 (FAST_CROWN_V4.md packages F1-F7; built ahead of v4, nothing reaches it before a v4 activation block)
+
+`docs/decisions/FAST_CROWN_V4.md` (sections 0, 2-6, 12) replaces the 200
+scored questions every epoch (the S3 entry above, items 1 and 2, and rule B's
+reading there) by a challenge a miner answers in one epoch, and lets the
+holder stand and be paid on its exploration alone. What must stay true:
+
+1. **One bound, tuned to 100** (I1/I3; `config.BOUND_N0_V4`). Rules A and B
+   and rule B's reverse bound use n0 = 100; rule A needs
+   `ODDS_MIN_PAIRS_V4` 300 labels, rule B `PICKS_MIN_QUESTIONS_V4` 500 items.
+   The memorisation check keeps n0 = its minimum.
+2. **The challenge is a prefix of one list** (I1/I3;
+   `epoch_plan.challenge_list_v4`, `verify._v4_scored_check`). Each epoch's
+   list is `CHALLENGE_LIST_SIZE_V4` questions: the scored slice first, then
+   published questions (the plan's `ReserveIndex`) drawn on the scored mix by
+   the epoch's challenge nonce, in keyed order. A proof with `scored` true
+   carries `challenge` {size 500 or 1000, holder}; its own results are
+   exactly the first `size` questions, each once; its holder-side results
+   (`holder_pick` true) are distinct questions of the prefix, each to an
+   entry other than its own pick; with no holder named, none. Anything else
+   refuses the proof. `scored` false: no challenge, no scored or holder-side
+   result. v1-v3 proofs never read either field.
+3. **The holder is the epoch's, and every pick is recomputed** (I1/I3;
+   `seat_v4.challenge_holder`, `v2_epoch._challenge_epoch`). A challenge in
+   epoch E pairs with the holder after E - `CHALLENGE_HOLDER_LAG_V4` (2),
+   which the root's newest reveal at E's boundary names; the seat state
+   keeps the holders of its last two decided epochs (`holders`, published,
+   read by a rebuild and a re-anchor), and a node that did not run E - 2
+   reads the newest one at or before it (the seat as it last decided it). A
+   TD makes a challenge only when the root's reveal of E - 2 itself is to be
+   had. Every validator recomputes the challenger's own
+   pick on each question from its verified head and the holder's from the
+   holder's bytes (`picks_v4.challenge_picks`: `head_odds.picks_and_odds_v4`
+   on the epoch's menu and pick-cost table over its FULL entries only, so a
+   provisional entry is never a challenge pick on either side, in the TD,
+   on every node and in `holder_picks`; a head with odds for no full entry on
+   a question of its prefix makes no challenge); a challenge naming another holder, or stating another
+   pick or holder-side call, is refused and not counted (published with its
+   reason): the run restarts. An entry without a row is never the holder's
+   pick; a question with no entry the holder has odds for has no holder
+   pick. The holder's bytes come from any verified proof carrying them, else
+   from the validator's replay store or the root's head publication, checked
+   by hash; without them the epoch is not scored here
+   (`v2_epoch.HolderHeadMissing`).
+4. **Items fail closed, up to a cap** (I3; `picks_v4.challenge_items`,
+   `challenge_verdict`). 0 where the two picks are the same entry; else the
+   challenger's value minus the holder's, 100 x (grade - table cost), the
+   challenger's failed call graded 0 and the holder's failed call 1, each at
+   its table cost; no holder pick: the holder's side is 0. A holder-side
+   call the challenger's TD did not start (`not_started` in the proof: its
+   time or dollar budget ran out first) is no item (`NO_ITEM`, the int32
+   minimum, which no real item takes: real items are held within
+   INT32_MIN + 1 .. INT32_MAX). When more than `HOLDER_FAIL_CAP_BP_V4`
+   (10%) of a challenge's holder-side calls failed or were not started, the
+   challenge is **void**: its items are all `NO_ITEM`, it counts for and
+   against nobody (no item, not `answered_in`, no mean, no cell), and
+   `picks_v4.void` publishes {head: reason}. 10% is above every honest rate
+   measured (no head-epoch past 3 failed calls of ~1,000; flaky entries 5-10%)
+   and keeps what failing the holder's side up to the cap can cost a
+   challenger to about 1.5 points (FAST_CROWN_V4.md 1;
+   `experiment_fast_crown_v4.py v`). The grade is the call's own. A failed
+   or unmade call never raises an item (attack case 1). Each epoch's mean
+   item per entry (by the challenger's entry, over differing picks, counted
+   items only) is published as [n, sum].
+5. **Evidence over attempts is the answered run** (I3; `picks_check`).
+   Rule B reads the unbroken run of epochs with a counted or void challenge,
+   counted items paired with the bar (or a predecessor it succeeded); a gap
+   restarts it. A void challenge neither counts nor breaks the run, but a
+   run passes through at most `VOID_MAX_IN_RUN_V4` (1) of them: the next one
+   back ends it as a gap does. Unlimited voids would let a challenger keep
+   only its good epochs (the note's "never resets, bad epochs withheld":
+   75% false passes at -1.75 points and 500 questions; with one void a run, 0;
+   `experiment_fast_crown_v4.py v`).
+6. **Standing and pay by verification** (I3; `seat_v4.decide`). Every
+   head, the holder included, stands while verified (by its own coldkey:
+   `seat_serving`) in one of the last `STANDING_EPOCHS_V4`; a seat is paid
+   when its head is verified that epoch, R does not beat it and it is not
+   refused. A contender bars later heads while it has a counted challenge
+   in the last `STANDING_EPOCHS_V4` epochs; a qualifier has one this epoch.
+7. **Whose serving counts** (I3; `seat_v4.seat_serving`,
+   `lineage_records`). Standing, pay and challenge evidence read the seat's
+   view of who owns a head: the recorded commit, or the same bytes committed
+   again by the coldkey that owns the head; never another coldkey's commit of
+   the same bytes after the first-commit record lapsed. A predecessor's
+   challenges are read as its successor's only from epochs before the
+   successor's commit (`tests/test_v4_seat_ownership.py`).
+8. **The TD challenges only what it can verify, inside its budget**
+   (I2/I8; `td_v4.ChallengePolicy`, `harness._run_benchmark_v4`). The
+   operator's `--v4-challenge` (0, 500 or 1000; provisioning field
+   `v4_challenge`, parsed exactly) sets the size; the holder is read from
+   the root's reveal of E - 2 (bytes checked against the root's
+   commitment) and its head bytes checked against that hash in the TD. No
+   challenge when either cannot be verified. The TD starts the challenger's
+   own calls first, in list order, then the holder-side calls with
+   exploration in the nonce's order (`picks_v4.call_order_key`), deciding
+   each start in that order; no challenge call is started more than
+   `CHALLENGE_BUDGET_S_V4` after the first call, and a call started keeps its
+   outcome. The dollar ceiling (`--v4-challenge-usd`, provisioning field
+   `v4_challenge_usd`: whole dollars 1 to `CHALLENGE_SPEND_MAX_USD_V4`
+   (50,000), default `CHALLENGE_SPEND_USD_V4` (100), parsed exactly, shown
+   on the READY line) bounds realised spend with an estimate pre-check: no
+   challenge whose estimate (`td_v4.challenge_estimate`: each own pick and
+   each differing holder pick at its entry's pick cost, the epoch's
+   pick-cost table) exceeds it, logged with both figures; and no challenge
+   call started once the challenge's realised cost plus the estimate of its
+   calls in flight has reached it, cut as the time budget cuts (calls in
+   flight then finish and are paid: at most HARNESS_CONCURRENCY of them)
+   (v0.6.0 provisioning unchanged: a push without the field is the push
+   before v4). The challenge is reported at the largest size whose own calls
+   were all started (below 500: no challenge, an unanswered attempt); the
+   holder-side calls not started are in the proof marked `not_started`, and
+   verification refuses a proof whose `not_started` calls are not the last
+   of its holder-side calls in that order (`verify._v4_scored_check`). What a
+   miner pays: every call started (own and holder side), whatever the
+   outcome. What counts: in a counted challenge every own call and every
+   holder-side call made (failed ones as the holder right); in a void one
+   nothing, and its run goes on (once); with no challenge reported, nothing,
+   and the run restarts.
+9. **The reveal fits** (I2; `tests/test_v4_reveal_budget.py`). `picks_v4`
+   publishes the holder, the list as [id, category], challengers' items as
+   int32, per-entry means, the challenge calls past the slice's shared
+   cells summed per (entry, category, holder-side calls not started left
+   out), the holder's computed slice picks, refused challenges, void
+   challenges with their reason (`void`), and the holder's routing value
+   against R's routing
+   (`routing_vs_r`: published only, deciding nothing). A v4 reveal carries
+   no per-UID `failed` lists. At 256 challengers of 1,000 the worst case
+   stays at least 3 MiB under 64 (60.0 MiB measured).
+10. **The holder's picks are published every epoch it holds** (I1/I2;
+   `picks_v4.holder_picks_doc`, `v2_epoch._publish_holder_picks`).
+   `picks_v4.holder_picks` is {"head": the seat holder `champion.champion`
+   names, "picks": base64 of one little-endian int8 per question of
+   `picks_v4.list`, in list order, the index of the picked entry in the
+   reveal's `models`, -1 for no pick}, computed by every validator with
+   `picks_v4.challenge_picks` (full entries only) on the epoch's menu and
+   pick-cost table, so
+   a reader holding the head's bytes, the menu the reveal names and the
+   prompts recomputes each one; `{}` while the seat is empty. It is part of
+   the digested `picks_v4` field (root and followers byte-identical);
+   without the holder's bytes a node does not score the epoch.
+
+Enforced by `tests/test_fast_crown_v4.py`, `tests/test_v4_seat_ownership.py`,
+the seat loops (`tests/test_v4_seat_loop.py`), the reveal budget test and
+the determinism stages `seat_v4` and `picks_v4`.
+
+### I1/I3 — v4: one account of the merged protocol (the fast crown, chain proposals and the epoch-cost work together; built ahead of v4, nothing reaches it before a v4 activation block)
+
+Where an earlier v4 entry above says otherwise, this account holds; the
+entries above give each part's detail and tests.
+
+1. **The seat and the challenge.** A head, the holder included, stands while
+   it (or a predecessor) was verified in one of the last `STANDING_EPOCHS_V4`
+   epochs; the holder answers no question and is paid on verification alone.
+   A contender has a counted challenge in that span
+   (`seat_v4.challenged_recently`); a qualifier one this epoch. A challenge
+   is the first 500 or 1,000 questions of the epoch's challenge list (the
+   slice first), the challenger's own pick and the holder's where they
+   differ, the holder being the one after E - 2; every validator recomputes
+   both picks (`head_odds.picks_and_odds_v4`, picks chosen exactly by
+   `head_odds.pick_rows`). Rules A and B tune the bound to `BOUND_N0_V4` =
+   100; rule A needs 300 labels, rule B 500 items. Rule A's comparisons are
+   computed in batches (`labels_v4.gain_strata_many`), held equal to the
+   per-pair path (`seat_v4.decide(per_pair=True)`) on every semantic below
+   (`tests/test_seat_v4_batched.py`). A validator that cannot obtain the
+   holder's head does not score the epoch (`HolderHeadMissing`); it seeks
+   the bytes in one order: what it holds, the bytes miners served this
+   epoch, the root's head publication, which publishes a holder and its
+   successor with the reveal that names them.
+2. **The menu lifecycle.** A miner files a proposal by committing
+   `proposal:<sha256>` as its second commitment field and serving the
+   document; the root admits at its pinned read before the boundary and
+   commits `join:<epoch>[:<sha256>]`; the entry is provisional for two epochs
+   (coverage aimed at it, its calls outside the failure bound, outage rule
+   and health, its labels scoring no head), then full or retired. No proof
+   carries a proposal or a measurement. A head carrying a provisional
+   entry's row may route its users to it, but a provisional entry is never a
+   challenge pick, on either side (`picks_v4.challenge_picks`: the TD, every
+   node and `holder_picks` compute a challenge's picks over full entries
+   only); `routing_vs_r` takes the holder's challenge picks, reads no
+   provisional label, and R never picks a provisional entry.
+3. **Labels and missing rows.** A label drawn while its entry was
+   provisional is read by no comparison. From full, a missing row is odds 0,
+   counted from the head's line (`labels_v4.Side.line_since`: the line
+   origin's own commit, published as the oldest predecessor's "hash:since").
+   A row the line added (`HeadState.added`, published) counts from its own
+   start, and the entry's labels from the line's start up to then are scored
+   as a missing row is (odds 0), for every later generation of the line; a
+   successor's odds before its commit are its predecessors' stored odds.
+   Every reader (the per-pair sums, the batched sums, the memorisation split)
+   takes each side's per-entry starts from `Side._starts` on the odds the side
+   is scored from.
+4. **Late odds.** At most `LATE_ODDS_SLOTS_V4` head-epochs a reveal; the
+   holder and every head with a counted challenge in the last
+   `STANDING_EPOCHS_V4` epochs take their rounds first (`late_odds_first`), a
+   function of the window and the seat state alone.
+5. **The reveal's fields and size.** One read limit, `MAX_REVEAL_BYTES`
+   (96 MiB). `picks_v4` carries `holder`, `list`, `items` (int32,
+   challengers only), `item_means`, `cells`, `refused`, `routing_vs_r`,
+   `holder_picks` and `evidence`, and no per-UID `failed` lists; a
+   validator's reveal carries `served_v4` and, on followers, `join_audit`.
+   The worst case (256 challengers of 1,000, 48 predecessors, 8 provisional
+   entries, the holder's picks, the largest join audit) stays within 72 MiB
+   (`tests/test_v4_reveal_budget.py`).
+6. **The flip.** Unchanged by the merge: a v4 commitment field 0 is the
+   bare head hash a pre-v4 node reads; the proposal and join fields are
+   second fields written only from the block; no pinned read asks for a
+   block the chain has not produced (the loops assert it).
+
 ### I3 — the scored cost is the policy's, not the miner's
 
 `thrift = reference_cost / miner_cost`. The denominator was already computed
@@ -4100,6 +6512,20 @@ one.
 deterministic, but it does not track provider price changes on its own. The
 metering proxy records the provider's reported cost alongside the table price
 so drift is *detectable*; acting on it is a manual, deliberate update.
+
+**The product reads reveals from the public store without a chain check
+(open, operational).** The product that follows the seat holder reads the
+root's reveals from the public bucket and checks a published head against a
+reveal (head parity: the head's routing decisions on the reveal's questions
+must be the reveal's), which binds a head to a reveal. Nothing on the
+product's side checks a reveal against the root's on-chain reveal
+commitment (`reveal:<epoch>:<sha256>[:<menu>]`), so it relies on the
+bucket's contents for which reveal is the root's. Validators and TDs do read
+the commitment (`reveal_sync`, `menu_publish.read_root_anchor`). Closing it
+needs a chain read in the product (the commitment pinned at a recent block,
+the reveal's sha256 compared before use), or a reveal list signed by the
+root's hotkey that the product can verify offline. This decides no score:
+no validator reads anything the product does.
 
 ## The dress rehearsal
 

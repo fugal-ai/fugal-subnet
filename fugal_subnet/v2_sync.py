@@ -26,6 +26,15 @@ inside the k+1 .. now-1 span are applied at `now` instead (a take's
 validator's own previous weights. Both show up as a mismatch at the next
 check, which re-anchors again; a span with no such event converges exactly.
 
+PROTOCOL v4 does not keep the epochs after k: it REPLAYS them (`resync`'s
+`replay`, fugal_subnet/v4_replay.py). A v4 epoch's label pool depends on the
+window it was pooled on (the plausibility check's reference is fitted on the
+window's earlier pairs), so an epoch kept from a window that differed
+carried the difference past every re-anchor. The replay runs each epoch
+k+1 .. now-1 again, in order, on the reference's state at k, from the
+inputs this validator recorded when it ran it; the result is the state a
+validator that ran every epoch holds, copy-rule and seat events included.
+
 The reference is the operator's choice (a directory of a validator's
 published reveals, FUGAL_FRAME_BOOTSTRAP, kept in sync with its bucket).
 Nothing here touches a score rule: it only decides which state the rules run
@@ -68,6 +77,19 @@ def load_reveals(directory: str | os.PathLike, since: int = 0) -> dict[int, tupl
     return out
 
 
+# Protocol v4's reveal fields (menu_publish.reveal_fields). `menu` names the
+# menu the epoch ran on, which every node reads from the chain, so it is part
+# of the view validators are compared on. The others differ by role: only the
+# root publishes the menu it derived (`menu_next`, its hash, the step's events
+# and the signed lists it newly names), and only the others publish an audit
+# of it (`menu_audit`).
+MENU_FIELD = "menu"
+MENU_ROLE_FIELDS = ("menu_next", "menu_next_hash", "menu_events", "menu_lists", "menu_audit")
+# The root's summary of the epoch's verified proofs (menu_inputs.summary_to_dict):
+# public, so a validator that lost its window can rebuild it. Root only.
+MENU_SUMMARY_FIELD = "menu_summary"
+
+
 def consensus_view(reveal: Mapping) -> str:
     """The part of a reveal every honest validator must agree on, canonical.
 
@@ -77,10 +99,15 @@ def consensus_view(reveal: Mapping) -> str:
     started from a rebuild has none), not on the epoch. The chain never sees
     them either: the SDK filters zero weights out before set_weights
     (convert_weights_and_uids_for_emit). Comparing them kept a rebuilt
-    validator re-anchoring until its gap timed out (final review, finding 1)."""
-    return json.dumps({"v2_state": reveal.get("v2_state"),
-                       "weights": nonzero_weights(reveal.get("weights"))},
-                      sort_keys=True, separators=(",", ":"))
+    validator re-anchoring until its gap timed out (final review, finding 1).
+
+    A protocol v4 reveal's `menu` (the menu the epoch ran on) joins the view;
+    a reveal without one (v1-v3) gives the view it always gave."""
+    view = {"v2_state": reveal.get("v2_state"),
+            "weights": nonzero_weights(reveal.get("weights"))}
+    if MENU_FIELD in reveal:
+        view[MENU_FIELD] = reveal.get(MENU_FIELD)
+    return json.dumps(view, sort_keys=True, separators=(",", ":"))
 
 
 def nonzero_weights(weights):
@@ -94,8 +121,12 @@ def nonzero_weights(weights):
 # Fields of a reveal that legitimately differ between agreeing validators:
 # `environment` (platform, thread counts; its score-affecting subset is
 # `consensus_digest`, which is compared) and `v2_sync` (whether this
-# validator's own state is verified yet).
-PER_VALIDATOR_FIELDS = ("environment", "v2_sync")
+# validator's own state is verified yet), and protocol v4's role fields
+# (MENU_ROLE_FIELDS: the root's derived menu, a follower's audit of it), a
+# follower's audit of the root's joins and the hotkeys each validator itself
+# verified (chain_proposals: only the root's list decides who may propose).
+PER_VALIDATOR_FIELDS = (("environment", "v2_sync") + MENU_ROLE_FIELDS + (MENU_SUMMARY_FIELD,)
+                        + ("join_audit", "served_v4"))
 
 
 def comparable_reveal(reveal: Mapping) -> dict:
@@ -188,6 +219,9 @@ class Resync:
     rebuilt: object                                  # v2_rebuild.V2Rebuild
     burn_in: dict[int, tuple[str, float]] | None     # None: a span epoch was not observed
     k: int
+    # Protocol v4: the state after replaying k+1 .. before-1 on the
+    # reference's state at k (v4_replay.Replayed); None before v4.
+    replayed: object | None = None
 
     @property
     def complete(self) -> bool:
@@ -196,11 +230,25 @@ class Resync:
 
 def resync(reference: Mapping[int, tuple[str, dict]], own: Mapping[int, tuple[str, dict]],
            k: int, before: int, *, window_size: int, prices, bench_category=None,
-           tables=None) -> Resync:
+           tables=None, replay=None) -> Resync:
     """The reference's state at k, the window from its reveals up to k and
-    this validator's own after k (both within `window_size` of before-1)."""
+    this validator's own after k (both within `window_size` of before-1).
+
+    With `replay` (protocol v4: a v4_replay.Replayer, called with the
+    rebuild at k, k and `before`), the reference's window and state at k
+    (its reveals k-window_size+1 .. k) are brought forward by replaying
+    this validator's epochs k+1 .. before-1, not by keeping them; `own` is
+    not read. v4_replay.Missing propagates: nothing is adopted."""
     from fugal_subnet.v2_rebuild import rebuild_v2_from_reveals
 
+    if replay is not None:
+        paths = [reference[j][0] for j in sorted(reference) if k - int(window_size) < j <= k]
+        rebuilt = rebuild_v2_from_reveals(paths, window_size=window_size, prices=prices,
+                                          bench_category=bench_category,
+                                          snapshot_epoch_id=reference[k][1]["epoch_id"],
+                                          tables=tables)
+        # No burn-in under v4: nothing to carry.
+        return Resync(rebuilt, {}, k, replayed=replay(rebuilt, k, before))
     oldest = before - int(window_size)
     paths = [reference[j][0] for j in sorted(reference) if oldest <= j <= k]
     paths += [own[j][0] for j in sorted(own) if k < j < before and j >= oldest]
@@ -209,4 +257,14 @@ def resync(reference: Mapping[int, tuple[str, dict]], own: Mapping[int, tuple[st
                                       snapshot_epoch_id=reference[k][1]["epoch_id"],
                                       tables=tables)
     burn_in = carry_burn_in(rebuilt.burn_in, rebuilt.serving, own, k, before)
+    from fugal_subnet.champion import SeatState
+
+    if not isinstance(rebuilt.seat, SeatState):
+        # Protocol v4's seat (seat_v4): whether a head stands is read from
+        # the epochs it was verified in, so the heads this validator saw
+        # served after k are seen then, as the live seat records them.
+        from fugal_subnet import seat_v4
+
+        rebuilt.seat = seat_v4.carry_seen(rebuilt.seat, [(j, own[j][1]) for j in sorted(own)
+                                                         if k < j < before])
     return Resync(rebuilt, burn_in, k)

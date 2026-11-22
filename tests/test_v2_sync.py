@@ -304,9 +304,10 @@ def test_the_gap_is_durable_and_a_local_outage_opens_one():
     import pathlib
 
     src = pathlib.Path(__file__).resolve().parents[1].joinpath("neurons", "validator.py").read_text()
-    # Every save carries the gap, the anchor and what the state was built under.
-    assert src.count('"gap_until": v2_gap_until, "anchor_at": v2_anchor_at,\n') == 3
-    assert src.count('"rules": v2_rules}') == 3
+    # Every save carries the gap, the anchor and what the state was built under
+    # (four: the sync step, the deferred v4 rebuild, the skipped epoch, the epoch).
+    assert src.count('"gap_until": v2_gap_until, "anchor_at": v2_anchor_at,\n') == 4
+    assert src.count('"rules": v2_rules}') == 4
     assert 'v2_anchor_at = v2_raw.get("anchor_at")' in src
     assert 'v2_gap_until = v2_raw.get("gap_until")' in src
     skip = src[src.index('logger.warning("No valid proofs received, skipping epoch")'):]
@@ -580,9 +581,15 @@ def test_a_startup_rebuild_behind_the_present_opens_a_gap():
     import pathlib
 
     src = pathlib.Path(__file__).resolve().parents[1].joinpath("neurons", "validator.py").read_text()
+    # neurons/validator._rebuild_v2_state: a gap through the epoch before the
+    # one it resumes at, and a window that is not degraded; main adopts both.
     block = src[src.index("behind = resume_epoch - 1"):]
     block = block[:block.index("else:")]
-    assert "v2_gap_until = resume_epoch - 1" in block and "v2_window_degraded = False" in block
+    assert "gap = resume_epoch - 1" in block
+    tail = src[src.index("behind = resume_epoch - 1"):]
+    assert "copy_rule.from_rebuild(rebuilt) or copy_rule.CopyState(), False, gap)" in tail
+    assert src.count("v2_window, v2_seat, v2_rules, v2_copy, v2_window_degraded, gap = got") == 2
+    assert src.count("v2_gap_until = gap if gap is not None else v2_gap_until") == 2
     assert "allow_take=not v2_window_degraded," in src          # a gap blocks nothing
     assert '"v2_sync": {"unverified": v2_gap_until is not None}' in src
 

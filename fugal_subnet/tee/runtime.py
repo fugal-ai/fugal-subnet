@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -203,15 +204,22 @@ class UpstreamNoAnswer(RuntimeError):
     """The upstream replied, but with no answer, and no retry is left or allowed."""
 
 
-def _post_with_deadline(req, deadline: float) -> bytes:
-    """POST `req` and return the body, or raise by `deadline` (time.monotonic()).
+class ReplyTooLarge(ValueError):
+    """A reply body over the byte cap its caller set."""
+
+
+def _post_with_deadline(req, deadline: float, max_bytes: int | None = None) -> bytes:
+    """Send `req` (its method: POST for a model call, GET for an endpoints
+    read) and return the body, or raise by `deadline` (time.monotonic()).
 
     A socket timeout alone is not a deadline: it bounds each read, and OpenRouter
     keeps a non-streamed request alive while the model reasons, so a call with a
     "420 s" timeout was measured at 917 s. Here every read gets the time left as
     its timeout, and a watchdog shuts the socket down at the deadline, which also
     ends a read blocked inside a chunk. The connection is closed either way.
-    A non-2xx status raises urllib's HTTPError with the body, as urlopen did.
+    A non-2xx status raises urllib's HTTPError with the body, as urlopen did; a
+    redirect is a non-2xx status and is never followed. With `max_bytes`, a
+    body longer than that raises ReplyTooLarge as soon as it is known to be.
     """
     import http.client
     import io
@@ -265,7 +273,12 @@ def _post_with_deadline(req, deadline: float) -> bytes:
         conn.request(req.get_method(), path, body=req.data, headers=dict(req.header_items()))
         sock.settimeout(max(0.001, left()))
         resp = conn.getresponse()
+        if max_bytes is not None:
+            declared = resp.getheader("Content-Length")
+            if declared and declared.strip().isdigit() and int(declared) > max_bytes:
+                raise ReplyTooLarge(f"a reply of {declared} bytes, at most {max_bytes}")
         chunks = []
+        received = 0
         while True:
             if fired.is_set() or left() <= 0:
                 raise UpstreamDeadline("deadline reached while reading the reply")
@@ -278,6 +291,9 @@ def _post_with_deadline(req, deadline: float) -> bytes:
             chunk = resp.read1(65536)
             if not chunk:
                 break
+            received += len(chunk)
+            if max_bytes is not None and received > max_bytes:
+                raise ReplyTooLarge(f"a reply of more than {max_bytes} bytes")
             chunks.append(chunk)
         if fired.is_set():
             raise UpstreamDeadline("deadline reached while reading the reply")
@@ -308,6 +324,16 @@ def _deadline_for(request_data) -> float:
     if isinstance(request_data, dict) and "provider" in request_data:
         return config.call_deadline_s(request_data)
     return PROXY_CALL_DEADLINE_S
+
+
+def _shorter_deadline(own: float, asked) -> float:
+    """The harness may ask for a SHORTER deadline than the call's own (a
+    provisional entry's calls, protocol v4: `X-Fugal-Deadline`, whole
+    seconds); it is never lengthened, and anything that is not a positive
+    whole number of seconds is ignored."""
+    if isinstance(asked, str) and asked.isdigit() and 0 < int(asked) < own:
+        return float(int(asked))
+    return own
 
 
 def _fetch_upstream(req, model_id: str, meter_unanswered=None,
@@ -421,6 +447,83 @@ class UnpricedModel(RuntimeError):
     """Raised when a routed model has no entry in the pinned price table."""
 
 
+# --- protocol v4: the endpoints listing and what a reply says it billed --------
+
+# Wall-clock bound on one endpoints-listing read (I6, A10: no call on the epoch
+# path is unbounded). A read that misses it is a failed read, which is no vote.
+ENDPOINT_READ_DEADLINE_S = 20.0
+
+
+def fetch_endpoints_page(model: str, *, deadline_s: float = ENDPOINT_READ_DEADLINE_S,
+                         max_bytes: int | None = None) -> bytes:
+    """GET OpenRouter's public endpoints listing of one model (protocol v4,
+    docs/decisions/LIVE_MENU_V4.md section 7.1) through the TD's one permitted
+    base URL, `_OPENROUTER_BASE`, and return the body.
+
+    The listing is public: the request carries no key. The model id is checked
+    against the listing's id shape before it is put in the path, the reply is
+    capped at `max_bytes` (default: endpoint_reads.MAX_LISTING_BYTES), a
+    redirect or any other non-2xx status raises, and the whole read ends by
+    `deadline_s`. Costs nothing."""
+    from fugal_subnet.tee import endpoint_reads as er
+
+    if not isinstance(model, str) or len(model) > er.MAX_MODEL_LEN or not er.MODEL_RE.fullmatch(model):
+        raise ValueError(f"model {model!r:.80} is not <lab>/<name>")
+    req = Request(f"{_OPENROUTER_BASE}/models/{model}/endpoints",
+                  headers={"Accept": "application/json"}, method="GET")
+    return _post_with_deadline(req, time.monotonic() + float(deadline_s),
+                               max_bytes=er.MAX_LISTING_BYTES if max_bytes is None else max_bytes)
+
+
+NANO = 10**9
+
+
+class _JsonNumber(str):
+    """The text of a JSON number, kept apart from a JSON string."""
+
+
+_COST_RE = re.compile(r"(0|[1-9][0-9]{0,8})(?:\.([0-9]{1,30}))?(?:[eE]([-+]?[0-9]{1,2}))?")
+
+
+def billed_nanodollars(resp_body: bytes) -> int | None:
+    """`usage.cost` of a reply, the provider's billed dollars, in integer
+    nanodollars rounded half up; None when the reply reports none or reports
+    something that is not a bounded non-negative number.
+
+    Read from the reply's own text with no float in between: the body is
+    parsed again with every JSON number left as its text, and the cost's text
+    is converted with integer arithmetic (a plain or exponent decimal, as a
+    JSON serialiser writes small numbers)."""
+    from fugal_subnet.tee.proof import MAX_PROVIDER_COST_NANO
+
+    try:
+        doc = json.loads(resp_body, parse_float=_JsonNumber, parse_int=_JsonNumber,
+                         parse_constant=str)
+    except (ValueError, RecursionError, TypeError):
+        return None
+    usage = doc.get("usage") if isinstance(doc, dict) else None
+    text = usage.get("cost") if isinstance(usage, dict) else None
+    if not isinstance(text, _JsonNumber) or len(text) > 48:
+        return None
+    m = _COST_RE.fullmatch(text)
+    if m is None:
+        return None
+    whole, frac, exp = m.group(1), m.group(2) or "", int(m.group(3) or 0)
+    from fractions import Fraction
+    value = Fraction(int(whole + frac), 10 ** len(frac)) * (Fraction(10) ** exp) * NANO
+    nano = int((2 * value + 1) // 2)
+    return nano if 0 <= nano <= MAX_PROVIDER_COST_NANO else None
+
+
+def served_by_of(resp_data) -> str:
+    """The provider a reply names (`provider`), when it is a name a proof may
+    carry (proof.served_by_ok); "" otherwise."""
+    from fugal_subnet.tee.proof import served_by_ok
+
+    name = resp_data.get("provider") if isinstance(resp_data, dict) else None
+    return name if served_by_ok(name) else ""
+
+
 class _ProxyServer(ThreadingHTTPServer):
     """The proxy's listener, with an accept queue sized for the harness.
 
@@ -451,6 +554,12 @@ class APICallRecord:
     # with several calls in flight the records interleave, and "the records
     # appended since I started" would bill one question for another's tokens.
     request_id: str = ""
+    # Protocol v4 (LIVE_MENU_V4.md, section 12), carried into a v4 proof's
+    # results and read by nothing before v4: the provider's billed cost exactly
+    # (`billed_nanodollars`, None when the reply reported none) and the
+    # provider that served the reply (`served_by_of`, "" when unnamed).
+    billed_nano: int | None = None
+    served_by: str = ""
 
 
 @dataclass
@@ -511,7 +620,8 @@ class MeteringProxy:
                 model_id = (self.headers.get("X-Fugal-Entry", "")
                             or request_data.get("model", "unknown"))
                 request_id = self.headers.get("X-Fugal-Request", "")
-                deadline_s = _deadline_for(request_data)
+                deadline_s = _shorter_deadline(_deadline_for(request_data),
+                                               self.headers.get("X-Fugal-Deadline", ""))
 
                 upstream_url = f"{_OPENROUTER_BASE}/chat/completions"
                 req = Request(
@@ -550,6 +660,8 @@ class MeteringProxy:
                             response_hash=resp_hash,
                             provider_cost_usd=provider_cost,
                             request_id=request_id,
+                            billed_nano=billed_nanodollars(resp_body),
+                            served_by=served_by_of(resp_data),
                         ))
 
                 try:

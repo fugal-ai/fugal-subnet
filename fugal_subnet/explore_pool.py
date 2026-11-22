@@ -30,6 +30,14 @@ operator whose private answers are implausible for the models it was sent to
 has them left out. A flag never touches that miner's own score.
 
 Everything is exact (integers and Fractions) and order-independent (I1).
+
+PROTOCOL V4 (docs/decisions/LIVE_MENU_V4.md, section 8). The shared set and a
+miner's private set are drawn with different probabilities (the cost shares;
+the mixture of the cost-aware and coverage parts), so a pooled pair carries
+the weight of the set its question was in: `pool_pairs(weights=
+SharesV4.shared_weights(), private_weights=SharesV4.private_weights())`. The
+operator cap is `coldkey_cap(4)`, EXPLORE_COLDKEY_CAP_V4. Without
+`private_weights` pooling is v3's, byte for byte.
 """
 from __future__ import annotations
 
@@ -114,22 +122,72 @@ def capped(answers: Iterable[ExploreAnswer], nonce: bytes, coldkey_cap: int) -> 
             if not a.private or (a.question_id, a.model) in keep[a.coldkey]]
 
 
-def pool_pairs(answers: Iterable[ExploreAnswer], *, nonce: bytes, coldkey_cap: int,
-               flagged: Iterable[str] = (),
-               weights: Mapping[str, int] | None = None) -> list[Pair]:
-    """The epoch's pooled pairs, sorted by (question, model).
+def coldkey_cap(protocol_version: int) -> int:
+    """The cap on one operator's private pairs in an epoch's pool:
+    config.EXPLORE_COLDKEY_CAP before protocol v4, EXPLORE_COLDKEY_CAP_V4
+    (60, 1.5x v4's private set) from it."""
+    from fugal_subnet import config
+    if int(protocol_version) >= 4:
+        return int(config.EXPLORE_COLDKEY_CAP_V4)
+    return int(config.EXPLORE_COLDKEY_CAP)
 
-    `weights` is {entry: inverse-probability weight} of the epoch's exploration
-    shares (explore_weights.weights); None weighs every pair one."""
-    from fugal_subnet.explore_weights import WEIGHT_SCALE
+
+def _votes(answers: Iterable[ExploreAnswer], *, nonce: bytes, coldkey_cap: int,
+           flagged: Iterable[str]) -> dict[tuple[str, str], dict[str, list[ExploreAnswer]]]:
+    """{(question, model): {coldkey: its answers}}: the answers that are
+    pooled, with failed calls, flagged operators and private answers over
+    the cap left out. The one place a pair's votes are decided."""
     out_of = set(flagged)
     live = [a for a in answers if not a.failed and a.coldkey not in out_of]
     live = capped(live, nonce, coldkey_cap)
     by_cell: dict[tuple[str, str], dict[str, list[ExploreAnswer]]] = {}
     for a in live:
         by_cell.setdefault((a.question_id, a.model), {}).setdefault(a.coldkey, []).append(a)
+    return by_cell
+
+
+def pair_voters(answers: Iterable[ExploreAnswer], *, nonce: bytes, coldkey_cap: int,
+                flagged: Iterable[str] = ()) -> dict[tuple[str, str], tuple[str, ...]]:
+    """{(question, model): the coldkeys whose answers make its pooled
+    outcome, sorted}, for exactly the pairs `pool_pairs` returns with the
+    same arguments (protocol v4: a label never judges the head of an
+    operator that voted on it, labels_v4)."""
+    return {cell: tuple(sorted(votes))
+            for cell, votes in _votes(answers, nonce=nonce, coldkey_cap=coldkey_cap,
+                                      flagged=flagged).items()}
+
+
+def pool_pairs(answers: Iterable[ExploreAnswer], *, nonce: bytes, coldkey_cap: int,
+               flagged: Iterable[str] = (),
+               weights: Mapping[str, int] | None = None,
+               private_weights: Mapping[str, int] | None = None) -> list[Pair]:
+    """The epoch's pooled pairs, sorted by (question, model).
+
+    `weights` is {entry: inverse-probability weight} of the epoch's exploration
+    shares (explore_weights.weights); None weighs every pair one.
+
+    Protocol v4 passes both tables: `weights` the shared set's
+    (SharesV4.shared_weights()) and `private_weights` the private set's
+    (SharesV4.private_weights()). A pair whose question was in the private
+    set weighs the private table's weight of its entry, any other the shared
+    table's: each pair carries the exact inverse of the probability its entry
+    was drawn with. The two sets are drawn disjoint on every node, so a pair
+    answered in both is a ValueError, never resolved by order."""
+    from fugal_subnet.explore_weights import WEIGHT_SCALE
+    if private_weights is not None and weights is None:
+        raise ValueError("private pair weights are given with the shared ones: both tables or "
+                         "neither")
+    by_cell = _votes(answers, nonce=nonce, coldkey_cap=coldkey_cap, flagged=flagged)
     pairs = []
     for (qid, model), votes in sorted(by_cell.items()):
+        weight = int(weights[model]) if weights is not None else WEIGHT_SCALE
+        if private_weights is not None:
+            sets = {bool(a.private) for v in votes.values() for a in v}
+            if len(sets) != 1:
+                raise ValueError(f"pair ({qid}, {model}) was answered in the shared and private "
+                                 "sets: a question is drawn into one of them")
+            if sets == {True}:
+                weight = int(private_weights[model])
         grade = [Fraction(sum(bool(a.correct) for a in v), len(v)) for v in votes.values()]
         p_tok = [Fraction(sum(int(a.prompt_tokens) for a in v), len(v)) for v in votes.values()]
         c_tok = [Fraction(sum(int(a.completion_tokens) for a in v), len(v)) for v in votes.values()]
@@ -139,7 +197,7 @@ def pool_pairs(answers: Iterable[ExploreAnswer], *, nonce: bytes, coldkey_cap: i
             y=_round_half_up(_median(grade) * ODDS_SCALE), voters=len(votes),
             prompt_tokens=_round_half_up(_median(p_tok)),
             completion_tokens=_round_half_up(_median(c_tok)),
-            weight=int(weights[model]) if weights is not None else WEIGHT_SCALE,
+            weight=weight,
             latency_ms=_round_half_up(_median(lat)),
         ))
     return pairs

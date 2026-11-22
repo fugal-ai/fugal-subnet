@@ -32,6 +32,14 @@ A `.published` marker next to each reveal records what was uploaded and
 where; the marker is written only after the upload succeeds, so a failed
 upload is retried next epoch and nothing is marked that was not sent.
 
+PROTOCOL v4 (docs/decisions/LIVE_MENU_V4.md, 4.3). The root's reveal of a v4
+epoch carries `menu_next`, the menu two epochs on. Its commitment then gains a
+fourth field, the menu hash, written only after a `menu` hook
+(fugal_subnet/menu_publish.MenuPublisher) has put the menu bytes, and any
+newer signed list they name, in the public store and read them back: publish
+before commit. A reveal without `menu_next` (every reveal of protocol v1-v3)
+never reaches the hook, and its commitment and marker are what they were.
+
 The heads a published reveal names go to the same store, by hash, no sooner
 than that marker exists (fugal_subnet/head_publisher.py says which and when).
 That is a separate step with its own time budget: it cannot fail or hold back
@@ -39,17 +47,30 @@ a reveal.
 """
 from __future__ import annotations
 
+import base64
 import glob
 import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 MARKER = ".published"
+
+# The most bytes one commitment holds. `subtensor.set_commitment` writes its
+# data as one `Raw<len>` field of the Commitments pallet, and the SDK's type
+# registry has Raw0..Raw128: a longer commitment cannot be encoded at all.
+COMMITMENT_MAX_BYTES = 128
+# A menu hash in a commitment: its 32 bytes in unpadded base64url, 43
+# characters. Hex (64) does not fit: `reveal:e00026489:` is 17 bytes and the
+# reveal's own sha256 in hex 64, which leaves 47 of the 128. The last
+# character carries 4 bits of the digest and 2 zero bits, so only these 16
+# characters end a canonical token, and one hash has one token.
+_MENU_TOKEN = re.compile(r"[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]")
 
 
 def reveal_digest(data: bytes) -> str:
@@ -61,8 +82,28 @@ def epoch_index_of(epoch_id: str) -> int:
     return int(str(epoch_id).lstrip("e"))
 
 
-def commitment_for(epoch_id: str, digest: str) -> str:
-    return f"reveal:{epoch_id}:{digest}"
+def encode_menu_hash(menu_hash: str) -> str:
+    """A menu hash (64 lowercase hex) as it stands in a commitment."""
+    if not (isinstance(menu_hash, str) and re.fullmatch(r"[0-9a-f]{64}", menu_hash)):
+        raise ValueError("a menu hash is 64 lowercase hex characters")
+    return base64.urlsafe_b64encode(bytes.fromhex(menu_hash)).decode("ascii").rstrip("=")
+
+
+def decode_menu_hash(token) -> str | None:
+    """The menu hash of a commitment's fourth field, or None for anything that
+    is not the one canonical token of a 32-byte hash."""
+    if not isinstance(token, str) or not _MENU_TOKEN.fullmatch(token):
+        return None
+    raw = base64.urlsafe_b64decode(token + "=")
+    return raw.hex() if len(raw) == 32 and encode_menu_hash(raw.hex()) == token else None
+
+
+def commitment_for(epoch_id: str, digest: str, menu_hash: str | None = None) -> str:
+    """`reveal:<epoch_id>:<sha256>`, and from protocol v4, when the root's
+    publisher confirmed the menu bytes readable, `:<menu hash token>`."""
+    if menu_hash is None:
+        return f"reveal:{epoch_id}:{digest}"
+    return f"reveal:{epoch_id}:{digest}:{encode_menu_hash(menu_hash)}"
 
 
 @dataclass
@@ -161,6 +202,8 @@ def publish_due_reveals(
     netuid: int,
     uploader,
     commit=None,
+    menu=None,
+    snapshot=None,
 ) -> list[dict]:
     """Upload every due reveal; commit the newest one's hash on chain.
 
@@ -170,8 +213,24 @@ def publish_due_reveals(
     commitment per epoch is within any rate limit). Returns one record per
     published reveal. Never raises for an upload failure: the reveal stays
     unmarked and is retried next epoch.
+
+    `menu(epoch_id, reveal) -> menu hash | None` (protocol v4,
+    menu_publish.MenuPublisher) is called only for the newest reveal, only
+    when it carries `menu_next`, and only when there is a commitment to make;
+    it returns the menu hash once the bytes are confirmed readable, and only
+    then does the hash go into the commitment. Its marker then also records
+    `menu_hash` and whether the commitment was `committed`, which is how the
+    root knows next epoch what the chain will hold.
+
+    `snapshot(epoch_id, reveal) -> bool` (protocol v4, memo_sync.
+    SnapshotPublisher) is called, before the commitment, for each reveal
+    published that names a view of the published set (`memo_v4`); a reveal
+    without one (every reveal of protocol v1-v3) never reaches it. What it
+    does decides nothing here.
     """
     published: list[dict] = []
+    parsed_of: dict[str, dict] = {}
+    newest_reveal: dict | None = None
     for path in due_reveals(epoch_dir, current_epoch_index, delay_epochs):
         epoch_id = os.path.basename(os.path.dirname(path))
         with open(path, "rb") as f:
@@ -199,13 +258,86 @@ def publish_due_reveals(
         with open(os.path.join(os.path.dirname(path), MARKER), "w", encoding="utf-8") as f:
             json.dump(record, f)
         published.append(record)
+        newest_reveal = parsed
+        parsed_of[epoch_id] = parsed
         logger.info("Published reveal %s -> %s (sha256 %s)", epoch_id, url, digest[:16])
+    if snapshot is not None:
+        for record in published:
+            if "memo_v4" in parsed_of[record["epoch_id"]]:
+                _confirmed_snapshot(snapshot, record["epoch_id"], parsed_of[record["epoch_id"]])
     if published and commit is not None:
         newest = published[-1]
+        menu_hash = None
+        with_menu = menu is not None and "menu_next" in newest_reveal
+        if with_menu:
+            menu_hash = _confirmed_menu(menu, newest["epoch_id"], newest_reveal)
+            if menu_hash is not None and len(commitment_for(
+                    newest["epoch_id"], newest["sha256"], menu_hash).encode()) > COMMITMENT_MAX_BYTES:
+                logger.error("The commitment for %s with its menu hash would exceed %d bytes; "
+                             "committing it without the menu hash (the menu carries)",
+                             newest["epoch_id"], COMMITMENT_MAX_BYTES)
+                menu_hash = None
         try:
-            ok = bool(commit(commitment_for(newest["epoch_id"], newest["sha256"])))
+            ok = bool(commit(commitment_for(newest["epoch_id"], newest["sha256"], menu_hash)))
         except Exception as e:  # noqa: BLE001
             ok, e_msg = False, str(e)
             logger.warning("Reveal hash commitment failed: %s", e_msg)
         newest["committed"] = ok
+        if with_menu:
+            newest["menu_hash"] = menu_hash
+            _write_marker(os.path.join(epoch_dir, newest["epoch_id"]), newest)
     return published
+
+
+def _confirmed_menu(menu, epoch_id: str, reveal: dict) -> str | None:
+    """The hook's verdict, or None when it raised (a failed menu publication
+    costs the menu change, never the reveal or its commitment)."""
+    try:
+        got = menu(epoch_id, reveal)
+    except Exception as e:  # noqa: BLE001 - logged; the commitment goes out without a menu
+        logger.warning("Menu publication for %s failed (%s); committing without a menu hash",
+                       epoch_id, type(e).__name__)
+        return None
+    try:
+        encode_menu_hash(got) if got is not None else None
+    except ValueError:
+        logger.error("Menu publication for %s returned no menu hash; committing without one",
+                     epoch_id)
+        return None
+    return got
+
+
+def _confirmed_snapshot(snapshot, epoch_id: str, reveal: dict) -> bool:
+    """The snapshot hook's verdict; False when it raised (a snapshot not
+    published costs a reader a longer fold, never the reveal or its
+    commitment)."""
+    try:
+        return bool(snapshot(epoch_id, reveal))
+    except Exception as e:  # noqa: BLE001 - logged; the commitment goes out regardless
+        logger.warning("Published-set snapshot for %s failed (%s)", epoch_id, type(e).__name__)
+        return False
+
+
+def _write_marker(folder: str, record: dict) -> None:
+    """Rewrite a marker atomically (it already says the reveal was sent)."""
+    path = os.path.join(folder, MARKER)
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning("Could not record the menu commitment beside %s: %s",
+                       os.path.basename(folder), e)
+
+
+def read_marker(folder: str) -> dict | None:
+    """The marker of a published reveal, or None."""
+    try:
+        with open(os.path.join(folder, MARKER), encoding="utf-8") as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return got if isinstance(got, dict) else None

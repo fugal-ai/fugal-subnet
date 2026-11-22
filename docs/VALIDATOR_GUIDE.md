@@ -137,20 +137,51 @@ validator that scored the whole field zero while looking healthy):
 ```bash
 git pull                       # or check out the release tag
 uv sync --locked --extra tee
+uv run python neurons/validator.py --check   # optional: the startup checks, then exit (0 = ready)
 sudo systemctl restart fugal-validator   # or restart your container
 ```
 
+`--check` (with the same flags and environment as your service) runs every
+startup check and prints the READY line without running an epoch, setting
+weights or committing anything, so a problem shows before the restart.
 Then check the startup log for one line:
 
 ```
-READY: approved entries N (newest app-compose.frozen-<tag>-finney.json), v3 inputs ok (pool 48320, embeddings ok), archive ok, collateral ok, role follower (verified)
+READY: approved entries N (newest app-compose.frozen-<tag>-finney.json), v3 inputs ok (pool 48320, embeddings ok), archive ok, collateral ok, role follower (verified), v4 not scheduled
 ```
 
 `NOT READY: …` names each missing item and the one command that fixes it.
+Once a release schedules protocol v4 the line ends `v4 ok (block N, seed …,
+mix …, list …, published seed … through e…, root hotkeys …, v4 digest …)`
+(the published-set seed is the memorisation check's starting point; the
+validator brings it forward by folding the public reveals after it, keeps it
+beside its state as `<state>.published_v4.json`; the set advances only by the
+root's reveals its commitments name at each boundary, so a root that is down
+freezes it and nothing else; a validator that lost the file takes the snapshot
+the named reveal names from the root's bucket, or reads every boundary from
+the seed, about 1.4 MB a reveal: nothing to do by hand), or `v4 MISSING from block N
+(runs v3 until then, stops there): …`: before the v4 block a missing v4
+input never stops the validator (it runs v3 and says what is missing); at
+the first v4 epoch a validator that still lacks it stops, and after the
+block it refuses to start until it is fixed.
 Nothing else is manual: the approved entries come from the frozen composes
 committed in the release (`fugal_subnet/validator_setup.py`), the embeddings
 file is fetched and verified, and on finney the archive and fallback endpoints
 default to OpenTensor's when unset.
+
+**v0.7.0 (protocol v4) timing:** update and restart **before block
+9,572,760** (the boundary of epoch 26591), at or after the merge that adds
+the v0.7.0 frozen composes, so the v4 miner image is approved. Every
+validator must run v0.7.0 before the root's first v4 commitment, which
+older releases cannot read. `--check` should end `v4 ok (block 9572760, seed
+a9fc6275, mix e2146137, list serial 1, published seed 2aa4da74 through
+e00026509, root hotkeys 1, v4 digest ..., chain history: pinned reads N blocks back are served)`; `v4 MISSING`
+names each fix, and the validator keeps running v3 until the block. Across
+the block the validator reads the published set from that seed forward, one
+pinned chain read per epoch since e00026509: keep the default archive
+endpoint (or your own archive node) in `FUGAL_ARCHIVE_ENDPOINTS`. The
+`chain history:` line checks three epochs back only. No new variable; the
+seat and window start empty at the block.
 
 **v0.6.0 (menu B) timing:** update and restart **before block 9,531,000**
 (~2026-11-18 04:22 UTC), at or after the composes PR merge, so the new miner
@@ -185,6 +216,24 @@ the release's entries and default endpoints follow the chain's genesis hash.
 > - **Archive endpoint**: on finney, unset `FUGAL_ARCHIVE_ENDPOINTS` /
 >   `FUGAL_FALLBACK_ENDPOINTS` default to `wss://archive.chain.opentensor.ai:443`
 >   and `wss://entrypoint-finney.opentensor.ai:443`. Set them to use your own.
+>   **What endpoint protocol v4 needs:** every v4 read of the chain is pinned
+>   to a block (the root's commitments at each boundary, the join read 30
+>   blocks before it). A node that is not an archive keeps only its last few
+>   hundred blocks (finney's public entrypoint: about 256), so such a read is
+>   read again from the archive endpoint (`FUGAL_ARCHIVE_ENDPOINTS` in order,
+>   finney's public archive when unset; `fugal_subnet/chain_reads.py`) when the
+>   node answers that the block's state is discarded. In steady state the reads are at most one epoch old. After
+>   missed epochs, the published set and the menu re-anchor on the root's
+>   newest snapshot and reveal where the endpoint no longer serves the
+>   boundaries missed, which needs pinned reads three epochs back (about
+>   1,100 blocks); the window's fill reads older reveals' hashes from the
+>   follower sync's ledger and leaves an epoch it cannot verify unfilled.
+>   Across the v4 activation the published set is read from the release's
+>   seed, up to 150 epochs back: only an archive serves that. `--check` and
+>   the READY line make one such read, back to the seed's boundary while the
+>   activation is near, and say `chain history: pinned reads N blocks back are
+>   served` or that it FAILED; a FAILED line before the block means this
+>   validator will not read the published set at the block.
 > - **`FUGAL_VALIDATOR_IP`**: `curl -s https://ifconfig.me` from this host.
 > - **Nothing to set to follow the root.** A validator that is not the root
 >   fetches the root's published reveals itself. Only the root sets
@@ -573,13 +622,98 @@ The validator automatically flags:
   junior head must also beat every senior seat holder by the margin
 - **The E″ miss rule** — a missed epoch decays a head's evidence and restarts
   its burn-in; selective publication (skip bad epochs) is penalized
-- **Weight capping** — weights change at most ±0.3 per UID per epoch
+- **Weight capping** — weights change at most ±0.3 per UID per epoch (not
+  under protocol v4; below)
 - **Commit-reveal** — questions committed before miner queries
 - **State persistence** — scoring state, the seat and the comparison window
   survive restarts; a lost window is rebuilt from published reveals
 - **Seniority from chain** — the first commitment block, read at the epoch
   boundary; commitments at or before the activation block tie and are ordered
   by a salted hash, so nothing can be gamed by committing early
+
+## Protocol v4: the seat (from block 9,572,760, epoch 26591)
+
+From a v4 activation block (`docs/decisions/SEAT_MINIMAL_V4.md`; the rules
+are `fugal_subnet/seat_v4.py`) your validator decides the seat by three
+rules on one statistical bound, each a pure function of published data:
+
+- **The bar** is the seat holder while it was verified (on its exploration
+  proof alone) in this epoch or one of the two before it, the reference R
+  does not beat it
+  on odds, and the memorisation check does not refuse it; otherwise R, and
+  the seat is open.
+- **A head takes the seat** when it beats the bar on odds by 0.1 Brier
+  points (rule A, at least 300 labels drawn after both heads were
+  committed and supplied by neither head's operator, the bound tuned to 100),
+  its one-epoch challenge (500 or 1,000 questions of the epoch's list, its
+  picks and the holder's where they differ, every pick recomputed here from
+  the heads and the holder the root's reveal of two epochs back names) is
+  not shown to be more than 1.5 points worse than the holder's (rule B, 500
+  items of its unbroken run of challenge epochs), and it
+  beats on odds every earlier head still in the race (rule C, by first
+  commit, R the earliest). Of those, the one committed last takes the seat;
+  if none qualifies the holder keeps it, even unpaid, so the seat is never
+  emptied without a replacement.
+- **The holder's head.** Checking a challenge needs the holder's bytes. Your
+  validator takes them from what it holds (the heads verified this epoch,
+  its replay store), then from the bytes miners served this epoch, then
+  from the root's head publication (which publishes a holder, and a
+  holder's successor, with the reveal that names it). If none has them it
+  logs an error and does not score that epoch rather than guess; it scores
+  the next one normally.
+- **New entries.** A proposal a miner commits on chain joins at the next
+  boundary as a provisional entry; for two epochs its labels score no head
+  and its calls are outside the failure bound, then the gates make it full
+  or retire it. From full, a head without its row is scored at odds 0 on it
+  from the start of its line (a successor that adds the row later keeps
+  those epochs at odds 0). A follower audits the root's joins
+  (`join_audit` in its reveal; an ALARM line on a difference).
+- **Pay** is 85 / 10 / 5 over the holder and the two holders before it,
+  each seat paid only while its head is verified (the holder on its
+  exploration alone), R does not beat it and the memorisation check does not refuse it;
+  an unpaid former holder's share goes to the holder and an unpaid holder's
+  share burns.
+- **What no longer runs under v4**: the bootstrap, the confirmation phase,
+  ghosts, burn-in, the high-water marks, the accuracy floor, the senior bars
+  as a separate rule, v1 dedup, the frame and agreement detectors, and the
+  ±0.3 weight cap (Yuma's stake-weighted consensus clips a validator that
+  diverges). A head adding a row for a new entry from the same hotkey and
+  coldkey, every existing row unchanged, keeps its place (succession).
+- **What to watch.** The log line `v4 seat: <event>, holder ..., bar ...,
+  paid ...` each epoch; the reveal's `seat_v4` block (each head's standing,
+  its bounds and the reasons it did not qualify) and `v2_state.seat` (the
+  seat state, which a rebuild from the root's reveals reproduces). At the
+  activation the seat is empty and the miner share burns for about five
+  epochs, until the first head qualifies.
+
+## Protocol v4: new menu entries (from block 9,572,760, epoch 26591)
+
+Under protocol v4 a miner proposes a menu entry by committing the hash of a
+small proposal document beside its head and serving the document from its
+axon (`docs/decisions/FAST_CROWN_V4.md` 18). Nothing to configure; what each
+validator does:
+
+- **The root validator**, each epoch after setting weights and before writing
+  its reveal, waits for the block about 30 blocks before the next boundary
+  (`chain_proposals.read_block`), reads every commitment there, fetches each
+  proposal document from its miner's axon (miners must admit it: the same
+  firewall rule as for proofs) and each model's public listing, admits by
+  the compiled rules, publishes the join delta to its reveal bucket, and
+  commits a second commitment field `join:<epoch>:<sha256>` beside its
+  reveal pointer before the boundary. Late, it commits nothing: the
+  proposals wait for the next boundary. Its state keeps
+  `<state>.menu/joins.json`.
+- **Every validator** reads the root's join pointer at the boundary, fetches
+  the delta by hash, checks it (the admission re-run on its own contents)
+  and runs the epoch on the base menu plus the delta's entries, which are
+  provisional for two epochs: every miner's exploration is aimed at them
+  and their labels score no head. The step scoring the join epoch makes
+  each full or retires it. A follower also recomputes the admission from
+  its own chain read and fetches and publishes the differences in its
+  reveal (`join_audit`); a difference logs `ALARM`, like the menu audit.
+- **What to watch.** `join_audit` in your reveals (empty differences), the
+  root's `Joins for epoch N committed: A admitted of C considered`, and an
+  `ALARM` on a delta the check refuses (every node then runs the base menu).
 
 ## Protocol v2: flip procedure
 

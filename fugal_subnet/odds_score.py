@@ -24,7 +24,10 @@ three times from saying 0% or 100%. A head's SKILL is how much lower its loss
 is than R's on the same pairs. A table of rates by kind of question has about
 zero skill against R by construction; skill is what reading the question adds.
 
-A MODEL A HEAD HAS NO ROW FOR is scored at p_R: zero skill there, no penalty.
+A MODEL A HEAD HAS NO ROW FOR is scored as certainly wrong, and the head is
+not eligible for the odds seat (`head_odds_on`, `missing_rows`). Rows are
+matched by entry id. The pairs of an entry still in grace are scored for no
+head (`EpochPairs.scored`), so a head needs no row for it until its grace ends.
 
 FRESH PAIRS ONLY. A head is scored on the pairs of epochs it was itself
 scored in (its current unbroken run, like the net-value comparison). It was
@@ -191,7 +194,7 @@ def missing_rows(window: Window, head: str, since_epoch: int | None = None,
 
 def _kept(values, ep: EpochPairs):
     """`values` (one per pair) without the pairs the odds score leaves out
-    (EpochPairs.scored: v3 menu B's grace period)."""
+    (EpochPairs.scored: entries in grace, v3 menu B's or v4's per entry)."""
     return values if ep.scored is None else values[ep.scored]
 
 

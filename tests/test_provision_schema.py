@@ -29,7 +29,25 @@ SOURCE = REPO / "fugal_subnet" / "tee" / "provision.py"
 #   hotkey_keyfile_b64  a secret, and only the miner's own identity; the TD
 #                       signs serve_axon and the head commitment itself
 #   coldkeypub_b64      public; the SDK reads the coldkey address to serve
+#   v4_proposal         protocol v4: the entry this operator's miner serves
+#                       and commits on chain; the compiled entry rules and
+#                       the shipped signed list judge it here, and the root
+#                       judges it again at admission
+#   v4_scored           protocol v4: whether the TD answers the scored
+#                       questions (auto, on, off), visible in every proof
+# The two v4 fields are one operator's choices, so they cannot be in the
+# shared, hashed compose; each is checked in full by validate_payload
+# (tee/v4_options.py), and none is an input of the grader, the pool, the
+# slice, the menu or the cost model.
 EXPECTED = {
+    "head_b64", "hotkey_ss58", "openrouter_api_key",
+    "hotkey_keyfile_b64", "coldkeypub_b64",
+    "v4_proposal", "v4_challenge", "v4_challenge_usd",
+}
+# What a v0.6.0 operator (and any operator before protocol v4) pushes, and
+# what a receiver before protocol v4 accepts: tests/test_td_v4_options.py
+# shows both directions still work.
+EXPECTED_BEFORE_V4 = {
     "head_b64", "hotkey_ss58", "openrouter_api_key",
     "hotkey_keyfile_b64", "coldkeypub_b64",
 }
@@ -42,6 +60,9 @@ FORBIDDEN = [
     "pool", "pool_hash", "benchmark_pool", "FUGAL_BENCHMARK_POOL",
     "grader", "grader_hash", "source_hash",
     "slice_size", "nonce", "questions_hash",
+    # Protocol v4 options a TD must not take from its operator: the menu it
+    # runs on and where it keeps state are read and checked by the TD itself.
+    "v4_anchor", "v4_state_dir", "v4_menu", "menu_hash", "v4_activation_block",
 ]
 
 

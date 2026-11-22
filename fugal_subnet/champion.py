@@ -54,6 +54,11 @@ from fractions import Fraction
 
 import numpy as np
 
+# Protocol v4's one bound (docs/decisions/SEAT_MINIMAL_V4.md 3.1): every v4
+# seat comparison is champion.lower_bound. It lives in its own module, which
+# reads no numpy, and nothing on the v1-v3 path calls it.
+from fugal_subnet.seat_bound import lower_bound  # noqa: F401
+
 # Integer units per NV point. 1e-6 of a point is far below any decision the
 # margin (0.2 points) makes, and keeps a 2,000 x 15,000-question resample sum
 # well inside int64.
@@ -235,10 +240,11 @@ class EpochPairs:
     # units (cost-aware exploration); None weighs every pair one.
     weight: np.ndarray | None = None
     # (pairs,) bool: the pairs the odds score counts. None counts every pair.
-    # v3 menu B's grace period (routing_protocol.grace_excluded) leaves the
-    # added entries' pairs unscored for every head alike: they are still
-    # pooled, published and fed to the reference, but no head is scored on
-    # them, then or later.
+    # A grace period (routing_protocol.grace_excluded: v3 menu B's added
+    # entries, or from v4 each entry until its own `scored_from`) leaves those
+    # entries' pairs unscored for every head alike: they are still pooled,
+    # published and fed to the reference, but no head is scored on them, then
+    # or later.
     scored: np.ndarray | None = None
 
     def __post_init__(self):
@@ -261,6 +267,8 @@ class Window:
     From protocol v3 it also holds each epoch's pooled exploration pairs and
     every scored head's odds on them (`pairs`, `odds`: int16 per pair, -1
     where the head has no row for the pair's model). Both are empty before v3.
+    From protocol v4 it holds each epoch's real-picks record (`picks`:
+    picks_v4.PicksEpoch, rule B's evidence), empty before v4.
     """
 
     size: int
@@ -268,6 +276,7 @@ class Window:
     heads: dict[str, dict[int, HeadEpoch]]
     pairs: dict[int, EpochPairs] = dataclasses.field(default_factory=dict)
     odds: dict[str, dict[int, np.ndarray]] = dataclasses.field(default_factory=dict)
+    picks: dict[int, object] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def empty(cls, size: int) -> Window:
@@ -275,7 +284,8 @@ class Window:
 
     def add_epoch(self, sl: EpochSlice, answers: Mapping[str, HeadEpoch],
                   pairs: EpochPairs | None = None,
-                  odds: Mapping[str, np.ndarray] | None = None) -> Window:
+                  odds: Mapping[str, np.ndarray] | None = None,
+                  picks: object | None = None) -> Window:
         """A new window with this epoch added and anything older than `size` dropped.
 
         Copy-on-write, like the rest of the epoch state (I1/I6: an epoch is
@@ -318,8 +328,14 @@ class Window:
                 kept_odds.setdefault(h, {})[sl.epoch] = o
         elif odds:
             raise ValueError("odds were given without the epoch's pairs")
+        # Protocol v4's real-picks record of the epoch (picks_v4.PicksEpoch).
+        kept_picks = {e: p for e, p in self.picks.items() if e >= oldest and e != sl.epoch}
+        if picks is not None:
+            if getattr(picks, "epoch", None) != sl.epoch:
+                raise ValueError("the picks record is not this epoch's")
+            kept_picks[sl.epoch] = picks
         return Window(size=self.size, slices=slices, heads=heads, pairs=kept_pairs,
-                      odds=kept_odds)
+                      odds=kept_odds, picks=kept_picks)
 
     def head_vectors(self, head: str, epoch: int) -> tuple[np.ndarray, np.ndarray]:
         """(grades, spends) of `head` on `epoch`'s slice. A failed call is 0 and 0."""

@@ -38,6 +38,23 @@ attested actually means", is the full statement):
       -> those answers are to the questions we asked
     per-question costs reconcile with the totals
       -> the cost figures are internally consistent
+
+Protocol v4 (docs/decisions/LIVE_MENU_V4.md, sections 4.1, 5, 8 and 12) adds,
+against the epoch's MenuState (`V4Expected`, built by `expected_v4`):
+
+    proof.menu_hash == menu_hash(MenuState(E)), namespace == identity_v4(it)
+      -> the run used the epoch's menu, not a stale or another one
+    every scored route is an entry of that menu
+      -> the head picked among the entries the epoch offers
+    exploration == the shared set, the cost-aware and the coverage parts
+      -> the nonce, the hotkey and the menu's shares chose every pair
+    proof.challenge: a prefix of the epoch's challenge list of 500 or 1000
+      -> a challenge is optional (FAST_CROWN_V4.md 2), never a chosen subset
+
+and under v4 the exploration failure bound is absolute and taken across the
+epoch's proofs (picks_v4.failure_refusals: more than FAIL_MAX_BP_V4 of a
+proof's exploration calls failed, outside an outage epoch), not the v1-v3
+comparison with the scored calls a v4 proof need not carry.
 """
 from __future__ import annotations
 
@@ -246,6 +263,221 @@ def unwrap_attestation(blob: bytes, extra_certs: "list[bytes] | None" = None
     return att["quote"], att["events"]
 
 
+@dataclass(frozen=True)
+class V4Expected:
+    """What one hotkey's protocol v4 proof must hold for epoch E, from
+    published inputs only (`expected_v4`): the epoch's menu and its hash, the
+    exploration the nonce, the hotkey and the menu's shares assign (the
+    shared set and the miner's two private parts)."""
+
+    state: object                                  # menu_state.MenuState of epoch E
+    menu_hash: str
+    hotkey: str
+    shared: dict[str, str]
+    cost_aware: dict[str, str]
+    coverage: dict[str, str]
+    # The epoch's challenge list, in order (epoch_plan.challenge_list_v4: the
+    # scored slice first). A challenge of n answers its first n.
+    challenge: tuple[str, ...] = ()
+
+    @property
+    def exploration(self) -> dict[str, str]:
+        """{question id: entry id}: the shared set and both private parts."""
+        return {**self.shared, **self.cost_aware, **self.coverage}
+
+    @property
+    def private_ids(self) -> frozenset[str]:
+        """The questions of the miner's private set: a pair on one of them is
+        weighed by the private set's weight when pooled (explore_pool)."""
+        return frozenset(self.cost_aware) | frozenset(self.coverage)
+
+
+def expected_v4(state, *, epoch: int, nonce: bytes, pool: list[dict], scored_ids,
+                hotkey: str, plan, shares=None, challenge_ids=None) -> V4Expected:
+    """`V4Expected` for `hotkey` in v4 epoch `epoch`, whose menu is `state`
+    (menu_state.menu_for_epoch's result for the epoch, carried or committed).
+
+    - exploration: `epoch_plan.exploration_plan_v4` on
+      `epoch_plan.explore_shares_v4(state)`, section 8's draw, which the TD
+      runs as `td_v4.exploration_v4`.
+
+    `nonce` is the epoch nonce as bytes (the harness's: bytes.fromhex of the
+    64-hex nonce), `scored_ids` the epoch's whole scored slice, and `plan` the
+    epoch's `td_v4.V4Plan`: `epoch_plan.plan_v4(pool)`, the one way to build
+    it, which the miner's TD runs too (its pool index). `shares` is the epoch's `epoch_plan.explore_shares_v4(state)`:
+    a function of the menu alone, so a validator computes it once per epoch
+    and hands it to every hotkey's expectation (None computes it here).
+    Shares over another set of entries are refused. Pure: every validator
+    derives the same expectation."""
+    from fugal_subnet import epoch_plan
+    from fugal_subnet import menu_state as ms
+
+    if not isinstance(state, ms.MenuState):
+        raise ValueError("a v4 expectation is read from the epoch's menu (a menu_state.MenuState)")
+    ms.validate(state)
+    if state.epoch != int(epoch):
+        raise ValueError(f"the menu given is the menu of epoch {state.epoch}, not of {epoch}")
+    if not hotkey:
+        raise ValueError("a v4 expectation is drawn for a hotkey")
+    scored = set(scored_ids)
+    if shares is None:
+        shares = epoch_plan.explore_shares_v4(state)
+    elif sorted(getattr(shares, "cost", ())) != list(state.ids()):
+        raise ValueError("the exploration shares handed in are not over this epoch's menu")
+    shared, cost_aware, coverage = epoch_plan.exploration_plan_v4(
+        nonce, pool, scored, shares, hotkey, plan.pool_index)
+    if challenge_ids is None:
+        # A plan that cannot draw the list (a slice of another size than its
+        # own) gives none: every challenge on it is then refused, never
+        # checked against a guess.
+        try:
+            challenge_ids = [q["question_id"]
+                             for q in plan.challenge_list(nonce, pool, len(scored))]
+        except (ValueError, AttributeError):
+            challenge_ids = []
+    return V4Expected(state=state, menu_hash=ms.menu_hash(state), hotkey=hotkey,
+                      shared=dict(shared), cost_aware=dict(cost_aware), coverage=dict(coverage),
+                      challenge=tuple(challenge_ids))
+
+
+def _v4_menu_check(proof: BenchmarkProof, v4: V4Expected) -> str | None:
+    """The proof ran on the epoch's menu: it names its hash, and its
+    namespace is identity_v4 of that hash (section 4.1; A7). A proof made on
+    the previous epoch's menu, or on any other, is refused here."""
+    from fugal_subnet.routing_protocol import identity_v4
+
+    if proof.menu_hash != v4.menu_hash:
+        return (f"The proof ran on menu {str(proof.menu_hash)[:16]}..., not on this epoch's menu "
+                f"{v4.menu_hash[:16]}...")
+    if proof.routing_protocol != identity_v4(v4.menu_hash):
+        return "The proof's evidence namespace is not identity_v4 of this epoch's menu"
+    if proof.endpoint_reads is None:
+        return "A v4 proof carries its endpoint reads (possibly none)"
+    return None
+
+
+def _v4_scored_check(proof: BenchmarkProof, v4: V4Expected,
+                     slice_ids: set[str] | None) -> str | None:
+    """The proof says whether it answered a challenge (its `scored` field),
+    and its results are what it says (FAST_CROWN_V4.md 2, package F4):
+
+    - `scored` false: no challenge, no scored result and no holder-side call:
+      the proof is exploration (and any measurement) only;
+    - `scored` true: a `challenge` of 500 or 1,000 questions; its scored
+      results are exactly the first `size` questions of the epoch's challenge
+      list (which begins with the whole slice), each once; with no holder
+      named, no holder-side call; with one, holder-side calls only on those
+      questions, each at most once and each to an entry other than the
+      proof's own pick on it;
+    - a result marked `not_started` is a holder-side call, and the calls so
+      marked are the last of the holder-side calls in the order the TD
+      starts them (picks_v4.call_order_key of the proof's nonce): a TD stops
+      starting calls when a budget runs out, never picks which to skip.
+
+    Anything else is refused whole: no proof keeps the questions its head
+    did well on, carries answers from anywhere else, or pairs a call the
+    challenge does not make. Whether each pick is the one the heads give,
+    and whether the holder is the one the epoch names, is the epoch's check
+    (v2_epoch._challenge_epoch): a challenge that fails it is not counted."""
+    got = [r.question_id for r in proof.scored_results]
+    held = proof.holder_results
+    if any(r.not_started and not r.holder_pick for r in proof.results):
+        return "Only a challenge's holder-side call may be reported not started"
+    if proof.scored is None:
+        return "A v4 proof says whether it answered a challenge (its `scored` field)"
+    if not proof.scored:
+        if got or held or proof.challenge is not None:
+            return (f"The proof says it answered no challenge but carries {len(got)} scored "
+                    f"results, {len(held)} holder-side calls"
+                    + (" and a challenge" if proof.challenge is not None else ""))
+        return None
+    ch = proof.challenge
+    if ch is None:
+        return "A v4 proof that answers a challenge says which (its `challenge` field)"
+    from fugal_subnet.tee.proof import CHALLENGE_SIZES
+
+    if ch.size not in CHALLENGE_SIZES:
+        return f"A challenge answers {' or '.join(map(str, CHALLENGE_SIZES))} questions"
+    if not v4.challenge:
+        return "This epoch's challenge list could not be drawn: the challenge cannot be checked"
+    if ch.size > len(v4.challenge):
+        return (f"The challenge answers {ch.size} questions; this epoch's challenge list holds "
+                f"{len(v4.challenge)}")
+    prefix = v4.challenge[:ch.size]
+    if slice_ids is not None and not set(slice_ids) <= set(prefix):
+        return "The challenge list does not begin with the epoch's slice"
+    if len(got) != len(set(got)) or set(got) != set(prefix):
+        missing = len(set(prefix) - set(got))
+        extra = len(set(got) - set(prefix))
+        return (f"The proof answers {len(got)} scored results against the first {ch.size} "
+                f"questions of the challenge list ({missing} missing, {extra} not in it, "
+                f"{len(got) - len(set(got))} repeated): a challenge is a prefix of the list")
+    if ch.holder is None:
+        if held:
+            return f"The challenge names no holder but carries {len(held)} holder-side calls"
+        return None
+    own = {r.question_id: r.routed_model for r in proof.scored_results}
+    hq = [r.question_id for r in held]
+    if len(hq) != len(set(hq)) or not set(hq) <= set(prefix):
+        return (f"The challenge's {len(hq)} holder-side calls are not distinct questions of its "
+                "prefix")
+    same = sorted(r.question_id for r in held if r.routed_model == own[r.question_id])
+    if same:
+        return (f"{len(same)} holder-side calls go to the proof's own pick (e.g. {same[0]}): the "
+                "holder is called only where the two picks differ")
+    from fugal_subnet.picks_v4 import call_order_key
+
+    nonce = proof.nonce
+    nonce_bytes = bytes.fromhex(nonce) if len(nonce) == 64 else nonce.encode()
+    in_order = sorted(held, key=lambda r: call_order_key(nonce_bytes, r.question_id))
+    flags = [bool(r.not_started) for r in in_order]
+    if any(flags) and flags != sorted(flags):
+        return ("The holder-side calls marked not started are not the last ones in the order "
+                "the TD starts them")
+    return None
+
+
+def _v4_route_check(proof: BenchmarkProof, v4: V4Expected) -> str | None:
+    """Every scored result is routed to an entry of the epoch's menu."""
+    ids = set(v4.state.ids())
+    off = sorted({r.routed_model for r in proof.scored_results + proof.holder_results
+                  if r.routed_model not in ids})
+    if off:
+        return f"{len(off)} scored routes name an entry not on this epoch's menu (e.g. {off[0]!r})"
+    return None
+
+
+def _v4_exploration_check(proof: BenchmarkProof, v4: V4Expected) -> str | None:
+    """The exploration results are exactly the assigned set: the shared set
+    and both private parts, each question once, each to its drawn entry
+    (section 8)."""
+    expected = v4.exploration
+    explored = {r.question_id: r.routed_model for r in proof.exploration_results}
+    if len(proof.exploration_results) != len(explored):
+        return (f"Duplicate exploration results: {len(proof.exploration_results)} entries for "
+                f"{len(explored)} questions")
+    if set(explored) != set(expected):
+        return (f"Exploration set mismatch: {len(expected)} questions assigned, "
+                f"{len(explored)} answered")
+    wrong = sorted(q for q, m in expected.items() if explored[q] != m)
+    if wrong:
+        return (f"{len(wrong)} exploration questions routed to an entry other than the one drawn "
+                f"(e.g. {wrong[0]})")
+    return None
+
+
+def _v4_head_check(head_bytes: bytes | None, v4: V4Expected) -> str | None:
+    """The head is a v4 head (head_eval.load_head_v4: today's format, rows
+    keyed by entry id, token means optional and ignored) with a row for an
+    entry of the epoch's menu; rows for other ids are never read (section
+    11.1). head_eval.v4_head_verdict, the one rule the TD and the miner use."""
+    from fugal_subnet.head_eval import v4_head_verdict
+    try:
+        return v4_head_verdict(head_bytes, v4.state)
+    except (KeyError, TypeError) as e:
+        return f"Incompatible success head: {e}"
+
+
 def verify_proof(
     proof: BenchmarkProof,
     approved_measurements: set[str],
@@ -264,6 +496,7 @@ def verify_proof(
     collateral_budget=None,
     protocol_version: int = 1,
     menu: str | None = None,
+    v4: V4Expected | None = None,
 ) -> VerifyResult:
     """Verify a miner's TEE-attested benchmark proof.
 
@@ -290,20 +523,40 @@ def verify_proof(
             benchmark_costs_for(head, version)); the harness stamps the same.
         menu: the epoch's v3 menu (routing_protocol.menu_for_epoch); on menu B
             a head built for menu A or menu B is accepted.
+        v4: protocol v4 only, and then required: this hotkey's `V4Expected`
+            (`expected_v4`). The namespace, the routes, the exploration and
+            the measurement are checked against it; `expected_exploration`,
+            if also given, must be its exploration. `gold_answers` must cover
+            the exploration and measurement questions too.
 
     Returns:
         VerifyResult with pass/fail and reason.
     """
     warnings: list[str] = []
-    # The namespace the harness stamps (harness: identity_for(version)); a
-    # second formatting of it here once refused every v3 proof (2026-11-16).
-    from fugal_subnet.routing_protocol import identity_for
-    expected_namespace = identity_for(int(protocol_version))
-    if proof.routing_protocol != expected_namespace:
-        return VerifyResult(
-            False,
-            f"Incompatible routing protocol evidence namespace for protocol v{int(protocol_version)}",
-        )
+    if int(protocol_version) >= 4:
+        # Protocol v4: the namespace is identity_v4 of the epoch's menu hash,
+        # so it is read from the epoch's menu and from nothing else.
+        if not isinstance(v4, V4Expected):
+            raise ValueError("verify_proof under protocol v4 needs this hotkey's V4Expected "
+                             "(expected_v4): the epoch's menu decides the namespace")
+        if v4.hotkey != (expected_hotkey or proof.hotkey):
+            raise ValueError("the V4Expected given was drawn for another hotkey")
+        if expected_exploration is not None and dict(expected_exploration) != v4.exploration:
+            raise ValueError("expected_exploration differs from the V4Expected's exploration")
+        expected_exploration = None          # checked against v4 below, once
+        why = _v4_menu_check(proof, v4)
+        if why:
+            return VerifyResult(False, why)
+    else:
+        # The namespace the harness stamps (harness: identity_for(version)); a
+        # second formatting of it here once refused every v3 proof (2026-11-16).
+        from fugal_subnet.routing_protocol import identity_for
+        expected_namespace = identity_for(int(protocol_version))
+        if proof.routing_protocol != expected_namespace:
+            return VerifyResult(
+                False,
+                f"Incompatible routing protocol evidence namespace for protocol v{int(protocol_version)}",
+            )
 
     # 1. DCAP attestation — proves the quote is genuine Intel-signed hardware.
     #    It does NOT prove the code was unmodified; check 3 does that.
@@ -410,7 +663,13 @@ def verify_proof(
     #    questions_hash alone proves nothing here: it is a public value, so a
     #    miner can copy it while grading an easier set entirely of its own
     #    choosing. Only comparing the result ids against the slice closes that.
-    if expected_question_ids is not None:
+    if v4 is not None:
+        # Protocol v4: the scored questions are optional, all or none, and
+        # the proof says which (_v4_scored_check).
+        why = _v4_scored_check(proof, v4, expected_question_ids)
+        if why:
+            return VerifyResult(False, why)
+    elif expected_question_ids is not None:
         actual_ids = {r.question_id for r in proof.scored_results}
         if actual_ids != expected_question_ids:
             missing = expected_question_ids - actual_ids
@@ -460,6 +719,14 @@ def verify_proof(
                 f"{expected_exploration[wrong[0]]!r})",
             )
 
+    # 6c. Protocol v4: the routes, the exploration and the measurement are
+    #     what the epoch's menu and the nonce assign (V4Expected).
+    if v4 is not None:
+        for check in (_v4_route_check, _v4_exploration_check):
+            why = check(proof, v4)
+            if why:
+                return VerifyResult(False, why)
+
     # 7. The head that ran must be the head committed on-chain before the nonce
     #    was knowable — otherwise a miner commits one head and runs another,
     #    and the evidence accumulator is keyed on a value it controls freely.
@@ -478,7 +745,11 @@ def verify_proof(
                 f"head is {actual[:16]}..., proof claims {proof.weights_hash[:16]}...",
             )
 
-    if not mock:
+    if not mock and v4 is not None:
+        why = _v4_head_check(head_bytes, v4)
+        if why:
+            return VerifyResult(False, why)
+    elif not mock:
         from fugal_subnet.head_eval import load_head_from_npz
         from fugal_subnet.routing_protocol import benchmark_costs_for
         try:
@@ -548,9 +819,12 @@ def verify_proof(
     #     signature of blocking that phase, and it is rejected whole. An
     #     outage that takes both down equally passes this -- it is the
     #     DIFFERENCE that is judged -- and is then merely a bad epoch.
+    #     Under v4 the bound is absolute and taken across the epoch's proofs
+    #     (picks_v4.failure_refusals), because a v4 proof need not carry a
+    #     scored pass to compare with.
     n_explore = len(proof.exploration_results)
     n_scored = len(proof.scored_results)
-    if n_explore and n_scored:
+    if n_explore and n_scored and v4 is None:
         explore_fail = sum(1 for r in proof.exploration_results if r.failed) / n_explore
         scored_fail = sum(1 for r in proof.scored_results if r.failed) / n_scored
         if explore_fail - scored_fail > EXPLORE_FAIL_MARGIN:

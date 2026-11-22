@@ -11,6 +11,11 @@ import json
 from dataclasses import dataclass, field
 
 from fugal_subnet.routing_protocol import identity
+from fugal_subnet.tee.endpoint_reads import (
+    EndpointRead,
+    reads_from_json,
+    reads_to_json,
+)
 
 
 def compute_questions_hash(question_ids: list[str]) -> str:
@@ -52,6 +57,27 @@ class QuestionResult:
     # number the miner cannot choose. None on v1 proofs, and then absent from
     # the hashed payload, so a v1 proof hashes exactly as it did before.
     latency_ms: int | None = None
+    # Protocol v4 (docs/decisions/LIVE_MENU_V4.md, section 12). Each is None on
+    # an earlier protocol's result and then absent from the hashed payload and
+    # from the JSON, so such a result hashes exactly as before.
+    # `provider_cost`: what the provider billed for this call (`usage.cost` of
+    # its replies), in integer nanodollars; None when no reply reported one.
+    provider_cost: int | None = None
+    # `served_by`: the provider that answered, as its reply names it ("" when
+    # it names none).
+    served_by: str | None = None
+    # `holder_pick`: True on a challenge's holder-side call (FAST_CROWN_V4.md
+    # 2): the seat holder's pick on a challenge question where it differs from
+    # the challenger's own. Such a result is not the challenger's answer
+    # (`BenchmarkProof.scored_results` leaves it out; `holder_results` lists
+    # it). Absent (None) on every other result.
+    holder_pick: bool | None = None
+    # `not_started`: True on a holder-side call the challenger's TD did not
+    # start (its time or dollar budget ran out first, in the order
+    # picks_v4.call_order_key gives). Such a result is failed, wrong, with no
+    # tokens and no cost; it is no item of the challenge
+    # (picks_v4.challenge_items). Absent (None) on every other result.
+    not_started: bool | None = None
 
     def hash_payload(self) -> dict:
         """The fields `content_hash` covers for this result.
@@ -77,13 +103,29 @@ class QuestionResult:
             payload["failed"] = True
         if self.latency_ms is not None:
             payload["latency_ms"] = self.latency_ms
+        if self.provider_cost is not None:
+            payload["provider_cost"] = self.provider_cost
+        if self.served_by is not None:
+            payload["served_by"] = self.served_by
+        if self.holder_pick is not None:
+            payload["holder_pick"] = self.holder_pick
+        if self.not_started is not None:
+            payload["not_started"] = self.not_started
         return payload
 
     def to_dict(self) -> dict:
         return {**self.hash_payload(), "failed": self.failed}
 
     @classmethod
-    def from_dict(cls, d: dict) -> QuestionResult:
+    def from_dict(cls, d: dict, *, v4_fields: bool = True) -> QuestionResult:
+        # `v4_fields` False reads a result of a v1-v3 proof: protocol v4's
+        # keys are not read at all, exactly as before they existed.
+        if not v4_fields:
+            d = {k: v for k, v in d.items() if k not in V4_RESULT_KEYS}
+        elif "measure_for" in d:
+            # Proposals are filed on chain and measured by the field's
+            # exploration (FAST_CROWN_V4.md 18): no v4 result measures one.
+            raise ValueError("a v4 result carries no measure_for: no proof measures a proposal")
         # Numbers are kept EXACTLY as the JSON carried them. `content_hash`
         # canonicalises `hash_payload()`, and JSON distinguishes `0` from
         # `0.0`: the miner hashes the in-memory object it serialised, so a
@@ -94,7 +136,7 @@ class QuestionResult:
         # `report_data == content_hash` while the quotes were genuine. Types
         # are still checked: a bool (a JSON true/false, which Python would
         # happily treat as 1/0) or a string is rejected, never reinterpreted.
-        return cls(
+        r = cls(
             question_id=d["question_id"],
             routed_model=d["routed_model"],
             correct=bool(d["correct"]),
@@ -105,7 +147,33 @@ class QuestionResult:
             is_exploration=bool(d.get("is_exploration", False)),
             failed=bool(d.get("failed", False)),
             latency_ms=_latency_ms(d["latency_ms"]) if "latency_ms" in d else None,
+            provider_cost=(_provider_cost(d["provider_cost"]) if "provider_cost" in d else None),
+            served_by=_served_by(d["served_by"]) if "served_by" in d else None,
+            holder_pick=_holder_pick(d["holder_pick"]) if "holder_pick" in d else None,
+            not_started=_not_started(d["not_started"]) if "not_started" in d else None,
         )
+        if r.holder_pick and r.is_exploration:
+            raise ValueError("a holder-side challenge call is not exploration")
+        if r.not_started and not (r.holder_pick and r.failed and not r.correct
+                                  and r.prompt_tokens == 0 and r.completion_tokens == 0
+                                  and r.cost_usd == 0 and r.provider_cost is None):
+            raise ValueError("only a holder-side call is reported not started, and then failed, "
+                             "with no tokens and no cost")
+        return r
+
+
+def _holder_pick(value):
+    """Present only as JSON true: a holder-side challenge call."""
+    if value is not True:
+        raise ValueError("holder_pick is present only as true")
+    return value
+
+
+def _not_started(value):
+    """Present only as JSON true: a holder-side call not started."""
+    if value is not True:
+        raise ValueError("not_started is present only as true")
+    return value
 
 
 def _latency_ms(value):
@@ -114,6 +182,40 @@ def _latency_ms(value):
     or negative value is rejected, never reinterpreted."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"latency_ms must be a non-negative integer, got {value!r}")
+    return value
+
+
+# Protocol v4's keys. A proof in a v1-v3 namespace is read as it was before
+# they existed: its v4 keys are not read, so they are neither hashed nor
+# refused, on every validator alike (`BenchmarkProof.from_dict`). `proposal`
+# and `measure_for` are kept in these sets for that reason only: a v4 proof
+# that carries either is refused (proposals are filed on chain).
+V4_RESULT_KEYS = frozenset({"provider_cost", "served_by", "measure_for", "holder_pick",
+                            "not_started"})
+V4_PROOF_KEYS = frozenset({"menu_hash", "endpoint_reads", "proposal", "scored", "challenge"})
+
+# Bounds on protocol v4's per-result fields (I2).
+MAX_PROVIDER_COST_NANO = 10**12      # $1,000 for one call: far above any real one
+MAX_SERVED_BY_LEN = 64
+
+
+def _provider_cost(value):
+    """Billed nanodollars: a non-negative JSON integer, bounded, kept as carried."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_PROVIDER_COST_NANO:
+        raise ValueError(f"provider_cost must be an integer in 0..{MAX_PROVIDER_COST_NANO}")
+    return value
+
+
+def served_by_ok(value) -> bool:
+    """A provider name a proof may carry: printable ASCII, at most MAX_SERVED_BY_LEN."""
+    return (isinstance(value, str) and len(value) <= MAX_SERVED_BY_LEN
+            and all(0x20 <= ord(c) <= 0x7E for c in value))
+
+
+def _served_by(value):
+    if not served_by_ok(value):
+        raise ValueError(f"served_by must be printable ASCII of at most {MAX_SERVED_BY_LEN} "
+                         "characters")
     return value
 
 
@@ -154,6 +256,52 @@ def _parse_tpm_intermediates(raw) -> list[bytes]:
     return out
 
 
+# A challenge's sizes as a proof may carry them (config.CHALLENGE_SIZES_V4).
+CHALLENGE_SIZES = (500, 1000)
+_CHALLENGE_KEYS = frozenset({"size", "holder"})
+
+
+@dataclass(frozen=True)
+class Challenge:
+    """What a v4 proof's challenge is (FAST_CROWN_V4.md 2): the first `size`
+    questions of the epoch's challenge list, paired with the seat holder whose
+    head hash is `holder` (None: no holder was named, the open form, and no
+    holder-side call is made)."""
+
+    size: int
+    holder: str | None
+
+    def to_json(self) -> dict:
+        return {"size": self.size, "holder": self.holder}
+
+    @classmethod
+    def from_json(cls, d) -> Challenge:
+        """One encoding, strict: exactly `size` (500 or 1000, a JSON integer)
+        and `holder` (64 lowercase hex characters, or null)."""
+        if not isinstance(d, dict) or set(d) != _CHALLENGE_KEYS:
+            raise ValueError(f"a challenge must be an object with exactly {sorted(_CHALLENGE_KEYS)}")
+        size, holder = d["size"], d["holder"]
+        if type(size) is not int or size not in CHALLENGE_SIZES:
+            raise ValueError(f"a challenge's size is one of {CHALLENGE_SIZES}")
+        if holder is not None:
+            _menu_hash(holder)
+        return cls(size=size, holder=holder)
+
+
+def _earlier_namespace(routing_protocol) -> bool:
+    """True when a proof names the v1, v2 or v3 evidence namespace."""
+    from fugal_subnet.routing_protocol import identity_for
+    return isinstance(routing_protocol, str) and routing_protocol in {
+        identity_for(v) for v in (1, 2, 3)}
+
+
+def _menu_hash(value) -> str:
+    if (not isinstance(value, str) or len(value) != 64
+            or any(c not in "0123456789abcdef" for c in value)):
+        raise ValueError("menu_hash must be 64 lowercase hex characters")
+    return value
+
+
 @dataclass
 class BenchmarkProof:
     epoch_id: str
@@ -188,14 +336,42 @@ class BenchmarkProof:
     # from the v2 image is byte-identical for a validator not yet upgraded.
     # Omitted from to_dict when empty. Bounded in from_dict (I2).
     tpm_intermediates: list[bytes] = field(default_factory=list)
+    # Protocol v4 (docs/decisions/LIVE_MENU_V4.md, section 12). None on every
+    # earlier proof, and then absent from content_hash and from to_dict, so
+    # such a proof keeps its bytes and its hash. A v4 proof always carries
+    # `menu_hash` (the menu its run used, whose identity_v4 is its
+    # `routing_protocol`) and `endpoint_reads` (possibly empty: a failed read
+    # leaves no record).
+    menu_hash: str | None = None
+    endpoint_reads: tuple[EndpointRead, ...] | None = None
+    # `scored`: whether the TD answered the epoch's scored questions
+    # (docs/decisions/SEAT_MINIMAL_V4.md 3.4: they are optional under v4).
+    # True: the results hold the whole scored slice; False: none of it, and
+    # the proof is exploration only. A v4 proof always
+    # says which (verify_proof refuses one that does not, and one whose
+    # results disagree with what it says: all of the slice or none).
+    scored: bool | None = None
+    # `challenge` (FAST_CROWN_V4.md 2): present exactly when `scored` is true.
+    # The proof's scored results are then its own picks on the first
+    # `challenge.size` questions of the epoch's challenge list (the scored
+    # slice first), and its `holder_results` the holder's picks where they
+    # differ from its own.
+    challenge: Challenge | None = None
 
     @property
     def scored_results(self) -> list[QuestionResult]:
-        """Results the miner is judged on — exploration is excluded."""
-        return [r for r in self.results if not r.is_exploration]
+        """Results the miner is judged on — exploration is excluded, and so
+        is a v4 challenge's holder-side call (it is not the miner's answer)."""
+        return [r for r in self.results if not r.is_exploration and not r.holder_pick]
+
+    @property
+    def holder_results(self) -> list[QuestionResult]:
+        """A v4 challenge's holder-side calls (`holder_pick` set)."""
+        return [r for r in self.results if r.holder_pick]
 
     @property
     def exploration_results(self) -> list[QuestionResult]:
+        """Exploration answers: the nonce assigned the entry."""
         return [r for r in self.results if r.is_exploration]
 
     @property
@@ -249,6 +425,7 @@ class BenchmarkProof:
             # Bound when present (see the field). Absent otherwise, so every
             # proof without intermediates hashes exactly as before.
             payload["tpm_intermediates"] = [c.hex() for c in self.tpm_intermediates]
+        payload.update(self._v4_fields())
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -268,11 +445,37 @@ class BenchmarkProof:
             "timestamp": self.timestamp,
             **({"tpm_intermediates": [c.hex() for c in self.tpm_intermediates]}
                if self.tpm_intermediates else {}),
+            **self._v4_fields(),
         }
+
+    def _v4_fields(self) -> dict:
+        """The v4 fields that are present, in their JSON form: the same in
+        content_hash and in to_dict."""
+        out: dict = {}
+        if self.menu_hash is not None:
+            out["menu_hash"] = self.menu_hash
+        if self.endpoint_reads is not None:
+            out["endpoint_reads"] = reads_to_json(self.endpoint_reads)
+        if self.scored is not None:
+            out["scored"] = self.scored
+        if self.challenge is not None:
+            out["challenge"] = self.challenge.to_json()
+        return out
 
     @classmethod
     def from_dict(cls, d: dict) -> BenchmarkProof:
-        results = [QuestionResult.from_dict(r) for r in d["results"]]
+        # A proof in a v1, v2 or v3 namespace is read exactly as before
+        # protocol v4's fields existed: its v4 keys are not read, so they are
+        # neither hashed nor refused, and every validator, whichever release
+        # it runs, reaches the same verdict on it. Any other proof has its v4
+        # fields read, strictly.
+        if _earlier_namespace(d.get("routing_protocol", "")):
+            d = {k: v for k, v in d.items() if k not in V4_PROOF_KEYS}
+            results = [QuestionResult.from_dict(r, v4_fields=False) for r in d["results"]]
+        elif "proposal" in d:
+            raise ValueError("a v4 proof carries no proposal: proposals are filed on chain")
+        else:
+            results = [QuestionResult.from_dict(r) for r in d["results"]]
         return cls(
             # Absent rather than empty for a proof written before this field
             # existed. Either way it fails verification; the distinction only
@@ -290,4 +493,16 @@ class BenchmarkProof:
             attestation_quote=bytes.fromhex(d["attestation_quote"]),
             timestamp=d["timestamp"],
             tpm_intermediates=_parse_tpm_intermediates(d.get("tpm_intermediates", [])),
+            menu_hash=_menu_hash(d["menu_hash"]) if "menu_hash" in d else None,
+            endpoint_reads=(reads_from_json(d["endpoint_reads"]) if "endpoint_reads" in d
+                            else None),
+            scored=_scored_flag(d["scored"]) if "scored" in d else None,
+            challenge=Challenge.from_json(d["challenge"]) if "challenge" in d else None,
         )
+
+
+def _scored_flag(value) -> bool:
+    """A JSON true or false, kept as carried; anything else is refused."""
+    if not isinstance(value, bool):
+        raise ValueError("scored must be true or false")
+    return value

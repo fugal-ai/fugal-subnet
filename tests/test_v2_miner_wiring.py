@@ -111,6 +111,18 @@ def test_the_pre_flip_commit_gives_up_loudly_at_the_deadline(monkeypatch, caplog
     assert sum("commit attempt" in r.getMessage() for r in caplog.records) == len(sub.attempts)
 
 
+def test_under_protocol_4_a_commit_after_the_deadline_is_no_error(monkeypatch, caplog):
+    """A v4 miner restarted after the flip commits at once: nothing rejects a
+    v4 head for it, so no ERROR says otherwise (v1-v3 unchanged, above)."""
+    miner = _miner(monkeypatch)
+    sub = _FlakySub(start=1040, fails=0)
+    with caplog.at_level("INFO"):
+        assert miner._commit_before_deadline(sub, _Wallet(), 70, "ab" * 32, deadline=1030,
+                                             retry_blocks=2, protocol=4) is False
+    assert not any(r.levelname == "ERROR" for r in caplog.records)
+    assert not any("reject" in r.getMessage() for r in caplog.records)
+
+
 def test_a_chain_read_error_does_not_kill_the_pre_flip_commit(monkeypatch):
     miner = _miner(monkeypatch)
     sub = _FlakySub(start=1000, fails=1)

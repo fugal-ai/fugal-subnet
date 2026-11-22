@@ -4,6 +4,55 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-22
+
+### Upgrade BEFORE block 9,572,760 (epoch 26591): protocol v4
+- **Protocol v4 switches on at block 9,572,760** (compiled as
+  `FINNEY_V4_ACTIVATION_BLOCK`; the finney compose sets
+  `FUGAL_V4_ACTIVATION_BLOCK` to the same value). Until the block everything
+  runs v3 exactly.
+- **Validators:** update to `main` at or after the merge that adds the
+  v0.7.0 frozen composes, run `uv sync --locked --extra tee`, then
+  `python neurons/validator.py --check` (exit 0, a `READY:` line ending
+  `v4 ok (block 9572760, ...)`), then restart, before the block. Every
+  validator must run v0.7.0 before the root's first v4 commitment. Keep an
+  archive endpoint (finney's default) behind the connection: across the
+  block the published set is read from the release's seed forward.
+- **Miners:** provision a TD on the v0.7.0 image with its frozen finney
+  compose before the block, with a v4 head (rows keyed by menu entry id);
+  keep the v3 TD serving until the block (`docs/MINER_GUIDE.md`, "Moving to
+  protocol v4").
+- At the block the seat and the evidence window start empty.
+
+### Added — protocol v4 (consensus; from block 9,572,760)
+- **A live menu.** The menu starts as the pinned seed
+  (`menu_v4_seed.json`, a9fc6275..., 59 entries) and changes by published
+  rules: provider prices followed at refresh epochs, failing entries
+  retired, and new entries proposed on chain by any miner from a lab and
+  host on the signed list, measured by the field and joined without a
+  release (`docs/decisions/LIVE_MENU_V4.md`, `docs/decisions/FAST_CROWN_V4.md`).
+- **The first signed lab and host list** ships:
+  `fugal_subnet/signed_lists/menu_allowlist.json`, serial 1, 19 labs and 26
+  hosts, signed by the release key under `fugal-list@fugalai.com`.
+- **The seat on odds, with an optional challenge.** A head takes the seat by
+  beating the holder (or the reference) on odds over fresh labels, showing
+  its real picks are not worse in a challenge of 500 or 1,000 questions it
+  chooses to pay for, and beating earlier contenders
+  (`docs/decisions/SEAT_MINIMAL_V4.md`). Every miner answers exploration
+  each epoch (about $0.78 of measured calls); the 200 daily scored questions
+  go away.
+- **Measured costs.** Routing is priced from the menu's measured costs, not
+  a fixed table.
+- **Miner options** over provisioning: `--v4-challenge` (0, 500, 1000),
+  `--v4-challenge-usd` (the dollar ceiling on a challenge's realised spend,
+  default 100, checked against an estimate first) and `--v4-proposal`.
+- **A memorisation check** on questions published before a head's commit,
+  from the published-set seed (`published_v4.json`, through e00026509),
+  brought forward by the root's reveals.
+- **`--check`** on both neurons, and READY lines that say what v4 needs.
+- `scripts/set_v4_activation_block.py` sets the block in the code, the
+  finney compose and these notes together.
+
 ### Added — verified heads are published by hash (validators; a notice for miners)
 The root validator now uploads the bytes of every head it verified to the
 reveal bucket, `heads/<netuid>/<sha256>.npz`. A head that holds or has held a
@@ -44,6 +93,44 @@ validator too; `0`: off) and `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` (default 32;
   `run_tee_attacks` gains four cases (a certificate that may not issue, an
   expired intermediate, a CA of the attacker's own at a Google CA address, an
   issuer address aimed at the operator's machine).
+
+### Added — protocol v4 building blocks (no effect on v3; nothing reads them before a v4 activation block)
+- `fugal_subnet/menu_rules.py`: the compiled rules a v4 menu entry must pass
+  (lab and host allowlists, a pinned host order with fallbacks off, one
+  quantization, the fixed reasoning settings, the answer limit, duplicates
+  and cooldowns), each a pure function that names the rule it refused under;
+  and signed lists, verified in process and offline
+  (`docs/decisions/LIVE_MENU_V4.md`, sections 6 and 13.4).
+- The release keys in `deploy/keys/allowed_signers` are also listed for the
+  signature namespace `fugal-list@fugalai.com`. Tag verification is
+  unchanged. `deploy/keys/README.md` has the signing and verification
+  commands; `scripts/signed_list.py` prepares and checks a list.
+- `data/menu_allowlist.draft.json`: an unsigned draft of the first lab and
+  host allowlist, derived from the v3 menu, for the owner to review and sign.
+- `scripts/check_safety_invariants.py` pins the list signers and requires a
+  shipped list to carry a valid signature and a pin.
+- `fugal_subnet/menu_state.py`: the v4 menu as published state (`MenuState`,
+  integers and strings only), its one canonical encoding and `menu_hash`,
+  the pure derivation step, and `menu_for_epoch`, the one rule for which
+  menu an epoch runs on (`docs/decisions/LIVE_MENU_V4.md`, sections 4, 5 and
+  9). `routing_protocol.identity_v4(menu_hash)` is the v4 proof namespace;
+  the v1-v3 identities are unchanged.
+- The step and the reader apply the compiled rules themselves: the step is
+  handed the signed list and decides what a newer list retires and which
+  filings pass; the reader refuses a committed menu that fails the rules and
+  names the carried menu as the one the epoch runs on.
+- `data/menu_v4_seed.json` (copy in `fugal_subnet/routing_data/`): the menu
+  of the first v4 epoch, hash-pinned, rebuilt byte for byte by
+  `scripts/build_menu_v4_seed.py` from a saved public listing and integer
+  sums of named published reveals. Every entry passes the compiled rules
+  against that listing.
+- `scripts/check_determinism.py` gains the `menu_derivation` stage.
+- Protocol v4 exploration (W5, inert): shares from the menu state's measured
+  costs, a 16-call coverage part per miner (damped, expected-spend capped at
+  $0.40) beside the 24-call cost-aware part, and each pair weighted by the
+  probability of its own draw (`explore_weights.plan_shares_v4`,
+  `epoch_plan.explore_shares_v4` / `exploration_plan_v4`). The
+  `explore_shares_v4` determinism stage.
 
 ## [0.6.0] - 2026-11-17
 
@@ -2003,7 +2090,8 @@ commitment block, both read from chain at the boundary; no per-validator map.)*
 - Mock integration pipeline, adversarial grader suite, and Docker local-testnet tooling.
 - Miner and validator operating guides.
 
-[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/fugal-ai/fugal-subnet/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.2...v0.5.0
 [0.3.2]: https://github.com/fugal-ai/fugal-subnet/compare/v0.3.1...v0.3.2

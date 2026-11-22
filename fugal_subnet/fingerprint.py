@@ -91,8 +91,14 @@ def grader_hash() -> str:
     return f"{canonical()}+code:{graders_code.grader_hash()}"
 
 
-def environment_fingerprint() -> dict:
-    """A JSON-serializable record of everything that can change a score."""
+def environment_fingerprint(protocol_version: int | None = None) -> dict:
+    """A JSON-serializable record of everything that can change a score.
+
+    `protocol_version` is the epoch's: from 4 the record gains a `v4`
+    section (fugal_subnet/consensus_v4.py: every v4 constant and pinned
+    file), which the digest then covers. Before 4, or without a version,
+    there is no such section and the record, and its digest, are exactly
+    what a v1-v3 epoch published before v4 was built."""
     from fugal_subnet import config
     from fugal_subnet.config import (
         EPOCH_COLLECT_FRACTION,
@@ -103,7 +109,7 @@ def environment_fingerprint() -> dict:
         SLICE_SIZE,
     )
 
-    return {
+    fp = {
         "fugal_version": fugal_subnet.__version__,
         "routing_protocol": __import__("fugal_subnet.routing_protocol", fromlist=["identity"]).identity(),
         "python": platform.python_version(),
@@ -155,6 +161,12 @@ def environment_fingerprint() -> dict:
                 "env": _env_unless_finney(config.V3_ACTIVATION_BLOCK_ENV,
                                           config.FINNEY_V3_ACTIVATION_BLOCK),
             },
+            # Protocol v4: off finney only (no release has a finney block, and
+            # finney refuses the variable). Recorded only when set, so a
+            # neuron without it publishes the digest it published before; the
+            # activation package puts the compiled block here for good.
+            **({"v4_activation_block": config.V4_ACTIVATION_BLOCK_ENV}
+               if getattr(config, "V4_ACTIVATION_BLOCK_ENV", None) is not None else {}),
             "embeddings_v3": config.EMBEDDINGS_SHA256,
             # v3 menu B: its block (the same two ways), its grace and its
             # pinned files (the menu A files are covered by identity_v3).
@@ -220,6 +232,11 @@ def environment_fingerprint() -> dict:
         },
         "approved_entries": sorted(config.TEE_APPROVED_MEASUREMENTS),
     }
+    if protocol_version is not None and int(protocol_version) >= 4:
+        from fugal_subnet import consensus_v4
+
+        fp["v4"] = consensus_v4.section()
+    return fp
 
 
 def _env_unless_finney(env, finney):
@@ -333,7 +350,7 @@ def _file_sha256(path) -> str | None:
         return None
 
 
-def consensus_digest(fingerprint: dict | None = None) -> str:
+def consensus_digest(fingerprint: dict | None = None, protocol_version: int | None = None) -> str:
     """One short hash over the score-affecting subset of the fingerprint.
 
     Platform and thread counts are excluded — they differ legitimately between
@@ -341,8 +358,14 @@ def consensus_digest(fingerprint: dict | None = None) -> str:
     kernel dispatch, the grader, and the routing constants. Two validators
     whose digests agree should produce identical scores; two that disagree have
     an explanation for why they did not.
+
+    A fingerprint taken for a v4 epoch (`protocol_version` 4, or a
+    `fingerprint` that carries the `v4` section) adds that section to the
+    material; any other digest is computed from exactly the material it
+    always was.
     """
-    fp = fingerprint if fingerprint is not None else environment_fingerprint()
+    fp = (fingerprint if fingerprint is not None
+          else environment_fingerprint(protocol_version=protocol_version))
     material = {
         "epoch": fp["epoch"],
         "scoring": fp.get("scoring", {}),
@@ -357,6 +380,8 @@ def consensus_digest(fingerprint: dict | None = None) -> str:
         "grader_sha256": fp["grader_sha256"],
         "routing": fp["routing"],
     }
+    if "v4" in fp:
+        material["v4"] = fp["v4"]
     import json
 
     canonical = json.dumps(material, sort_keys=True, separators=(",", ":"))

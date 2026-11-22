@@ -87,10 +87,13 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 ### Identity and constants
 - `config.py` → every env-overridable constant (single source), with the reason each value is what it is. The three lists at the bottom classify every `FUGAL_` variable: consensus (digested, refused on finney), consensus input, operational.
 - `fingerprint.py` → the consensus digest (what a score was computed with), the finney refusals for `--mock` and for consensus overrides, the code fingerprint in the reveal
+- `consensus_v4.py` → protocol v4's section of that digest (present only in a v4 epoch's fingerprint, so a v1-v3 epoch's digest is unchanged): the activation block, every registered v4 constant in an exact canonical form, and the sha256 of every pinned v4 file (`PINNED_FILES`: the menu seed, the mix, the list signers, the signed lists, the published-set seed). `problems()` keeps the registry complete: every UPPER_CASE constant of a scanned module is registered, named in `NOT_V4` with its reason, or a pre-v4 name; a new v4 module, constant or data file fails the safety check and `tests/test_consensus_v4.py` until it is classified
 - `determinism.py` → pins CPU kernel dispatch; imported before numpy and torch by both neurons
 - `routing_protocol.py` / `pricing.py` → the protocol identity (price table + token manifest per protocol version, hash-pinned) and the cost of a routing policy from shared data alone
 - `routing_data/` → the copies of `data/models*.json` and the token manifests that the identity hashes (must be byte-identical to `data/`; the safety check enforces it)
+- `menu_rules.py` + `signed_lists/` → protocol v4 (design: `docs/decisions/LIVE_MENU_V4.md`; **nothing on the v1-v3 path imports it**): the compiled rules a menu entry must pass (a new proposal and an entry already on the menu differ only in how a pinned host missing from the listing is treated), and the signed lists they read (lab and host allowlist, device list), verified in process against the pinned copy of `deploy/keys/allowed_signers`. The rules' constants live here and nowhere else
 - `vendor/success_contract.py` → the portable head contract (file format, cost estimate, ranking rule); vendored from fugal-core, byte-compared in CI
+- `menu_state.py` → protocol v4 (design: `docs/decisions/LIVE_MENU_V4.md`; **nothing on the v1-v3 path imports it**): the menu as published state (`MenuState`, integers and strings only), its one canonical encoding and `menu_hash`, the pure derivation step (it is handed the signed list and applies `menu_rules` itself: what a list refuses is never an input), the two measured costs (`costs`, the call cost exploration reads; `pick_costs` / `pick_cost`, the pick-cost table picks, the product and net value read: W13, from graded scored-question cells via `menu_inputs.graded_cells`), the rule for which menu an epoch runs on (`menu_for_epoch`: a committed menu that fails the rules is `MenuRefused` and the carried one runs; without the bytes or the list, `MenuUnavailable`), and the pinned seed `routing_data/menu_v4_seed.json` (built by `scripts/build_menu_v4_seed.py`). `routing_protocol.identity_v4(menu_hash)` is the v4 proof namespace
 
 ### Questions (both neurons)
 - `benchmarks/loader.py` + per-benchmark loaders, `benchmarks/v2_sets.py` → the pinned pools (v1: 5 benchmarks, v2: 10 open-licence benchmarks in 4 categories), checked against `pool_manifest*.json`
@@ -101,7 +104,8 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 - `graders.py` → the deterministic checkers (consensus-critical, hash-versioned, immutable)
 
 ### The miner's head
-- `head_eval.py` → load and validate a head, evaluate it against a ground-truth matrix (success-contract heads rank by probability minus dollars)
+- `head_eval.py` → load and validate a head, evaluate it against a ground-truth matrix (success-contract heads rank by probability minus dollars); `load_head_v4` is protocol v4's acceptance (today's format, rows keyed by entry id, token means optional and never read), written beside the vendored contract
+- `head_odds.py` → a head's exact integer odds (v3), and `picks_and_odds_v4`, the one function the v4 TD routes with and a validator recomputes with: odds on the epoch's menu in its order, picks priced at the menu's pick costs (`menu_state.pick_costs`) in Fractions
 - `backbone.py` → Qwen3-0.6B hidden states (CPU float32 only; CUDA and float16 are refused)
 - `api.py` → OpenRouter client (used by the miner inside the TEE, never by the validator)
 - `scale.py` → SCALE codec, enough to read a TDX event log
@@ -111,8 +115,10 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 1. `tee/harness.py` → runs the benchmark: loads the head, routes, calls models via the proxy (24 in flight, 16k tokens in v2), grades, produces the proof
 2. `tee/runtime.py` → MeteringProxy (records every call with tokens and cost) + TEERuntime (TDX attestation)
 3. `tee/provision.py` → the attested provisioning channel (head, wallet, API key in; operator-only log pull out)
-4. `tee/proof.py` → BenchmarkProof and QuestionResult data models
-5. `tee/dstack_client.py` → the dstack guest agent socket (quotes, keys)
+   - `tee/v4_options.py` → the operator's own v4 options (proposal, measurement ceiling, scored mode) as the provisioning push carries them: the strict parsers the miner's CLI/env path also uses, checked at the push boundary
+4. `tee/proof.py` → BenchmarkProof and QuestionResult data models (the protocol v4 fields are hashed and serialised only when present, so earlier proofs keep their bytes)
+5. `tee/td_v4.py` + `tee/endpoint_reads.py` → protocol v4, the TD side (**nothing on the v1-v3 path imports them**): the epoch's menu read through `menu_state.menu_for_epoch` and checked against the compiled rules before any call (no menu, no proof), wire requests from an entry's named fields, the strict keyless read of OpenRouter's endpoints listing (integer picodollars), measurement of the miner's own proposals under its spend ceiling, proposal filing, and `V4Session` (the TD's menu across epochs)
+6. `tee/dstack_client.py` → the dstack guest agent socket (quotes, keys)
 
 ### Validator pipeline (verification, no model calls)
 1. `protocol.py` → FugalProofSynapse wire format (epoch_id + nonce → proof_json + head_npz_b64 + proof_hash + weights_hash + event_log_json, all inline and size-capped)
@@ -122,14 +128,24 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 5. `tee/verify.py` → verifies a proof end to end: attestation, measurement against the approved entries, nonce, questions hash, head against commitment, cost consistency
 6. `shared_grades.py` → protocol v2: one grade per (question, model) cell per epoch, shared by every head that routed there
 7. `commit_reveal.py` + `reveal_publisher.py` → the epoch artifact (commit hash on chain, then the reveal), written atomically and published to the public store
-8. `head_publisher.py` → the root publishes every verified head by sha256: a seat holder's with the reveal that lists it, any other head after `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` epochs (operational, feeds no score; `reveal_sync.fetch_head` reads one back and checks the hash)
+8. `menu_publish.py` → protocol v4 (**nothing on the v1-v3 path imports it**): the root publishes the menu it derived (bytes and newly named signed lists put in the store and read back) before its hash goes into the reveal commitment (`reveal:<epoch>:<sha256>:<menu hash token>`); every node reads the root's commitment for E - MENU_LAG pinned at E's boundary and runs `menu_state.menu_for_epoch`; the others publish `menu_audit`; a node that missed epochs walks the chain forward (`rebuild`). The read helpers for miners and the product are in `reveal_sync` (`fetch_menu_bytes`, `fetch_signed_list`)
+9. `head_publisher.py` → the root publishes every verified head by sha256: a seat holder's with the reveal that lists it, any other head after `FUGAL_PUBLISH_HEADS_AFTER_EPOCHS` epochs (operational, feeds no score; `reveal_sync.fetch_head` reads one back and checks the hash)
 
 ### Scoring, protocol v2 (`release/v2`)
 - `v2_epoch.py` → one epoch end to end: verified proofs → shared grades → the comparison window → the seat decision → the weight vector → the reveal's v2 fields
 - `champion.py` → the paired net-value test (integer units, deterministic bootstrap), the comparison window, the seat machine (first / hold / take / ghost / resume) and its accuracy gates
+- `picks_v4.py` → protocol v4's real-picks check (rule B, `docs/decisions/SEAT_MINIMAL_V4.md` 3.4; **nothing on the v1-v3 path calls it**): each epoch's record of the heads that answered the optional scored questions, valued at the exact shared cell grade minus the epoch's pick cost, the answered run, `picks_check` on the one bound, and the absolute exploration failure bound with its outage waiver; published in the reveal's `picks_v4`, kept in the window, read back by a rebuild
+- `seat_bound.py` → protocol v4's one bound (`docs/decisions/SEAT_MINIMAL_V4.md` 3.1; re-exported as `champion.lower_bound`; **nothing on the v1-v3 path calls it**): a one-sided normal-mixture confidence sequence at alpha = 1% on integer items with a stratified variance, in integers and Fractions only
+- `labels_v4.py` → protocol v4's labels and odds (`docs/decisions/SEAT_MINIMAL_V4.md` 3.2, 4; `docs/decisions/FAST_CROWN_V4.md` 8, 18; **nothing on the v1-v3 path imports it**): which pooled labels a comparison of two heads reads (the last 48 epochs, after both rows count, voted by neither owner, never a label drawn while its entry was provisional), every head's odds on every epoch from its line's start (a successor's are its predecessors' stored odds before its commit; late odds for missed epochs), a missing row at odds 0 counted from the head's line and an added row's earlier labels likewise (`Side.added`, `Side.line`), the reference R as a side, the exact per-category sums the bound reads (`gain_strata`), and the same sums for many pairs at once (`gain_strata_many`, held equal to the per-pair path)
+- `seat_v4.py` → protocol v4's seat (`docs/decisions/SEAT_MINIMAL_V4.md` 3.3 to 3.8, 4.4; `docs/decisions/FAST_CROWN_V4.md` 2, 6; **nothing on the v1-v3 path imports it**): `observe` (heads seen, new heads, succession by byte-identical rows under the same hotkey and coldkey, the rows a line added) then `decide` (the bar is the holder while it was verified in the last G = `STANDING_EPOCHS_V4` epochs, R does not beat it and the memorisation check does not refuse it, else R; contenders have a counted challenge in the last G epochs (`challenged_recently`, also the late-odds priority); rule A on the one bound with n0 = `BOUND_N0_V4`, the reverse picks bound, rule B on challenge items, rule C's precedence; the latest qualifier takes; comparisons in batches, or `per_pair`); the holder a challenge pairs with (`challenge_holder`, after E - 2); pay 85/10/5 on verification alone; the published seat state (`v2_state.seat`, `"protocol": 4`) and its evidence (`seat_v4`, digested in `seat_digest`). None of v1-v3's burn-in, ghosts, high-water marks, frame or agreement detectors or weight cap runs on a v4 epoch
+- `chain_proposals.py` → protocol v4's chain proposals (`docs/decisions/FAST_CROWN_V4.md` 18; **nothing on the v1-v3 path imports it**): the proposal document a miner serves and commits by hash as its second commitment field (`proposal:<sha256>`), the root's pinned chain read a margin before the boundary, admission by a fixed order and quotas under the list in force, the join delta published by hash and the root's `join:<epoch>[:<sha256>]` pointer, `check_delta` (every node and TD re-runs admission on the delta's own contents) and the follower's audit
+- `join_step.py` → protocol v4's join step (`docs/decisions/FAST_CROWN_V4.md` 18; **nothing on the v1-v3 path imports it**): the root's admission at its pinned read, the base menu plus the delta on every node, and each follower's `join_audit` (ALARM on a difference)
+- `memo_v4.py` → protocol v4's memorisation check (`docs/decisions/SEAT_MINIMAL_V4.md` 6; **nothing on the v1-v3 path imports it**): the published set (per question its first publishing epoch, seeded from the pinned `routing_data/published_v4.json` built by `scripts/build_published_v4.py`, folded from each reveal), the rationed fresh draw from the unpublished reserve that every hotkey's private set holds (`plan_v4` with the published set), and a head's seen-against-unseen gap within benchmark under the one bound (`memo_evidence`, `.refused`)
+- `memo_sync.py` → protocol v4 (**nothing on the v1-v3 path imports it**): how the published set moves between nodes. `ChainSet`, one class for the root, every other validator and a miner's TD: at each boundary the root's reveal commitment read pinned there, a newly named reveal folded (bytes checked by sha256), else nothing; the set as of E is what E's plan and verdicts both read; kept beside the state (`<state>.published_v4.json`) or in the TD's state directory; a node with no state anchors on the snapshot the named reveal names, else the seed; a reveal whose named view contradicts the node's state is an ALARM (a TD makes no proof). `SnapshotPublisher`: the root's upload of each named view by digest (`<netuid>/published/<digest>.json`) before the commitment. Nothing waits on the root
 - `copy_rule.py` → first-commit seniority with the salted pre-flip tie, coldkey ownership, exact copies, ghost incumbents, the senior bars a junior must beat
 - `payout.py` → 85 / 10 / 5 across the champion and the two before it; unpaid shares burn
 - `v2_rebuild.py` → a validator that lost its state rebuilds the window and seat from published reveals (snapshot + replay)
+- `v4_replay.py` → protocol v4's re-anchor (**nothing on the v1-v3 path calls it**): each v4 epoch's inputs to `run_v2_epoch` kept beside the state (`STATE_PATH.v4replay/`, a window plus two epochs, heads once by hash), and a re-anchor on the reference's state at k runs this validator's epochs k+1 .. now-1 again on it instead of keeping them, each with the memorisation memo the epoch loop built for it (`memo_for(epoch, recorded nonce)`: `neurons/validator._v4_memo_for`, on the published set as of that epoch from `memo_sync.ChainSet.view`; nothing folded); a span it cannot replay replaces nothing and waits for a later reference epoch
 - `evidence.py` (v2 part) → the E'' burn-in counter: a miss after burn-in decays and restarts it
 
 ### Scoring, protocol v1 (live until the activation block)
@@ -145,7 +161,7 @@ Bittensor SDK v10.x (10.0.0 - 10.x). Key behaviors:
 ### Support
 - `epoch_logger.py`, `logging_setup.py` → structured JSONL epoch logs; logging that survives importing bittensor
 - `consensus.py` → offline multi-validator audit tool (not in the live loop)
-- `attacks/` → three executable attack suites (grader output, hostile miner input, forged TEE proofs); CI runs them
+- `attacks/` → three executable attack suites (grader output, hostile miner input, forged TEE proofs); CI runs them. `attacks/seat_v4_world.py` and `attacks/memo_seat_world.py` are the constructed windows the v4 seat and memorisation cases (and the determinism stages) run on
 - `data/models.json`, `data/models_v2.json` → the pinned price tables, one per protocol. Consensus-critical and hash-pinned like `graders.py`: a price change re-scores every miner.
 
 ## Graders Are Consensus Rules
@@ -203,6 +219,20 @@ python scripts/dress_rehearsal.py --scenario all
 python scripts/dress_rehearsal.py --scenario v2_flip
 # In-process half (seconds, no Docker; also run by tests/test_rehearsal_v2.py):
 python scripts/rehearsal_v2.py
+
+# Protocol v4, in process (no Docker, under two minutes): the shipped loops
+# from v3 across the v4 block, the menu's life, and the seat's scenarios, on
+# the shared fakes of tests/v4_world.py (also run by tests/test_rehearsal_v4.py)
+python scripts/rehearsal_v4.py
+# Its chain half (Docker, ~30 min, not in "all"): the shipped neurons across
+# the v4 block on a real local chain, with an archive node, a local stand-in
+# for the reveal bucket and a fixture published-set seed
+# (scripts/dress_rehearsal_v4.py, scripts/rehearsal_shim.py)
+python scripts/dress_rehearsal.py --scenario v4_flip
+# A protocol v3 scenario on this tree and on origin/main, diffed (by hand)
+python scripts/check_v3_equivalence.py --ref origin/main
+# The v4 release gate: what a release that schedules v4 still lacks
+uv run python scripts/check_safety_invariants.py --release-v4
 ```
 
 Both v2 rehearsals probe which v2 pieces the branch has and SKIP (never fail)

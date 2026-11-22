@@ -268,6 +268,43 @@ def test_a_v2_epoch_with_no_proofs_burns_instead_of_keeping_the_last_weights():
     assert src.index("_burn_epoch_weights(") < src.index("save_state(")
 
 
+def test_a_v4_epoch_with_no_proofs_sets_one_burn_vector_whatever_each_validator_set_before():
+    """A v4 vector is never capped (SEAT_MINIMAL_V4.md 2.2 #28), the all-burn
+    vector of an epoch with no valid proof included: validators whose earlier
+    weights differ set the same vector, the burn uid at 1.0. Through v3 the
+    burn vector stays capped against each validator's own previous one."""
+    from types import SimpleNamespace
+
+    import neurons.validator as v
+
+    (branch,) = [n for n in ast.walk(_main()) if isinstance(n, ast.If)
+                 and ast.unparse(n.test) == "not verified_proofs"]
+    (call,) = [n for n in ast.walk(branch) if isinstance(n, ast.Call)
+               and ast.unparse(n.func) == "_burn_epoch_weights"]
+    assert "protocol_version=protocol_version" in ast.unparse(call)
+
+    class Sub:
+        def get_subnet_owner_hotkey(self, netuid, block=None):
+            return "owner"
+
+    mg = SimpleNamespace(hotkeys=["a", "owner", "b", "c"])
+    histories = [([], []), ([2], [1.0]), ([0, 3], [0.25, 0.75]), ([1, 2], [0.9, 0.1])]
+    orig = v.set_weights_with_retry
+    try:
+        for protocol, distinct in ((4, 1), (3, 4)):
+            calls = []
+            v.set_weights_with_retry = lambda *a, **k: (calls.append((a[4], a[5])) or (True, ""))
+            outs = [v._burn_epoch_weights(Sub(), None, 1, 0, 100, mg, True, u, w, 5, 360,
+                                          protocol_version=protocol) for u, w in histories]
+            set_ = {json.dumps([list(map(int, u)), [round(x, 12) for x in w]]) for u, w in calls}
+            assert len(set_) == distinct, (protocol, calls)
+            if protocol >= 4:
+                assert calls == [([1], [1.0])] * len(histories)
+                assert outs == [([1], [1.0])] * len(histories)
+    finally:
+        v.set_weights_with_retry = orig
+
+
 def test_burn_epoch_weights_sets_the_burn_uid_and_never_raises():
     from types import SimpleNamespace
 

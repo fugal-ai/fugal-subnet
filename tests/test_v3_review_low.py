@@ -30,7 +30,7 @@ def test_the_validator_runs_the_check_on_the_blocks_it_read():
 
     src = (pathlib.Path(__file__).resolve().parents[1] / "neurons" / "validator.py").read_text()
     read = src.index("odds_block = _cfg.odds_seat_block(genesis)")
-    check = src.index("_check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL, menu_b_blk)")
+    check = src.index("_check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL, menu_b_blk, v4_block)")
     assert read < check < src.index("metagraph = subtensor.metagraph(netuid)", read)
 
 

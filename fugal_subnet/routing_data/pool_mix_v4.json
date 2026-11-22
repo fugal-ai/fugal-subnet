@@ -1,0 +1,116 @@
+{
+ "benchmarks": {
+  "aime": {
+   "category": "hard",
+   "pool": 911,
+   "weight_ppm": 5103
+  },
+  "aime25": {
+   "category": "hard",
+   "pool": 24,
+   "weight_ppm": 839
+  },
+  "arc": {
+   "category": "everyday",
+   "pool": 3369,
+   "weight_ppm": 50000
+  },
+  "beyondaime": {
+   "category": "hard",
+   "pool": 100,
+   "weight_ppm": 3494
+  },
+  "code_contests": {
+   "category": "code",
+   "pool": 2500,
+   "weight_ppm": 89754
+  },
+  "code_humanevalplus": {
+   "category": "code",
+   "pool": 156,
+   "weight_ppm": 4723
+  },
+  "code_leetcode": {
+   "category": "code",
+   "pool": 1858,
+   "weight_ppm": 43576
+  },
+  "code_mbppplus": {
+   "category": "code",
+   "pool": 353,
+   "weight_ppm": 11947
+  },
+  "gsm8k_train": {
+   "category": "easy_math",
+   "pool": 7473,
+   "weight_ppm": 22650
+  },
+  "ifeval": {
+   "category": "instruction",
+   "pool": 215,
+   "weight_ppm": 7158
+  },
+  "math_l12": {
+   "category": "easy_math",
+   "pool": 1912,
+   "weight_ppm": 27350
+  },
+  "math_l35": {
+   "category": "math",
+   "pool": 3619,
+   "weight_ppm": 123313
+  },
+  "mmlu": {
+   "category": "knowledge",
+   "pool": 2837,
+   "weight_ppm": 28760
+  },
+  "mmlupro": {
+   "category": "knowledge",
+   "pool": 10048,
+   "weight_ppm": 121240
+  },
+  "omnimath_hard": {
+   "category": "hard",
+   "pool": 844,
+   "weight_ppm": 29486
+  },
+  "omnimath_mid": {
+   "category": "math",
+   "pool": 1114,
+   "weight_ppm": 26687
+  },
+  "rlvr_ifeval": {
+   "category": "instruction",
+   "pool": 4143,
+   "weight_ppm": 142842
+  },
+  "supergpqa_hard": {
+   "category": "hard",
+   "pool": 6844,
+   "weight_ppm": 261078
+  }
+ },
+ "category_targets_pct": {
+  "code": 15,
+  "easy_math": 5,
+  "everyday": 5,
+  "hard": 30,
+  "instruction": 15,
+  "knowledge": 15,
+  "math": 15
+ },
+ "cycle_epochs": 96,
+ "format": "pool-mix-v4-v1",
+ "inputs": {
+  "observations": {
+   "file": "data/observations/mix_v4_cells_e00026466-e00026489.json",
+   "sha256": "4659bd52c8a36b51ce8f706f7a57fed598877fec3f9f88d9eba72227aa4cc59f"
+  },
+  "pool_manifest": {
+   "file": "fugal_subnet/benchmarks/pool_manifest_v3.json",
+   "sha256": "5f164053523e6fb35cf343079efbd4236a269b4da17fb904f001885db607bca1"
+  }
+ },
+ "slice_size": 200
+}

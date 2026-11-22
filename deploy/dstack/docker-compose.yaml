@@ -23,12 +23,14 @@
 # FUGAL_V2_ACTIVATION_BLOCK is the finney flip. From v0.5.0 (image
 # build-v2026.11.17, signed as image-v2026.11.17b; v0.6.0 image build-v2026.11.17c,
 # signed as image-v2026.11.17c) it also carries
-# FUGAL_V3_ACTIVATION_BLOCK, finney's v3 block. The testnet twin for the
+# FUGAL_V3_ACTIVATION_BLOCK, finney's v3 block; from v0.7.0 (image
+# build-v2026.11.22b, signed as image-v2026.11.22b) FUGAL_V4_ACTIVATION_BLOCK
+# too. The testnet twin for the
 # netuid-552 rehearsal is docker-compose.test.yaml; the two differ only in
 # network/netuid and the activation blocks, so one digest yields two entries.
 services:
   miner:
-    image: ghcr.io/fugal-ai/fugal-miner@sha256:cdbd85ea74adfc59dae58653b2e013d36865c8b520b8fc3e927f360dbdeb8a3a
+    image: ghcr.io/fugal-ai/fugal-miner@sha256:3bb518d0a0b2934c87ea37f31c12695672d6b8ed3530ef44b85b032241245ea1
     restart: unless-stopped
     ports:
       - "8091:8091"   # axon: validators reach the miner here (open to the world)

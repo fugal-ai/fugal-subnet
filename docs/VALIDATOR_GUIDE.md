@@ -175,7 +175,7 @@ the v0.7.0 frozen composes, so the v4 miner image is approved. Every
 validator must run v0.7.0 before the root's first v4 commitment, which
 older releases cannot read. `--check` should end `v4 ok (block 9572760, seed
 a9fc6275, mix e2146137, list serial 1, published seed 2aa4da74 through
-e00026509, root hotkeys 1, chain history: ..., v4 digest ...)`; `v4 MISSING`
+e00026509, root hotkeys 1, v4 digest ..., chain history: pinned reads N blocks back are served)`; `v4 MISSING`
 names each fix, and the validator keeps running v3 until the block. Across
 the block the validator reads the published set from that seed forward, one
 pinned chain read per epoch since e00026509: keep the default archive

@@ -251,7 +251,7 @@ def test_verification_holds_the_not_started_calls_to_the_end_of_the_tds_order():
 
 # --- the TD: own calls first, the budget cuts holder-side calls, nothing dropped -------------
 
-SCALE = 2000.0
+SCALE = 200.0
 
 
 def _timed_run(holder_median_s, holder_sigma, *, seed=1, n=N, differ=0.87, budget_s=1800):

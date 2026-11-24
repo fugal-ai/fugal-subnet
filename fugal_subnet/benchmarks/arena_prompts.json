@@ -1,0 +1,250 @@
+{
+ "_source": "RouterArena config/eval_config/zero-shot (https://github.com/RouteWorks/RouterArena, Apache-2.0), dataset revision a4a062ce; the prompt template per dataset, verbatim",
+ "prompts": {
+  "AIME": {
+   "eval_metrics": [
+    "math_metric"
+   ],
+   "prompt": "Please solve the following mathematical problem step by step. \n\nContext: {Context}\n\nQuestion: {Question}\n\nProvide your final answer in \\boxed{{{{}}}} format, where the content inside the braces is the exact mathematical expression or number. For example: \\boxed{{{{42}}}}. Keep your explanation clear, concise, and within 3 sentences."
+  },
+  "ArcMMLU": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "AsDiv": {
+   "eval_metrics": [
+    "math_metric"
+   ],
+   "prompt": "Please solve the following mathematical problem step by step. \n\nContext: {Context}\n\nQuestion: {Question}\n\nProvide your final answer in \\boxed{{{{}}}} format, where the content inside the braces is the exact mathematical expression or number. For example: \\boxed{{{{42}}}}. Keep your explanation clear, concise, and within 3 sentences."
+  },
+  "ChessInstruct": {
+   "eval_metrics": [
+    "chess_accuracy"
+   ],
+   "prompt": "You are given a question about chess moves. Analyze the context carefully and provide the correct move.\n\nContext:\n{Context}\n\nQuestion:\n{Question}\n\nInstructions:\n- State the correct chess move clearly.\n- Format your final answer as \\boxed{{X}}, where X is the move in standard coordinate notation (e.g., a2a3).\n- Keep your explanation or reasoning within 2–3 sentences."
+  },
+  "ChessInstruct_mcq": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following question about chess moves and provide the correct answer.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct answer in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "Ethics_commonsense": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and determine whether the action (in question) is morally acceptable or not.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "Ethics_deontology": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and consider which option best follows deontological ethics.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "Ethics_justice": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and determine whether the action (in question) is morally acceptable or not.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "Ethics_virtue": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and determine which virtue or vice best describes the action in the scenario.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "FinQA": {
+   "eval_metrics": [
+    "math_metric"
+   ],
+   "prompt": "Please solve the following mathematical problem step by step. Provide the final answer.\n\nContext: {Context}\n\nQuestion: {Question}\n\nProvide your final answer in \\boxed{{{{}}}} format, where the content inside the braces is the exact mathematical expression or number. For example: \\boxed{{{{42}}}}. Keep your explanation clear, concise, and within 3 sentences."
+  },
+  "GPQA": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "GSM8K": {
+   "eval_metrics": [
+    "math_metric"
+   ],
+   "prompt": "Please solve the following mathematical problem and provide the final answer.\n\nContext: {Context}\n\nQuestion: {Question}\n\nProvide your final answer in \\boxed{{{{}}}} format, where the content inside the braces is the exact mathematical expression or number. For example: \\boxed{{{{42}}}}. Keep your explanation clear, concise, and within 3 sentences."
+  },
+  "GeoBench": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "GeoGraphyData": {
+   "eval_metrics": [
+    "exact_match"
+   ],
+   "prompt": "Please read the following question and provide the correct answer.\n\nContext: {Context}\n\nQuestion: {Question}\n\nProvide the correct answer in \\boxed{{X}}, where X is the correct and the most common answer to the question. Keep the explanation or feedback within 3 sentences."
+  },
+  "LiveCodeBench": {
+   "eval_metrics": [
+    "code_accuracy"
+   ]
+  },
+  "MATH": {
+   "eval_metrics": [
+    "math_metric"
+   ],
+   "prompt": "Please solve the following mathematical problem and provide the final answer.\n\nContext: {Context}\n\nQuestion: {Question}\n\nProvide your final answer in \\boxed{{{{}}}} format, where the content inside the braces is the exact mathematical expression or number. For example: \\boxed{{{{42}}}}. Keep your explanation clear, concise, and within 3 sentences."
+  },
+  "MMLU": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "MMLUPro": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "MathQA": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "MedMCQA": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "MusicTheoryBench": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "NarrativeQA": {
+   "eval_metrics": [
+    "meteor_score"
+   ],
+   "prompt": "Please read the following context and answer the question based on its content.\n\nContext: {Context}\n\nQuestion: {Question}\n\nProvide your final answer in \\boxed{{{{}}}} format. Keep your explanation clear, concise, and within 3 sentences."
+  },
+  "OpenTDB": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "PubMedQA": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "QANTA": {
+   "eval_metrics": [
+    "exact_match"
+   ],
+   "prompt": "Please read the following question and provide the correct answer.\n\nContext: {Context}\n\nQuestion: {Question}\n\nProvide the correct answer in \\boxed{{X}}, where X is the correct and the most common answer to the question. Keep the explanation or feedback within 3 sentences."
+  },
+  "SocialiQA": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "SuperGLUE-CausalReasoning": {
+   "eval_metrics": [
+    "mcq_accuracy"
+   ],
+   "prompt": "Please read the following multiple-choice questions and provide the most likely correct answer based on the options given.\n\nContext: {Context}\n\nQuestion: {Question}\n\nOptions: \n{Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct letter choice. Keep the explanation or feedback within 3 sentences."
+  },
+  "SuperGLUE-ClozeTest": {
+   "eval_metrics": [
+    "superglue_clozetest"
+   ],
+   "prompt": "Read the following passage and answer the question by choosing the best option. Provide only the text of the correct option as your answer.\n\n{Question}\n\nOptions : {Options}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the contetn of the correct option. "
+  },
+  "SuperGLUE-Entailment": {
+   "eval_metrics": [
+    "superglue_exact_match"
+   ],
+   "prompt": "You are a Natural Language Inference expert. Analyze the given \"Premise\" and \"Hypothesis\".\n\nYou must determine if the Premise entails the Hypothesis. First, explain your reasoning in one or two sentences on why the Hypothesis can or cannot be inferred from the Premise. Then, provide your final judgment: `0.0` for entailment, `1.0` for no entailment.\n\nQuestion: {Question}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct choice. "
+  },
+  "SuperGLUE-QA": {
+   "eval_metrics": [
+    "superglue_exact_match"
+   ],
+   "prompt": "You are a reading comprehension assistant. Your task is to answer a question based on the provided context.\n\nFirst, provide your final judgment: `1` for correct, `0` for incorrect.\n\nContext: {Context}\n\nQuestion: {Question}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct choice. "
+  },
+  "SuperGLUE-RC": {
+   "eval_metrics": [
+    "superglue_exact_match"
+   ],
+   "prompt": "Your task is to evaluate if the \"Provided Answer\" is a correct response to the \"Question\" based on the \"Paragraph\".\\n- Output 1 if the answer is correct.- Output 0 if the answer is incorrect.\n\nQuestion: {Question}\n\nProvided Answer: {Answer}\n\n Is the provided answer correct? Provide the correct letter choice in \\boxed{{X}}, where X is the correct choice. "
+  },
+  "SuperGLUE-Wic": {
+   "eval_metrics": [
+    "superglue_exact_match"
+   ],
+   "prompt": "Consider the word \"{Context}\" in the two sentences below. Does the word have the same meaning in both sentences? Answer with only \"Yes\" or \"No\".\n\n{Question}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct choice. "
+  },
+  "SuperGLUE-Wsc": {
+   "eval_metrics": [
+    "superglue_exact_match"
+   ],
+   "prompt": "In the \"Text\" below, does the pronoun (\"span2_text\") refer to the noun phrase (\"span1_text\")?\n\nAnswer with only \"Yes\" or \"No\".\n\n{Question}\n\nProvide the correct letter choice in \\boxed{{X}}, where X is the correct choice. "
+  },
+  "WMT19-cs-en": {
+   "eval_metrics": [
+    "meteor_score"
+   ],
+   "prompt": "Translate the following sentence from Englisb to Czech.\n\n{Question}\n\nProvide your final answer in \\boxed{{{{}}}} format."
+  },
+  "WMT19-de-en": {
+   "eval_metrics": [
+    "meteor_score"
+   ],
+   "prompt": "Translate the following sentence from English to German.\n\n{Question}\n\nProvide your final answer in \\boxed{{{{}}}} format."
+  },
+  "WMT19-fi-en": {
+   "eval_metrics": [
+    "meteor_score"
+   ],
+   "prompt": "Translate the following sentence from English to Finnish.\n\n{Question}\n\nProvide your final answer in \\boxed{{{{}}}} format."
+  },
+  "WMT19-gu-en": {
+   "eval_metrics": [
+    "meteor_score"
+   ],
+   "prompt": "Translate the following sentence from English to Gujarati.\n\n{Question}\n\nProvide your final answer in \\boxed{{{{}}}} format."
+  },
+  "WMT19-kk-en": {
+   "eval_metrics": [
+    "meteor_score"
+   ],
+   "prompt": "Translate the following sentence from English to Kazakh.\n\n{Question}\n\nProvide your final answer in \\boxed{{{{}}}} format."
+  },
+  "WMT19-lt-en": {
+   "eval_metrics": [
+    "meteor_score"
+   ],
+   "prompt": "Translate the following sentence from English to Lithuanian.\n\n{Question}\n\nProvide your final answer in \\boxed{{{{}}}} format."
+  },
+  "WMT19-ru-en": {
+   "eval_metrics": [
+    "meteor_score"
+   ],
+   "prompt": "Translate the following sentence from English to Russian.\n\n{Question}\n\nProvide your final answer in \\boxed{{{{}}}} format."
+  },
+  "WMT19-zh-en": {
+   "eval_metrics": [
+    "meteor_score"
+   ],
+   "prompt": "Translate the following sentence from English to Chinese.\n\n{Question}\n\nProvide your final answer in \\boxed{{{{}}}} format."
+  }
+ }
+}

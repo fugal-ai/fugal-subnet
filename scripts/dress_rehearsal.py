@@ -1930,7 +1930,8 @@ def main() -> int:
 
     try:
         from scripts.dress_rehearsal_v4 import ARCHIVE_PORT
-        v4 = args.scenario in ("v4_flip", "v4_seat_menu")
+        # v5_flip reuses v4_flip's world: its archive node and epoch length.
+        v4 = args.scenario in ("v4_flip", "v4_seat_menu", "v5_flip")
         start_chain((ARCHIVE_PORT,) if v4 else ())
         subtensor0 = wait_for_chain()
         from scripts.setup_local_testnet import calibrate_epoch_interval

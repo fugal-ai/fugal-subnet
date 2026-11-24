@@ -109,7 +109,10 @@ class Contender:
     hotkey: str
     first_commit_block: int
     standing: bool = True          # verified in the last STANDING epochs
-    memo_refused: bool = False     # refused by the memorisation check
+    # Refused by a memorisation check. v5's caller never sets it: v5 keeps
+    # what a head could have read out of its comparisons instead
+    # (v5_epoch.eligible_after, INVARIANTS I5 — v5).
+    memo_refused: bool = False
     predecessor: str | None = None
     live: bool = True              # verified this epoch (a paid seat must be)
     copy: bool = False             # an exact copy (copy_rule.is_exact_copy)

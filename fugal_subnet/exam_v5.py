@@ -9,8 +9,11 @@ comparison needs them:
 1. **Questions.** `draw_exam` draws candidate questions by the epoch nonce
    on the exam mix (each dataset's quota by largest remainder of its weight,
    each dataset's questions ranked by HMAC(nonce, question id), the draw put
-   in the same keyed order). Which questions are eligible (fresh or already
-   published, the memorisation check) is the caller's (memo_v4).
+   in the same keyed order). The caller passes only the pool's unpublished
+   reserve (v5_epoch.next_spec: no exam question's labels are public when it
+   is drawn), and an item counts only on a question whose labels were not
+   public before either compared head was committed (`eligible`, built by
+   v5_epoch.eligible_after: the memorisation rule).
 2. **Picks.** `exam_picks`: each contender's pick per question, by the v4
    pick function with the head's OWN lam (in (0, HEAD_LAM_MAX_V5]).
 3. **Cells.** `build_spec` walks the candidates in order. A question needs a
@@ -387,33 +390,41 @@ def _items(index, pairs, exclude, v_nd, stratum_of) -> dict[str, list[int]]:
 
 def comparison_items(specs: Sequence[ExamSpec], votes: Iterable[Vote], x: str, y: str,
                      exclude_coldkeys: frozenset[str], mean_cost_nd: Mapping[str, int],
-                     stratum_of: Callable[[str], str]) -> dict[str, list[int]]:
+                     stratum_of: Callable[[str], str],
+                     eligible: Callable[[str], bool] | None = None) -> dict[str, list[int]]:
     """X's items against Y by stratum, over every spec both are contenders of
     (in seat_bound units: arena_score.item_units). `exclude_coldkeys` are the
     two compared operators; `mean_cost_nd[h]` each head's mean pick-table cost
-    (`mean_pick_cost_nd`), which sets V_XY."""
+    (`mean_pick_cost_nd`), which sets V_XY. `eligible(question id)` (the
+    memorisation rule, v5_epoch.eligible_after): a question it refuses gives
+    no item, equal picks or not; None counts every question."""
     specs = [s for s in specs if x in s.picks and y in s.picks]
     index = _index_votes(specs, votes)
     v_nd = arena_score.value_scale_nd(int(mean_cost_nd[x]), int(mean_cost_nd[y]))
     pairs = [(s, q, s.picks[x][i], s.picks[y][i])
-             for s in specs for i, q in enumerate(s.questions)]
+             for s in specs for i, q in enumerate(s.questions)
+             if eligible is None or eligible(q)]
     return _items(index, pairs, frozenset(exclude_coldkeys), v_nd, stratum_of)
 
 
 def baseline_items(specs: Sequence[ExamSpec], votes: Iterable[Vote], x: str,
                    exclude_coldkeys: frozenset[str], mean_cost_nd: Mapping[str, int],
-                   stratum_of: Callable[[str], str]) -> dict[str, list[int]]:
+                   stratum_of: Callable[[str], str],
+                   eligible: Callable[[str], bool] | None = None) -> dict[str, list[int]]:
     """X's items against B* on each spec's baseline questions (B* is the
     spec's `baseline` entry; `mean_cost_nd` holds the entry's pick-table cost
     per question under its id). Specs without X or without a baseline are
-    skipped; `exclude_coldkeys` is X's operator."""
+    skipped; `exclude_coldkeys` is X's operator; `eligible` as in
+    `comparison_items` (B* is a menu entry, not a head: only X can have
+    seen a question's labels)."""
     specs = [s for s in specs if x in s.picks and s.baseline]
     index = _index_votes(specs, votes)
     out: dict[str, list[int]] = {}
     for s in specs:
         v_nd = arena_score.value_scale_nd(int(mean_cost_nd[x]), int(mean_cost_nd[s.baseline]))
         pos = {q: i for i, q in enumerate(s.questions)}
-        pairs = [(s, q, s.picks[x][pos[q]], s.baseline) for q in s.baseline_questions]
+        pairs = [(s, q, s.picks[x][pos[q]], s.baseline) for q in s.baseline_questions
+                 if eligible is None or eligible(q)]
         for k, v in _items(index, pairs, frozenset(exclude_coldkeys), v_nd, stratum_of).items():
             out.setdefault(k, []).extend(v)
     return out

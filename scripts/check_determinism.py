@@ -465,6 +465,11 @@ def _v5_epoch(seed: int) -> list:
         return int.from_bytes(d[:2], "big") % 100 < acc[e]
 
     state, book, records, reveals, out = seat_v5.SeatStateV5(), {}, [], {}, []
+
+    def published(q):
+        # One question in seven was published before every head's commit
+        # (the memorisation rule leaves it out of every comparison).
+        return -1 if _h.sha256(f"{seed}|pub|{q}".encode()).digest()[0] % 7 == 0 else None
     for i in range(6):
         epoch = 100 + i
         names = ["a", "b"] + (["c"] if i >= 3 else [])
@@ -496,7 +501,7 @@ def _v5_epoch(seed: int) -> list:
             res = v5_epoch.score_epoch(epoch=epoch, state=state, heads=book, record=rec,
                                        window=fed(records), served=served,
                                        full_entries=entries, stratum_of=lambda q: q[-1],
-                                       burn_uid=0)
+                                       burn_uid=0, first_published=published)
         finally:
             seat_v5.N_MIN, seat_v5.N0, v5_epoch.BASELINE_MIN_PAIRS = old_n, old_n0, old_b
         state, book = res.decision.state, res.heads

@@ -6682,8 +6682,8 @@ recomputation differs from the root's treats that epoch's exam as void
 
 `fugal_subnet/seat_v5.py`, re-run every epoch on the window's items:
 
-- **Incumbent.** The holder, if it stands, is not refused by the
-  memorisation check, is not an exact copy, and is not shown worse than B*.
+- **Incumbent.** The holder, if it stands, is not an exact copy, and is not
+  shown worse than B*.
   Otherwise there is none and the former holder joins the history.
 - **Upgrade.** A newer head of the holder's own coldkey replaces it unless it
   is *shown* worse: the holder's bound over it passes −UPGRADE_MARGIN_V5
@@ -6701,14 +6701,40 @@ recomputation differs from the root's treats that epoch's exam as void
   margin. An empty seat is filled only this way: on merit, never by a draw.
 - **Contenders.** Per coldkey the newest standing head, plus the holder; at
   most CONTENDERS_MAX_V5, the earliest commits kept. Exact copies
-  (`copy_rule` ownership) and memo-refused heads never contend.
+  (`copy_rule` ownership) never contend.
 - **Pay.** 85/10/5 to the holder and the history (`payout.seat_weights`); a
-  seat is paid only while its head is live this epoch, not memo-refused, and
-  its bound over B* passes 0. Every unpaid share burns. While no head beats
+  seat is paid only while its head is live this epoch and its bound over B*
+  passes 0. Every unpaid share burns. While no head beats
   the best single model, the whole weight burns.
 
 Check: `tests/test_seat_v5.py`, the `seat_v5` determinism stage, the attack
 world `fugal_subnet/attacks/seat_v5_world.py`.
+
+### I5 — v5: no head is judged on labels it could have read
+
+A head is fixed by its commitment, so it can only have learned the labels of
+questions published before it was committed. Two rules on the published set
+(`memo_v4.Published`, the chain-driven view every node holds; from v5 a
+reveal's exam and coverage votes are published outcomes too,
+`memo_v4.published_ids`):
+
+- **The exam is fresh.** Its questions are drawn from the pool's unpublished
+  reserve only, leaving out every question of a spec already built, at
+  ceil(R / FRESH_RESERVE_EPOCHS_V5) an epoch (at most EXAM_QUESTIONS_V5)
+  (`v5_epoch.next_spec`, `reserve`, `exam_size`). When a question is drawn,
+  none of its labels is public.
+- **Per-comparison eligibility.** A question counts in the comparison of X
+  with Y (or of X with B*) only when its labels were never published or were
+  first published in an epoch at or after the later of the compared heads'
+  commit epochs (`v5_epoch.eligible_after`): a reveal of epoch f is public
+  from epoch f + 1, so a head committed in epoch c can have read it only if
+  f ≤ c − 1. This covers what the draw cannot see, a question published by
+  another path between the draw and the exam.
+
+So memorisation gains nothing by construction; v4's statistical per-head
+refusal is not used. The reserve is the evidence's budget: it shrinks by about
+1/FRESH_RESERVE_EPOCHS_V5 an epoch, and a release that adds questions raises
+it. Check: `tests/test_v5_memo_resync.py`, the `v5_epoch` determinism stage.
 
 ### I4 — v5: an exam cell is a vote of operators, never of the compared ones
 
@@ -6719,7 +6745,10 @@ median). In the comparison of X with Y, no vote from X's or Y's coldkey
 counts; a question left without a usable vote gives that comparison no item.
 A cell whose usable votes all failed, from at least two coldkeys
 (`exam_v5.FAILED_CELL_MIN_VOTERS`), counts as a wrong answer at zero cost, as
-the product would fail it.
+the product would fail it. A cell on an entry that left the menu between the
+spec (E−2) and its exam (E) is not called and not expected
+(`tee/verify.expected_v5`, the harness): it has no vote at all, so it gives
+that comparison no item and never counts as a failure.
 So no operator's re-runs, withheld calls or own grading can move its own
 comparisons. Check: `tests/test_exam_v5.py`.
 
@@ -6729,3 +6758,13 @@ A v5 TD answers the cells the exam spec assigns to its hotkey (checked
 against the root's committed spec hash) and its coverage share, nothing
 else; a vote for a cell not assigned to the voting hotkey is refused by
 verification. Check: `tests/test_td_v5.py`.
+
+### v5 state: rebuilt from the root's reveals
+
+A validator's v5 state (seat, head book, window records, the specs ahead) is
+a pure function of the root's reveals (`v5_epoch.rebuild`). A node with no
+state or a stale one rebuilds it before it scores (`v5_node.V5Node.resync`,
+called from the epoch loop): a fresh follower holds the root's state. The
+bytes of the heads in the book are kept beside the state, each checked
+against its sha256 when read back, so a restart still gives the holder and
+the contenders their picks. Check: `tests/test_v5_memo_resync.py`.

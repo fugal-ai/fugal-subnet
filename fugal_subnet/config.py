@@ -1793,6 +1793,13 @@ EXAM_CALL_DEADLINE_S_V5 = 600
 # B* (the best single full entry, by RouterArena's score on the window's
 # coverage votes) is chosen only among entries with at least this many votes.
 BASELINE_MIN_PAIRS_V5 = 100
+# The exam draws only the pool's unpublished reserve (no exam question's
+# labels are public when it is drawn: the memorisation rule, v5_epoch), and
+# ceil(R / FRESH_RESERVE_EPOCHS_V5) of it an epoch (at most EXAM_QUESTIONS_V5),
+# so the reserve shrinks by about 1/240 an epoch: a 60,000-question reserve
+# gives 250 an epoch at first and keeps 37% of itself after 12 days. A release
+# that adds questions raises it at once.
+FRESH_RESERVE_EPOCHS_V5 = 240
 
 
 def v5_activation_block(genesis_hash: str | None) -> int | None:

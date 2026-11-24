@@ -18,6 +18,11 @@ VOTERS = [("hk-v1", "ck-v1"), ("hk-v2", "ck-v2"), ("hk-v3", "ck-v3"), ("hk-v4", 
 BASE = "m/base"
 
 
+def NOTHING(_q):
+    """No question published before the exam (every question eligible)."""
+    return None
+
+
 @pytest.fixture(autouse=True)
 def small_bounds(monkeypatch):
     monkeypatch.setattr(seat_v5, "N_MIN", 60)
@@ -78,7 +83,8 @@ def make_record(epoch, book, names, *, n_q=60, void=None, liar=None):
     return rec, spec
 
 
-def run(book, names_by_epoch, start=100, state=None, heads=None, records=(), **kw):
+def run(book, names_by_epoch, start=100, state=None, heads=None, records=(),
+        first_published=NOTHING, **kw):
     state = state or seat_v5.SeatStateV5()
     heads = dict(heads or {})
     records = list(records)
@@ -89,7 +95,8 @@ def run(book, names_by_epoch, start=100, state=None, heads=None, records=(), **k
         rec, spec = make_record(e, book, names, **kw)
         res = v5_epoch.score_epoch(epoch=e, state=state, heads=heads, record=rec,
                                    window=records, served=book.served(names),
-                                   full_entries=ENTRIES, stratum_of=stratum, burn_uid=0)
+                                   full_entries=ENTRIES, stratum_of=stratum, burn_uid=0,
+                                   first_published=first_published)
         records.append(rec)
         state, heads = res.decision.state, res.heads
         reveals[e] = dict(res.reveal)
@@ -104,7 +111,7 @@ def test_day_one_no_evidence_everything_burns():
     rec = v5_epoch.EpochRecord(100, None, {}, (), ())
     res = v5_epoch.score_epoch(epoch=100, state=seat_v5.SeatStateV5(), heads={}, record=rec,
                                window=[], served=book.served(["a"]), full_entries=ENTRIES,
-                               stratum_of=stratum, burn_uid=0)
+                               stratum_of=stratum, burn_uid=0, first_published=NOTHING)
     assert res.decision.event == "empty" and res.decision.holder is None
     assert (res.uids, res.weights) == ([0], [1.0])
     assert res.baseline == ""
@@ -183,7 +190,8 @@ def test_rebuild_from_reveals_gives_the_same_state():
     assert [r.to_reveal() for r in recs] == [r.to_reveal() for r in v5_epoch.window_of(records, 103)]
     again = v5_epoch.score_epoch(epoch=103, state=seat_v5.SeatStateV5(), heads={},
                                  record=recs[-1], window=recs[:-1], served=book.served(["a", "b"]),
-                                 full_entries=ENTRIES, stratum_of=stratum, burn_uid=0)
+                                 full_entries=ENTRIES, stratum_of=stratum, burn_uid=0,
+                                   first_published=NOTHING)
     assert again.decision.holder == res.decision.holder
 
 

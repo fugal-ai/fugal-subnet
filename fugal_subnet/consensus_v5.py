@@ -35,6 +35,8 @@ REGISTERED: dict[str, tuple[str, ...]] = {
         "CONTENDERS_MAX_V5", "PAYOUT_SEAT_SHARES", "STANDING_EPOCHS_V4",
         # B* and the vote plausibility test (v5_epoch)
         "BASELINE_MIN_PAIRS_V5", "EXPLORE_PRIVATE_Z", "EXPLORE_PRIVATE_MIN_SAMPLES_V4",
+        # the memorisation rule: the exam's fresh draw (v5_epoch)
+        "FRESH_RESERVE_EPOCHS_V5", "EPOCH_INTERVAL",
         # the one bound (shared with v4)
         "BOUND_A_ALPHA_V4", "BOUND_LN2_UP_V4", "BOUND_UNITS_PER_POINT_V4",
     ),
@@ -44,7 +46,8 @@ REGISTERED: dict[str, tuple[str, ...]] = {
     ),
     "fugal_subnet.v5_epoch": (
         "WINDOW_EPOCHS", "SPEC_LAG", "STANDING_EPOCHS", "Y_SCALE", "BASELINE_MIN_PAIRS",
-        "IMPLAUSIBLE_Z", "IMPLAUSIBLE_MIN_SAMPLES", "NANO",
+        "IMPLAUSIBLE_Z", "IMPLAUSIBLE_MIN_SAMPLES", "NANO", "EPOCH_INTERVAL",
+        "FRESH_RESERVE_EPOCHS",
         "SPEC_KEY", "COSTS_KEY", "RECORD_KEY", "SEAT_KEY", "BASELINE_KEY", "HEADS_KEY",
     ),
 }

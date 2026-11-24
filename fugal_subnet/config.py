@@ -1756,8 +1756,12 @@ elif _v5_activation:
 ARENA_A_REF_V5 = "82/100"
 # One epoch's exam: at most this many questions, the first
 # EXAM_BASELINE_QUESTIONS_V5 of them also labelled for the best single entry.
+# Every exam question carries B*'s cell: the seat's bound over B* needs
+# N_MIN_V5 paired questions, and at 100 a question an epoch no seat could fill
+# for ~21 epochs after the first exam (about a day); at the full exam it fills
+# in a few epochs, for about $0.2 more a hotkey-epoch.
 EXAM_QUESTIONS_V5 = 500
-EXAM_BASELINE_QUESTIONS_V5 = 100
+EXAM_BASELINE_QUESTIONS_V5 = 500
 # Distinct coldkeys that vote on each exam cell (one hotkey each).
 EXAM_VOTES_V5 = 3
 # Exam calls one verified hotkey makes per epoch (the budget that sizes the

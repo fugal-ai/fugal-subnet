@@ -143,7 +143,9 @@ def main() -> int:
         rec = record(e, specs.get(e), world, names)
         res = v5_epoch.score_epoch(epoch=e, state=state, heads=heads, record=rec, window=records,
                                    served=world.served(names), full_entries=ENTRIES,
-                                   stratum_of=stratum, burn_uid=0)
+                                   stratum_of=stratum, burn_uid=0,
+                                   # Every exam question here is drawn fresh, unpublished.
+                                   first_published=lambda _q: None)
         records.append(rec)
         state, heads = res.decision.state, res.heads
         events[e], holder_at[e] = res.decision.event, res.decision.holder

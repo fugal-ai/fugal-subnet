@@ -53,7 +53,10 @@ def test_live_never_guesses_when_the_owner_cannot_be_read():
 
 @pytest.mark.parametrize("owner", ["5NotRegistered", None, ""])
 def test_live_never_guesses_when_the_owner_is_not_registered(owner):
-    with pytest.raises(RuntimeError, match="refusing to burn to a guessed UID"):
+    # An empty owner is the storage default (chain_reads.is_zero_account): it is
+    # refused as an unreadable answer, so live raises the read error instead.
+    # Either way live raises and never burns to a guessed UID.
+    with pytest.raises(RuntimeError, match="refusing to burn to a guessed UID|Could not read"):
         resolve_burn_uid(_Owners(owner=owner), 70, 4320, META, live=True)
 
 

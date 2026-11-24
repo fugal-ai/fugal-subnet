@@ -25,6 +25,7 @@ OpenTDB is not on Hugging Face as such; OpenTriviaQA (the same kind of four-opti
 CC BY-SA) stands in for it under the OpenTDB key.
 
 Pool item schema (as every loader in this package): prompt, gold, grader_id ("arena"),
+route_text (what routers embed: the row's content without the template, route_text below),
 benchmark ("arena_<RouterArena dataset key>"), question_id, metadata {ra_dataset, ra_name,
 source, source_id, ...}. Code items keep their v3 checker in metadata.
 """
@@ -191,9 +192,40 @@ def format_prompt(row: dict) -> str:
         p = _fmt(tmpl, Context=ctx, Question=row["Question"])
     else:
         p = _fmt(tmpl, Context=ctx, Question=row["Question"], Options=options_str)
-    if len(p) > 10000:
-        p = f"{p[:5000]}...{p[-5000:]}"
-    return p
+    return _cut(p)
+
+
+def _cut(text: str) -> str:
+    """prep_datasets' length cut: the first and last 5,000 characters of a longer text."""
+    return f"{text[:5000]}...{text[-5000:]}" if len(text) > 10000 else text
+
+
+def route_text(row: dict) -> str:
+    """What a router sees: the row's own content, never RouterArena's instruction template.
+
+    RouterArena forbids routing on the instruction text its harness wraps around each question
+    (it names the dataset and the answer format), and a real user sends no such template. So the
+    text routers embed is the values the template inserts, in the template's own order, joined by
+    a blank line: Context (only when non-empty; the template's "None" filler is not content),
+    Question, and Options exactly as the template lists them ("A. ...", one per line). Every
+    template sentence, label and format instruction is left out. The answering model still gets
+    the full templated prompt (format_prompt), which grading needs. Deterministic: a pure
+    function of the row and the pinned templates."""
+    import string
+
+    name, options = row["ra_name"], row["Options"]
+    tmpl = prompts()[_template_key(name, bool(options))]["prompt"]
+    values = {"Context": row["Context"], "Question": row["Question"],
+              "Options": "".join(f"{_LETTERS[i] if i < 26 else '-'}. {o}\n"
+                                 for i, o in enumerate(options)).rstrip("\n"),
+              "Answer": ""}
+    parts, seen = [], set()
+    for _lit, field, _spec, _conv in string.Formatter().parse(tmpl):
+        if field in values and field not in seen:
+            seen.add(field)
+            if values[field].strip():
+                parts.append(values[field].strip("\n"))
+    return _cut("\n\n".join(parts))
 
 
 # --- converters (pure functions of pinned rows) -----------------------------------------------
@@ -562,8 +594,8 @@ def to_item(row) -> dict:
     if row["Metadata"]:
         meta["ra_metadata"] = row["Metadata"]
     return {"question_id": question_id(row), "benchmark": f"arena_{key}",
-            "prompt": format_prompt(row), "gold": row["Answer"], "grader_id": "arena",
-            "metadata": meta}
+            "prompt": format_prompt(row), "route_text": route_text(row), "gold": row["Answer"],
+            "grader_id": "arena", "metadata": meta}
 
 
 def code_items(v3_pool: list[dict]) -> list[dict]:
@@ -575,6 +607,9 @@ def code_items(v3_pool: list[dict]) -> list[dict]:
                          "source": q["benchmark"], "source_id": q["question_id"]})
             out.append({"question_id": f"arena_LiveCodeBench_{q['question_id']}",
                         "benchmark": "arena_LiveCodeBench", "prompt": q["prompt"],
+                        # A code task is its own content: the v3 prompt carries no harness
+                        # template, so the router sees the same text the model answers.
+                        "route_text": q["prompt"],
                         "gold": q["gold"], "grader_id": "arena", "metadata": meta})
     return out
 
@@ -632,12 +667,62 @@ def build_pool(fx: Fetcher, v3_pool: list[dict], report: dict | None = None):
     return pool, {k: sorted(v) for k, v in sorted(excluded.items())}, weights
 
 
+MANIFEST_NAME = "pool_manifest_v5.json"
+_MANIFEST: dict | None = None
+
+
+def manifest() -> dict:
+    """The pinned pool manifest (pool_manifest_v5.json, pinned by check_safety_invariants)."""
+    global _MANIFEST
+    if _MANIFEST is None:
+        with open(str(files("fugal_subnet.benchmarks") / MANIFEST_NAME), encoding="utf-8") as f:
+            _MANIFEST = json.load(f)
+    return _MANIFEST
+
+
+def weights_ppm() -> dict[str, int]:
+    """The exam mix: each RouterArena dataset's share of RouterArena, in ppm (the manifest's).
+    A dataset with no questions in the pool (ArcMMLU) simply draws nothing; the draw spreads
+    its share over the rest (exam_v5.draw_exam)."""
+    return {str(k): int(v) for k, v in sorted(manifest()["weights_ppm"].items())}
+
+
+def dataset_key(item: dict) -> str:
+    """A pool item's RouterArena dataset key: the exam's stratum and its mix key."""
+    return str((item.get("metadata") or {}).get("ra_dataset", ""))
+
+
+def in_coverage(question_id: str) -> bool:
+    """True when the question is in the coverage part of the v5 pool, False when in the exam
+    part: sha256("<POOL_SALT>:partition:<id>")'s first 8 bytes, as an integer h, against
+    config.COVERAGE_PARTITION_V5 (a fraction p): coverage iff h < p * 2^64. Fixed per id."""
+    from fractions import Fraction
+
+    from fugal_subnet import config
+    p = Fraction(config.COVERAGE_PARTITION_V5)
+    h = int.from_bytes(hashlib.sha256(f"{POOL_SALT}:partition:{question_id}".encode()).digest()[:8],
+                       "big")
+    return h * p.denominator < p.numerator * (1 << 64)
+
+
+def partition(pool) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """({dataset: exam-part ids}, {dataset: coverage-part ids}), ids sorted."""
+    exam: dict[str, list[str]] = defaultdict(list)
+    cover: dict[str, list[str]] = defaultdict(list)
+    for q in pool:
+        qid = str(q["question_id"])
+        (cover if in_coverage(qid) else exam)[dataset_key(q)].append(qid)
+    return ({k: sorted(v) for k, v in sorted(exam.items())},
+            {k: sorted(v) for k, v in sorted(cover.items())})
+
+
 def content_hash(pool: list[dict]) -> str:
-    """Every field the grader or the prompt reads, in id order (as loader.content_hash_v3)."""
+    """Every field the grader, the prompt or the router reads, in id order (as
+    loader.content_hash_v3)."""
     h = hashlib.sha256()
     for q in sorted(pool, key=lambda x: x["question_id"]):
         meta = q.get("metadata") or {}
-        h.update(json.dumps([q["question_id"], q["prompt"],
+        h.update(json.dumps([q["question_id"], q["prompt"], q["route_text"],
                              json.dumps(q["gold"], sort_keys=True, default=str), q["grader_id"],
                              q["benchmark"], meta.get("ra_dataset", ""),
                              json.dumps(meta.get("checker"), sort_keys=True, default=str)],

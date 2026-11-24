@@ -13,7 +13,6 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import types
 
 import numpy as np
 import pytest
@@ -314,21 +313,67 @@ def test_v5_keys_are_not_read_in_an_earlier_namespace():
     assert r.exam is None and r.y is None
 
 
-def test_grade_y_falls_back_to_the_v4_grader_and_reads_arena_grades(monkeypatch):
-    from fractions import Fraction
-    q = {"question_id": "q1", "prompt": "?", "gold": "4", "grader_id": "numeric_final",
-         "benchmark": "gsm8k", "metadata": {}}
-    assert td_v5.grade_y(q, "4") == td_v5.Y_SCALE and td_v5.grade_y(q, "5") == 0
-    fake = types.ModuleType("fugal_subnet.graders_arena")
-    import sys
-    monkeypatch.setitem(sys.modules, "fugal_subnet.graders_arena", fake)
-    for given, want in [(Fraction(1, 2), td_v5.Y_SCALE // 2), (True, td_v5.Y_SCALE), (7, 7)]:
-        fake.grade = lambda q, t, g=given: g
-        assert td_v5.grade_y(q, "x") == want
-    for bad in (0.5, Fraction(3, 2), td_v5.Y_SCALE + 1):
-        fake.grade = lambda q, t, g=bad: g
-        with pytest.raises(ValueError):
-            td_v5.grade_y(q, "x")
+def _arena_item(qid="arena_MMLUPro_x", gold="B", dataset="MMLUPro", **meta):
+    return {"question_id": qid, "benchmark": f"arena_{dataset}", "prompt": "?",
+            "route_text": "?", "gold": gold, "grader_id": "arena",
+            "metadata": {"ra_dataset": dataset, **meta}}
+
+
+def test_grade_y_is_the_arena_grade_on_its_scale():
+    q = _arena_item()
+    assert td_v5.grade_y(q, "so \\boxed{B}") == td_v5.Y_SCALE
+    assert td_v5.grade_y(q, "so \\boxed{C}") == 0
+
+
+def test_grade_y_grades_code_in_the_sandbox_only(monkeypatch):
+    from fugal_subnet import graders_arena
+    from fugal_subnet.tee import harness
+    calls = []
+    monkeypatch.setattr(harness, "require_code_sandbox", lambda: calls.append("sandbox"))
+    seen = {}
+
+    def fake_grade(task, reply, allow_exec=False):
+        seen["allow_exec"] = allow_exec
+        return td_v5.Y_SCALE
+    monkeypatch.setattr(graders_arena, "grade", fake_grade)
+    code = _arena_item(dataset="LiveCodeBench", gold="x", checker={"id": "stdin_stdout"})
+    assert td_v5.grade_y(code, "print(1)") == td_v5.Y_SCALE
+    assert calls == ["sandbox"] and seen["allow_exec"] is True
+    seen.clear()
+    td_v5.grade_y(_arena_item(), "x")
+    assert calls == ["sandbox"] and seen["allow_exec"] is False
+
+
+@pytest.mark.parametrize("bad", [0.5, True, td_v5.Y_SCALE + 1, -1])
+def test_grade_y_refuses_a_grade_off_its_integer_scale(monkeypatch, bad):
+    from fugal_subnet import graders_arena
+    monkeypatch.setattr(graders_arena, "grade", lambda task, reply, allow_exec=False: bad)
+    with pytest.raises(ValueError):
+        td_v5.grade_y(_arena_item(), "x")
+
+
+def _arena_pool(n=400):
+    datasets = ("MMLUPro", "OpenTDB", "QANTA", "PubMedQA")
+    return [_arena_item(qid=f"arena_{datasets[i % 4]}_{i:04d}", dataset=datasets[i % 4])
+            for i in range(n)]
+
+
+def test_coverage_draws_only_the_pools_coverage_part_and_never_an_excluded_question():
+    from fugal_subnet.benchmarks import arena_sets
+    pool = _arena_pool(2000)      # every dataset's coverage part covers its share of the draw
+    exam_part, cover_part = arena_sets.partition(pool)
+    cover_ids = {q for ids in cover_part.values() for q in ids}
+    exam_ids = {q for ids in exam_part.values() for q in ids}
+    assert cover_ids and exam_ids and not cover_ids & exam_ids
+    state = mf.state()
+    excluded = set(sorted(cover_ids)[:5])
+    got = td_v5.coverage_v5(bytes.fromhex(NONCE), pool, excluded, state, HOTKEY)
+    assert got and set(got) <= cover_ids and not set(got) & excluded
+    assert len(got) == min(td_v5.COVERAGE_CALLS, len(cover_ids) - len(excluded))
+    assert set(got.values()) <= set(state.ids())
+    # deterministic per (nonce, hotkey), different for another hotkey
+    assert td_v5.coverage_v5(bytes.fromhex(NONCE), pool, excluded, state, HOTKEY) == got
+    assert td_v5.coverage_v5(bytes.fromhex(NONCE), pool, excluded, state, HOTKEY + "x") != got
 
 
 # --- the miner's v5 session ----------------------------------------------------------------
@@ -366,6 +411,6 @@ def test_the_miner_builds_a_v5_session_on_its_v4_session(monkeypatch):
     v4 = V4()
     session = miner._v5_session(None, netuid=70, v4_session=v4, first_epoch=104,
                                 blocks_per_epoch=360, hotkey=HOTKEY, genesis=None,
-                                read_spec=lambda e: (e - 2, _spec(e)))
+                                read_spec=lambda e: (e - 2, _spec(e)), pool=_arena_pool(8))
     assert session.is_v5(104) and not session.is_v5(103)
     assert v4.challenge(105) is None

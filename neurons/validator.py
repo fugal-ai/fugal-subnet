@@ -1165,11 +1165,24 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                 v4_plan = _plan_v4.plan_v4(epoch_inputs[3][0])
                 epoch_inputs[4] = (epoch_inputs[3][0], epoch_inputs[3][1], None, None, None)
                 if v5_block is not None:
-                    # Protocol v5 runs on v4's pool and menu until the exam
-                    # pool (lane P) lands; its exam draws from the same pool.
+                    # Protocol v5 keeps v4's menu and its plan on the v3 pool
+                    # (the epoch's nonce and committed slice); its exam,
+                    # coverage and gold are the v5 pool's (v5_inputs below).
                     epoch_inputs[5] = epoch_inputs[4]
             except Exception as e:  # noqa: BLE001 - a v4 reason: refused only once v4 is due
                 v4_inputs_error = f"the v4 plan cannot be built on the v3 pool ({e})"
+    # Protocol v5 inputs: the v5 pool (loader.load_pool(5), verified against
+    # pool_manifest_v5.json) and its routing embeddings (route_text, pinned by
+    # config.EMBEDDINGS_V5_SHA256). A live validator with v5 scheduled refuses
+    # to start without them; before the pin exists ("TBD") nothing can run v5.
+    v5_inputs = None
+    if v5_block is not None:
+        try:
+            v5_inputs = _v5_load_inputs(_cfg, live=live)
+        except Exception as e:  # noqa: BLE001 - any failure here is a startup refusal
+            if live:
+                raise click.ClickException(f"protocol v5 inputs could not be loaded: {e}") from e
+            logger.warning("protocol v5 inputs could not be loaded (mock): %s", e)
     role_name = ("none" if role is None else "ROOT" if role.root else
                  "follower (verified)" if role.root_hotkey else "follower")
     # Protocol v4's inputs and refusals, for the READY line and the menu
@@ -1692,9 +1705,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                     # v5: this hotkey's coverage cells on the epoch's menu and
                     # the exam cells the root's spec assigns it (I8).
                     try:
+                        if v5_inputs is None:
+                            raise ValueError("the v5 pool and embeddings are not loaded")
                         exp5 = _v5_expected(
                             v4_menu.state, epoch_index=epoch_index, nonce=nonce,
-                            pool=benchmark_pool, hotkey=hotkey_ss58, spec=v5_exam[0],
+                            pool=v5_inputs.pool, hotkey=hotkey_ss58, spec=v5_exam[0],
                             plan=v4_epoch_plan)
                     except Exception as e:  # noqa: BLE001 - our expectation, not the miner's proof
                         logger.error("UID %d: no v5 expectation could be drawn (%s: %s); its "
@@ -1705,7 +1720,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                     v4_expected[uid] = exp5.v4
                     uid_checks = checks._replace(
                         explore_map=exp5.v4.exploration, v5=exp5,
-                        slice_gold=_v5_gold(slice_gold, gold_answers, exp5))
+                        slice_gold=_v5_gold(slice_gold, v5_inputs.gold, exp5))
                 elif protocol_version >= 4 and hotkey_ss58 and _offers_proof(responses[uid]):
                     # v4: this hotkey's exploration and measurement on the
                     # epoch's menu, and the gold for all of them.
@@ -1994,8 +2009,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                     v5_node, epoch_index=epoch_index, nonce=nonce, exam=v5_exam,
                     state=v4_menu.state, verified_proofs=verified_proofs,
                     verified_heads=verified_heads, head_hashes=head_hashes,
-                    coldkey_of=coldkey_of, commit_blocks=commit_blocks, gold_answers=gold_answers,
-                    pool=benchmark_pool, embeddings=v3_embeddings, burn_uid=burn_uid,
+                    coldkey_of=coldkey_of, commit_blocks=commit_blocks, v5_inputs=v5_inputs,
+                    burn_uid=burn_uid,
                     published=v4_view,
                     pooled=_v4_pool(v4_menu.state, verified_proofs=verified_proofs,
                                     expected=v4_expected, coldkey_of=coldkey_of, nonce=nonce,
@@ -3947,19 +3962,61 @@ class _V5Scored(NamedTuple):
     baseline: str
 
 
+class _V5Inputs(NamedTuple):
+    """Protocol v5's pool inputs: the pool (verified against pool_manifest_v5),
+    its gold by question id, its routing embeddings (route_text rows), the
+    exam part by RouterArena dataset (arena_sets.partition) and the mix."""
+    pool: list
+    gold: dict
+    embeddings: object
+    exam_by_dataset: dict
+    weights_ppm: dict
+
+
+def _v5_load_inputs(cfg, *, live: bool) -> _V5Inputs:
+    """Load the v5 pool and its pinned routing embeddings (fetched from
+    EMBEDDINGS_V5_URL when missing or wrong). The pin must exist: "TBD" means
+    this release cannot run v5 and is refused."""
+    from fugal_subnet import validator_setup
+    from fugal_subnet.benchmarks import arena_sets
+    from fugal_subnet.benchmarks.loader import load_pool
+
+    pin = getattr(cfg, "EMBEDDINGS_V5_SHA256", "TBD")
+    if not pin or pin == "TBD":
+        raise ValueError("config.EMBEDDINGS_V5_SHA256 is not pinned (TBD): this build cannot "
+                         "run protocol v5")
+    pool = load_pool(5, strict=live)
+    path = os.getenv("FUGAL_EMBEDDINGS_V5_FILE", "data/embeddings/pool_v5.npz")
+    logger.info(validator_setup.ensure_embeddings(path, pin, getattr(cfg, "EMBEDDINGS_V5_URL", None)))
+    emb = Embeddings.load(path, pin)
+    missing = emb.covers([q["question_id"] for q in pool])
+    if missing:
+        raise ValueError(f"the v5 embeddings file has no row for {len(missing)} pool "
+                         f"question(s), e.g. {missing[0]}")
+    exam_part, _cover = arena_sets.partition(pool)
+    logger.info("Protocol v5 inputs: pool %d questions (exam part %d), embeddings for %d",
+                len(pool), sum(len(v) for v in exam_part.values()), len(emb.row))
+    return _V5Inputs(pool=pool, gold={q["question_id"]: q for q in pool}, embeddings=emb,
+                     exam_by_dataset=exam_part, weights_ppm=arena_sets.weights_ppm())
+
+
 def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_proofs: dict,
               verified_heads: dict, head_hashes: dict, coldkey_of: dict, commit_blocks: dict,
-              gold_answers: dict, pool: list, embeddings, burn_uid: int, pooled, published):
+              v5_inputs: _V5Inputs | None, burn_uid: int, pooled, published):
     """Protocol v5's scoring of one epoch (v5_epoch): the votes of the
     verified proofs, the seat and weights, and the spec of epoch + SPEC_LAG.
     `published` is the epoch's published set (memo_v4.Published, the view
     its plan drew on): the memorisation rule reads it (v5_epoch).
     Returns (result, uids, weights, commit): `commit` advances `node` (called
     at the loop's commit point, after the reveal and the weights)."""
-    from fugal_subnet import epoch_plan, v5_epoch
     from fugal_subnet import menu_state as ms
+    from fugal_subnet import v5_epoch
+    from fugal_subnet.benchmarks import arena_sets
     from fugal_subnet.head_eval import load_head_v4
 
+    if v5_inputs is None:
+        raise RuntimeError(f"epoch {epoch_index} is protocol v5 but the v5 pool and embeddings "
+                           "were not loaded at startup")
     spec, costs, void = exam
     votes, cover = [], []
     served = []
@@ -3984,7 +4041,8 @@ def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_pro
         votes=tuple(votes), coverage=tuple(cover),
         flagged=frozenset(v5_epoch.implausible(votes)),
         void=None if counts or spec is None else void)
-    bench = {q: str(g.get("benchmark", "")) for q, g in gold_answers.items()}
+    # The stratum of a question is its RouterArena dataset (arena_sets.dataset_key).
+    bench = {q: arena_sets.dataset_key(g) for q, g in v5_inputs.gold.items()}
     full = [e.id for e in state.entries if ms.is_full(e)]
     first_published = v5_epoch.published_reader(published)
     result = v5_epoch.score_epoch(
@@ -3999,17 +4057,15 @@ def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_pro
             loaded[h] = load_head_v4(data)
         except ValueError:
             continue
-    by_dataset: dict[str, list[str]] = {}
-    for q in pool:
-        by_dataset.setdefault(str(q.get("benchmark", "")), []).append(str(q["question_id"]))
-    # TODO(lane P): the RouterArena-like exam mix replaces v4's pinned mix.
-    _t, _bc, weights_ppm = epoch_plan._mix_v4()
+    # The exam draws only the pool's exam part (coverage never touches it), on
+    # RouterArena's dataset shares.
     try:
         next_spec, next_costs = v5_epoch.next_spec(
             epoch=epoch_index, nonce=nonce, decision=result.decision, heads=result.heads,
             served=served, loaded=loaded, state_menu=state,
-            hidden_of=lambda qids: embeddings.aligned(list(qids)),
-            by_dataset=by_dataset, weights_ppm=dict(weights_ppm), baseline=result.baseline,
+            hidden_of=lambda qids: v5_inputs.embeddings.aligned(list(qids)),
+            by_dataset=v5_inputs.exam_by_dataset, weights_ppm=dict(v5_inputs.weights_ppm),
+            baseline=result.baseline,
             first_published=first_published,
             used=v5_epoch.spec_questions([*(s for s, _c in node.specs.values()),
                                           *(r.spec for r in node.records), spec]))

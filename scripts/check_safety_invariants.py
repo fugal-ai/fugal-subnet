@@ -71,7 +71,10 @@ ARENA_GRADER_SHA256 = "e74f46a4938015395badacfb484a86f114cb6745d6fa945ddcf2d649f
 POOL_V5_DATA_SHA256 = {
     "arena_prompts.json": "00ce256570d4dc7db804ee36f511331084c850c1ad39c16040f3143189a1a65f",
     "exclusions_routerarena.json": "73fcf11244b1df0a6f2fd8498de6be6b0b44b38da2b4e7c8fccd647d11349ea6",
-    "pool_manifest_v5.json": "9dcd5bb6c6bb23da701f52896101f12898ed4e22de7c8f5f6c01db224f15a954",
+    # Re-pinned 2026-11-24 (lane W4): items gain route_text (what routers embed, without
+    # RouterArena's instruction template), so the content hash moved; prompts, golds, ids
+    # and exclusions are byte-identical.
+    "pool_manifest_v5.json": "5daf2b1aa555fe371d52aea6326b994cc680b56eb8074297813b8c3264474320",
 }
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole
@@ -2530,7 +2533,7 @@ def v5_release_blockers(root: Path | None = None, cfg=None, *, probe=None,
                            f"{finney_name}={earlier}")
 
     # 3. pinned
-    out.extend(f"pinned: {why}" for why in consensus_v5.problems(package))
+    out.extend(f"pinned: {why}" for why in consensus_v5.problems(package, cfg))
 
     # 4. the frozen compose
     frozen = sorted((root / "deploy" / "dstack").glob("app-compose.frozen-*-finney.json"))

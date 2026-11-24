@@ -584,7 +584,9 @@ _V5_NAMES: dict[str, tuple[str, ...]] = {
         "EXAM_CALLS_PER_HOTKEY_V5", "COVERAGE_CALLS_V5", "WINDOW_EPOCHS_V5", "N_MIN_V5", "N0_V5",
         "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5", "CONTENDERS_MAX_V5", "SPEC_LAG_V5",
         "HEAD_LAM_MAX_V5", "Y_SCALE_V5", "EXAM_BUDGET_S_V5", "EXAM_CALL_DEADLINE_S_V5",
-        "BASELINE_MIN_PAIRS_V5", "FRESH_RESERVE_EPOCHS_V5"),
+        "BASELINE_MIN_PAIRS_V5", "FRESH_RESERVE_EPOCHS_V5", "COVERAGE_PARTITION_V5",
+        "EMBEDDINGS_V5_SHA256", "EMBEDDINGS_V5_URL"),
+    "fugal_subnet.benchmarks.loader": ("DEFAULT_POOL_FILE_V5",),
     "fugal_subnet.arena_score": (
         "Y_SCALE", "UNITS_PER_POINT", "A_REF", "NANO", "ARENA_BETA", "ARENA_COST_MAX_PER_1K",
         "ARENA_COST_MIN_PER_1K", "NANO_PER_QUERY_PER_USD_PER_1K", "COST_MAX_ND", "COST_MIN_ND",
@@ -676,7 +678,8 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.benchmarks.code_sets": ("74febd3366d2f6df", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.gpqa": ("00069def9aadd4c0", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.livecode": ("1ac5675e8cb17526", "4f53cda18c2baa0c"),
-    "fugal_subnet.benchmarks.loader": ("d5a9f08b55acc9aa", "4f53cda18c2baa0c"),
+    # v5: DEFAULT_POOL_FILE_V5 added to NOT_V4 (v5 only)
+    "fugal_subnet.benchmarks.loader": ("973c4dc0e93d75ae", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.math_": ("d9a4e097379678c2", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.mmlu": ("35614e83f6cc1105", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.v2_sets": ("688a22339353c2e5", "4f53cda18c2baa0c"),
@@ -688,7 +691,8 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.commit_reveal": ("353e9a600cb5d95c", "4f53cda18c2baa0c"),
     # v5: EXAM_BUDGET_S_V5, EXAM_CALL_DEADLINE_S_V5, BASELINE_MIN_PAIRS_V5 and
     # FRESH_RESERVE_EPOCHS_V5 added to NOT_V4 (v5 only)
-    "fugal_subnet.config": ("5027e33da035f8e1", "2b9b61905b4c5c4f"),
+    # and (lane W4) COVERAGE_PARTITION_V5, EMBEDDINGS_V5_SHA256, EMBEDDINGS_V5_URL
+    "fugal_subnet.config": ("49b96a35ebe8dfd7", "2b9b61905b4c5c4f"),
     "fugal_subnet.copy_rule": ("5191ef53fd3d75ce", "4f53cda18c2baa0c"),
     "fugal_subnet.determinism": ("ea226adaa11ca2b1", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_logger": ("eaa876bbf2003294", "4f53cda18c2baa0c"),
@@ -763,6 +767,13 @@ NOT_SCANNED: dict[str, str] = {
     "fugal_subnet.seat_v5": "protocol v5 only: decides nothing a v4 epoch publishes; its constants "
                             "are in the v5 section (consensus_v5.REGISTERED)",
     "fugal_subnet.consensus_v5": "the v5 registry",
+    "fugal_subnet.graders_arena": "protocol v5 only, and hash-pinned whole (check_safety_invariants "
+                                  "pins its sha256; consensus_v5.PINNED_FILES puts it in the v5 "
+                                  "digest): every byte of it is covered, constants included",
+    "fugal_subnet.benchmarks.arena_sets": "protocol v5 only: the v5 pool's builder and reader; the "
+                                          "pool it builds is pinned by pool_manifest_v5.json's "
+                                          "content hash and its keyed order and exam/coverage "
+                                          "split by POOL_SALT (consensus_v5.REGISTERED)",
     "fugal_subnet.v5_epoch": "protocol v5 only: a v5 epoch's votes, window, B*, seat and next "
                              "exam; its constants are in the v5 section (consensus_v5.REGISTERED)",
     "fugal_subnet.v5_node": "protocol v5 only: a validator's v5 state on disk (operational: the "

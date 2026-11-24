@@ -618,7 +618,10 @@ def _run_benchmark_v5(*, nonce, head_bytes, benchmark_pool, proxy, epoch_id, sou
         raise ValueError(why)
     weights_hash = hashlib.sha256(head_bytes).hexdigest()
     nonce_bytes = bytes.fromhex(nonce) if len(nonce) == 64 else nonce.encode()
-    pool_by_id = {q["question_id"]: q for q in benchmark_pool}
+    # Every v5 call is on the v5 pool (arena_sets); `benchmark_pool` is the v3
+    # pool the v4 menu plan draws on, used only when no v5 pool is given.
+    v5_pool = list(v5.pool) or list(benchmark_pool)
+    pool_by_id = {q["question_id"]: q for q in v5_pool}
 
     # 2. Endpoint reads, before any model call.
     reads = er.read_endpoints(td_v4.wanted_reads(state), v5.v4.fetch_listing)
@@ -644,8 +647,8 @@ def _run_benchmark_v5(*, nonce, head_bytes, benchmark_pool, proxy, epoch_id, sou
             logger.warning("Epoch %d: %d of this hotkey's %d exam cells name a question not in "
                            "this TD's pool or an entry not on the epoch's menu: not called",
                            v5.epoch, missing, len(exam.cells))
-    coverage = td_v5.coverage_v5(nonce_bytes, benchmark_pool, spec_questions | set(exam_qids),
-                                 state, hotkey, index=getattr(v5.v4.plan, "pool_index", None))
+    coverage = td_v5.coverage_v5(nonce_bytes, v5_pool, spec_questions | set(exam_qids),
+                                 state, hotkey)
     for qid in sorted(coverage):
         eid = coverage[qid]
         if eid not in requests:
@@ -653,7 +656,8 @@ def _run_benchmark_v5(*, nonce, head_bytes, benchmark_pool, proxy, epoch_id, sou
         if qid in pool_by_id:
             scheduled.append((pool_by_id[qid], eid, "coverage", requests[eid], eid))
 
-    if any(s[0].get("grader_id") in SANDBOXED_CODE_CHECKERS for s in scheduled):
+    if any(s[0].get("grader_id") in SANDBOXED_CODE_CHECKERS
+           or (s[0].get("metadata") or {}).get("checker") for s in scheduled):
         require_code_sandbox()
 
     proxy.prices = td_v4.proxy_prices(state)

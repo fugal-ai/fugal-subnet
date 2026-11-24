@@ -1152,11 +1152,12 @@ def _v5_spec_reader(subtensor, *, netuid: int, root_hk, blocks_per_epoch: int, f
 
 
 def _v5_session(subtensor, *, netuid: int, v4_session, first_epoch: int, blocks_per_epoch: int,
-                hotkey: str, genesis, fetch_reveal=None, read_spec=None):
+                hotkey: str, genesis, fetch_reveal=None, read_spec=None, pool=None):
     """The miner's td_v5.V5Session: `v4_session` for the menu (its challenge
-    gated off from `first_epoch`, td_v5.gate_challenge), and an exam policy
-    that reads each epoch's spec from the root's reveals as the v4 holder
-    reader does (`_v5_spec_reader`, or `read_spec`)."""
+    gated off from `first_epoch`, td_v5.gate_challenge), an exam policy that
+    reads each epoch's spec from the root's reveals as the v4 holder reader
+    does (`_v5_spec_reader`, or `read_spec`), and the v5 pool every v5 call
+    is on (`pool`, else loader.load_pool(5): verified against its manifest)."""
     from fugal_subnet import config as cfg
     from fugal_subnet import reveal_sync
     from fugal_subnet.tee import td_v5
@@ -1179,9 +1180,14 @@ def _v5_session(subtensor, *, netuid: int, v4_session, first_epoch: int, blocks_
                                     blocks_per_epoch=blocks_per_epoch,
                                     fetch_reveal=_kept_reveals(fetch_reveal))
     policy = td_v5.ExamPolicy(first_epoch=first_epoch, hotkey=hotkey, read_spec=read_spec)
+    if pool is None:
+        from fugal_subnet.benchmarks.loader import load_pool
+        pool = load_pool(5)
+        logger.info("Protocol v5 pool: %d questions (pool_manifest_v5 content hash verified)",
+                    len(pool))
     return td_v5.V5Session(v4_session=v4_session, exam=policy, first_epoch=first_epoch,
                            protocol_of=_protocol_of_boundary(genesis),
-                           blocks_per_epoch=blocks_per_epoch)
+                           blocks_per_epoch=blocks_per_epoch, pool=pool)
 
 
 def _protocol_of_boundary(genesis):

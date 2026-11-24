@@ -36,6 +36,7 @@ def _cfg(**kw):
         FINNEY_MENU_B_BLOCK=config.FINNEY_MENU_B_BLOCK,
         FINNEY_V4_ACTIVATION_BLOCK=v4,
         FINNEY_V5_ACTIVATION_BLOCK=(v4 // BPE + 100) * BPE,
+        EMBEDDINGS_V5_SHA256="ab" * 32,
     )
     base.update(kw)
     return types.SimpleNamespace(**base)
@@ -76,6 +77,12 @@ def _gate(tree, cfg=None, probe=None):
 
 def test_a_release_with_every_condition_passes(tree):
     assert _gate(tree) == []
+
+
+@pytest.mark.parametrize("pin", ["TBD", None, ""])
+def test_an_unpinned_embeddings_file_is_a_blocker(tree, pin):
+    got = _gate(tree, cfg=_cfg(EMBEDDINGS_V5_SHA256=pin))
+    assert any(g.startswith("pinned: config.EMBEDDINGS_V5_SHA256 is not pinned") for g in got)
 
 
 def test_v4_conditions_are_v5_conditions(tree):

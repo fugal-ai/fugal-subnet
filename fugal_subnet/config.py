@@ -1689,6 +1689,14 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_BENCHMARK_POOL_V3",
     "FUGAL_POOL_FILE_V3",
     "FUGAL_POOL_CACHE_V3",
+    # v5: the pool is verified against pool_manifest_v5's content hash and the
+    # embeddings against EMBEDDINGS_V5_SHA256 whatever file or cache they came
+    # from; FUGAL_ARENA_CACHE_DIR is only where a build downloads its sources.
+    "FUGAL_BENCHMARK_POOL_V5",
+    "FUGAL_POOL_FILE_V5",
+    "FUGAL_POOL_CACHE_V5",
+    "FUGAL_ARENA_CACHE_DIR",
+    "FUGAL_EMBEDDINGS_V5_FILE",
     "FUGAL_FRAME_BOOTSTRAP",
     "FUGAL_EMBEDDINGS_FILE",
     "FUGAL_BACKBONE_THREADS",
@@ -1804,6 +1812,21 @@ BASELINE_MIN_PAIRS_V5 = 100
 # gives 250 an epoch at first and keeps 37% of itself after 12 days. A release
 # that adds questions raises it at once.
 FRESH_RESERVE_EPOCHS_V5 = 240
+# The v5 pool (benchmarks/arena_sets.py, pinned by pool_manifest_v5.json) is
+# split once, by a keyed hash of each question id (arena_sets.in_coverage),
+# into the exam part and the coverage part (this share of it). Exams draw only
+# the exam part's unpublished reserve; coverage (the training labels every
+# miner buys) draws only the coverage part and reuses it freely. Coverage
+# labels therefore never shrink the exam's reserve and the memorisation rule
+# needs nothing from them.
+COVERAGE_PARTITION_V5 = "1/5"
+# The v5 pool's routing embeddings: one row per question of route_text (the
+# question without RouterArena's instruction template, arena_sets.route_text),
+# built like the v3 file (one prompt per row, batch 1, one thread). "TBD" until
+# the file is built and published; a live validator with v5 scheduled refuses
+# to start on "TBD" and `check_safety_invariants --release-v5` lists it.
+EMBEDDINGS_V5_SHA256: str = "TBD"
+EMBEDDINGS_V5_URL: str | None = None
 
 
 def v5_activation_block(genesis_hash: str | None) -> int | None:

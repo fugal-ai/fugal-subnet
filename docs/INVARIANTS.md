@@ -6731,10 +6731,30 @@ reveal's exam and coverage votes are published outcomes too,
   f ≤ c − 1. This covers what the draw cannot see, a question published by
   another path between the draw and the exam.
 
+- **Coverage never touches the exam.** The v5 pool is split once, by a keyed
+  hash of each question id (`arena_sets.in_coverage`, COVERAGE_PARTITION_V5
+  of it to coverage), into an exam part and a coverage part. Exams draw only
+  the exam part; coverage (the training labels) draws only the coverage part
+  and reuses it freely (`td_v5.coverage_v5`). Coverage labels being public
+  therefore never shrinks the exam's reserve.
+
 So memorisation gains nothing by construction; v4's statistical per-head
 refusal is not used. The reserve is the evidence's budget: it shrinks by about
 1/FRESH_RESERVE_EPOCHS_V5 an epoch, and a release that adds questions raises
-it. Check: `tests/test_v5_memo_resync.py`, the `v5_epoch` determinism stage.
+it. Check: `tests/test_v5_memo_resync.py`, the `v5_epoch` determinism stage,
+`tests/test_graders_arena.py` (the partition).
+
+### v5: routers see the question, never RouterArena's template
+
+The exam pool's questions carry two texts (`benchmarks/arena_sets.py`): the
+templated `prompt` RouterArena's harness builds (the answering model gets it,
+and grading needs its answer format) and `route_text`, the row's own content
+(context when non-empty, question, options as listed) without any template
+sentence, label or format instruction. Routers are scored on picks computed
+from the embeddings of `route_text` only (the pinned EMBEDDINGS_V5_SHA256
+file), because RouterArena forbids routing on its harness's instruction text
+and a real user sends none. `route_text` is in the pool's content hash
+(pool_manifest_v5.json). Check: `tests/test_graders_arena.py`.
 
 ### I4 — v5: an exam cell is a vote of operators, never of the compared ones
 

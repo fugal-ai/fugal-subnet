@@ -13,9 +13,12 @@ replaces its challenge and its random exploration with two kinds of calls:
    and needs no head but its own (which the proof binds, as before): the
    cells are the union of every contender's differing picks, which every
    validator recomputes from the same published inputs.
-2. **Coverage cells.** COVERAGE_CALLS cells drawn for this hotkey as v4
-   draws its coverage part (`coverage_v5`): the training labels that let a
-   new or unpicked entry be learned at all.
+2. **Coverage cells.** COVERAGE_CALLS cells of the pool's coverage part,
+   drawn for this hotkey (`coverage_v5`): the training labels that let a new
+   or unpicked entry be learned at all.
+
+Every v5 call is on the v5 pool (benchmarks/arena_sets.py), sent the
+question's templated prompt and graded by graders_arena (`grade_y`).
 
 The first SPEC_LAG epochs from the activation are coverage only: no reveal
 before them can carry a spec. An epoch whose spec cannot be read or checked
@@ -40,7 +43,6 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from fractions import Fraction
 
 from fugal_subnet import config
 from fugal_subnet.reveal_sync import MAX_REVEAL_BYTES
@@ -188,72 +190,51 @@ def gate_challenge(policy, first_v5_epoch: int):
 def coverage_v5(nonce: bytes, pool: list[dict], excluded_ids: set[str], state, hotkey: str,
                 index=None) -> dict[str, str]:
     """This hotkey's coverage cells, {question id: entry id}: COVERAGE_CALLS
-    questions drawn as v4 draws a miner's private set (the epoch's fresh
-    questions first when `index` is the epoch's memo_v4.ReserveIndex, then
-    slicer.select_private_explore), disjoint from `excluded_ids` (the exam's
-    questions), every one sent to an entry by the menu's coverage shares
-    (epoch_plan.explore_shares_v4(state).coverage, explore_weights.
-    assign_by_share under exploration.coverage_nonce). Every validator draws
-    the same.
-
-    TODO(coordinator): the category targets are v4's pinned mix until lane P's
-    RouterArena mix replaces them."""
-    from fugal_subnet import epoch_plan, memo_v4
-    from fugal_subnet.benchmarks.slicer import select_private_explore
+    questions of the v5 pool's COVERAGE part (arena_sets.in_coverage; never an
+    exam question, so coverage labels never shrink the exam's reserve), drawn
+    on the RouterArena mix by exam_v5.draw_exam under this hotkey's private
+    nonce (exploration.private_nonce), outside `excluded_ids`, each sent to an
+    entry by the menu's coverage shares (epoch_plan.explore_shares_v4(state).
+    coverage, explore_weights.assign_by_share under exploration.coverage_nonce).
+    The coverage part is reused freely: it trains routers and decides no
+    comparison. Every validator draws the same. `index` is unused (kept for
+    the callers' signature)."""
+    from fugal_subnet import epoch_plan
+    from fugal_subnet.benchmarks import arena_sets
     from fugal_subnet.exploration import coverage_nonce, private_nonce
     from fugal_subnet.explore_weights import assign_by_share
 
+    del index
     n = COVERAGE_CALLS
     if not hotkey or n <= 0:
         return {}
-    shares = epoch_plan.explore_shares_v4(state)
-    targets, _bench_category, _bench_weight = epoch_plan._mix_v4()
+    excluded = {str(q) for q in excluded_ids}
+    by_id = {str(q["question_id"]): q for q in pool}
+    _exam, cover = arena_sets.partition(pool)
+    cover = {d: [q for q in ids if q not in excluded] for d, ids in cover.items()}
     mine = private_nonce(nonce, hotkey)
-    index = index or epoch_plan.pool_index_v4(pool)
-    excluded = set(excluded_ids)
-    fresh: list[dict] = []
-    if isinstance(index, memo_v4.ReserveIndex):
-        fresh = [q for q in memo_v4.fresh_questions(nonce, index, targets)
-                 if q["question_id"] not in excluded][:n]
-        excluded |= {q["question_id"] for q in fresh}
-    chosen = fresh + select_private_explore(mine, index, excluded, n - len(fresh), dict(targets))
-    if not chosen:
+    chosen_ids = _exam_v5().draw_exam(mine, cover, arena_sets.weights_ppm(), n)
+    if not chosen_ids:
         return {}
-    return assign_by_share(coverage_nonce(mine), chosen, shares.coverage)
+    shares = epoch_plan.explore_shares_v4(state)
+    return assign_by_share(coverage_nonce(mine), [by_id[q] for q in chosen_ids], shares.coverage)
 
 
 def grade_y(question: dict, text: str) -> int:
-    """One reply's label, an integer 0..Y_SCALE (RouterArena's metrics may be
-    fractional). Through lane P's arena grader (fugal_subnet/graders_arena.py,
-    `grade(question, text)`) when the image ships it; a bool counts as 0 or
-    Y_SCALE, a Fraction in [0, 1] is floored to the scale, an int is taken
-    as already on the scale. Floats are refused (labels are consensus data).
+    """One reply's label, an integer 0..Y_SCALE: the pinned arena grader
+    (graders_arena.grade, RouterArena's metrics; METEOR is fractional). A code
+    question (its metadata carries a graders_code checker) is graded in the
+    code sandbox, which must have passed its self-test, as v3's code questions
+    are (harness.require_code_sandbox)."""
+    from fugal_subnet import graders_arena
 
-    TODO(lane P / coordinator): drop the fallback to the v4 grader once
-    graders_arena.py is integrated."""
-    grade = None
-    try:
-        from fugal_subnet import graders_arena  # type: ignore[attr-defined]
-        grade = getattr(graders_arena, "grade", None)
-    except ImportError:
-        grade = None
-    if grade is None:
-        from fugal_subnet.tee.harness import grade_question
-        return Y_SCALE if grade_question(question, text) else 0
-    v = grade(question, text)
-    if isinstance(v, bool):
-        return Y_SCALE if v else 0
-    if isinstance(v, int):
-        y = v
-    elif isinstance(v, Fraction):
-        if not 0 <= v <= 1:
-            raise ValueError("an arena grade is in [0, 1]")
-        y = (v.numerator * Y_SCALE) // v.denominator
-    else:
-        raise ValueError(f"an arena grade is a bool, an int on the scale or a Fraction, not "
-                         f"{type(v).__name__}")
-    if not 0 <= y <= Y_SCALE:
-        raise ValueError(f"an arena grade is on 0..{Y_SCALE}")
+    code = bool((question.get("metadata") or {}).get("checker"))
+    if code:
+        from fugal_subnet.tee.harness import require_code_sandbox
+        require_code_sandbox()
+    y = graders_arena.grade(question, text, allow_exec=code)
+    if type(y) is not int or not 0 <= y <= Y_SCALE:
+        raise ValueError(f"an arena grade is an int on 0..{Y_SCALE}, got {y!r}")
     return y
 
 
@@ -268,6 +249,7 @@ class V5EpochInputs:
     epoch: int
     v4: object                       # td_v4.V4EpochInputs, challenge None
     exam: ExamTask | None
+    pool: tuple = ()                 # the v5 pool (arena_sets), every v5 call's question
     budget_s: float = EXAM_BUDGET_S
     call_deadline_s: int = EXAM_CALL_DEADLINE_S
 
@@ -280,9 +262,13 @@ class V5Session:
     accepted, read and checked as under v4) and its exam policy."""
 
     def __init__(self, *, v4_session, exam: ExamPolicy, first_epoch: int,
-                 protocol_of=None, blocks_per_epoch: int | None = None):
+                 protocol_of=None, blocks_per_epoch: int | None = None, pool=()):
         self.v4 = v4_session
         self.exam = exam
+        # The v5 pool (loader.load_pool(5), verified against its manifest):
+        # the exam cells' and coverage's questions. The v4 session keeps the
+        # v3 pool its menu plan draws on.
+        self.pool = tuple(pool)
         self.first_epoch = int(first_epoch)
         # `protocol_of(boundary_block) -> int` is the one source of an epoch's
         # protocol, slicer.protocol_version_for_boundary (the miner binds it
@@ -305,7 +291,7 @@ class V5Session:
         v4_inputs = self.v4.inputs_for(epoch)
         if getattr(v4_inputs, "challenge", None) is not None:
             v4_inputs = dataclasses.replace(v4_inputs, challenge=None)
-        return V5EpochInputs(epoch=epoch, v4=v4_inputs, exam=self.exam(epoch))
+        return V5EpochInputs(epoch=epoch, v4=v4_inputs, exam=self.exam(epoch), pool=self.pool)
 
     def ran(self, inputs: V5EpochInputs, proof) -> object:
         """Record the menu `proof` ran on (td_v4.V4Session.ran)."""

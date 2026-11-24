@@ -170,6 +170,80 @@ def test_prompt_formatting_matches_routerarena_rules():
     assert len(p) == 10003 and "..." in p
 
 
+def _template_literals(template: str) -> list[str]:
+    """The template's own sentences: its literal text between placeholders, in pieces of 12 or
+    more characters (labels like "Context:" and every instruction sentence)."""
+    import string
+    out = []
+    for lit, _f, _s, _c in string.Formatter().parse(template):
+        for piece in lit.replace("\\n", "\n").split("\n"):
+            piece = piece.strip()
+            if len(piece) >= 12:
+                out.append(piece)
+    return out
+
+
+@pytest.mark.parametrize("key", sorted(json.load(
+    open(arena_sets.files("fugal_subnet.benchmarks") / "arena_prompts.json"))["prompts"]))
+def test_route_text_carries_the_rows_content_and_none_of_its_template(key):
+    tmpl = arena_sets.prompts()[key].get("prompt")
+    if tmpl is None:
+        pytest.skip("no template (LiveCodeBench: code items route on their own prompt)")
+    name = {"ChessInstruct_mcq": "ChessInstruct_mcq"}.get(key, key)
+    has_options = "{Options}" in tmpl
+    row = arena_sets._row(name, "s", 1, "QUESTION-BODY-7f3", "A",
+                          context="CONTEXT-BODY-9c1" if "{Context}" in tmpl else "",
+                          options=["OPTION-ONE", "OPTION-TWO"] if has_options else ())
+    rt = arena_sets.route_text(row)
+    assert "QUESTION-BODY-7f3" in rt
+    if "{Context}" in tmpl:
+        assert "CONTEXT-BODY-9c1" in rt
+    if has_options:
+        assert "A. OPTION-ONE\nB. OPTION-TWO" in rt
+    for literal in _template_literals(tmpl):
+        assert literal not in rt, (key, literal)
+    # the model still gets RouterArena's full templated prompt
+    assert arena_sets.format_prompt(row) != rt and "QUESTION-BODY-7f3" in arena_sets.format_prompt(row)
+
+
+def test_route_text_drops_the_empty_context_filler_and_cuts_like_the_prompt():
+    row = arena_sets._row("QANTA_History", "s", 1, "Who?", "X")
+    assert arena_sets.route_text(row) == "Who?"          # no "Context: None"
+    assert "Context: None" in arena_sets.format_prompt(row)
+    long = arena_sets._row("NarrativeQA", "s", 3, "Q", "A", context="x" * 20000)
+    rt = arena_sets.route_text(long)
+    assert len(rt) == 10003 and rt.startswith("x" * 5000)
+
+
+def test_code_items_route_on_their_own_prompt():
+    v3 = [{"question_id": "c1", "benchmark": "code_contests", "prompt": "Write a program.",
+           "gold": "", "grader_id": "code_stdio", "metadata": {"checker": {"id": "x"}}}]
+    (item,) = arena_sets.code_items(v3)
+    assert item["route_text"] == item["prompt"] == "Write a program."
+
+
+def test_the_coverage_partition_is_a_fixed_fifth():
+    ids = [f"arena_MMLUPro_{i:06d}" for i in range(20000)]
+    share = sum(arena_sets.in_coverage(q) for q in ids) / len(ids)
+    assert 0.19 < share < 0.21
+    assert [arena_sets.in_coverage(q) for q in ids[:50]] == [arena_sets.in_coverage(q)
+                                                              for q in ids[:50]]
+
+
+def test_the_v5_pool_loader_refuses_a_pool_that_is_not_the_pinned_one(tmp_path, monkeypatch):
+    import gzip
+
+    from fugal_subnet.benchmarks import loader
+    path = tmp_path / "pool_v5.json.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as f:
+        json.dump([{"question_id": "q", "benchmark": "arena_QANTA", "prompt": "p",
+                    "route_text": "p", "gold": "g", "grader_id": "arena",
+                    "metadata": {"ra_dataset": "QANTA"}}], f)
+    monkeypatch.setenv("FUGAL_BENCHMARK_POOL_V5", str(path))
+    with pytest.raises(ValueError, match="not the pinned one"):
+        loader.load_pool(5)
+
+
 def test_grading_key_and_template_key():
     assert arena_sets.ra_dataset_of("MMLUPro_computer science") == "MMLUPro"
     assert arena_sets.ra_dataset_of("Ethics_virtue") == "Ethics"

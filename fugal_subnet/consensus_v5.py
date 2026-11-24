@@ -39,7 +39,12 @@ REGISTERED: dict[str, tuple[str, ...]] = {
         "FRESH_RESERVE_EPOCHS_V5", "EPOCH_INTERVAL",
         # the one bound (shared with v4)
         "BOUND_A_ALPHA_V4", "BOUND_LN2_UP_V4", "BOUND_UNITS_PER_POINT_V4",
+        # the pool's exam/coverage split and the routing embeddings' pin
+        "COVERAGE_PARTITION_V5", "EMBEDDINGS_V5_SHA256",
     ),
+    # The v5 pool's keyed order and exam/coverage split (its content is pinned
+    # by pool_manifest_v5.json's content hash, below).
+    "fugal_subnet.benchmarks.arena_sets": ("POOL_SALT",),
     "fugal_subnet.seat_v5": (
         "TAKE_MARGIN", "UPGRADE_MARGIN", "N_MIN", "N0", "CONTENDERS_MAX", "SEAT_SHARES",
         "HISTORY_MAX", "TAKE_UNITS", "UPGRADE_UNITS",
@@ -52,14 +57,15 @@ REGISTERED: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# role -> (path under fugal_subnet/, required). Names are placeholders until
-# lane P lands the files (graders_arena.py, the v5 pool manifest, the
-# RouterArena exclusion list, the exam pool's embeddings).
+# role -> (path under fugal_subnet/, required): the arena grader, RouterArena's
+# prompt templates, the v5 pool manifest (its content hash covers every
+# prompt, gold and route_text) and the RouterArena exclusion list. The routing
+# embeddings are pinned by config.EMBEDDINGS_V5_SHA256 (a registered constant).
 PINNED_FILES: dict[str, tuple[str, bool]] = {
     "graders_arena": ("graders_arena.py", True),
+    "arena_prompts": ("benchmarks/arena_prompts.json", True),
     "pool_manifest_v5": ("benchmarks/pool_manifest_v5.json", True),
     "exclusions_routerarena": ("benchmarks/exclusions_routerarena.json", True),
-    "embeddings_v5": ("routing_data/embeddings_v5.sha256", True),
 }
 
 
@@ -106,10 +112,16 @@ def section() -> dict:
     return {"activation": activation(), "constants": constants(), "files": file_hashes()}
 
 
-def problems(package: Path | None = None) -> list[str]:
+def problems(package: Path | None = None, cfg=None) -> list[str]:
     out = [f"{k} is {v}" for k, v in sorted(constants().items())
            if isinstance(v, str) and v.startswith("unavailable")]
     root = PACKAGE if package is None else Path(package)
     out += [f"pinned file {rel} ({role}) is missing" for role, (rel, required)
             in sorted(PINNED_FILES.items()) if required and not (root / rel).is_file()]
+    if cfg is None:
+        from fugal_subnet import config as cfg
+    pin = getattr(cfg, "EMBEDDINGS_V5_SHA256", None)
+    if not pin or pin == "TBD":
+        out.append("config.EMBEDDINGS_V5_SHA256 is not pinned (TBD): build and publish the v5 "
+                   "routing embeddings, then pin their sha256 and EMBEDDINGS_V5_URL")
     return out

@@ -111,7 +111,7 @@
   "order": "sha256('fugal-arena-pool-v5:' + question_id)",
   "total": 90000
  },
- "content_hash": "94216b4eceaa552734ddf49fc8ea1050a47286932b8ef1406468c3c0ef97783b",
+ "content_hash": "1b2c853e1fb3f52cd2f158e1502d3d8cd9d2d50cc790f7ec0738fcb3d80a80a9",
  "dataset_revisions": {
   "EleutherAI/hendrycks_math": "21a5633873b6a120296cce3e2df9d5550074f4a3",
   "TIGER-Lab/MMLU-Pro": "b189ec765aa7ed75c8acfea42df31fdae71f97be",

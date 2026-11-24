@@ -6658,3 +6658,67 @@ Unknown or pre-transition identities fail admission; no old evidence is resumed.
 `tests/test_success_contract.py` enforces these boundaries, and the reference module
 is checked against its exact core source in CI. The candidate manifest blocks live
 startup/export pending review. See `SUCCESS_CONTRACT.md` for the reset runbook.
+
+## Protocol v5 (draft; applies only from a v5 activation block no release has set)
+
+Protocol v5 scores a head on its real picks at RouterArena's trade-off between
+accuracy and cost. An S-point is one accuracy point after the log-cost
+adjustment of RouterArena's own score (`fugal_subnet/arena_score.py`); every
+comparison below is a paired mean of per-question items in S-points, bounded
+by `seat_bound.lower_bound` (valid at every look, alpha 1%).
+
+### I1 — v5: the exam spec is a pure function of published data
+
+The exam for epoch E (its questions, each contender's pick, the cells to
+label, the baseline B* and its questions, the ring of hotkeys and the cell
+assignment) is computed from the boundary nonce, the heads verified by E−2,
+the menu state and the pool alone (`exam_v5.build_spec`). The root publishes
+it in its reveal of E−2; every validator recomputes it, and a validator whose
+recomputation differs from the root's treats that epoch's exam as void
+(nobody is scored on it). Check: determinism stages `exam_spec_v5`,
+`arena_items_v5`, `seat_v5` (`scripts/check_determinism.py --perturb`).
+
+### I3 — v5: the seat in one rule
+
+`fugal_subnet/seat_v5.py`, re-run every epoch on the window's items:
+
+- **Incumbent.** The holder, if it stands, is not refused by the
+  memorisation check, is not an exact copy, and is not shown worse than B*.
+  Otherwise there is none and the former holder joins the history.
+- **Upgrade.** A newer head of the holder's own coldkey replaces it when its
+  bound over the holder passes UPGRADE_MARGIN_V5 (shown not worse by more
+  than the margin) and its bound over B* passes 0. It keeps the holder's
+  place (`holder_since`).
+- **Walk.** The other contenders, earliest first commit first (ties by head
+  hash): C replaces the incumbent when its bound over the incumbent passes
+  TAKE_MARGIN_V5 (or there is none) and its bound over B* passes 0. A later
+  head must beat whoever holds the seat at its turn, so neither a farm of
+  near-copies nor a lucky late copy of an earlier head passes without the
+  margin. An empty seat is filled only this way: on merit, never by a draw.
+- **Contenders.** Per coldkey the newest standing head, plus the holder; at
+  most CONTENDERS_MAX_V5, the earliest commits kept. Exact copies
+  (`copy_rule` ownership) and memo-refused heads never contend.
+- **Pay.** 85/10/5 to the holder and the history (`payout.seat_weights`); a
+  seat is paid only while its head is live this epoch, not memo-refused, and
+  its bound over B* passes 0. Every unpaid share burns. While no head beats
+  the best single model, the whole weight burns.
+
+Check: `tests/test_seat_v5.py`, the `seat_v5` determinism stage, the attack
+world `fugal_subnet/attacks/seat_v5_world.py`.
+
+### I4 — v5: an exam cell is a vote of operators, never of the compared ones
+
+Each exam cell (question, menu entry) is labelled by EXAM_VOTES_V5 hotkeys of
+distinct coldkeys, assigned by a keyed walk of the ring. Votes are pooled as
+exploration pairs are (failed calls dropped, the plausibility check, the
+median). In the comparison of X with Y, no vote from X's or Y's coldkey
+counts; a question left without a usable vote gives that comparison no item.
+So no operator's re-runs, withheld calls or own grading can move its own
+comparisons. Check: `tests/test_exam_v5.py`.
+
+### I8 — v5: a TD labels only the cells assigned to it
+
+A v5 TD answers the cells the exam spec assigns to its hotkey (checked
+against the root's committed spec hash) and its coverage share, nothing
+else; a vote for a cell not assigned to the voting hotkey is refused by
+verification. Check: `tests/test_td_v5.py`.

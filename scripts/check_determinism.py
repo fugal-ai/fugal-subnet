@@ -80,6 +80,7 @@ STAGES = (
     "published_v4",
     "exam_spec_v5",
     "arena_items_v5",
+    "seat_v5",
 )
 
 
@@ -429,7 +430,62 @@ def run_pipeline(seed: int) -> dict:
         "v4_replay": _digest(_v4_replay(seed)),
         "published_v4": _digest(_published_v4(seed)),
         **{stage: _digest(value) for stage, value in _exam_v5(seed).items()},
+        "seat_v5": _digest(_seat_v5(seed)),
     }
+
+
+def _seat_v5(seed: int) -> list:
+    """Protocol v5's seat (fugal_subnet/seat_v5.py) over twelve epochs of its
+    synthetic world (fugal_subnet/attacks/seat_v5_world.py): every head below
+    the best single model at first (empty, all burned), a fill the first
+    epoch a head beats it, a same-coldkey upgrade, a near-copy farm held off
+    by the margin, a better head taking the seat, and a holder that stops
+    standing. Under --perturb the contenders and the item strata are fed in
+    reverse. Digested per epoch: the decision, the evidence and the weights."""
+    from fugal_subnet import seat_v5
+    from fugal_subnet.attacks.seat_v5_world import Head, World
+
+    perturb = bool(os.environ.get("FUGAL_PERTURB"))
+
+    def fed(items):
+        return list(reversed(items)) if perturb else list(items)
+
+    w = World(questions=3000, baseline_accuracy=0.84, seed=seed)
+    plan = {1: [("low1", "ck-l1", 10, 0.80, 0.2, 0), ("low2", "ck-l2", 11, 0.82, 0.2, 1)],
+            3: [("good", "ck-g", 20, 0.92, 0.0, 2)],
+            5: [("good2", "ck-g", 25, 0.93, 0.0, 3)],
+            6: [(f"farm{i}", f"ck-f{i}", 30 + i, 0.93, 0.0, 10 + i) for i in range(4)],
+            8: [("best", "ck-b", 40, 0.99, 0.2, 4)]}
+    state, out, events = seat_v5.SeatStateV5(), [], []
+    for e in range(1, 13):
+        for name, ck, block, acc, noise, sd in plan.get(e, []):
+            w.add(Head(name, ck, block, acc, noise=noise, seed=sd))
+        if e >= 11:
+            w.heads[next(h for h in w.heads if w.heads[h].name == "best")].standing = False
+        heads = fed([h.contender() for h in w.heads.values()])
+
+        def items(x, y):
+            return dict(fed(w.items(x, y).items()))
+
+        def base(x):
+            return dict(fed(w.baseline_items(x).items()))
+
+        d = seat_v5.decide(state, e, heads, items, base)
+        state = d.state
+        uids, weights = seat_v5.weights(
+            d, {h: i + 1 for i, h in enumerate(sorted(w.heads))}, burn_uid=0)
+        names = {h: w.heads[h].name for h in w.heads}
+        events.append((d.event, names.get(d.holder)))
+        out.append({"event": d.event, "state": state.to_reveal(), "payable": list(d.payable),
+                    "evidence": d.evidence,
+                    "weights": [list(map(int, uids)), [repr(float(x)) for x in weights]]})
+    want = [("empty", None), ("empty", None), ("fill", "good"), ("hold", "good"),
+            ("upgrade", "good2"), ("hold", "good2"), ("hold", "good2"), ("take", "best"),
+            ("hold", "best"), ("hold", "best")]
+    if events[:10] != want or events[10][1] == "best":
+        raise SystemExit(f"the seat_v5 stage no longer burns, fills, upgrades, holds off a "
+                         f"farm, takes and lapses: {events}")
+    return out
 
 
 def _seat_confirmation(seed: int) -> list:

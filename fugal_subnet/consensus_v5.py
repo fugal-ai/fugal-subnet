@@ -37,6 +37,8 @@ REGISTERED: dict[str, tuple[str, ...]] = {
         "BASELINE_MIN_PAIRS_V5", "EXPLORE_PRIVATE_Z", "EXPLORE_PRIVATE_MIN_SAMPLES_V4",
         # the memorisation rule: the exam's fresh draw (v5_epoch)
         "FRESH_RESERVE_EPOCHS_V5", "EPOCH_INTERVAL",
+        # v5's environment variables (kept out of the v4 section's two lists)
+        "CONSENSUS_ENV_INPUTS_V5", "OPERATIONAL_ENV_VARS_V5",
         # the one bound (shared with v4)
         "BOUND_A_ALPHA_V4", "BOUND_LN2_UP_V4", "BOUND_UNITS_PER_POINT_V4",
         # the pool's exam/coverage split and the routing embeddings' pin

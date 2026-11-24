@@ -1806,8 +1806,12 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
             read.add(a or b)
     lists = {
         "CONSENSUS_ENV_VARS": set(config.CONSENSUS_ENV_VARS),
-        "CONSENSUS_ENV_INPUTS": set(config.CONSENSUS_ENV_INPUTS),
-        "OPERATIONAL_ENV_VARS": set(config.OPERATIONAL_ENV_VARS),
+        # v5's names live in their own lists (kept out of the v4 digest); a
+        # name is classified by the union, so it is in exactly one class.
+        "CONSENSUS_ENV_INPUTS": set(config.CONSENSUS_ENV_INPUTS)
+        | set(getattr(config, "CONSENSUS_ENV_INPUTS_V5", ())),
+        "OPERATIONAL_ENV_VARS": set(config.OPERATIONAL_ENV_VARS)
+        | set(getattr(config, "OPERATIONAL_ENV_VARS_V5", ())),
     }
     for name in sorted(read):
         where = [k for k, v in lists.items() if name in v]

@@ -1645,8 +1645,6 @@ CONSENSUS_ENV_INPUTS = (
     "FUGAL_V3_ACTIVATION_BLOCK",
     # Off finney only: finney has no v4 block, and a set variable is refused there.
     "FUGAL_V4_ACTIVATION_BLOCK",
-    # Off finney only, as v4's: finney compiles FINNEY_V5_ACTIVATION_BLOCK.
-    "FUGAL_V5_ACTIVATION_BLOCK",
     "FUGAL_ODDS_SEAT_BLOCK",
     "FUGAL_MENU_B_BLOCK",
     "FUGAL_MENU_GRACE_EPOCHS",
@@ -1689,14 +1687,6 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_BENCHMARK_POOL_V3",
     "FUGAL_POOL_FILE_V3",
     "FUGAL_POOL_CACHE_V3",
-    # v5: the pool is verified against pool_manifest_v5's content hash and the
-    # embeddings against EMBEDDINGS_V5_SHA256 whatever file or cache they came
-    # from; FUGAL_ARENA_CACHE_DIR is only where a build downloads its sources.
-    "FUGAL_BENCHMARK_POOL_V5",
-    "FUGAL_POOL_FILE_V5",
-    "FUGAL_POOL_CACHE_V5",
-    "FUGAL_ARENA_CACHE_DIR",
-    "FUGAL_EMBEDDINGS_V5_FILE",
     "FUGAL_FRAME_BOOTSTRAP",
     "FUGAL_EMBEDDINGS_FILE",
     "FUGAL_BACKBONE_THREADS",
@@ -1731,6 +1721,27 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_MIN_VALIDATORS",
     "FUGAL_SCORE_DIVERGENCE",
     "FUGAL_WEIGHT_DIVERGENCE",
+)
+
+# Protocol v5's environment variables, kept in their own lists: CONSENSUS_ENV_INPUTS
+# and OPERATIONAL_ENV_VARS are registered constants of the v4 consensus section
+# (consensus_v4.REGISTERED), so a name added to them would move the v4 digest
+# that v0.7.0 validators publish before the v5 block. These lists are hashed by
+# the v5 section only (consensus_v5) and classified like the two above
+# (check_safety_invariants' env classification reads all four).
+CONSENSUS_ENV_INPUTS_V5 = (
+    # Off finney only, as v4's: finney compiles FINNEY_V5_ACTIVATION_BLOCK.
+    "FUGAL_V5_ACTIVATION_BLOCK",
+)
+OPERATIONAL_ENV_VARS_V5 = (
+    # The pool is verified against pool_manifest_v5's content hash and the
+    # embeddings against EMBEDDINGS_V5_SHA256 whatever file or cache they came
+    # from; FUGAL_ARENA_CACHE_DIR is only where a build downloads its sources.
+    "FUGAL_BENCHMARK_POOL_V5",
+    "FUGAL_POOL_FILE_V5",
+    "FUGAL_POOL_CACHE_V5",
+    "FUGAL_ARENA_CACHE_DIR",
+    "FUGAL_EMBEDDINGS_V5_FILE",
 )
 
 

@@ -585,7 +585,10 @@ _V5_NAMES: dict[str, tuple[str, ...]] = {
         "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5", "CONTENDERS_MAX_V5", "SPEC_LAG_V5",
         "HEAD_LAM_MAX_V5", "Y_SCALE_V5", "EXAM_BUDGET_S_V5", "EXAM_CALL_DEADLINE_S_V5",
         "BASELINE_MIN_PAIRS_V5", "FRESH_RESERVE_EPOCHS_V5", "COVERAGE_PARTITION_V5",
-        "EMBEDDINGS_V5_SHA256", "EMBEDDINGS_V5_URL"),
+        "EMBEDDINGS_V5_SHA256", "EMBEDDINGS_V5_URL",
+        # v5's own env lists: kept out of CONSENSUS_ENV_INPUTS / OPERATIONAL_ENV_VARS
+        # (registered above) so the v4 digest stays the v0.7.0 value.
+        "CONSENSUS_ENV_INPUTS_V5", "OPERATIONAL_ENV_VARS_V5"),
     "fugal_subnet.benchmarks.loader": ("DEFAULT_POOL_FILE_V5",),
     "fugal_subnet.arena_score": (
         "Y_SCALE", "UNITS_PER_POINT", "A_REF", "NANO", "ARENA_BETA", "ARENA_COST_MAX_PER_1K",
@@ -692,7 +695,9 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     # v5: EXAM_BUDGET_S_V5, EXAM_CALL_DEADLINE_S_V5, BASELINE_MIN_PAIRS_V5 and
     # FRESH_RESERVE_EPOCHS_V5 added to NOT_V4 (v5 only)
     # and (lane W4) COVERAGE_PARTITION_V5, EMBEDDINGS_V5_SHA256, EMBEDDINGS_V5_URL
-    "fugal_subnet.config": ("49b96a35ebe8dfd7", "2b9b61905b4c5c4f"),
+    # and CONSENSUS_ENV_INPUTS_V5, OPERATIONAL_ENV_VARS_V5 (v5's env names moved
+    # out of the two v4-registered lists, so the v4 digest stays v0.7.0's)
+    "fugal_subnet.config": ("c962f1128e44f594", "2b9b61905b4c5c4f"),
     "fugal_subnet.copy_rule": ("5191ef53fd3d75ce", "4f53cda18c2baa0c"),
     "fugal_subnet.determinism": ("ea226adaa11ca2b1", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_logger": ("eaa876bbf2003294", "4f53cda18c2baa0c"),

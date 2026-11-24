@@ -81,6 +81,7 @@ STAGES = (
     "exam_spec_v5",
     "arena_items_v5",
     "seat_v5",
+    "v5_epoch",
 )
 
 
@@ -431,7 +432,84 @@ def run_pipeline(seed: int) -> dict:
         "published_v4": _digest(_published_v4(seed)),
         **{stage: _digest(value) for stage, value in _exam_v5(seed).items()},
         "seat_v5": _digest(_seat_v5(seed)),
+        "v5_epoch": _digest(_v5_epoch(seed)),
     }
+
+
+def _v5_epoch(seed: int) -> list:
+    """Protocol v5's epoch end to end (fugal_subnet/v5_epoch.py) over six
+    synthetic epochs: specs built by exam_v5 for three heads, votes cast by
+    the assigned hotkeys (one operator lying), coverage votes, the seat, the
+    weights, the reveal, and the rebuild of the last epoch's state from the
+    reveals. Under --perturb the served heads, the votes and the window are
+    fed in reverse. Digested per epoch: the reveal fields and the weights."""
+    import hashlib as _h
+
+    from fugal_subnet import exam_v5, seat_v5, v5_epoch
+    from fugal_subnet.exam_v5 import Vote
+
+    perturb = bool(os.environ.get("FUGAL_PERTURB"))
+
+    def fed(xs):
+        return list(reversed(list(xs))) if perturb else list(xs)
+
+    entries = ("m/base", "m/cheap", "m/good", "m/best")
+    acc = {"m/base": 50, "m/cheap": 60, "m/good": 90, "m/best": 97}
+    cost = {"m/base": 1500, "m/cheap": 500, "m/good": 2000, "m/best": 2100}
+    heads = {"a": ("ck-a", 1, 10, "m/good"), "b": ("ck-b", 2, 20, "m/cheap"),
+             "c": ("ck-c", 3, 30, "m/best")}
+    voters = [(f"hk-v{i}", f"ck-v{i}") for i in range(5)]
+
+    def right(q, e):
+        d = _h.sha256(f"{seed}|{q}|{e}".encode()).digest()
+        return int.from_bytes(d[:2], "big") % 100 < acc[e]
+
+    state, book, records, reveals, out = seat_v5.SeatStateV5(), {}, [], {}, []
+    for i in range(6):
+        epoch = 100 + i
+        names = ["a", "b"] + (["c"] if i >= 3 else [])
+        ring = voters + [(f"hk-{n}", heads[n][0]) for n in names]
+        hk_ck = dict(ring)
+        pool = [f"q{epoch}-{j}" for j in range(80)]
+        spec = exam_v5.build_spec(epoch, bytes([seed % 256, epoch % 256]),
+                                  {n: [heads[n][3]] * len(pool) for n in names}, entries, pool,
+                                  ring, "m/base")
+        votes = []
+        for (q, e), hks in spec.assignment.items():
+            for hk in hks:
+                y = 10000 if right(q, e) else 0
+                if hk_ck[hk] == "ck-v0":
+                    y = 10000 - y
+                votes.append(Vote(epoch, q, e, hk, hk_ck[hk], y, cost[e], False))
+        cover = [Vote(epoch, f"c{epoch}-{k}-{e}", e, hk, ck,
+                      10000 if right(f"c{epoch}-{k}", e) else 0, cost[e], False)
+                 for e in entries for k in range(10) for hk, ck in voters[1:3]]
+        votes = fed(votes)
+        rec = v5_epoch.EpochRecord(epoch, spec, dict(cost), tuple(votes), tuple(fed(cover)),
+                                   frozenset(v5_epoch.implausible(votes)))
+        served = fed([v5_epoch.Served(n, heads[n][1], f"hk-{n}", heads[n][0], heads[n][2])
+                      for n in names])
+        old_n, old_n0, old_b = seat_v5.N_MIN, seat_v5.N0, v5_epoch.BASELINE_MIN_PAIRS
+        seat_v5.N_MIN = seat_v5.N0 = 100
+        v5_epoch.BASELINE_MIN_PAIRS = 10
+        try:
+            res = v5_epoch.score_epoch(epoch=epoch, state=state, heads=book, record=rec,
+                                       window=fed(records), served=served,
+                                       full_entries=entries, stratum_of=lambda q: q[-1],
+                                       burn_uid=0)
+        finally:
+            seat_v5.N_MIN, seat_v5.N0, v5_epoch.BASELINE_MIN_PAIRS = old_n, old_n0, old_b
+        state, book = res.decision.state, res.heads
+        records.append(rec)
+        reveals[epoch] = res.reveal
+        reveals[epoch - v5_epoch.SPEC_LAG] = {**reveals.get(epoch - v5_epoch.SPEC_LAG, {}),
+                                              **v5_epoch.spec_reveal(spec, cost)}
+        out.append({"epoch": epoch, "reveal": res.reveal,
+                    "weights": [list(res.uids), [repr(w) for w in res.weights]]})
+    seat, rebuilt, recs = v5_epoch.rebuild(reveals, 105)
+    out.append({"rebuilt": [seat.to_reveal(), {h: f.to_reveal() for h, f in rebuilt.items()},
+                            [r.to_reveal() for r in recs]]})
+    return out
 
 
 def _seat_v5(seed: int) -> list:

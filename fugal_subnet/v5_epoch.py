@@ -12,7 +12,7 @@ docs/INVARIANTS.md, the v5 entries):
    flagged coldkeys, the spec's pick costs). A record is exactly what the
    epoch's reveal publishes (`EpochRecord.to_reveal` / `from_reveal`), so the
    window rebuilds from reveals alone.
-3. **B\*.** The best FULL menu entry by RouterArena's own score on the
+3. **B*.** The best FULL menu entry by RouterArena's own score on the
    window's coverage votes (`baseline_entry`).
 4. **The seat.** `seat_v5.decide` on the window's paired items
    (`exam_v5.comparison_items` / `baseline_items`, both compared operators

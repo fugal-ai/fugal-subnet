@@ -583,7 +583,8 @@ _V5_NAMES: dict[str, tuple[str, ...]] = {
         "ARENA_A_REF_V5", "EXAM_QUESTIONS_V5", "EXAM_BASELINE_QUESTIONS_V5", "EXAM_VOTES_V5",
         "EXAM_CALLS_PER_HOTKEY_V5", "COVERAGE_CALLS_V5", "WINDOW_EPOCHS_V5", "N_MIN_V5", "N0_V5",
         "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5", "CONTENDERS_MAX_V5", "SPEC_LAG_V5",
-        "HEAD_LAM_MAX_V5", "Y_SCALE_V5", "EXAM_BUDGET_S_V5", "EXAM_CALL_DEADLINE_S_V5"),
+        "HEAD_LAM_MAX_V5", "Y_SCALE_V5", "EXAM_BUDGET_S_V5", "EXAM_CALL_DEADLINE_S_V5",
+        "BASELINE_MIN_PAIRS_V5"),
     "fugal_subnet.arena_score": (
         "Y_SCALE", "UNITS_PER_POINT", "A_REF", "NANO", "ARENA_BETA", "ARENA_COST_MAX_PER_1K",
         "ARENA_COST_MIN_PER_1K", "NANO_PER_QUERY_PER_USD_PER_1K", "COST_MAX_ND", "COST_MIN_ND",
@@ -685,8 +686,9 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.code_gate": ("2745c98ee9a82e5e", "4f53cda18c2baa0c"),
     "fugal_subnet.collect": ("bac0db6b872fcae9", "4f53cda18c2baa0c"),
     "fugal_subnet.commit_reveal": ("353e9a600cb5d95c", "4f53cda18c2baa0c"),
-    # v5: EXAM_BUDGET_S_V5 and EXAM_CALL_DEADLINE_S_V5 added to NOT_V4 (v5 only)
-    "fugal_subnet.config": ("b84a954d80d0619c", "2b9b61905b4c5c4f"),
+    # v5: EXAM_BUDGET_S_V5, EXAM_CALL_DEADLINE_S_V5 and BASELINE_MIN_PAIRS_V5
+    # added to NOT_V4 (v5 only)
+    "fugal_subnet.config": ("df3813905eae1773", "2b9b61905b4c5c4f"),
     "fugal_subnet.copy_rule": ("5191ef53fd3d75ce", "4f53cda18c2baa0c"),
     "fugal_subnet.determinism": ("ea226adaa11ca2b1", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_logger": ("eaa876bbf2003294", "4f53cda18c2baa0c"),
@@ -761,6 +763,8 @@ NOT_SCANNED: dict[str, str] = {
     "fugal_subnet.seat_v5": "protocol v5 only: decides nothing a v4 epoch publishes; its constants "
                             "are in the v5 section (consensus_v5.REGISTERED)",
     "fugal_subnet.consensus_v5": "the v5 registry",
+    "fugal_subnet.v5_epoch": "protocol v5 only: a v5 epoch's votes, window, B*, seat and next "
+                             "exam; its constants are in the v5 section (consensus_v5.REGISTERED)",
 }
 
 # The pinned files a v4 epoch reads, by role: (path under fugal_subnet/,

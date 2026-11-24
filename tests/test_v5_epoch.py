@@ -215,8 +215,32 @@ def test_votes_from_proof_splits_exam_and_coverage_and_reads_billed_cost():
                                        "failed": False, "provider_cost": 1234, "cost_usd": 9.0,
                                        **k})
     proof = SimpleNamespace(hotkey="hk", results=[
-        r(exam=True), r(exam=False, provider_cost=None, cost_usd=0.000002),
+        r(exam=True), r(exam=False, provider_cost=None, cost_usd=0.5),
         r(exam=True, failed=True, y=0), r(exam=None)])
     exam, cover = v5_epoch.votes_from_proof(7, proof, "ck")
     assert [v.cost_nd for v in exam] == [1234, 1234] and exam[1].failed
-    assert cover[0].cost_nd == 2000 and len(cover) == 1
+    assert cover[0].cost_nd == 500_000_000 and len(cover) == 1
+
+
+def test_the_node_keeps_its_state_and_judges_the_published_spec(tmp_path):
+    from fugal_subnet import v5_node
+
+    book = Book()
+    book.add("a", "ck-a", 1, 10, "m/good")
+    res, state, heads, records, _ = run(book, [["a"]] * 2)
+    _, spec = make_record(102, book, ["a"])
+    path = str(tmp_path / "state.v5")
+    node = v5_node.V5Node(path, root=True)
+    node.commit(101, res, records[-1], spec, COST)
+    again = v5_node.V5Node(path, root=True)
+    assert again.seat == state and again.heads == heads
+    assert [r.to_reveal() for r in again.records] == [records[-1].to_reveal()]
+    assert again.exam_for(102) == (spec, COST, None)
+    assert again.exam_for(103)[2] == "no exam spec for this epoch"
+    _, other = make_record(103, book, ["a"])
+    follower = v5_node.V5Node(path, root=False, read_published=lambda e: (other, COST))
+    assert "not the published" in follower.exam_for(102)[2]
+    same = v5_node.V5Node(path, root=False, read_published=lambda e: (spec, COST))
+    assert same.exam_for(102) == (spec, COST, None)
+    broken = v5_node.V5Node(path, root=False, read_published=lambda e: 1 / 0)
+    assert broken.exam_for(102)[0] is None and broken.exam_for(102)[2]

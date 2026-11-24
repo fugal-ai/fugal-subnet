@@ -572,8 +572,19 @@ has 300 labels over R and a challenge of 500 questions.
   unpaid for those
   epochs; miss three and the seat goes that epoch to the latest head that
   passes the three rules. It also opens when R beats your odds (for
-  example, when your head lacks a row for an entry whose 20-epoch
-  allowance has ended) or when the memorisation check refuses your head.
+  example, when your head lacks a row for an entry that has become full)
+  or when the memorisation check refuses your head.
+- **Rows for new entries: add them while the entry is provisional.** There
+  is no allowance. From the epoch the gates make a new entry full (two
+  epochs after it joins), a head without its row is scored at odds 0 on
+  that entry's labels ("never answers correctly", `labels_v4._scored`), and
+  those epochs stay at odds 0 for as long as they are in the window, even if
+  you add the row later (an added row counts from its own commit). Each
+  join is published at `gs://fugal-reveals/70/joins/<hash>.json` (the root
+  commits `join:<epoch>:<hash>`), and the entry's id is in the reveal's
+  menu: commit a successor that adds the row (below) during the two
+  provisional epochs. A prior row (for example, the mean of a sibling
+  setting's rows) is far better than none.
 - **Adding a row keeps your place (succession).** Commit, from the same
   hotkey and coldkey, a head whose existing rows are byte for byte the old
   head's (weights and bias) and which only adds rows (or drops rows of

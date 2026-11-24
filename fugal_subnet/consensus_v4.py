@@ -712,6 +712,11 @@ NOT_SCANNED: dict[str, str] = {
                                           "fixtures no validator reads",
     "fugal_subnet.attacks.memo_seat_world": "an attack suite's world (tooling): its constants are "
                                             "fixtures no validator reads",
+    "fugal_subnet.attacks.seat_v5_world": "an attack suite's world (tooling): its constants are "
+                                          "fixtures no validator reads",
+    "fugal_subnet.seat_v5": "protocol v5 only: decides nothing a v4 epoch publishes; its constants "
+                            "are in the v5 section (consensus_v5.REGISTERED)",
+    "fugal_subnet.consensus_v5": "the v5 registry",
 }
 
 # The pinned files a v4 epoch reads, by role: (path under fugal_subnet/,

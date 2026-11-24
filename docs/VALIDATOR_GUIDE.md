@@ -715,6 +715,51 @@ validator does:
   root's `Joins for epoch N committed: A admitted of C considered`, and an
   `ALARM` on a delta the check refuses (every node then runs the base menu).
 
+## Protocol v5 (from block TBD-block, epoch TBD-epoch)
+
+v0.8.0 switches finney to protocol v5 at block TBD-block; until then
+everything runs v4. Design record: `docs/decisions/ARENA_V5.md`.
+
+**Upgrade before the block**, the usual way:
+
+```bash
+git pull                       # or check out the release tag
+uv sync --locked --extra tee
+uv run python neurons/validator.py --check
+sudo systemctl restart fugal-validator
+```
+
+Every validator must run v0.8.0 before the block: an older release keeps
+scoring v4 and its weights diverge from every v5 validator's. No new
+variable. Keep an archive endpoint behind the connection
+(`FUGAL_ARCHIVE_ENDPOINTS`, default finney's public archive): a follower
+reads the root's reveal of two epochs back for the exam spec and the
+window, and that state is older than the default endpoint keeps.
+
+**What a v5 epoch does.**
+
+1. Reads each verified proof's exam votes and coverage votes; a coldkey
+   whose exam votes stray from the other coldkeys' on the same cells is
+   flagged and its votes count nowhere that epoch.
+2. Recomputes the exam spec the root published for this epoch (two epochs
+   ago) from the same inputs; if its own spec differs, that epoch's exam is
+   void here (logged) and nobody is scored on it.
+3. Picks B*, the best full menu entry by RouterArena's score on the
+   window's coverage votes.
+4. Decides the seat (`v5 seat: <event>, holder …, history …, paid …, B* …`
+   in the log) and sets the weights; a seat that does not beat B* burns.
+5. As the root, builds and publishes the spec of epoch + 2.
+
+**What to watch.** From the block each epoch line reads
+`=== Epoch eN (…, protocol v5) ===`. The first two v5 epochs are coverage
+only and burn; the first exam is the third; no seat fills before about 21
+epochs (B* is compared on 100 questions an epoch, the bound needs 2,000).
+The reveal carries `seat_v5`, `votes_v5`, `baseline_v5`, `heads_v5` and,
+on the root, `exam_spec_v5`. A follower that disagrees with the root logs
+the void exam; send that line to the operators' channel. The `READY:` line
+is unchanged in this release (its v4 part); a v5 input problem shows in the
+first v5 epoch's log.
+
 ## Protocol v2: flip procedure
 
 Protocol v2 switches every validator from the v1 rules to the v2 rules at one

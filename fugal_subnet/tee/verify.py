@@ -387,6 +387,15 @@ def expected_v5(state, *, epoch: int, nonce: bytes, pool: list[dict], hotkey: st
                       exam_cells=cells)
 
 
+def questions_hash_v5(v5: V5Expected) -> str:
+    """The questions hash a v5 proof carries: the sorted, distinct question ids
+    of its exam cells (`compute_questions_hash`), exactly as the TD computes it
+    (tee/harness, v5 path: `compute_questions_hash(sorted(set(exam_qids)))` over
+    the assigned cells it calls). A coverage-only epoch's is the hash of []. It
+    is never the v4 scored slice's hash: a v5 TD answers no slice."""
+    return compute_questions_hash(sorted({str(q) for q, _e in v5.exam_cells}))
+
+
 def _v5_exam_check(proof: BenchmarkProof, v5: V5Expected) -> str | None:
     """A v5 proof answers no challenge and its exam calls are exactly its
     assigned cells (I8): each once, each to the cell's entry, the spec's hash
@@ -616,6 +625,10 @@ def verify_proof(
             raise ValueError("verify_proof under protocol v5 needs this hotkey's V5Expected "
                              "(expected_v5) and no V4Expected")
         v4 = v5.v4
+        # A v5 proof's questions hash is its own exam cells' questions, not the
+        # epoch's slice: it is read from `v5` and from nothing else, so a caller
+        # cannot hold every v5 proof to a v4 slice hash (questions_hash_v5).
+        expected_questions_hash = questions_hash_v5(v5)
     elif v5 is not None:
         raise ValueError("a V5Expected is for a protocol v5 epoch")
     if int(protocol_version) >= 4:

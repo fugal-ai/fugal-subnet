@@ -1723,9 +1723,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                         n_unverifiable += 1
                         continue
                     v4_expected[uid] = exp5.v4
-                    uid_checks = checks._replace(
-                        explore_map=exp5.v4.exploration, v5=exp5,
-                        slice_gold=_v5_gold(slice_gold, v5_inputs.gold, exp5))
+                    uid_checks = _v5_uid_checks(checks, exp5, slice_gold, v5_inputs.gold)
                 elif protocol_version >= 4 and hotkey_ss58 and _offers_proof(responses[uid]):
                     # v4: this hotkey's exploration and measurement on the
                     # epoch's menu, and the gold for all of them.
@@ -3947,6 +3945,20 @@ def _v5_expected(state, *, epoch_index: int, nonce: bytes, pool: list, hotkey: s
 
     return _verify.expected_v5(state, epoch=epoch_index, nonce=nonce, pool=pool, hotkey=hotkey,
                                spec=spec, index=getattr(plan, "pool_index", None))
+
+
+def _v5_uid_checks(checks, expected, slice_gold: dict, gold_answers: dict):
+    """One hotkey's checks in a v5 epoch: its V5Expected, its coverage as the
+    exploration, the gold for its cells, and the questions hash and set of ITS
+    exam cells (tee/verify.questions_hash_v5; [] on a coverage-only epoch).
+    A v5 TD answers no v4 slice, so the epoch's slice hash and ids never apply."""
+    from fugal_subnet.tee.verify import questions_hash_v5
+
+    return checks._replace(
+        explore_map=expected.v4.exploration, v5=expected,
+        slice_gold=_v5_gold(slice_gold, gold_answers, expected),
+        questions_hash=questions_hash_v5(expected),
+        question_ids={str(q) for q, _e in expected.exam_cells})
 
 
 def _v5_gold(slice_gold: dict, gold_answers: dict, expected) -> dict:

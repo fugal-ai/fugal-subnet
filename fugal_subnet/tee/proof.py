@@ -78,6 +78,16 @@ class QuestionResult:
     # tokens and no cost; it is no item of the challenge
     # (picks_v4.challenge_items). Absent (None) on every other result.
     not_started: bool | None = None
+    # Protocol v5 (~/projects/fugal-v2-handoff/v5/DESIGN.md section 5). Each is
+    # None on an earlier protocol's result and then absent from the hashed
+    # payload and the JSON, so such a result hashes exactly as before. Every
+    # v5 result carries both.
+    # `exam`: True on an exam-cell call (a cell the root's exam spec assigned
+    # to this hotkey), False on a coverage call.
+    exam: bool | None = None
+    # `y`: the call's label, an integer 0..Y_SCALE_V5 (td_v5.grade_y); 0 when
+    # the call failed. `correct` is then exactly `y == Y_SCALE_V5`.
+    y: int | None = None
 
     def hash_payload(self) -> dict:
         """The fields `content_hash` covers for this result.
@@ -111,6 +121,10 @@ class QuestionResult:
             payload["holder_pick"] = self.holder_pick
         if self.not_started is not None:
             payload["not_started"] = self.not_started
+        if self.exam is not None:
+            payload["exam"] = self.exam
+        if self.y is not None:
+            payload["y"] = self.y
         return payload
 
     def to_dict(self) -> dict:
@@ -121,7 +135,7 @@ class QuestionResult:
         # `v4_fields` False reads a result of a v1-v3 proof: protocol v4's
         # keys are not read at all, exactly as before they existed.
         if not v4_fields:
-            d = {k: v for k, v in d.items() if k not in V4_RESULT_KEYS}
+            d = {k: v for k, v in d.items() if k not in V4_RESULT_KEYS | V5_RESULT_KEYS}
         elif "measure_for" in d:
             # Proposals are filed on chain and measured by the field's
             # exploration (FAST_CROWN_V4.md 18): no v4 result measures one.
@@ -151,15 +165,56 @@ class QuestionResult:
             served_by=_served_by(d["served_by"]) if "served_by" in d else None,
             holder_pick=_holder_pick(d["holder_pick"]) if "holder_pick" in d else None,
             not_started=_not_started(d["not_started"]) if "not_started" in d else None,
+            exam=_exam_flag(d["exam"]) if "exam" in d else None,
+            y=_label(d["y"]) if "y" in d else None,
         )
         if r.holder_pick and r.is_exploration:
             raise ValueError("a holder-side challenge call is not exploration")
-        if r.not_started and not (r.holder_pick and r.failed and not r.correct
+        if (r.exam is None) != (r.y is None):
+            raise ValueError("a v5 result carries both exam and y, or neither")
+        if r.exam is not None:
+            _check_v5_result(r)
+        if r.not_started and not ((r.holder_pick or r.exam is not None) and r.failed
+                                  and not r.correct
                                   and r.prompt_tokens == 0 and r.completion_tokens == 0
                                   and r.cost_usd == 0 and r.provider_cost is None):
-            raise ValueError("only a holder-side call is reported not started, and then failed, "
-                             "with no tokens and no cost")
+            raise ValueError("only a holder-side call or a v5 call is reported not started, and "
+                             "then failed, with no tokens and no cost")
         return r
+
+
+def _exam_flag(value):
+    """A JSON true or false (protocol v5): an exam cell or a coverage call."""
+    if not isinstance(value, bool):
+        raise ValueError("exam must be true or false")
+    return value
+
+
+def _y_scale() -> int:
+    from fugal_subnet import config
+    return int(getattr(config, "Y_SCALE_V5", 10000))
+
+
+def _label(value):
+    """A v5 label: a JSON integer 0..Y_SCALE_V5 (never a bool or a float)."""
+    scale = _y_scale()
+    if type(value) is not int or not 0 <= value <= scale:
+        raise ValueError(f"y must be an integer from 0 to {scale}")
+    return value
+
+
+def _check_v5_result(r) -> None:
+    """A v5 result's fields agree: never a holder-side call; an exam cell is
+    not exploration and a coverage call is; a failed call is labelled 0; and
+    `correct` is exactly a full label."""
+    if r.holder_pick:
+        raise ValueError("a v5 result is never a holder-side call")
+    if r.is_exploration == r.exam:
+        raise ValueError("a v5 exam cell is not exploration, and a coverage call is")
+    if r.failed and r.y != 0:
+        raise ValueError("a failed v5 call is labelled 0")
+    if r.correct != (r.y == _y_scale()):
+        raise ValueError("a v5 result is correct exactly when its label is full")
 
 
 def _holder_pick(value):
@@ -193,6 +248,10 @@ def _latency_ms(value):
 V4_RESULT_KEYS = frozenset({"provider_cost", "served_by", "measure_for", "holder_pick",
                             "not_started"})
 V4_PROOF_KEYS = frozenset({"menu_hash", "endpoint_reads", "proposal", "scored", "challenge"})
+# Protocol v5's keys (DESIGN.md section 5), read only outside the v1-v3
+# namespaces, like v4's: absent from every earlier proof, which keeps its hash.
+V5_RESULT_KEYS = frozenset({"exam", "y"})
+V5_PROOF_KEYS = frozenset({"spec_hash"})
 
 # Bounds on protocol v4's per-result fields (I2).
 MAX_PROVIDER_COST_NANO = 10**12      # $1,000 for one call: far above any real one
@@ -357,6 +416,10 @@ class BenchmarkProof:
     # slice first), and its `holder_results` the holder's picks where they
     # differ from its own.
     challenge: Challenge | None = None
+    # Protocol v5: the hash of the root's exam spec this proof's exam cells
+    # answer (td_v5.ExamTask.spec_hash); None on a coverage-only v5 epoch and
+    # on every earlier proof, and then absent from content_hash and to_dict.
+    spec_hash: str | None = None
 
     @property
     def scored_results(self) -> list[QuestionResult]:
@@ -460,6 +523,8 @@ class BenchmarkProof:
             out["scored"] = self.scored
         if self.challenge is not None:
             out["challenge"] = self.challenge.to_json()
+        if self.spec_hash is not None:
+            out["spec_hash"] = self.spec_hash
         return out
 
     @classmethod
@@ -470,7 +535,7 @@ class BenchmarkProof:
         # it runs, reaches the same verdict on it. Any other proof has its v4
         # fields read, strictly.
         if _earlier_namespace(d.get("routing_protocol", "")):
-            d = {k: v for k, v in d.items() if k not in V4_PROOF_KEYS}
+            d = {k: v for k, v in d.items() if k not in V4_PROOF_KEYS | V5_PROOF_KEYS}
             results = [QuestionResult.from_dict(r, v4_fields=False) for r in d["results"]]
         elif "proposal" in d:
             raise ValueError("a v4 proof carries no proposal: proposals are filed on chain")
@@ -498,6 +563,7 @@ class BenchmarkProof:
                             else None),
             scored=_scored_flag(d["scored"]) if "scored" in d else None,
             challenge=Challenge.from_json(d["challenge"]) if "challenge" in d else None,
+            spec_hash=_menu_hash(d["spec_hash"]) if "spec_hash" in d else None,
         )
 
 

@@ -29,10 +29,13 @@ recomputed spec agrees (no "exam void" line); from A+2 the miners' proofs
 carry exam votes; root and follower publish the same seat_v5 state every
 v5 epoch; nothing raises.
 
-Stand-ins: scenario v4_flip's, and the exam is drawn from v4's fixture pool
-until the v5 exam pool ships (the validator logs a gap and the epoch's exam
-is coverage only when the pool cannot supply questions; the check reports
-it rather than failing the flip).
+Stand-ins: scenario v4_flip's (model stub, local store, fixture v3 pool and
+embeddings for the v4 epochs). The v5 epochs use the REAL pinned v5 pool and
+embeddings: there is no unpinned v5 pool (loader.load_all_v5 verifies the
+manifest hash) and the validator refuses embeddings whose sha256 is not
+config.EMBEDDINGS_V5_SHA256. Point the scenario at local copies with
+FUGAL_REHEARSAL_V5_POOL and FUGAL_REHEARSAL_V5_EMBEDDINGS (defaults below);
+both are verified before any process starts, and nothing here weakens a pin.
 """
 from __future__ import annotations
 
@@ -45,6 +48,53 @@ V4_EPOCHS_BEFORE = 2              # A = S + 2
 END = 4                           # through A+4: two exam epochs scored
 MINERS = ("dr_m1", "dr_m2", "dr_m3", "dr_m4")
 NAMES = ("v5f_val1", "v5f_val2")
+# Local copies of the pinned v5 pool and embeddings (the release's own files).
+V5_POOL = os.path.expanduser(os.getenv(
+    "FUGAL_REHEARSAL_V5_POOL", "~/fugal-deploy/v5-lane-p/pool_v5.json.gz"))
+V5_EMBEDDINGS = os.path.expanduser(os.getenv(
+    "FUGAL_REHEARSAL_V5_EMBEDDINGS", "~/fugal-deploy/v5-lane-p/embeddings_v5.npz"))
+
+
+def v5_inputs(report, S) -> dict | None:
+    """The env that points every neuron at the pinned v5 pool and embeddings,
+    after checking both against their pins; None (and a failed check) if either
+    is missing or differs."""
+    import hashlib
+
+    from fugal_subnet import config
+    from fugal_subnet.benchmarks import loader
+
+    why = []
+    if not os.path.isfile(V5_POOL):
+        why.append(f"no v5 pool at {V5_POOL}")
+    if not os.path.isfile(V5_EMBEDDINGS):
+        why.append(f"no v5 embeddings at {V5_EMBEDDINGS}")
+    if not why:
+        h = hashlib.sha256()
+        with open(V5_EMBEDDINGS, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+        if h.hexdigest() != config.EMBEDDINGS_V5_SHA256:
+            why.append(f"embeddings sha256 {h.hexdigest()[:16]} is not the pinned "
+                       f"{str(config.EMBEDDINGS_V5_SHA256)[:16]}")
+        prior = os.environ.get("FUGAL_BENCHMARK_POOL_V5")
+        os.environ["FUGAL_BENCHMARK_POOL_V5"] = V5_POOL
+        try:
+            n = len(loader.load_pool(5))
+        except Exception as e:  # noqa: BLE001 - reported as the check's detail
+            why.append(f"v5 pool refused: {str(e)[:160]}")
+            n = 0
+        finally:
+            if prior is None:
+                os.environ.pop("FUGAL_BENCHMARK_POOL_V5", None)
+            else:
+                os.environ["FUGAL_BENCHMARK_POOL_V5"] = prior
+    report.check(S, "the pinned v5 pool and embeddings are present and verify", not why,
+                 "; ".join(why) if why else f"pool {n} questions, embeddings "
+                 f"{str(config.EMBEDDINGS_V5_SHA256)[:16]}")
+    if why:
+        return None
+    return {"FUGAL_BENCHMARK_POOL_V5": V5_POOL, "FUGAL_EMBEDDINGS_V5_FILE": V5_EMBEDDINGS}
 
 
 def scenario_v5_flip(dr, report, subtensor, netuid, wallets, procs_out, args):
@@ -56,6 +106,9 @@ def scenario_v5_flip(dr, report, subtensor, netuid, wallets, procs_out, args):
     S = S_NAME
     results = dr.RESULTS
     print("\n[Scenario v5_flip] protocol v5 across its activation block", flush=True)
+    v5_env = v5_inputs(report, S)
+    if v5_env is None:
+        return
     bpe = blocks_per_epoch(int(dr.EPOCH_INTERVAL_S))
     archive = w4.start_archive_node(dr.CHAIN_NAME)
     report.check(S, "an archive node joins the local chain", archive,
@@ -85,6 +138,7 @@ def scenario_v5_flip(dr, report, subtensor, netuid, wallets, procs_out, args):
             "PATH": path, "CLOUDSDK_CONFIG": no_gcloud,
             "FUGAL_OPENROUTER_BASE": f"http://127.0.0.1:{w4.STUB_PORT}/v1",
             "FUGAL_BENCHMARK_POOL_V3": fx["pool_path"], "FUGAL_EMBEDDINGS_FILE": fx["emb"],
+            **v5_env,
             "FUGAL_ROOT_HOTKEY": root_hk, "FUGAL_REFERENCE_BUCKET": w4.BUCKET,
             "FUGAL_REHEARSAL_STORE_DIR": store_dir, "FUGAL_REHEARSAL_STORE_URL": store.url,
             "FUGAL_REHEARSAL_PUBLISHED_SEED": fx["seed_path"],

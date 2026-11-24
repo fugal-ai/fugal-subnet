@@ -1790,6 +1790,9 @@ Y_SCALE_V5 = 10000
 # for the TD; a call past either is recorded not_started or failed.
 EXAM_BUDGET_S_V5 = 1200
 EXAM_CALL_DEADLINE_S_V5 = 600
+# B* (the best single full entry, by RouterArena's score on the window's
+# coverage votes) is chosen only among entries with at least this many votes.
+BASELINE_MIN_PAIRS_V5 = 100
 
 
 def v5_activation_block(genesis_hash: str | None) -> int | None:

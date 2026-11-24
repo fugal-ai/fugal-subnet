@@ -108,7 +108,9 @@ def draw_exam(nonce: bytes, by_dataset: Mapping[str, Sequence[str]],
 
 def head_lam(head) -> Fraction:
     """A v5 head's own lam (the price its picks weigh cost at), exact: the
-    head file's `lam`, finite, in (0, HEAD_LAM_MAX_V5]."""
+    head file's `lam` as stored (float64), converted with Fraction(float) so
+    every validator and the product get the same rational (0.1 is the
+    float's exact value, not 1/10); finite, in (0, HEAD_LAM_MAX_V5]."""
     z = getattr(head, "success", None) or {}
     if "lam" not in z:
         raise ValueError("a v5 head carries its lam")
@@ -125,7 +127,9 @@ def head_lam(head) -> Fraction:
 
 def exam_picks(head, state, hidden, *, exclude: frozenset = frozenset()) -> tuple[str, ...]:
     """A head's pick per question (row of `hidden`) on the epoch's menu, by
-    the v4 pick function at the head's own lam; "" where it has no pick."""
+    the v4 pick function at the head's own lam; "" where it has no pick.
+    Priced per ENTRY only (menu_state.pick_costs, no question category), so
+    the product, which never knows a query's category, reproduces it."""
     from fugal_subnet.head_odds import picks_and_odds_v4
 
     out = picks_and_odds_v4(head, state, hidden, lam=head_lam(head), exclude=exclude)

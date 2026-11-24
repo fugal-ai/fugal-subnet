@@ -70,6 +70,39 @@ def test_holder_may_upgrade_when_not_worse_and_keeps_its_place():
     assert d.holder_since == 77 and d.history == ("old",)
 
 
+def test_near_identical_retrain_upgrades_not_shown_worse():
+    # a same-coldkey retrain that differs on ~2% of 6,000 questions cannot be
+    # shown worse by the 1/4 margin, so it replaces its own holder (gentle rule)
+    w = World()
+    h = w.add(Head("v1", "ck-h", 10, 0.85, noise=0.0))
+    s = w.add(Head("v1b", "ck-h", 40, 0.85, noise=0.02, seed=5))
+    d = w.decide(S(h.hash, 77, ()))
+    assert d.event == "upgrade" and d.holder == s.hash and d.holder_since == 77
+    assert not d.evidence["heads"][s.hash]["holder_over_upgrade"]["passes"]
+
+
+def test_upgrade_must_itself_be_payable():
+    w = World(baseline_accuracy=0.85)
+    h = w.add(Head("v1", "ck-h", 10, 0.90, noise=0.0))
+    s = w.add(Head("v2", "ck-h", 40, 0.84, noise=0.0, seed=3))   # below B*
+    d = w.decide(S(h.hash, 77, ()))
+    assert d.holder == h.hash
+    assert any("upgrade refused" in r for r in d.evidence["heads"][s.hash]["reasons"])
+
+
+def test_holder_that_stops_standing_is_replaced_on_merit_and_does_not_resume():
+    w = World()
+    h = w.add(Head("old", "ck-a", 10, 0.90, noise=0.0, standing=False))
+    c = w.add(Head("new", "ck-b", 40, 0.85, noise=0.0, seed=2))
+    d = w.decide(S(h.hash, 50, ()))
+    assert d.event == "fill" and d.holder == c.hash and h.hash in d.history
+    # it returns: it walks as an ordinary contender (earlier commit, so first),
+    # and needs the margin over the new holder, which it has here
+    h.standing = True
+    d2 = w.decide(d.state)
+    assert d2.event == "take" and d2.holder == h.hash
+
+
 def test_worse_upgrade_is_refused_and_holder_holds():
     w = World()
     h = w.add(Head("v1", "ck-h", 10, 0.88))

@@ -1770,7 +1770,9 @@ N_MIN_V5 = 2000
 N0_V5 = 2000
 # Margins in S-points (exact Fractions): a challenger must beat the holder
 # by TAKE_MARGIN_V5; a same-coldkey successor replaces its own holder unless
-# it is shown worse by more than -UPGRADE_MARGIN_V5.
+# it is SHOWN worse: the holder's bound over it passes -UPGRADE_MARGIN_V5
+# (+1/4; never before N_MIN_V5 paired questions). The successor must also be
+# payable (its bound over the best single entry passes 0).
 TAKE_MARGIN_V5 = "1/4"
 UPGRADE_MARGIN_V5 = "-1/4"
 # Contenders scored per epoch (the newest standing head per coldkey).
@@ -1781,6 +1783,13 @@ SPEC_LAG_V5 = 2
 HEAD_LAM_MAX_V5 = 10000
 # Labels are integers 0..Y_SCALE_V5 (RouterArena metrics may be fractional).
 Y_SCALE_V5 = 10000
+# A TD's exam/coverage calls: none starts later than EXAM_BUDGET_S_V5 seconds
+# after the epoch's first call and none waits longer than
+# EXAM_CALL_DEADLINE_S_V5, so the proof is ready before the validators'
+# collection (boundary + half of a 360-block epoch, ~36 minutes). Operational
+# for the TD; a call past either is recorded not_started or failed.
+EXAM_BUDGET_S_V5 = 1200
+EXAM_CALL_DEADLINE_S_V5 = 600
 
 
 def v5_activation_block(genesis_hash: str | None) -> int | None:

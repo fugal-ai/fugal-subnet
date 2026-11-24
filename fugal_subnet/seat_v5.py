@@ -11,9 +11,12 @@ picks, judged only on votes from operators other than the two compared
     incumbent  the holder, if it stands, is not memo-refused, is not an
                exact copy, and is not shown worse than B* (the bound of
                B* over the holder does not pass). Otherwise none.
-    upgrade    a newer head of the holder's own coldkey replaces it when its
-               bound over the holder passes UPGRADE_MARGIN (-1/4: shown not
-               worse by more than a quarter point) and its bound over B* passes 0. It keeps the place.
+    upgrade    a newer head of the holder's own coldkey replaces it when it
+               is NOT SHOWN WORSE than the holder (the bound of the holder
+               over it does not pass -UPGRADE_MARGIN = +1/4; with fewer than
+               N_MIN paired questions nothing is shown, so a fresh retrain is
+               not shown worse) and its own bound over B* passes 0 (it is
+               payable). It keeps the holder's place and since.
     walk       the other contenders, earliest first commit first: C replaces
                the incumbent when its bound over the incumbent passes
                TAKE_MARGIN (+1/4), or there is no incumbent, and its bound
@@ -24,6 +27,11 @@ picks, judged only on votes from operators other than the two compared
                payout.seat_weights) is paid while its head is live this
                epoch, is not memo-refused, and its bound over B* passes 0;
                an unpaid share burns.
+
+Standing: a holder that stops standing (not verified in the last STANDING
+epochs) goes to the history and the seat refills on merit in the same epoch.
+A returning former holder has no resume right: it walks as an ordinary
+contender in first-commit order and must beat whoever then holds the seat.
 
 Contenders: per coldkey the newest standing head, plus, for the holder's
 coldkey, the holder itself; at most CONTENDERS_MAX, earliest first commit
@@ -227,15 +235,19 @@ def decide(state: SeatStateV5, epoch: int, contenders: Sequence[Contender],
                 and _order(c) > _order(by_head[incumbent])
                 and (c.predecessor is None or c.predecessor == incumbent)]
         for c in sorted(succ, key=_order, reverse=True)[:1]:
-            vs = beats(c.head, incumbent, UPGRADE_UNITS)
+            # shown worse: the holder's bound over the successor passes the
+            # upgrade margin's magnitude (+1/4); before N_MIN it never passes
+            worse = beats(incumbent, c.head, -UPGRADE_UNITS)
             vb = over_b(c.head)
-            doc(c.head).update({"upgrade_vs_holder": _bound_doc(vs), "vs_baseline": _bound_doc(vb)})
-            if vs.passes and vb.passes:
-                doc(c.head)["reasons"].append("upgraded the holder (same coldkey, not worse)")
-                incumbent, event = c.head, "upgrade"
+            doc(c.head).update({"holder_over_upgrade": _bound_doc(worse),
+                                "vs_baseline": _bound_doc(vb)})
+            if worse.passes:
+                doc(c.head)["reasons"].append("upgrade refused: shown worse than the holder")
+            elif not vb.passes:
+                doc(c.head)["reasons"].append("upgrade refused: does not beat the best single model")
             else:
-                doc(c.head)["reasons"].append("upgrade refused: shown worse than the holder "
-                                              "or not better than the best single model")
+                doc(c.head)["reasons"].append("upgraded the holder (same coldkey, not shown worse)")
+                incumbent, event = c.head, "upgrade"
 
     # 3. the walk, earliest first commit first
     before_walk = incumbent

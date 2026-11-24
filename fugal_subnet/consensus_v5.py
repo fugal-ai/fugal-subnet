@@ -25,10 +25,11 @@ PACKAGE = Path(__file__).resolve().parent
 REGISTERED: dict[str, tuple[str, ...]] = {
     "fugal_subnet.config": (
         # the score (v5/DESIGN.md 1)
-        "K_ARENA_V5", "Y_SCALE_V5",
-        # the exam (DESIGN 5)
+        "ARENA_A_REF_V5", "Y_SCALE_V5",
+        # the exam (DESIGN 5) and the TD's call budget (operational)
         "EXAM_QUESTIONS_V5", "EXAM_VOTES_V5", "EXAM_BASELINE_QUESTIONS_V5",
         "EXAM_CALLS_PER_HOTKEY_V5", "COVERAGE_CALLS_V5", "SPEC_LAG_V5", "HEAD_LAM_MAX_V5",
+        "EXAM_BUDGET_S_V5", "EXAM_CALL_DEADLINE_S_V5",
         # the seat (DESIGN 3)
         "WINDOW_EPOCHS_V5", "N_MIN_V5", "N0_V5", "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5",
         "CONTENDERS_MAX_V5", "PAYOUT_SEAT_SHARES",

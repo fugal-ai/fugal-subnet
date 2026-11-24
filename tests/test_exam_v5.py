@@ -75,6 +75,31 @@ def test_exam_picks_use_the_heads_own_lam():
         p or "" for p in picks_and_odds_v4(dear, state, hidden, lam=Fraction(9000.0)).picks)
 
 
+def test_exam_picks_are_priced_per_entry_so_the_product_can_reproduce_them():
+    # argmax odds/ODDS_SCALE - lam * pick_cost(entry): one cost per entry, no
+    # question category (the product never knows a query's category)
+    from fugal_subnet import menu_state as ms
+    from fugal_subnet.head_odds import ODDS_SCALE
+
+    state = mf.state()
+    ids = list(state.ids())
+    hidden = _hidden(30)
+    head = _head(ids, 3.0)
+    lam = exam_v5.head_lam(head)
+    costs = ms.pick_costs(state)
+    out = picks_and_odds_v4(head, state, hidden, lam=lam)
+    for i, pick in enumerate(exam_v5.exam_picks(head, state, hidden)):
+        u = {e: Fraction(int(out.odds[i, j]), ODDS_SCALE) - lam * costs[e]
+             for j, e in enumerate(ids) if out.odds[i, j] >= 0}
+        best = max(u.values())
+        assert pick == next(e for e in ids if e in u and u[e] == best)
+
+
+def test_head_lam_is_the_exact_fraction_of_the_stored_float64():
+    head = _head(list(mf.state().ids()), 0.1)
+    assert exam_v5.head_lam(head) == Fraction(0.1) != Fraction(1, 10)
+
+
 @pytest.mark.parametrize("lam", [0.0, -1.0, float("inf"), float("nan"), 10_001.0])
 def test_a_head_lam_outside_the_bounds_is_refused(lam):
     with pytest.raises(ValueError):

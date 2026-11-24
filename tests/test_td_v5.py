@@ -6,9 +6,7 @@ is held to the v5 deadline and none starts after the v5 budget, so the proof
 is ready before collection; each result carries `exam` and its label `y`, and
 the proof the spec's hash. No network, no spend.
 
-The exam spec here is a TEST SHIM with the interface lane V1's
-fugal_subnet/exam_v5.py provides (INTERFACES.md): the coordinator runs these
-tests against the real module at integration.
+The exam spec is the real fugal_subnet.exam_v5.ExamSpec.
 """
 from __future__ import annotations
 
@@ -20,6 +18,8 @@ import types
 import numpy as np
 import pytest
 
+from fugal_subnet import exam_v5
+from fugal_subnet.exam_v5 import ExamSpec
 from fugal_subnet.tee import harness, td_v4, td_v5
 from fugal_subnet.tee.proof import BenchmarkProof, QuestionResult
 from tests import menu_fixtures as mf
@@ -34,54 +34,21 @@ def _small_menus(monkeypatch):
     mf.allow_small_menus(monkeypatch)
 
 
-# --- TEST SHIM for lane V1's exam_v5 (ExamSpec, assigned_cells) ------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class _Spec:
-    epoch: int
-    questions: tuple
-    cells: tuple
-    assignment: dict
-
-    def to_json(self) -> str:
-        return json.dumps({"epoch": self.epoch, "questions": list(self.questions),
-                           "cells": [list(c) for c in self.cells],
-                           "assignment": [[list(c), list(h)] for c, h in
-                                          sorted(self.assignment.items())]},
-                          sort_keys=True, separators=(",", ":"))
-
-    def spec_hash(self) -> str:
-        return hashlib.sha256(self.to_json().encode()).hexdigest()
-
-    @classmethod
-    def from_json(cls, s: str) -> _Spec:
-        d = json.loads(s)
-        return cls(epoch=d["epoch"], questions=tuple(d["questions"]),
-                   cells=tuple(tuple(c) for c in d["cells"]),
-                   assignment={tuple(c): tuple(h) for c, h in d["assignment"]})
-
-
-_SHIM = types.SimpleNamespace(
-    ExamSpec=_Spec,
-    assigned_cells=lambda spec, hotkey: [c for c, hks in spec.assignment.items() if hotkey in hks])
-
-
-@pytest.fixture(autouse=True)
-def _exam_shim(monkeypatch):
-    monkeypatch.setattr(td_v5, "_exam_v5", lambda: _SHIM)
+# --- specs: the real exam_v5.ExamSpec ----------------------------------------------------
 
 
 def _spec(epoch=104, *, mine=(("q1", FIXTURE_IDS[0]), ("q2", FIXTURE_IDS[1]), ("q2", FIXTURE_IDS[2])),
-          theirs=(("q3", FIXTURE_IDS[0]),)) -> _Spec:
+          theirs=(("q3", FIXTURE_IDS[0]),)) -> ExamSpec:
     assignment = {c: (HOTKEY, OTHER) for c in mine}
     assignment.update({c: (OTHER,) for c in theirs})
     cells = tuple(sorted(assignment))
-    return _Spec(epoch=epoch, questions=tuple(sorted({c[0] for c in cells})), cells=cells,
-                 assignment=assignment)
+    return ExamSpec(epoch=epoch, questions=tuple(sorted({c[0] for c in cells})), picks={},
+                    baseline=FIXTURE_IDS[0], baseline_questions=(), cells=cells,
+                    ring=tuple(sorted([(HOTKEY, "ck-mine"), (OTHER, "ck-other")])),
+                    assignment=assignment)
 
 
-def _reveal(epoch_id: str, spec: _Spec | None, **field_over) -> tuple[bytes, str]:
+def _reveal(epoch_id: str, spec: ExamSpec | None, **field_over) -> tuple[bytes, str]:
     doc = {"epoch_id": epoch_id, "champion": {"champion": None}}
     if spec is not None:
         field = {"epoch": spec.epoch, "spec": spec.to_json(), "spec_hash": spec.spec_hash()}
@@ -208,7 +175,7 @@ def _run_v5(monkeypatch, provider=None, *, exam=True, coverage=COVERAGE, budget_
         monkeypatch.setattr(harness, "_clock", clock)
     spec = _spec(104)
     task = (td_v5.ExamTask(epoch=104, spec=spec, spec_hash=spec.spec_hash(),
-                           cells=tuple(sorted(_SHIM.assigned_cells(spec, HOTKEY))))
+                           cells=tuple(sorted(exam_v5.assigned_cells(spec, HOTKEY))))
             if exam else None)
     v4_inputs = _inputs(pool, challenge=None, fetch_listing=provider.fetch)
     inputs = td_v5.V5EpochInputs(epoch=104, v4=v4_inputs, exam=task,
@@ -367,12 +334,35 @@ def test_grade_y_falls_back_to_the_v4_grader_and_reads_arena_grades(monkeypatch)
 # --- the miner's v5 session ----------------------------------------------------------------
 
 
-def test_the_miner_builds_a_v5_session_on_its_v4_session():
+def test_the_session_reads_the_protocol_from_the_one_source():
+    # is_v5 follows protocol_of(boundary) when given (the miner binds it to
+    # slicer.protocol_version_for_boundary), not first_epoch
+    session = td_v5.V5Session(v4_session=None, exam=_policy(lambda e: None), first_epoch=0,
+                              protocol_of=lambda b: 5 if b >= 104 * 360 else 4,
+                              blocks_per_epoch=360)
+    assert session.is_v5(104) and not session.is_v5(103)
+
+
+def test_the_miners_protocol_source_is_the_slicer_on_the_chain_blocks(monkeypatch):
+    from fugal_subnet import config as cfg
+    from neurons import miner
+
+    monkeypatch.setattr(cfg, "V2_ACTIVATION_BLOCK", 1000)
+    monkeypatch.setattr(cfg, "v3_activation_block", lambda g: 2000)
+    monkeypatch.setattr(cfg, "v4_activation_block", lambda g: 3000)
+    monkeypatch.setattr(cfg, "v5_activation_block", lambda g: 104 * 360)
+    of = miner._protocol_of_boundary(None)
+    assert of(104 * 360) == 5 and of(103 * 360) == 4 and of(2500) == 3
+
+
+def test_the_miner_builds_a_v5_session_on_its_v4_session(monkeypatch):
     from neurons import miner
 
     class V4:
         challenge = None
 
+    monkeypatch.setattr(miner, "_protocol_of_boundary",
+                        lambda g: (lambda b: 5 if b >= 104 * 360 else 4))
     v4 = V4()
     session = miner._v5_session(None, netuid=70, v4_session=v4, first_epoch=104,
                                 blocks_per_epoch=360, hotkey=HOTKEY, genesis=None,

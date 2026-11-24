@@ -47,17 +47,16 @@ from fugal_subnet.reveal_sync import MAX_REVEAL_BYTES
 
 logger = logging.getLogger(__name__)
 
-# The v5 constants this module reads. Lane V1 owns config.py and adds them
-# (INTERFACES.md); until then the documented defaults apply.
-SPEC_LAG = int(getattr(config, "SPEC_LAG_V5", 2))
-COVERAGE_CALLS = int(getattr(config, "COVERAGE_CALLS_V5", 48))
-Y_SCALE = int(getattr(config, "Y_SCALE_V5", 10000))
+# The v5 constants this module reads (fugal_subnet/config.py, the v5 block).
+SPEC_LAG = int(config.SPEC_LAG_V5)
+COVERAGE_CALLS = int(config.COVERAGE_CALLS_V5)
+Y_SCALE = int(config.Y_SCALE_V5)
 # No exam or coverage call is started later than this after the epoch's first
 # call, and none waits longer than EXAM_CALL_DEADLINE_S: the last reply is in
 # by about 30 minutes after the first call, inside the 36-minute window to the
 # validators' collection (boundary + 0.5 of a 360-block epoch).
-EXAM_BUDGET_S = float(getattr(config, "EXAM_BUDGET_S_V5", 1200))
-EXAM_CALL_DEADLINE_S = int(getattr(config, "EXAM_CALL_DEADLINE_S_V5", 600))
+EXAM_BUDGET_S = float(config.EXAM_BUDGET_S_V5)
+EXAM_CALL_DEADLINE_S = int(config.EXAM_CALL_DEADLINE_S_V5)
 
 # Where the root's reveal of E - SPEC_LAG carries epoch E's spec:
 # {"epoch": E, "spec": <ExamSpec.to_json()>, "spec_hash": <ExamSpec.spec_hash()>}.
@@ -69,7 +68,7 @@ EXAM_KINDS = ("exam", "coverage")
 
 
 def _exam_v5():
-    """The exam module (lane V1, fugal_subnet/exam_v5.py)."""
+    """The exam module (fugal_subnet/exam_v5.py: ExamSpec, assigned_cells)."""
     from fugal_subnet import exam_v5
     return exam_v5
 
@@ -280,12 +279,20 @@ class V5Session:
     """A miner's v5 state across epochs: its v4 session (the menu it last
     accepted, read and checked as under v4) and its exam policy."""
 
-    def __init__(self, *, v4_session, exam: ExamPolicy, first_epoch: int):
+    def __init__(self, *, v4_session, exam: ExamPolicy, first_epoch: int,
+                 protocol_of=None, blocks_per_epoch: int | None = None):
         self.v4 = v4_session
         self.exam = exam
         self.first_epoch = int(first_epoch)
+        # `protocol_of(boundary_block) -> int` is the one source of an epoch's
+        # protocol, slicer.protocol_version_for_boundary (the miner binds it
+        # to the chain's activation blocks); without it, the first v5 epoch.
+        self.protocol_of = protocol_of
+        self.blocks_per_epoch = None if blocks_per_epoch is None else int(blocks_per_epoch)
 
     def is_v5(self, epoch: int) -> bool:
+        if self.protocol_of is not None and self.blocks_per_epoch:
+            return int(self.protocol_of(int(epoch) * self.blocks_per_epoch)) >= 5
         return int(epoch) >= self.first_epoch
 
     def inputs_for(self, epoch: int) -> V5EpochInputs:

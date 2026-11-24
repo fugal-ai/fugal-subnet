@@ -6685,10 +6685,14 @@ recomputation differs from the root's treats that epoch's exam as void
 - **Incumbent.** The holder, if it stands, is not refused by the
   memorisation check, is not an exact copy, and is not shown worse than B*.
   Otherwise there is none and the former holder joins the history.
-- **Upgrade.** A newer head of the holder's own coldkey replaces it when its
-  bound over the holder passes UPGRADE_MARGIN_V5 (shown not worse by more
-  than the margin) and its bound over B* passes 0. It keeps the holder's
-  place (`holder_since`).
+- **Upgrade.** A newer head of the holder's own coldkey replaces it unless it
+  is *shown* worse: the holder's bound over it passes −UPGRADE_MARGIN_V5
+  (+1/4). With fewer than N_MIN_V5 paired questions nothing is shown, so a
+  fresh retrain is not shown worse. It must also be payable itself (its bound
+  over B* passes 0). It keeps the holder's place (`holder_since`).
+- **Standing.** A holder that stops standing goes to the history and the
+  seat refills on merit the same epoch. A returning former holder has no
+  resume right: it walks as an ordinary contender in first-commit order.
 - **Walk.** The other contenders, earliest first commit first (ties by head
   hash): C replaces the incumbent when its bound over the incumbent passes
   TAKE_MARGIN_V5 (or there is none) and its bound over B* passes 0. A later
@@ -6713,6 +6717,9 @@ distinct coldkeys, assigned by a keyed walk of the ring. Votes are pooled as
 exploration pairs are (failed calls dropped, the plausibility check, the
 median). In the comparison of X with Y, no vote from X's or Y's coldkey
 counts; a question left without a usable vote gives that comparison no item.
+A cell whose usable votes all failed, from at least two coldkeys
+(`exam_v5.FAILED_CELL_MIN_VOTERS`), counts as a wrong answer at zero cost, as
+the product would fail it.
 So no operator's re-runs, withheld calls or own grading can move its own
 comparisons. Check: `tests/test_exam_v5.py`.
 

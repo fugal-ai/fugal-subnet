@@ -1113,14 +1113,10 @@ def _v4_session(subtensor, *, netuid: int, pool, first_epoch: int, blocks_per_ep
 
 
 def _v5_activation_block(genesis):
-    """The block protocol v5 applies from on this chain, or None (config's
-    v5_activation_block, which lane V1 adds alongside V5_ACTIVATION_BLOCK)."""
+    """The block protocol v5 applies from on this chain, or None
+    (config.v5_activation_block)."""
     from fugal_subnet import config as cfg
-    fn = getattr(cfg, "v5_activation_block", None)
-    if callable(fn):
-        return fn(genesis)
-    value = getattr(cfg, "V5_ACTIVATION_BLOCK", None)
-    return None if value is None else int(value)
+    return cfg.v5_activation_block(genesis)
 
 
 def _td_v5_coverage_calls() -> int:
@@ -1183,7 +1179,30 @@ def _v5_session(subtensor, *, netuid: int, v4_session, first_epoch: int, blocks_
                                     blocks_per_epoch=blocks_per_epoch,
                                     fetch_reveal=_kept_reveals(fetch_reveal))
     policy = td_v5.ExamPolicy(first_epoch=first_epoch, hotkey=hotkey, read_spec=read_spec)
-    return td_v5.V5Session(v4_session=v4_session, exam=policy, first_epoch=first_epoch)
+    return td_v5.V5Session(v4_session=v4_session, exam=policy, first_epoch=first_epoch,
+                           protocol_of=_protocol_of_boundary(genesis),
+                           blocks_per_epoch=blocks_per_epoch)
+
+
+def _protocol_of_boundary(genesis):
+    """boundary block -> protocol version, by the one source
+    (slicer.protocol_version_for_boundary) on this chain's activation blocks."""
+    from fugal_subnet import config as cfg
+    from fugal_subnet.benchmarks.slicer import protocol_version_for_boundary
+
+    on_finney = (genesis is not None
+                 and str(genesis).lower() == cfg.FINNEY_GENESIS_HASH.lower())
+    v2 = cfg.V2_ACTIVATION_BLOCK
+    if v2 is None and on_finney:
+        v2 = cfg.FINNEY_V2_ACTIVATION_BLOCK
+    v3 = cfg.v3_activation_block(genesis)
+    v4 = cfg.v4_activation_block(genesis)
+    v5 = cfg.v5_activation_block(genesis)
+
+    def protocol_of(boundary_block: int) -> int:
+        return protocol_version_for_boundary(int(boundary_block), v2, v3,
+                                             v4_activation_block=v4, v5_activation_block=v5)
+    return protocol_of
 
 
 def _kept_reveals(fetch_reveal, keep: int = 4):

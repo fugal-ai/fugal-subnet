@@ -65,13 +65,13 @@ POOL_V3_DATA_SHA256 = {
 # Protocol v5 (RouterArena) grading contract: fugal_subnet/graders_arena.py, RouterArena's
 # metrics ported (parity: scripts/parity_graders_arena.py). Pinned like graders_code.py.
 #   (first version) 2026-11-24, lane P.
-ARENA_GRADER_SHA256 = "PENDING"
+ARENA_GRADER_SHA256 = "e74f46a4938015395badacfb484a86f114cb6745d6fa945ddcf2d649f773c03d"
 # The v5 pool's pinned data (scripts/build_pool_v5.py writes the manifest and the exclusions;
 # arena_prompts.json is RouterArena's prompt templates, verbatim). Rebuild and re-pin together.
 POOL_V5_DATA_SHA256 = {
-    "arena_prompts.json": "PENDING",
-    "exclusions_routerarena.json": "PENDING",
-    "pool_manifest_v5.json": "PENDING",
+    "arena_prompts.json": "00ce256570d4dc7db804ee36f511331084c850c1ad39c16040f3143189a1a65f",
+    "exclusions_routerarena.json": "73fcf11244b1df0a6f2fd8498de6be6b0b44b38da2b4e7c8fccd647d11349ea6",
+    "pool_manifest_v5.json": "9dcd5bb6c6bb23da701f52896101f12898ed4e22de7c8f5f6c01db224f15a954",
 }
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole

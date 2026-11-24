@@ -94,11 +94,20 @@ class Fetcher:
     def __init__(self, cache_dir: str | None = None):
         self.cache_dir = cache_dir
 
-    def path(self, repo: str, filename: str, revision: str | None = None) -> str:
+    def path(self, repo: str, filename: str, revision: str | None = None, tries: int = 6) -> str:
+        import time
+
         from huggingface_hub import hf_hub_download
         rev = revision or SOURCES[repo]
-        return hf_hub_download(repo, filename, repo_type="dataset", revision=rev,
-                               cache_dir=self.cache_dir)
+        for attempt in range(tries):      # transient network errors only; the bytes are pinned
+            try:
+                return hf_hub_download(repo, filename, repo_type="dataset", revision=rev,
+                                       cache_dir=self.cache_dir)
+            except Exception:
+                if attempt == tries - 1:
+                    raise
+                time.sleep(5 * (attempt + 1))
+        raise RuntimeError("unreachable")
 
     def parquet(self, repo, filename, columns=None, revision=None) -> list[dict]:
         import pyarrow.parquet as pq
@@ -279,12 +288,13 @@ def narrativeqa(fx):
 
 
 def geobench(fx):
-    for r in fx.json("daven3/geobench", "geobenchmark_apstudy.json"):
+    # Every apstudy item has the same "id"; the row index is the identity.
+    for i, r in enumerate(fx.json("daven3/geobench", "geobenchmark_apstudy.json")):
         ch = r["question"]["choices"]
         labels = [c["label"] for c in ch]
         if r.get("answerKey") not in labels:
             continue
-        yield _row("GeoBench", "daven3/geobench", r["id"], r["question"]["stem"],
+        yield _row("GeoBench", "daven3/geobench", f"apstudy/{i}", r["question"]["stem"],
                    labels.index(r["answerKey"]), options=[c["text"] for c in ch])
 
 
@@ -486,7 +496,7 @@ CONVERTERS = (mmlupro, mmlu, medmcqa, pubmedqa, opentdb, qanta, narrativeqa, geo
 def routerarena_rows(fx) -> list[dict]:
     repo, rev = ROUTERARENA
     return fx.parquet(repo, "data/full-00000-of-00001.parquet", revision=rev,
-                      columns=["Dataset name", "Global Index", "Question"])
+                      columns=["Dataset name", "Global Index", "Context", "Question"])
 
 
 def shares(ra_rows) -> dict[str, int]:
@@ -514,9 +524,16 @@ def _shingles(s: str) -> set[str]:
     return {" ".join(w[i:i + SHINGLE_WORDS]) for i in range(len(w) - SHINGLE_WORDS + 1)}
 
 
+def _identity(row) -> str:
+    """A question's text identity: its context and question together. Some datasets ask the
+    same generic question of every item ("what's the effect of this?", "How would Others
+    feel as a result?"); the context is what makes the item."""
+    return _norm((row.get("Context") or "") + "\n" + (row.get("Question") or ""))
+
+
 class Exclusion:
     def __init__(self, ra_rows):
-        self.text = {_norm(r["Question"]) for r in ra_rows}
+        self.text = {_identity(r) for r in ra_rows}
         self.sh = defaultdict(set)
         for r in ra_rows:
             key = r["Global Index"].split("_")[0]
@@ -524,7 +541,7 @@ class Exclusion:
                 self.sh[key] |= _shingles(r["Question"])
 
     def hit(self, row) -> str | None:
-        if _norm(row["Question"]) in self.text:
+        if _identity(row) in self.text:
             return "text"
         key = ra_dataset_of(row["ra_name"])
         if key in SHINGLE_DATASETS and self.sh[key] & _shingles(row["Question"]):

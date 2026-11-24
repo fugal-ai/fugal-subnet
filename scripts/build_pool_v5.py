@@ -65,7 +65,7 @@ def main() -> int:
     with open(excl_path, "w", encoding="utf-8") as f:
         json.dump({"routerarena": {"repo": arena_sets.ROUTERARENA[0],
                                    "revision": arena_sets.ROUTERARENA[1],
-                                   "rule": "same normalised question text, or (long questions) "
+                                   "rule": "same normalised context + question text, or (long questions) "
                                            f"a shared {arena_sets.SHINGLE_WORDS}-word shingle "
                                            "with a RouterArena question of the same dataset"},
                    "question_ids": excluded}, f, indent=1, sort_keys=True)

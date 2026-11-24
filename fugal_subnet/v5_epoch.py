@@ -21,6 +21,23 @@ docs/INVARIANTS.md, the v5 entries):
    heads verified by now (`next_spec`); the root publishes it in this
    epoch's reveal and every validator recomputes it (`spec_agrees`).
 
+MEMORISATION. A head is fixed by its commitment, so it can only have learned
+the labels of questions published before it was committed. Two rules, both on
+the published set (memo_v4.Published: per question, the first epoch whose
+reveal published an outcome on it, the chain-driven view every node holds):
+
+- The exam is drawn from the pool's UNPUBLISHED reserve only (`next_spec`),
+  FRESH_RESERVE_EPOCHS_V5-paced like v4's fresh draw (F = ceil(R / that)),
+  leaving out every question of a spec already built: when it is drawn no
+  label of it is public.
+- A question counts in a comparison only if its labels were first published
+  in an epoch at or after the later of the compared heads' commit epochs
+  (`eligible_after`): a reveal of epoch f is published during epoch f + 1,
+  so a head committed in epoch c can have read it only if f <= c - 1. This
+  catches what the draw cannot see (a question published by another path
+  between the draw and the exam) and makes the rule exact rather than a
+  statistical refusal: v4's per-head memorisation verdict is not needed.
+
 DETERMINISM. Integers and Fractions only; sorted orders; the reveal fields
 are canonical JSON-able values.
 """
@@ -35,6 +52,8 @@ from fugal_subnet import arena_score, config, exam_v5, seat_v5
 from fugal_subnet.exam_v5 import ExamSpec, Vote
 
 WINDOW_EPOCHS = int(config.WINDOW_EPOCHS_V5)
+EPOCH_INTERVAL = int(config.EPOCH_INTERVAL)
+FRESH_RESERVE_EPOCHS = int(config.FRESH_RESERVE_EPOCHS_V5)
 SPEC_LAG = int(config.SPEC_LAG_V5)
 STANDING_EPOCHS = int(config.STANDING_EPOCHS_V4)
 Y_SCALE = int(config.Y_SCALE_V5)
@@ -302,8 +321,8 @@ def observe(heads: Mapping[str, HeadFacts], served: Sequence[Served],
     return {h: f for h, f in sorted(out.items()) if f.last_seen > epoch - WINDOW_EPOCHS}
 
 
-def contenders(heads: Mapping[str, HeadFacts], served: Sequence[Served], epoch: int,
-               memo_refused: frozenset[str] = frozenset()) -> list[seat_v5.Contender]:
+def contenders(heads: Mapping[str, HeadFacts], served: Sequence[Served],
+               epoch: int) -> list[seat_v5.Contender]:
     """seat_v5's contenders: every head in the book, standing when its owner
     served it in the last STANDING_EPOCHS epochs, live when its owner served
     it this epoch. A head served this epoch only by another coldkey is an
@@ -314,8 +333,7 @@ def contenders(heads: Mapping[str, HeadFacts], served: Sequence[Served], epoch: 
     for h, f in sorted(heads.items()):
         out.append(seat_v5.Contender(
             head=h, coldkey=f.coldkey, hotkey=f.hotkey, first_commit_block=f.first_commit_block,
-            standing=f.last_seen > epoch - STANDING_EPOCHS, memo_refused=h in memo_refused,
-            live=h in live))
+            standing=f.last_seen > epoch - STANDING_EPOCHS, live=h in live))
     return out
 
 
@@ -328,6 +346,35 @@ def serving_uids(heads: Mapping[str, HeadFacts], served: Sequence[Served]) -> di
         if f is not None and s.coldkey == f.coldkey and s.head not in out:
             out[s.head] = s.uid
     return out
+
+
+# --- memorisation ----------------------------------------------------------------------------
+
+
+def commit_epoch(block: int) -> int:
+    """The epoch a commitment at `block` was made in."""
+    return int(block) // EPOCH_INTERVAL
+
+
+def eligible_after(first_published: Callable[[str], int | None],
+                   epoch: int) -> Callable[[str], bool]:
+    """The question filter of a comparison whose later head was committed in
+    epoch `epoch`: a question counts when its labels were never published
+    (`first_published` None) or first published in an epoch at or after
+    `epoch` (a reveal of epoch f is public from epoch f + 1 on)."""
+    e = int(epoch)
+
+    def ok(question_id: str) -> bool:
+        f = first_published(question_id)
+        return f is None or int(f) >= e
+    return ok
+
+
+def published_reader(published) -> Callable[[str], int | None]:
+    """`first_published` over a memo_v4.Published (or None: nothing published)."""
+    if published is None:
+        return lambda _q: None
+    return published.first_epoch
 
 
 # --- items -----------------------------------------------------------------------------------
@@ -357,8 +404,10 @@ def _baseline_cost(records: Sequence[EpochRecord]) -> dict[str, int]:
 
 
 def item_sources(records: Sequence[EpochRecord], heads: Mapping[str, HeadFacts],
-                 stratum_of: Callable[[str], str]):
-    """(items(x, y), baseline_items(x)) for seat_v5.decide over the window."""
+                 stratum_of: Callable[[str], str],
+                 first_published: Callable[[str], int | None]):
+    """(items(x, y), baseline_items(x)) for seat_v5.decide over the window,
+    each on the questions eligible for that comparison (`eligible_after`)."""
     specs = [r.spec for r in records if r.spec is not None]
     votes = [v for r in records for v in r.counted_votes()]
     costs: dict[str, int] = {}
@@ -370,15 +419,20 @@ def item_sources(records: Sequence[EpochRecord], heads: Mapping[str, HeadFacts],
 
     base_cost = _baseline_cost(records)
 
+    def committed(h: str) -> int:
+        return commit_epoch(heads[h].first_commit_block)
+
     def items(x: str, y: str):
         ex = frozenset({heads[x].coldkey, heads[y].coldkey})
+        ok = eligible_after(first_published, max(committed(x), committed(y)))
         return exam_v5.comparison_items(specs, votes, x, y, ex, {x: mean(x), y: mean(y)},
-                                        stratum_of)
+                                        stratum_of, ok)
 
     def base(x: str):
         ex = frozenset({heads[x].coldkey})
+        ok = eligible_after(first_published, committed(x))
         return exam_v5.baseline_items(specs, votes, x, ex, {x: mean(x), **base_cost},
-                                      stratum_of)
+                                      stratum_of, ok)
 
     return items, base
 
@@ -399,17 +453,17 @@ class V5Result:
 def score_epoch(*, epoch: int, state: seat_v5.SeatStateV5, heads: Mapping[str, HeadFacts],
                 record: EpochRecord, window: Sequence[EpochRecord], served: Sequence[Served],
                 full_entries: Iterable[str], stratum_of: Callable[[str], str], burn_uid: int,
-                memo_refused: frozenset[str] = frozenset()) -> V5Result:
+                first_published: Callable[[str], int | None]) -> V5Result:
     """Epoch `epoch`'s seat and weights. `window` is the earlier epochs'
     records (this epoch's `record` is added); `heads` the book before this
-    epoch. Epochs A and A + 1 have no spec: the seat is decided on the
-    window as it is (empty at activation: every share burns)."""
+    epoch; `first_published` the published set as of this epoch
+    (`published_reader`). Epochs A and A + 1 have no spec: the seat is
+    decided on the window as it is (empty at activation: every share burns)."""
     book = observe(heads, served, epoch)
     recs = window_of([*[r for r in window if r.epoch != record.epoch], record], epoch)
     base, table = baseline_entry(recs, full_entries)
-    items, base_items = item_sources(recs, book, stratum_of)
-    decision = seat_v5.decide(state, epoch, contenders(book, served, epoch, memo_refused),
-                              items, base_items)
+    items, base_items = item_sources(recs, book, stratum_of, first_published)
+    decision = seat_v5.decide(state, epoch, contenders(book, served, epoch), items, base_items)
     uids, weights = seat_v5.weights(decision, serving_uids(book, served), burn_uid=burn_uid)
     reveal = {
         SEAT_KEY: {"state": decision.state.to_reveal(), "evidence": _jsonable(decision.evidence)},
@@ -446,11 +500,15 @@ def next_spec(*, epoch: int, nonce: bytes, decision: seat_v5.SeatDecisionV5,
               heads: Mapping[str, HeadFacts], served: Sequence[Served],
               loaded: Mapping[str, object], state_menu, hidden_of: Callable[[Sequence[str]], object],
               by_dataset: Mapping[str, Sequence[str]], weights_ppm: Mapping[str, int],
-              baseline: str, memo_refused: frozenset[str] = frozenset()) -> tuple[ExamSpec, dict]:
+              baseline: str, first_published: Callable[[str], int | None],
+              used: Iterable[str] = ()) -> tuple[ExamSpec, dict]:
     """(the spec of epoch + SPEC_LAG, its pick costs in nanodollars).
 
-    The contenders are seat_v5.select's for the seat as just decided; each
-    picks on the candidate questions with its own lam on this epoch's menu
+    The candidate questions are the reserve's (`reserve`: unpublished by
+    `first_published`, not in `used`, the questions of every spec already
+    built), FRESH_RESERVE_EPOCHS-paced (`exam_size`). The contenders are
+    seat_v5.select's for the seat as just decided; each picks on the
+    candidate questions with its own lam on this epoch's menu
     (`exam_v5.exam_picks`); a contender whose bytes are not at hand
     (`loaded`) is left out. The ring is this epoch's verified (hotkey,
     coldkey) pairs."""
@@ -458,8 +516,10 @@ def next_spec(*, epoch: int, nonce: bytes, decision: seat_v5.SeatDecisionV5,
 
     spec_epoch = int(epoch) + SPEC_LAG
     key = spec_nonce(nonce, spec_epoch)
-    pool = exam_v5.draw_exam(key, by_dataset, weights_ppm, exam_v5.EXAM_QUESTIONS)
-    chosen = seat_v5.select(contenders(heads, served, epoch, memo_refused), decision.holder)
+    fresh = reserve(by_dataset, first_published, used)
+    pool = exam_v5.draw_exam(key, fresh, weights_ppm,
+                             exam_size(sum(len(v) for v in fresh.values())))
+    chosen = seat_v5.select(contenders(heads, served, epoch), decision.holder)
     picks: dict[str, tuple[str, ...]] = {}
     if pool:
         hidden = hidden_of(pool)
@@ -476,6 +536,36 @@ def next_spec(*, epoch: int, nonce: bytes, decision: seat_v5.SeatDecisionV5,
     spec = exam_v5.build_spec(spec_epoch, key, picks, entries, pool, ring, baseline)
     costs = {e: int(c * NANO) for e, c in sorted(_ms.pick_costs(state_menu).items())}
     return spec, costs
+
+
+def reserve(by_dataset: Mapping[str, Sequence[str]], first_published: Callable[[str], int | None],
+            used: Iterable[str] = ()) -> dict[str, list[str]]:
+    """{dataset: its questions no reveal has published an outcome on and no
+    built spec holds}, ids sorted: what an exam may draw."""
+    used = set(used)
+    out = {}
+    for d in sorted(by_dataset):
+        qs = sorted({str(q) for q in by_dataset[d]
+                     if str(q) not in used and first_published(str(q)) is None})
+        if qs:
+            out[d] = qs
+    return out
+
+
+def exam_size(reserve_size: int) -> int:
+    """An exam's candidate questions from a reserve of R: ceil(R /
+    FRESH_RESERVE_EPOCHS), at most EXAM_QUESTIONS_V5. The reserve then lasts:
+    it shrinks by about 1/FRESH_RESERVE_EPOCHS an epoch (a release that adds
+    questions raises it at once)."""
+    r = int(reserve_size)
+    if r < 0:
+        raise ValueError("a reserve size is not negative")
+    return min(exam_v5.EXAM_QUESTIONS, -(-r // FRESH_RESERVE_EPOCHS))
+
+
+def spec_questions(specs: Iterable[ExamSpec | None]) -> set[str]:
+    """Every question of the given specs: the `used` an exam draw leaves out."""
+    return {q for s in specs if s is not None for q in s.questions}
 
 
 def spec_reveal(spec: ExamSpec, costs_nd: Mapping[str, int]) -> dict:

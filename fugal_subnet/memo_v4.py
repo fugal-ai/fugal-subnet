@@ -266,7 +266,8 @@ def seed_through(doc: Mapping | None = None) -> int:
 def published_ids(reveal: Mapping) -> set[str]:
     """The questions a reveal publishes an outcome on: its scored questions,
     every exploration answer it lists (failed or not, excluded from the pool
-    or not) and its pooled labels. Over-inclusion only shrinks the reserve; a
+    or not), its pooled labels and, from protocol v5, its exam and coverage
+    votes. Over-inclusion only shrinks the reserve; a
     question left out would be counted unseen when it is not."""
     out: set[str] = set()
     for key in ("questions", "exploration", "exploration_pool"):
@@ -278,6 +279,22 @@ def published_ids(reveal: Mapping) -> set[str]:
             if not isinstance(q, str) or not q:
                 raise ValueError(f"reveal `{key}` holds a row with no question id")
             out.add(q)
+    # Protocol v5 (v5_epoch.RECORD_KEY): the record's exam and coverage votes
+    # are outcomes too, rows [question id, entry, hotkey, coldkey, y, cost,
+    # failed]. A v4 reveal has no such field.
+    v5 = reveal.get("votes_v5")
+    if v5 is not None:
+        if not isinstance(v5, Mapping):
+            raise ValueError("reveal `votes_v5` must be an object")
+        for key in ("votes", "coverage"):
+            rows = v5.get(key) or []
+            if not isinstance(rows, list):
+                raise ValueError(f"reveal `votes_v5.{key}` must be a list")
+            for row in rows:
+                q = row[0] if isinstance(row, list) and row else None
+                if not isinstance(q, str) or not q:
+                    raise ValueError(f"reveal `votes_v5.{key}` holds a row with no question id")
+                out.add(q)
     return out
 
 

@@ -1565,6 +1565,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             v4_challenge_list = (
                 v4_epoch_plan.challenge_list(nonce, benchmark_pool, _cfg.SLICE_SIZE_V4)
                 if protocol_version == 4 and v4_epoch_plan is not None else [])
+            # v5: a node with no state or a stale one (a fresh follower, a
+            # restart after a gap) first rebuilds it from the root's reveals.
+            if protocol_version >= 5 and v5_node is not None:
+                _v5_resync(v5_node, epoch_index=epoch_index,
+                           first_epoch=v5_block // blocks_per_epoch, reference_dir=reference_dir)
             # v5: the exam the TDs answer this epoch (the root's published
             # spec), its costs, and why its items do not count here (or None).
             v5_exam = (v5_node.exam_for(epoch_index) if protocol_version >= 5
@@ -1991,6 +1996,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                     verified_heads=verified_heads, head_hashes=head_hashes,
                     coldkey_of=coldkey_of, commit_blocks=commit_blocks, gold_answers=gold_answers,
                     pool=benchmark_pool, embeddings=v3_embeddings, burn_uid=burn_uid,
+                    published=v4_view,
                     pooled=_v4_pool(v4_menu.state, verified_proofs=verified_proofs,
                                     expected=v4_expected, coldkey_of=coldkey_of, nonce=nonce,
                                     flagged=frozenset(), shares=v4_shares))
@@ -3881,6 +3887,39 @@ def _v5_setup(*, subtensor, netuid: int, role, cfg, on_finney: bool, blocks_per_
     return v5_node.V5Node(state_path + ".v5", root=root, read_published=read)
 
 
+def _v5_resync(node, *, epoch_index: int, first_epoch: int, reference_dir: str | None) -> bool:
+    """Rebuild `node` (v5_node.V5Node.resync) when it is stale before epoch E,
+    from the root's reveals: a follower's synced reference directory first,
+    then this validator's own epoch files (the root's own). Never the epoch's
+    failure: a node that cannot rebuild scores on what it holds, logged."""
+    from fugal_subnet import v5_node
+    from fugal_subnet.benchmarks.slicer import epoch_id_for_block
+    from fugal_subnet.commit_reveal import EPOCH_DIR
+
+    if not node.stale(epoch_index, first_epoch):
+        return False
+    dirs = [d for d in (reference_dir, EPOCH_DIR) if d]
+
+    def read(e: int):
+        for d in dirs:
+            try:
+                with open(os.path.join(d, epoch_id_for_block(e), "reveal.json"), "rb") as f:
+                    return f.read()
+            except OSError:
+                continue
+        return None
+    try:
+        done = node.resync(v5_node.reference_reveals(read, epoch_index), epoch_index)
+    except Exception as e:  # noqa: BLE001 - scored on what it holds; logged
+        logger.error("v5 state is stale before epoch %d and could not be rebuilt from the "
+                     "root's reveals (%s: %s)", epoch_index, type(e).__name__, e)
+        return False
+    if not done:
+        logger.warning("v5 state is stale before epoch %d and the root's reveal of epoch %d is "
+                       "not held: scoring on the state as it is", epoch_index, epoch_index - 1)
+    return done
+
+
 def _v5_expected(state, *, epoch_index: int, nonce: bytes, pool: list, hotkey: str, spec, plan):
     """What one hotkey's v5 proof must hold this epoch (tee/verify.expected_v5):
     its coverage cells and the exam cells the published spec assigns it."""
@@ -3910,9 +3949,11 @@ class _V5Scored(NamedTuple):
 
 def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_proofs: dict,
               verified_heads: dict, head_hashes: dict, coldkey_of: dict, commit_blocks: dict,
-              gold_answers: dict, pool: list, embeddings, burn_uid: int, pooled):
+              gold_answers: dict, pool: list, embeddings, burn_uid: int, pooled, published):
     """Protocol v5's scoring of one epoch (v5_epoch): the votes of the
     verified proofs, the seat and weights, and the spec of epoch + SPEC_LAG.
+    `published` is the epoch's published set (memo_v4.Published, the view
+    its plan drew on): the memorisation rule reads it (v5_epoch).
     Returns (result, uids, weights, commit): `commit` advances `node` (called
     at the loop's commit point, after the reveal and the weights)."""
     from fugal_subnet import epoch_plan, v5_epoch
@@ -3932,7 +3973,11 @@ def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_pro
             served.append(v5_epoch.Served(h, uid, str(proof.hotkey), ck,
                                           int(commit_blocks.get(uid, 0))))
             if uid in verified_heads:
-                node.head_bytes[h] = verified_heads[uid]
+                try:
+                    node.keep_head(h, verified_heads[uid])
+                except (ValueError, OSError) as e:
+                    logger.warning("UID %d: its head's bytes could not be kept (%s: %s)", uid,
+                                   type(e).__name__, e)
     counts = spec is not None and void is None
     record = v5_epoch.EpochRecord(
         epoch=epoch_index, spec=spec if counts else None, costs_nd=dict(costs) if counts else {},
@@ -3941,10 +3986,12 @@ def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_pro
         void=None if counts or spec is None else void)
     bench = {q: str(g.get("benchmark", "")) for q, g in gold_answers.items()}
     full = [e.id for e in state.entries if ms.is_full(e)]
+    first_published = v5_epoch.published_reader(published)
     result = v5_epoch.score_epoch(
         epoch=epoch_index, state=node.seat, heads=node.heads, record=record,
         window=node.records, served=served, full_entries=full,
-        stratum_of=lambda q: bench.get(q, ""), burn_uid=burn_uid)
+        stratum_of=lambda q: bench.get(q, ""), burn_uid=burn_uid,
+        first_published=first_published)
     # The next exam, from the heads verified by now.
     loaded = {}
     for h, data in node.head_bytes.items():
@@ -3962,7 +4009,10 @@ def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_pro
             epoch=epoch_index, nonce=nonce, decision=result.decision, heads=result.heads,
             served=served, loaded=loaded, state_menu=state,
             hidden_of=lambda qids: embeddings.aligned(list(qids)),
-            by_dataset=by_dataset, weights_ppm=dict(weights_ppm), baseline=result.baseline)
+            by_dataset=by_dataset, weights_ppm=dict(weights_ppm), baseline=result.baseline,
+            first_published=first_published,
+            used=v5_epoch.spec_questions([*(s for s, _c in node.specs.values()),
+                                          *(r.spec for r in node.records), spec]))
     except Exception as e:  # noqa: BLE001 - no exam then; never the epoch
         logger.error("Epoch %d: the exam spec of epoch %d could not be built (%s: %s); that "
                      "epoch is coverage only", epoch_index, epoch_index + v5_epoch.SPEC_LAG,

@@ -218,6 +218,10 @@ _V1_V3_ONLY = (
     "2.3 item 32); a v4 epoch's plausibility minimum is EXPLORE_PRIVATE_MIN_SAMPLES_V4",
     "v1's copy detection (dedup.find_duplicates), which a v4 epoch does not run",
 )
+# Protocol v5's names (~/projects/fugal-v2-handoff/v5/DESIGN.md): no v4 epoch
+# reads them (a v5 proof field is absent from every v4 proof, and the v5 TD
+# path runs only from the v5 activation); the v5 digest registers them.
+_V5_ONLY = "protocol v5 only, registered by the v5 digest (consensus_v5); no v4 epoch reads it"
 NOT_V4: dict[str, dict[str, str]] = {
     "fugal_subnet.config": {
         "V4_ACTIVATION_BLOCK_ENV": "recorded in the section's `activation` part",
@@ -361,6 +365,18 @@ NOT_V4: dict[str, dict[str, str]] = {
     "fugal_subnet.tee.proof": {
         "TPM_INTERMEDIATES_MAX": "the TPM half of attestation, v1-v3 verification",
         "TPM_INTERMEDIATE_MAX_BYTES": "the TPM half of attestation, v1-v3 verification",
+        "V5_RESULT_KEYS": _V5_ONLY,
+        "V5_PROOF_KEYS": _V5_ONLY,
+    },
+    "fugal_subnet.tee.td_v5": {
+        "SPEC_LAG": _V5_ONLY,
+        "COVERAGE_CALLS": _V5_ONLY,
+        "Y_SCALE": _V5_ONLY,
+        "EXAM_BUDGET_S": _V5_ONLY,
+        "EXAM_CALL_DEADLINE_S": _V5_ONLY,
+        "REVEAL_SPEC_KEY": _V5_ONLY,
+        "MAX_SPEC_REVEAL_BYTES": _V5_ONLY,
+        "EXAM_KINDS": _V5_ONLY,
     },
     # Read by v1-v3's seat and not by v4's (seat_v4 replaces it; the seat
     # package's deletions, SEAT_MINIMAL_V4.md 12).
@@ -674,10 +690,13 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.tee.attestation": ("1dadc7b329998b57", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.dstack_client": ("a08d24a047e69d88", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.harness": ("51a04a98ca3b4992", "778863ca476ad168"),
-    "fugal_subnet.tee.proof": ("0d0db7d0895af1c0", "4f53cda18c2baa0c"),
+    # 2026-11-24: V5_RESULT_KEYS and V5_PROOF_KEYS added NOT_V4 (protocol v5 only).
+    "fugal_subnet.tee.proof": ("1883d2ea8683f259", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.provision": ("ae01f2857fd671ae", "6bd87895b607fada"),
     "fugal_subnet.tee.runtime": ("da960f72963c78a0", "863f9b513d6a0d0e"),
     "fugal_subnet.tee.td_v4": ("f31b734466ec3059", "4f53cda18c2baa0c"),
+    # 2026-11-24: the v5 TD module; its constants are protocol v5 only (NOT_V4).
+    "fugal_subnet.tee.td_v5": ("7c1aa8462bbc9796", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.tpm": ("9bcdc262923867b7", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.v4_options": ("1ee788d99f45a154", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.verify": ("4f53cda18c2baa0c", "c6becece9cf88d68"),

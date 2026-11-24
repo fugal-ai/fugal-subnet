@@ -98,7 +98,9 @@ include = ["fugal_subnet*", "neurons*"]
 # goes quiet, and the validator loads an unverified pool while logging
 # nothing. tests/test_packaging.py holds both names here.
 "fugal_subnet.benchmarks" = ["pool_manifest.json", "pool_manifest_v2.json", "pool_manifest_v3.json",
-                            "exclusions_v3.json", "code_keep_v3.json"]
+                            "exclusions_v3.json", "code_keep_v3.json",
+                            "pool_manifest_v5.json", "exclusions_routerarena.json",
+                            "arena_prompts.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

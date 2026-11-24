@@ -62,6 +62,17 @@ POOL_V3_DATA_SHA256 = {
     "exclusions_v3.json": "ee346f7f486372351336a6cfb23143e927a29222d47c1d41562b9de5dc1cf26e",
     "code_keep_v3.json": "a02c71940b7765b45fcb315153f0686aeaa78d56e6180afa76aafa604a20f4bc",
 }
+# Protocol v5 (RouterArena) grading contract: fugal_subnet/graders_arena.py, RouterArena's
+# metrics ported (parity: scripts/parity_graders_arena.py). Pinned like graders_code.py.
+#   (first version) 2026-11-24, lane P.
+ARENA_GRADER_SHA256 = "e74f46a4938015395badacfb484a86f114cb6745d6fa945ddcf2d649f773c03d"
+# The v5 pool's pinned data (scripts/build_pool_v5.py writes the manifest and the exclusions;
+# arena_prompts.json is RouterArena's prompt templates, verbatim). Rebuild and re-pin together.
+POOL_V5_DATA_SHA256 = {
+    "arena_prompts.json": "00ce256570d4dc7db804ee36f511331084c850c1ad39c16040f3143189a1a65f",
+    "exclusions_routerarena.json": "73fcf11244b1df0a6f2fd8498de6be6b0b44b38da2b4e7c8fccd647d11349ea6",
+    "pool_manifest_v5.json": "9dcd5bb6c6bb23da701f52896101f12898ed4e22de7c8f5f6c01db224f15a954",
+}
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole
 # subnet. Pinned for the same reason graders.py is. Changing prices is a
@@ -513,6 +524,27 @@ def check_pool_v3_data_pinned(errors: list[str]) -> None:
         if actual != pin:
             errors.append(f"fugal_subnet/benchmarks/{name}: hash {actual[:16]}... does not match "
                           f"the pin {pin[:16]}... (it decides which questions are in the v3 pool)")
+
+
+def check_pinned_arena_grader(errors: list[str]) -> None:
+    path = ROOT / "fugal_subnet" / "graders_arena.py"
+    actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    if actual != ARENA_GRADER_SHA256:
+        errors.append(
+            f"fugal_subnet/graders_arena.py: v5 grader hash {actual[:16]}... does not match "
+            f"the pin {ARENA_GRADER_SHA256[:16]}... — a v5 grader change is a consensus break")
+
+
+def check_pool_v5_data_pinned(errors: list[str]) -> None:
+    for name, pin in POOL_V5_DATA_SHA256.items():
+        path = ROOT / "fugal_subnet" / "benchmarks" / name
+        if not path.exists():
+            errors.append(f"fugal_subnet/benchmarks/{name} is missing")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != pin:
+            errors.append(f"fugal_subnet/benchmarks/{name}: hash {actual[:16]}... does not match "
+                          f"the pin {pin[:16]}... (it decides the v5 exam pool or its prompts)")
 
 
 def check_epoch_id_single_source(errors: list[str]) -> None:
@@ -2579,6 +2611,8 @@ def main(argv: list[str] | None = None) -> None:
     check_code_questions_are_graded(errors)
     check_pinned_system_prompt_v3(errors)
     check_pool_v3_data_pinned(errors)
+    check_pinned_arena_grader(errors)
+    check_pool_v5_data_pinned(errors)
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)

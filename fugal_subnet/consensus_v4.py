@@ -557,6 +557,28 @@ for _module, _names in _CLOSURE_REGISTERED.items():
 for _module, _reasons in _CLOSURE_NOT_V4.items():
     NOT_V4.setdefault(_module, {}).update(_reasons)
 
+# Protocol v5's names: read only by a v5 epoch (from config.v5_activation_block),
+# which consensus_v5 registers; a v4 epoch reads none of them.
+_V5_ONLY = ("a protocol v5 constant: read only from the v5 activation block on and "
+            "registered by consensus_v5; a v4 epoch reads none of it")
+_V5_NAMES: dict[str, tuple[str, ...]] = {
+    "fugal_subnet.config": (
+        "FINNEY_V5_ACTIVATION_BLOCK", "V5_ACTIVATION_BLOCK_ENV", "V5_ACTIVATION_BLOCK_MALFORMED",
+        "ARENA_A_REF_V5", "EXAM_QUESTIONS_V5", "EXAM_BASELINE_QUESTIONS_V5", "EXAM_VOTES_V5",
+        "EXAM_CALLS_PER_HOTKEY_V5", "COVERAGE_CALLS_V5", "WINDOW_EPOCHS_V5", "N_MIN_V5", "N0_V5",
+        "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5", "CONTENDERS_MAX_V5", "SPEC_LAG_V5",
+        "HEAD_LAM_MAX_V5", "Y_SCALE_V5"),
+    "fugal_subnet.arena_score": (
+        "Y_SCALE", "UNITS_PER_POINT", "A_REF", "NANO", "ARENA_BETA", "ARENA_COST_MAX_PER_1K",
+        "ARENA_COST_MIN_PER_1K", "NANO_PER_QUERY_PER_USD_PER_1K", "COST_MAX_ND", "COST_MIN_ND",
+        "LOG2_BITS", "LN2", "LOG2_SPAN"),
+    "fugal_subnet.exam_v5": (
+        "EXAM_QUESTIONS", "EXAM_BASELINE_QUESTIONS", "EXAM_VOTES", "EXAM_CALLS_PER_HOTKEY",
+        "HEAD_LAM_MAX", "Y_SCALE", "FAILED_CELL_MIN_VOTERS", "_NO_PICK"),
+}
+for _module, _names in _V5_NAMES.items():
+    NOT_V4.setdefault(_module, {}).update(dict.fromkeys(_names, _V5_ONLY))
+
 # The names each pre-v4 module had in the v3 release. They are classified
 # by the v1-v3 mechanisms (the scoring block, the protocol identity, the
 # environment lists); v4 reads them through those. A name added since is
@@ -632,6 +654,7 @@ PRE_V4: dict[str, dict[str, str]] = {
 # A name added to or moved between those classes changes a hash, and
 # problems() fails until the line here is updated in the same commit.
 CLASS_PINS: dict[str, tuple[str, str]] = {
+    "fugal_subnet.arena_score": ("1ac5026690406c9b", "4f53cda18c2baa0c"),
     "fugal_subnet.axon_allowlist": ("250f7ed2869c7fa2", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.code_sets": ("74febd3366d2f6df", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.gpqa": ("00069def9aadd4c0", "4f53cda18c2baa0c"),
@@ -646,11 +669,12 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.code_gate": ("2745c98ee9a82e5e", "4f53cda18c2baa0c"),
     "fugal_subnet.collect": ("bac0db6b872fcae9", "4f53cda18c2baa0c"),
     "fugal_subnet.commit_reveal": ("353e9a600cb5d95c", "4f53cda18c2baa0c"),
-    "fugal_subnet.config": ("365127c95b54f713", "2b9b61905b4c5c4f"),
+    "fugal_subnet.config": ("aff45309c5195c4a", "2b9b61905b4c5c4f"),
     "fugal_subnet.copy_rule": ("5191ef53fd3d75ce", "4f53cda18c2baa0c"),
     "fugal_subnet.determinism": ("ea226adaa11ca2b1", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_logger": ("eaa876bbf2003294", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_plan": ("924655747f80455e", "4f53cda18c2baa0c"),
+    "fugal_subnet.exam_v5": ("324515b25eb537cb", "4f53cda18c2baa0c"),
     "fugal_subnet.head_archive": ("1ee99a516c64ffb9", "4f53cda18c2baa0c"),
     "fugal_subnet.head_odds": ("ae8ff68a53819d51", "4f53cda18c2baa0c"),
     "fugal_subnet.head_publisher": ("9a42d3792535d56c", "4f53cda18c2baa0c"),

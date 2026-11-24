@@ -78,6 +78,8 @@ STAGES = (
     "memo_v4",
     "v4_replay",
     "published_v4",
+    "exam_spec_v5",
+    "arena_items_v5",
 )
 
 
@@ -426,6 +428,7 @@ def run_pipeline(seed: int) -> dict:
         "memo_v4": _digest(_memo_v4(seed)),
         "v4_replay": _digest(_v4_replay(seed)),
         "published_v4": _digest(_published_v4(seed)),
+        **{stage: _digest(value) for stage, value in _exam_v5(seed).items()},
     }
 
 
@@ -2590,6 +2593,101 @@ def _child(seed: int) -> dict:
     # check that a differing v4 constant moves only it.
     result["_consensus_digest_v4"] = _v4_digest_isolation()["v4"]
     return result
+
+
+def _exam_v5(seed: int) -> dict:
+    """Protocol v5's exam (exam_v5, arena_score) over three epochs: a draw on
+    a four-dataset mix, six contenders' picks over five entries (two always
+    equal, one with off-menu and no picks), a ring of 13 hotkeys on 7
+    coldkeys, B* on the first questions, a budget that stops the exam early in
+    one epoch; then votes from assigned and unassigned hotkeys, failures, a
+    double vote and fractional medians, read as paired items for every pair
+    of contenders (both operators excluded) and against B*; plus
+    arena_score's log2, logarithmic mean, k and items on edge values.
+
+    Under --perturb every input collection arrives reversed (the datasets and
+    their questions, the contenders, the menu, the ring, the votes and the
+    specs) and the process has another hash seed."""
+    import random as _random
+
+    from fugal_subnet import arena_score, exam_v5
+
+    perturb = bool(os.environ.get("FUGAL_PERTURB"))
+
+    def seq(xs):
+        return list(reversed(list(xs))) if perturb else list(xs)
+
+    def dct(d):
+        return dict(reversed(list(d.items()))) if perturb else dict(d)
+
+    rng = _random.Random(f"exam-v5-{seed}")
+    menu = ["lab/a@low", "lab/a@high", "lab/b", "lab/c", "lab/d"]
+    by = {f"set{k}": [f"set{k}-q{i}" for i in range(400)] for k in range(4)}
+    weights = {"set0": 500_000, "set1": 250_000, "set2": 150_000, "set3": 100_000}
+    ring = [(f"5Hk{i:02d}", f"5Ck{i % 7}") for i in range(13)]
+    owner = {f"head{h}": f"5Ck{h}" for h in range(6)}
+    specs, spec_docs = [], {}
+    budget = exam_v5.EXAM_CALLS_PER_HOTKEY
+    for e in range(3):
+        nonce = hashlib.sha256(f"exam-v5-{seed}-{e}".encode()).digest()
+        pool = exam_v5.draw_exam(nonce, dct({k: seq(v) for k, v in by.items()}), dct(weights), 600)
+        picks = {}
+        for h in range(6):
+            if h == 1:
+                picks[f"head{h}"] = list(picks["head0"])
+            elif h == 5:
+                picks[f"head{h}"] = [rng.choice(menu + ["off/x", ""]) for _ in pool]
+            else:
+                picks[f"head{h}"] = [rng.choice(menu[:3] if rng.random() < 0.7 else menu)
+                                     for _ in pool]
+        exam_v5.EXAM_CALLS_PER_HOTKEY = 12 if e == 1 else budget
+        try:
+            spec = exam_v5.build_spec(26_600 + e, nonce, dct({h: list(p) for h, p in picks.items()}),
+                                      seq(menu), pool, seq(ring), "lab/b")
+        finally:
+            exam_v5.EXAM_CALLS_PER_HOTKEY = budget
+        specs.append(spec)
+        spec_docs[f"epoch_{e}"] = {"hash": spec.spec_hash(), "json": spec.to_json(),
+                                   "assigned": {hk: exam_v5.assigned_cells(spec, hk)
+                                                for hk, _ in ring}}
+    ck = dict(ring)
+    votes = []
+    for spec in specs:
+        for cell in spec.cells:
+            for hk in spec.assignment[cell]:
+                votes.append(exam_v5.Vote(spec.epoch, cell[0], cell[1], hk, ck[hk],
+                                          rng.choice([0, exam_v5.Y_SCALE, 3_333]),
+                                          rng.randint(0, 2_000_000), rng.random() < 0.08))
+            if rng.random() < 0.05:
+                votes.append(exam_v5.Vote(spec.epoch, cell[0], cell[1], "5Hstranger", "5Cx", 0, 1,
+                                          False))
+    if votes:
+        votes.append(votes[0])                     # a double vote: both copies drop
+    cost = {e: 1_000 * (i + 1) ** 3 for i, e in enumerate(menu)}
+    heads = sorted(owner)
+    mean = {h: exam_v5.mean_pick_cost_nd(specs, h, cost) for h in heads}
+    mean.update(cost)
+    items = {}
+    for x in heads:
+        for y in heads:
+            if x < y:
+                got = exam_v5.comparison_items(seq(specs), seq(votes), x, y,
+                                               frozenset({owner[x], owner[y]}), mean,
+                                               lambda q: q.split("-")[0])
+                items[f"{x}~{y}"] = {k: sorted(v) for k, v in sorted(got.items())}
+        got = exam_v5.baseline_items(seq(specs), seq(votes), x, frozenset({owner[x]}), mean,
+                                     lambda q: q.split("-")[0])
+        items[f"{x}~B*"] = {k: sorted(v) for k, v in sorted(got.items())}
+    if not any(v for d in items.values() for v in d.values()) or "head0~head1" not in items:
+        raise SystemExit("the exam_v5 stage no longer produces paired items")
+    edges = [str(arena_score.log2_fixed(n, d)) for n, d in
+             ((1, 1), (3, 1), (500_000, 11), (7, 1024), (10**30 + 7, 3))]
+    edges += [arena_score.log_mean_nd(a, b) for a, b in ((0, 0), (1, 10**9), (440_000, 1_200_000))]
+    edges += [str(arena_score.k_pair(a, b)) for a, b in ((1, 1), (620_000, 1_204_000),
+                                                         (10**12, 10**12))]
+    edges += [arena_score.item_units(exam_v5.Y_SCALE, 0, 5, 7, arena_score.value_scale_nd(a, b))
+              for a, b in ((620_000, 1_204_000), (1, 1), (10**12, 10**12))]
+    return {"exam_spec_v5": spec_docs, "arena_items_v5": {"items": items, "edges": edges}}
 
 
 def run_in_subprocess(seed: int, perturb: bool) -> dict:

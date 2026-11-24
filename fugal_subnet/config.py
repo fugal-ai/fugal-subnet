@@ -1645,6 +1645,8 @@ CONSENSUS_ENV_INPUTS = (
     "FUGAL_V3_ACTIVATION_BLOCK",
     # Off finney only: finney has no v4 block, and a set variable is refused there.
     "FUGAL_V4_ACTIVATION_BLOCK",
+    # Off finney only, as v4's: finney compiles FINNEY_V5_ACTIVATION_BLOCK.
+    "FUGAL_V5_ACTIVATION_BLOCK",
     "FUGAL_ODDS_SEAT_BLOCK",
     "FUGAL_MENU_B_BLOCK",
     "FUGAL_MENU_GRACE_EPOCHS",
@@ -1722,3 +1724,83 @@ OPERATIONAL_ENV_VARS = (
     "FUGAL_SCORE_DIVERGENCE",
     "FUGAL_WEIGHT_DIVERGENCE",
 )
+
+
+# --- v5 ---
+# Protocol v5 (~/fugal-v2-handoff/v5/DESIGN.md; docs/INVARIANTS.md, the v5
+# entries): a head is scored on the value of its real picks the way
+# RouterArena scores a router, S = accuracy - ln(mean cost per query) /
+# k (arena_score.k_pair), paired against the holder and the best single entry on the same
+# exam questions, with labels voted by other operators (arena_score.py,
+# exam_v5.py). Nothing before the v5 block reads these.
+#
+# Activation: as v4's. Finney's block is compiled (None: no release schedules
+# v5) and the variable may only repeat it there; another chain reads
+# FUGAL_V5_ACTIVATION_BLOCK. Never before v4.
+FINNEY_V5_ACTIVATION_BLOCK: int | None = None
+_v5_activation = os.getenv("FUGAL_V5_ACTIVATION_BLOCK", "").strip()
+V5_ACTIVATION_BLOCK_ENV: int | None = None
+V5_ACTIVATION_BLOCK_MALFORMED: str | None = None
+_v5_digits = _v5_activation[1:] if _v5_activation.startswith("-") else _v5_activation
+if _v5_digits.isascii() and _v5_digits.isdigit():
+    V5_ACTIVATION_BLOCK_ENV = int(_v5_activation)
+elif _v5_activation:
+    V5_ACTIVATION_BLOCK_MALFORMED = _v5_activation
+# RouterArena's exchange rate between accuracy and cost, per compared pair
+# (arena_score.k_pair): Arena(a, c) = 100 (1 + b) a C / (b a + C), b = 0.1,
+# C = log2(200 / c) / log2(200 / 0.0044) with c the cost per 1K queries
+# clamped to [$0.0044, $200]; its local trade-off between accuracy and
+# ln(cost) is k = C^2 ln2 log2(200 / 0.0044) / (b a^2). C is evaluated at the
+# pair's logarithmic-mean pick cost (label-free), a at this reference
+# accuracy (RouterArena's routers run at 0.79-0.86). Re-derived each release.
+ARENA_A_REF_V5 = "82/100"
+# One epoch's exam: at most this many questions, the first
+# EXAM_BASELINE_QUESTIONS_V5 of them also labelled for the best single entry.
+EXAM_QUESTIONS_V5 = 500
+EXAM_BASELINE_QUESTIONS_V5 = 100
+# Distinct coldkeys that vote on each exam cell (one hotkey each).
+EXAM_VOTES_V5 = 3
+# Exam calls one verified hotkey makes per epoch (the budget that sizes the
+# exam: cells x votes <= this x hotkeys), and its coverage calls.
+EXAM_CALLS_PER_HOTKEY_V5 = 320
+COVERAGE_CALLS_V5 = 48
+# The seat's evidence window, minimum paired questions and the bound's n0.
+WINDOW_EPOCHS_V5 = 48
+N_MIN_V5 = 2000
+N0_V5 = 2000
+# Margins in S-points (exact Fractions): a challenger must beat the holder
+# by TAKE_MARGIN_V5; a same-coldkey successor replaces its own holder unless
+# it is shown worse by more than -UPGRADE_MARGIN_V5.
+TAKE_MARGIN_V5 = "1/4"
+UPGRADE_MARGIN_V5 = "-1/4"
+# Contenders scored per epoch (the newest standing head per coldkey).
+CONTENDERS_MAX_V5 = 24
+# The spec of epoch E's exam is published in the root's reveal of E - this.
+SPEC_LAG_V5 = 2
+# A v5 head's own lam (the price a pick weighs cost at): in (0, this].
+HEAD_LAM_MAX_V5 = 10000
+# Labels are integers 0..Y_SCALE_V5 (RouterArena metrics may be fractional).
+Y_SCALE_V5 = 10000
+
+
+def v5_activation_block(genesis_hash: str | None) -> int | None:
+    """The block protocol v5 applies from on this chain, or None. As
+    v4_activation_block: finney's is compiled and the variable may only repeat
+    it; another chain reads it; a malformed value is refused by name except on
+    finney while no release compiles a v5 block. Never before v4."""
+    malformed = V5_ACTIVATION_BLOCK_MALFORMED
+    if malformed is not None:
+        known_finney = (genesis_hash is not None
+                        and str(genesis_hash).lower() == FINNEY_GENESIS_HASH.lower())
+        if known_finney and FINNEY_V5_ACTIVATION_BLOCK is None:
+            return None
+        raise ValueError(f"FUGAL_V5_ACTIVATION_BLOCK={malformed!r} is not a block number "
+                         "(digits only). Unset it or set the block.")
+    block = _chain_block(genesis_hash, FINNEY_V5_ACTIVATION_BLOCK, V5_ACTIVATION_BLOCK_ENV,
+                         "FUGAL_V5_ACTIVATION_BLOCK")
+    if block is not None:
+        v4 = v4_activation_block(genesis_hash)
+        if v4 is None or block < v4:
+            raise ValueError(f"the v5 activation block ({block}) must not be before the v4 "
+                             f"activation block ({v4})")
+    return block

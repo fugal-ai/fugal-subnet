@@ -923,9 +923,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
     except ValueError as e:
         raise click.ClickException(str(e)) from e
     _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL, menu_b_blk, v4_block)
-    if v5_block is not None and v5_block % EPOCH_INTERVAL:
-        raise click.ClickException(f"the v5 activation block {v5_block} is not an epoch "
-                                   f"boundary (a multiple of {EPOCH_INTERVAL})")
+    if v5_block is not None:
+        # An epoch boundary in BLOCKS (blocks_per_epoch), as the v2-v4 blocks are
+        # checked: EPOCH_INTERVAL is seconds (finney 4320 s = 360 blocks).
+        from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
+        try:
+            validate_activation_block(v5_block, blocks_per_epoch(EPOCH_INTERVAL))
+        except ValueError as e:
+            raise click.ClickException(f"v5 activation block: {e}") from e
     if v5_block is not None:
         logger.info("Protocol v5: from the first epoch whose boundary is at or after block %d",
                     v5_block)

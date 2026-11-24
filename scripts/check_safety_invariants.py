@@ -2281,8 +2281,9 @@ def v4_release_blockers(root: Path | None = None, cfg=None, *, signers: bytes | 
                 (package / "config.py").read_text(encoding="utf-8"))}
                 | {"FINNEY_V2_ACTIVATION_BLOCK"}):
             earlier = getattr(cfg, finney_name, None)
-            if finney_name != "FINNEY_V4_ACTIVATION_BLOCK" and earlier is not None \
-                    and int(block) <= int(earlier):
+            # Only earlier protocols' blocks must precede v4's (v5's comes after).
+            if finney_name not in ("FINNEY_V4_ACTIVATION_BLOCK", "FINNEY_V5_ACTIVATION_BLOCK") \
+                    and earlier is not None and int(block) <= int(earlier):
                 out.append(f"block: FINNEY_V4_ACTIVATION_BLOCK={block} is not after "
                            f"{finney_name}={earlier}")
 

@@ -1756,7 +1756,7 @@ OPERATIONAL_ENV_VARS_V5 = (
 # Activation: as v4's. Finney's block is compiled (None: no release schedules
 # v5) and the variable may only repeat it there; another chain reads
 # FUGAL_V5_ACTIVATION_BLOCK. Never before v4.
-FINNEY_V5_ACTIVATION_BLOCK: int | None = None
+FINNEY_V5_ACTIVATION_BLOCK: int | None = 9587880
 _v5_activation = os.getenv("FUGAL_V5_ACTIVATION_BLOCK", "").strip()
 V5_ACTIVATION_BLOCK_ENV: int | None = None
 V5_ACTIVATION_BLOCK_MALFORMED: str | None = None
@@ -1833,11 +1833,12 @@ FRESH_RESERVE_EPOCHS_V5 = 240
 COVERAGE_PARTITION_V5 = "1/5"
 # The v5 pool's routing embeddings: one row per question of route_text (the
 # question without RouterArena's instruction template, arena_sets.route_text),
-# built like the v3 file (one prompt per row, batch 1, one thread). "TBD" until
-# the file is built and published; a live validator with v5 scheduled refuses
-# to start on "TBD" and `check_safety_invariants --release-v5` lists it.
-EMBEDDINGS_V5_SHA256: str = "TBD"
-EMBEDDINGS_V5_URL: str | None = None
+# built like the v3 file (one prompt per row, batch 1, one thread). 63,411
+# rows x 1024; built 2026-11-24 on two CPU types, a 24-row sample recomputed
+# bit for bit on a third. Published at the URL below; the hash is what is trusted.
+EMBEDDINGS_V5_SHA256: str = "3b6cd118f0e4e597b792f2b04af0e08a14bd8e072b689a46d98d492b3b955b04"
+EMBEDDINGS_V5_URL: str | None = (
+    "https://storage.googleapis.com/fugal-reveals/embeddings/v5/embeddings-3b6cd118f0e4e597b792f2b04af0e08a14bd8e072b689a46d98d492b3b955b04.npz")
 
 
 def v5_activation_block(genesis_hash: str | None) -> int | None:

@@ -6,8 +6,8 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [0.8.0] - unreleased
 
-### Upgrade BEFORE block TBD-block (TBD-epoch): protocol v5
-- **Protocol v5 switches on at block TBD-block** (compiled as
+### Upgrade BEFORE block 9,587,880 (e00026633): protocol v5
+- **Protocol v5 switches on at block 9,587,880** (compiled as
   `FINNEY_V5_ACTIVATION_BLOCK`; the finney compose sets
   `FUGAL_V5_ACTIVATION_BLOCK` to the same value). Until that block everything
   runs v4 exactly.

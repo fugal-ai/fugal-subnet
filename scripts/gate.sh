@@ -13,10 +13,16 @@
 #      drifted from the lockfile and from CI's extras.
 #   2. The steps were a hand-copied SUBSET of CI's, in fewer environments.
 #
-# So the steps of the `test`, `tee-verifier` and `quality` jobs are not
+# So the steps of the `checks`, `tee-verifier` and `quality` jobs are not
 # written here at all -- they are READ OUT OF .github/workflows/ci.yml (every
 # `uv run` / `uv build` line). A step added to those jobs is picked up on the
 # next run with no edit to this file.
+#
+# The one exception is the pytest suite itself. CI splits it across shard
+# jobs (`tests`, scripts/ci_test_shards.py); here it runs whole, once, with
+# GATE_WORKERS xdist workers (default 4; each worker holds its own torch),
+# then the two `capacity` tests (~12 min, up to 4 GiB each) one at a time, as
+# a timing bound wants and as CI's `capacity` job runs them.
 #
 # What it does NOT run, on purpose:
 #   - success-contract: CI runs it with plain `python` and a 1.2 GB backbone
@@ -29,7 +35,7 @@
 #
 # Usage:
 #   scripts/gate.sh          # every job below
-#   scripts/gate.sh test     # just CI's `test` job (no DCAP verifier)
+#   scripts/gate.sh test     # just CI's `tests` + `checks` jobs (no DCAP verifier)
 #   scripts/gate.sh tee      # just CI's `tee-verifier` job
 #   scripts/gate.sh quality  # just CI's `quality` job (ruff, pip-audit, build)
 #   scripts/gate.sh success  # just the two cheap success-contract checks
@@ -120,7 +126,14 @@ if [ "$WHICH" = "all" ] || [ "$WHICH" = "test" ]; then
   # CI's `test` job. Deliberately WITHOUT --extra tee: verify_dcap takes a
   # different path when the verifier is absent, and this is the environment
   # that proves the absent path still works.
-  run_job test "CI job: test (no DCAP verifier)" --extra dev
+  if ! steps=$(steps_for checks); then
+    echo ""; echo "FAIL  could not read the steps of CI job 'checks' from ci.yml"; FAILED=1
+  else
+    run_steps "CI jobs: tests (every shard) + checks (no DCAP verifier)" \
+      "uv run pytest -q -n ${GATE_WORKERS:-4} --dist loadgroup -m 'not capacity'
+uv run pytest -q -m capacity
+$steps" --extra dev
+  fi
 fi
 
 if [ "$WHICH" = "all" ] || [ "$WHICH" = "tee" ]; then

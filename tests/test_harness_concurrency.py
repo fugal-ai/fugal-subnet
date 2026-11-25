@@ -114,18 +114,29 @@ def test_concurrency_actually_overlaps_calls(monkeypatch):
 
 def test_a_stalled_call_costs_one_worker_not_the_epoch(monkeypatch):
     inner = _recording_stub()
+    stalled_until = []
+    others_done = []
 
     def stub(proxy, model_id, question):
         if question["question_id"] == "q003":
             time.sleep(1.0)
+            stalled_until.append(time.monotonic())
             return ""            # a timeout, as _call_model reports it
-        return inner(proxy, model_id, question)
+        text = inner(proxy, model_id, question)
+        others_done.append(time.monotonic())
+        return text
 
-    proof, elapsed, _ = _run(monkeypatch, stub, n=32)
+    proof, _elapsed, _ = _run(monkeypatch, stub, n=32)
     by_id = {r.question_id: r for r in proof.results}
     assert len(by_id) == 16 and by_id["q003"].correct is False
     assert by_id["q003"].cost_usd == 0.0 and by_id["q003"].prompt_tokens == 0
-    assert elapsed < 1.8, "one slow call must not serialise the rest"
+    # One slow call must not serialise the rest: every other call finished
+    # while the stalled one was still asleep. Ordering, not a wall-clock bound
+    # on the whole run_benchmark (whose head evaluation and proof building
+    # slow down on a loaded machine, e.g. under pytest-xdist, without saying
+    # anything about the calls).
+    assert len(stalled_until) == 1 and len(others_done) == 15
+    assert max(others_done) < stalled_until[0], "one slow call must not serialise the rest"
 
 
 def test_cost_totals_do_not_depend_on_record_order():

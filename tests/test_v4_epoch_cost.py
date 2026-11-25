@@ -118,6 +118,11 @@ def test_a_rule_a_comparison_costs_the_same_however_many_labels():
 
 
 @pytest.mark.slow
+# ~12 minutes each on a CI runner, so CI runs these in their own jobs on
+# release/* pull requests, pushes to main and release/**, and nightly, not in
+# every pull request's shards. The line-count tests above are the per-PR guard
+# against the per-label loop this file exists for.
+@pytest.mark.capacity
 @pytest.mark.parametrize("shape", ["ladder", "served_last"])
 def test_one_v4_epoch_at_full_size_fits_well_inside_the_epoch(shape):
     """scripts/experiments/time_v4_epoch.py at full size (256 UIDs, 48

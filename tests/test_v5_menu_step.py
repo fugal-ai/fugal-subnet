@@ -71,9 +71,19 @@ def test_v5_categories_cover_every_v5_question_and_are_its_dataset():
         validator._v5_category_of(None)
 
 
+def test_the_v5_menu_step_sees_one_category():
+    # The menu's pick stats allow at most PICK_MAX_CATEGORIES categories, and
+    # RouterArena has ~25 datasets: v5 prices a pick per entry, so the menu
+    # step sees every v5 question in one category (the seat keeps the datasets).
+    cats = validator._v5_menu_category_of(_v5_inputs())
+    assert set(cats) == set(validator._v5_category_of(_v5_inputs()))
+    assert set(cats.values()) == {validator.V5_MENU_CATEGORY}
+    assert len(set(cats.values())) <= ms.PICK_MAX_CATEGORIES
+
+
 def test_the_menu_step_runs_on_a_v5_epoch():
     start, epoch_state, proofs, pooled = _v5_epoch_world()
-    cats = validator._v5_category_of(_v5_inputs())
+    cats = validator._v5_menu_category_of(_v5_inputs())
     summary = mi.summarize_epoch(100, epoch_state, proofs, pooled=pooled, category_of=cats,
                                  counted_heads={"1f" * 32})
     window = [mi.summary_from_dict(dict(mi.summary_to_dict(summary), epoch=e))
@@ -84,7 +94,7 @@ def test_the_menu_step_runs_on_a_v5_epoch():
     assert inputs.host_reads == window[-1].votes
     assert {c.entry_id: c.pairs for c in inputs.explore_counts}[HIGH] > 0
     assert {t.entry_id for t in inputs.token_stats} >= {HIGH, LOW}
-    assert {c.category for t in inputs.token_stats for c in t.cells} <= set(DATASETS)
+    assert {c.category for t in inputs.token_stats for c in t.cells} <= {validator.V5_MENU_CATEGORY}
     (g,) = inputs.gates
     assert g.entry_id == "lab-c/model-new@high" and len(g.coldkeys) == 5
     out = ms.step_detail(start, inputs, mf.PARAMS)

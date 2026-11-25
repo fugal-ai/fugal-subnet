@@ -2210,10 +2210,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                 v4_pooled = list(v2_result.pooled)
                 from fugal_subnet.v2_epoch import category_of as _category_of
                 # A v5 epoch's proofs answer v5 pool questions (exam cells and
-                # coverage), never the v4 slice's: their category is their
-                # RouterArena dataset, the exam's stratum (_v5_category_of).
+                # coverage), never the v4 slice's. The menu step sees them as
+                # ONE category (_v5_menu_category_of): v5 prices a pick per
+                # entry, and the pick stats allow at most PICK_MAX_CATEGORIES.
                 menu_category_of = (
-                    _v5_category_of(v5_inputs) if protocol_version >= 5 else
+                    _v5_menu_category_of(v5_inputs) if protocol_version >= 5 else
                     {q: _category_of(g, v4_tables.bench_category)
                      for q, g in gold_answers.items()})
                 v4_fields, published_early, v4_deferred = _v4_menu_epoch(
@@ -4010,6 +4011,18 @@ def _v5_category_of(v5_inputs: _V5Inputs | None) -> dict:
     if v5_inputs is None:
         raise RuntimeError("protocol v5 but the v5 pool was not loaded at startup")
     return {q: arena_sets.dataset_key(g) for q, g in v5_inputs.gold.items()}
+
+
+V5_MENU_CATEGORY = "arena"
+
+
+def _v5_menu_category_of(v5_inputs: _V5Inputs | None) -> dict:
+    """{question id: category} for the menu step in protocol v5: every v5 pool
+    question in ONE category. v5 prices a pick per entry (exam_v5.exam_picks),
+    so the menu's pick stats need no split, and RouterArena's ~25 datasets
+    would exceed menu_state.PICK_MAX_CATEGORIES. The seat's strata stay the
+    datasets (_v5_category_of)."""
+    return {q: V5_MENU_CATEGORY for q in _v5_category_of(v5_inputs)}
 
 
 def _v5_load_inputs(cfg, *, live: bool) -> _V5Inputs:

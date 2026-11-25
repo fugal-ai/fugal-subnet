@@ -4,6 +4,29 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-25
+
+### Upgrade TONIGHT (by ~03:00 ET Thu): v5 commit blocks from block 9,587,520 (e00026632, ~Wed 2026-11-25 19:52 ET)
+- **The v5 seat can fill.** v0.8.0 recorded a head's commitment as the v1
+  seniority key (registration × 10^10 + commit), so its commit epoch looked
+  far in the future and every earlier exam dropped out of the memorisation
+  filter: each epoch scored only its own exam and no comparison reached
+  N_MIN_V5 (reported 2026-11-25). From block 9,587,520
+  (`FINNEY_V5_COMMIT_FIX_BLOCK`) v5 records the raw commitment block; the
+  head book, its owner and the walk order use it too (a stored key reads as
+  key % 10^10). Earlier v5 epochs replay as published.
+- **Commit epochs are block epochs.** `v5_epoch.commit_epoch` divided a block
+  by EPOCH_INTERVAL (seconds); it is now slicer's epoch index (block //
+  blocks_per_epoch). With only the raw block, every published question would
+  have counted.
+- Validator-only: no new miner image. `git pull && uv sync --locked --extra
+  tee`, restart. Nothing else to set.
+- **Why an early block is safe:** until a comparison reaches N_MIN_V5 (the
+  first exams count from e00026629, so not before about 04:00 ET Thu) no seat
+  can fill, and a v0.8.0 and a v0.8.1 validator set the same weights (every
+  share burns). Every validator must run v0.8.1 before then.
+- Package version 0.8.1 (v0.8.0 still reported 0.7.0).
+
 ## [0.8.0] - unreleased
 
 ### Upgrade BEFORE block 9,585,720 (e00026627): protocol v5

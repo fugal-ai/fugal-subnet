@@ -44,6 +44,8 @@ REGISTERED: dict[str, tuple[str, ...]] = {
         "BOUND_A_ALPHA_V4", "BOUND_LN2_UP_V4", "BOUND_UNITS_PER_POINT_V4",
         # the pool's exam/coverage split and the routing embeddings' pin
         "COVERAGE_PARTITION_V5", "EMBEDDINGS_V5_SHA256",
+        # v0.8.1: raw commitment blocks from this block
+        "FINNEY_V5_COMMIT_FIX_BLOCK",
     ),
     # The v5 pool's keyed order and exam/coverage split (its content is pinned
     # by pool_manifest_v5.json's content hash, below).
@@ -57,7 +59,7 @@ REGISTERED: dict[str, tuple[str, ...]] = {
     "fugal_subnet.v5_epoch": (
         "WINDOW_EPOCHS", "SPEC_LAG", "STANDING_EPOCHS", "Y_SCALE", "BASELINE_MIN_PAIRS",
         "IMPLAUSIBLE_Z", "IMPLAUSIBLE_MIN_SAMPLES", "NANO", "EPOCH_INTERVAL",
-        "FRESH_RESERVE_EPOCHS",
+        "FRESH_RESERVE_EPOCHS", "BLOCKS_PER_EPOCH", "SENIORITY_BASE",
         "SPEC_KEY", "COSTS_KEY", "RECORD_KEY", "SEAT_KEY", "BASELINE_KEY", "HEADS_KEY",
     ),
 }

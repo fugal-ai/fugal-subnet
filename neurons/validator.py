@@ -920,6 +920,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
         # Protocol v5 (config.v5_activation_block): never before v4.
         v5_fn = getattr(_cfg, "v5_activation_block", None)
         v5_block = v5_fn(genesis) if callable(v5_fn) else None
+        # v0.8.1: the block v5 reads raw commitment blocks from.
+        fix_fn = getattr(_cfg, "v5_commit_fix_block", None)
+        v5_fix_block = fix_fn(genesis) if callable(fix_fn) and v5_block is not None else None
     except ValueError as e:
         raise click.ClickException(str(e)) from e
     _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL, menu_b_blk, v4_block)
@@ -929,11 +932,18 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
         from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
         try:
             validate_activation_block(v5_block, blocks_per_epoch(EPOCH_INTERVAL))
+            if v5_fix_block is not None:
+                validate_activation_block(v5_fix_block, blocks_per_epoch(EPOCH_INTERVAL))
+                if v5_fix_block < v5_block:
+                    raise ValueError(f"the v5 commit-block fix block {v5_fix_block} is before "
+                                     f"the v5 block {v5_block}")
         except ValueError as e:
             raise click.ClickException(f"v5 activation block: {e}") from e
     if v5_block is not None:
         logger.info("Protocol v5: from the first epoch whose boundary is at or after block %d",
                     v5_block)
+        if v5_fix_block is not None:
+            logger.info("Protocol v5 raw commit blocks (v0.8.1): from block %d", v5_fix_block)
     if v4_block is not None:
         logger.info("Protocol v4: from the first epoch whose boundary is at or after block %d "
                     "(not a finney release: a test or local-chain override)", v4_block)
@@ -1653,6 +1663,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             verified_heads: dict[int, bytes] = {}
             head_hashes: dict[int, str] = {}
             commit_blocks: dict[int, float] = {}
+            raw_commit_blocks: dict[int, int] = {}   # v5 (v0.8.1): the commitment's block
             n_invalid = 0
             # Kept apart from n_invalid on purpose. A proof this validator
             # could not check is not a proof it rejected, and the difference is
@@ -1768,10 +1779,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                         and (why_not := _head_within_bounds(checked.head_bytes,
                                                             protocol_version))):
                     logger.warning("UID %d proof rejected: %s", uid, why_not)
-                    checked = _Checked("invalid", checked.seniority)
+                    checked = _Checked("invalid", checked.seniority,
+                                       commit_block=checked.commit_block)
                 outcomes[uid] = checked.status
                 if checked.seniority is not None:
                     commit_blocks[uid] = checked.seniority
+                if checked.commit_block is not None:
+                    raw_commit_blocks[uid] = checked.commit_block
                 if checked.status == "invalid":
                     n_invalid += 1
                 elif checked.status == "unverifiable":
@@ -2008,11 +2022,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             v2_result = None
             if protocol_version >= 5:
                 # --- PROTOCOL v5: the seat on real picks (fugal_subnet/v5_epoch.py) ---
+                # v0.8.1: raw commitment blocks from the fix block; v0.8.0's
+                # seniority keys before it (those epochs replay as published).
+                raw_blocks = v5_fix_block is not None and boundary_block >= v5_fix_block
                 v2_result, uids, weights, v5_commit = _v5_score(
                     v5_node, epoch_index=epoch_index, nonce=nonce, exam=v5_exam,
                     state=v4_menu.state, verified_proofs=verified_proofs,
                     verified_heads=verified_heads, head_hashes=head_hashes,
-                    coldkey_of=coldkey_of, commit_blocks=commit_blocks, v5_inputs=v5_inputs,
+                    coldkey_of=coldkey_of, v5_inputs=v5_inputs,
+                    commit_blocks=(raw_commit_blocks if raw_blocks else commit_blocks),
+                    raw_commit_blocks=raw_blocks,
                     burn_uid=burn_uid,
                     published=v4_view,
                     pooled=_v4_pool(v4_menu.state, verified_proofs=verified_proofs,
@@ -2576,6 +2595,7 @@ class _Checked(NamedTuple):
     seniority: float | None = None
     proof: object = None
     head_bytes: bytes | None = None
+    commit_block: int | None = None
 
 
 def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_block: int,
@@ -2597,6 +2617,7 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
         logger.warning("UID %d: no hotkey in the metagraph; proof not checked", uid)
         return _Checked("invalid")
     weights_hash = getattr(resp, "weights_hash", "")
+    commit_block = None
 
     # The on-chain commitment, read at the boundary block. Only a head hash can
     # be committed: an empty or malformed value would compare equal to an
@@ -2608,6 +2629,7 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
         # author keeps rank over whoever copied its previous head, and every
         # validator derives the same order (commitments.seniority_key).
         seniority = seniority_key(registration_block, committed[1])
+        commit_block = int(committed[1])
     elif checks.require_commitment:
         logger.warning(
             "UID %d proof rejected: weights_hash %s... not committed on-chain "
@@ -2622,9 +2644,9 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
         bundle = _get_bundle_for_uid(uid, resp)
     except Exception as e:  # noqa: BLE001 - one miner, not the epoch
         logger.warning("UID %d: failed to get bundle: %s", uid, e)
-        return _Checked("invalid", seniority)
+        return _Checked("invalid", seniority, commit_block=commit_block)
     if bundle is None:
-        return _Checked("invalid", seniority)
+        return _Checked("invalid", seniority, commit_block=commit_block)
     proof, head_bytes = bundle
 
     # Defence in depth. verify_proof is contracted not to raise on miner
@@ -2659,7 +2681,7 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
             "UID %d proof verification raised %s: %s — rejecting this "
             "miner, not the epoch", uid, type(e).__name__, e,
         )
-        return _Checked("invalid", seniority)
+        return _Checked("invalid", seniority, commit_block=commit_block)
 
     if not result.valid:
         # Not scored either way, and falls through to apply_miss like any
@@ -2678,13 +2700,13 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
                 "as invalid; this validator never judged it",
                 uid, result.reason,
             )
-            return _Checked("unverifiable", seniority)
+            return _Checked("unverifiable", seniority, commit_block=commit_block)
         logger.warning("UID %d proof failed verification: %s", uid, result.reason)
-        return _Checked("invalid", seniority)
+        return _Checked("invalid", seniority, commit_block=commit_block)
 
     for w in result.warnings or ():
         logger.info("UID %d proof warning: %s", uid, w)
-    return _Checked("valid", seniority, proof, head_bytes)
+    return _Checked("valid", seniority, proof, head_bytes, commit_block)
 
 
 def _offers_proof(resp) -> bool:
@@ -4054,6 +4076,7 @@ def _v5_load_inputs(cfg, *, live: bool) -> _V5Inputs:
 
 def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_proofs: dict,
               verified_heads: dict, head_hashes: dict, coldkey_of: dict, commit_blocks: dict,
+              raw_commit_blocks: bool = True,
               v5_inputs: _V5Inputs | None, burn_uid: int, pooled, published):
     """Protocol v5's scoring of one epoch (v5_epoch): the votes of the
     verified proofs, the seat and weights, and the spec of epoch + SPEC_LAG.
@@ -4100,7 +4123,7 @@ def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_pro
         epoch=epoch_index, state=node.seat, heads=node.heads, record=record,
         window=node.records, served=served, full_entries=full,
         stratum_of=lambda q: bench.get(q, ""), burn_uid=burn_uid,
-        first_published=first_published)
+        first_published=first_published, raw_commit_blocks=raw_commit_blocks)
     # The next exam, from the heads verified by now.
     loaded = {}
     for h, data in node.head_bytes.items():

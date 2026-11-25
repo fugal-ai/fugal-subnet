@@ -580,6 +580,7 @@ _V5_ONLY = ("a protocol v5 constant: read only from the v5 activation block on a
 _V5_NAMES: dict[str, tuple[str, ...]] = {
     "fugal_subnet.config": (
         "FINNEY_V5_ACTIVATION_BLOCK", "V5_ACTIVATION_BLOCK_ENV", "V5_ACTIVATION_BLOCK_MALFORMED",
+        "FINNEY_V5_COMMIT_FIX_BLOCK",
         "ARENA_A_REF_V5", "EXAM_QUESTIONS_V5", "EXAM_BASELINE_QUESTIONS_V5", "EXAM_VOTES_V5",
         "EXAM_CALLS_PER_HOTKEY_V5", "COVERAGE_CALLS_V5", "WINDOW_EPOCHS_V5", "N_MIN_V5", "N0_V5",
         "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5", "MINER_PAID_FRACTION_V5", "CONTENDERS_MAX_V5",
@@ -700,7 +701,8 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     # and CONSENSUS_ENV_INPUTS_V5, OPERATIONAL_ENV_VARS_V5 (v5's env names moved
     # out of the two v4-registered lists, so the v4 digest stays v0.7.0's)
     # and MINER_PAID_FRACTION_V5 (v0.8.0: half the miner emission burns)
-    "fugal_subnet.config": ("aab579140bcb7c4c", "2b9b61905b4c5c4f"),
+    # and FINNEY_V5_COMMIT_FIX_BLOCK (v0.8.1: raw commitment blocks in v5)
+    "fugal_subnet.config": ("1b7231e93d85874e", "2b9b61905b4c5c4f"),
     "fugal_subnet.copy_rule": ("5191ef53fd3d75ce", "4f53cda18c2baa0c"),
     "fugal_subnet.determinism": ("ea226adaa11ca2b1", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_logger": ("eaa876bbf2003294", "4f53cda18c2baa0c"),

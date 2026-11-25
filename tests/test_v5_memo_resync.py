@@ -31,8 +31,8 @@ def test_eligible_after_counts_only_what_no_compared_head_could_have_read():
     assert ok("same") and ok("later") and ok("never")
 
 
-def test_commit_epoch_is_the_block_over_the_epoch_interval():
-    n = v5_epoch.EPOCH_INTERVAL
+def test_commit_epoch_is_the_blocks_epoch_index():
+    n = v5_epoch.BLOCKS_PER_EPOCH          # blocks, not EPOCH_INTERVAL's seconds (v0.8.1)
     assert v5_epoch.commit_epoch(0) == 0
     assert v5_epoch.commit_epoch(5 * n - 1) == 4 and v5_epoch.commit_epoch(5 * n) == 5
 
@@ -53,7 +53,7 @@ def test_published_questions_give_no_items_and_the_seat_does_not_fill_on_them():
 
 def test_a_comparison_reads_the_later_heads_commit():
     book = Book()
-    n = v5_epoch.EPOCH_INTERVAL
+    n = v5_epoch.BLOCKS_PER_EPOCH
     book.add("old", "ck-o", 1, 10, "m/good")
     book.add("new", "ck-n", 2, 50 * n, "m/cheap")
     _res, _s, heads, records, _r = run(book, [["old", "new"]] * 3)

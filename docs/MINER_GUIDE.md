@@ -222,10 +222,10 @@ container inside a confidential VM.
 | `--v4-challenge` | `0` | Protocol v4 only [PAID when not 0]: the challenge the TD answers each epoch, 0 (none), 500 or 1000 questions (`FUGAL_V4_CHALLENGE`; below) |
 | `--check` | off | Run the startup checks (chain, protocol, v4 options and files, pool, code sandbox, registration), print the `READY:` line and exit (0 when ready); waits for no provisioning, embeds and serves nothing. Every start logs the same line (under v4: the seed, mix and list found, the published-set seed and the reveal it is observed through, the root's hotkey for the first v4 epoch, your proposal and challenge size, and whether the list the image ships allows your proposal) |
 
-### Moving to protocol v5 (v0.8.0, block 9,587,880)
+### Moving to protocol v5 (v0.8.0, block 9,585,720)
 
-v0.8.0 switches finney to protocol v5 at block 9,587,880 (the boundary of
-epoch e00026633). Until that block everything runs v4 exactly. The design
+v0.8.0 switches finney to protocol v5 at block 9,585,720 (the boundary of
+epoch e00026627). Until that block everything runs v4 exactly. The design
 record is `docs/decisions/ARENA_V5.md`.
 
 **What you are now paid for.** RouterArena's own score: the answers your

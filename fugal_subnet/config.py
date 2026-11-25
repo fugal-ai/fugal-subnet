@@ -1756,7 +1756,7 @@ OPERATIONAL_ENV_VARS_V5 = (
 # Activation: as v4's. Finney's block is compiled (None: no release schedules
 # v5) and the variable may only repeat it there; another chain reads
 # FUGAL_V5_ACTIVATION_BLOCK. Never before v4.
-FINNEY_V5_ACTIVATION_BLOCK: int | None = 9587880
+FINNEY_V5_ACTIVATION_BLOCK: int | None = 9585720
 _v5_activation = os.getenv("FUGAL_V5_ACTIVATION_BLOCK", "").strip()
 V5_ACTIVATION_BLOCK_ENV: int | None = None
 V5_ACTIVATION_BLOCK_MALFORMED: str | None = None

@@ -249,10 +249,17 @@ model, all of it burns.
 1. **Your head's `lam` is now read.** A v5 pick is argmax over entries of
    (predicted success − lam × the entry's pick cost), with your head's own
    `lam` (a float in (0, 10000]). v4 ignored it and used 1, which values a
-   correct answer at $1, far more accuracy-heavy than RouterArena; heads
-   score better on S with lam around 10–20. Tune it on the published
-   reveals: the exam's votes (`votes_v5`) are the labels your picks are
-   judged on.
+   correct answer at $1, far more accuracy-heavy than RouterArena.
+   From RouterArena's formula, the best lam for a router with accuracy a
+   and mean pick cost c̄ ($ per question) is
+
+       lam ≈ 0.1·a² / (C² · ln2 · log2(200/0.0044) · c̄),
+       C = log2(200 / cost per 1K) / log2(200/0.0044)
+
+   about 35 at $0.6 per 1K questions, 55–70 at $0.3, 90–110 at $0.15
+   (a = 0.8–0.9). That assumes calibrated success estimates; a head's best
+   lam can differ, so tune it on the published reveals: the exam's votes
+   (`votes_v5`) are the labels your picks are judged on.
 2. **Retrain for the exam.** Questions come from a RouterArena-like pool
    (the same public source datasets RouterArena samples, none of its own
    items, in its dataset mix): mostly knowledge, trivia, medical and

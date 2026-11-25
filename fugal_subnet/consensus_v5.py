@@ -51,6 +51,8 @@ REGISTERED: dict[str, tuple[str, ...]] = {
         "TAKE_MARGIN", "UPGRADE_MARGIN", "N_MIN", "N0", "CONTENDERS_MAX", "SEAT_SHARES",
         "HISTORY_MAX", "TAKE_UNITS", "UPGRADE_UNITS",
     ),
+    # The v5 menu step's one category (validator._v5_menu_category_of).
+    "neurons.validator": ("V5_MENU_CATEGORY",),
     "fugal_subnet.v5_epoch": (
         "WINDOW_EPOCHS", "SPEC_LAG", "STANDING_EPOCHS", "Y_SCALE", "BASELINE_MIN_PAIRS",
         "IMPLAUSIBLE_Z", "IMPLAUSIBLE_MIN_SAMPLES", "NANO", "EPOCH_INTERVAL",

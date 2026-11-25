@@ -597,6 +597,7 @@ _V5_NAMES: dict[str, tuple[str, ...]] = {
     "fugal_subnet.exam_v5": (
         "EXAM_QUESTIONS", "EXAM_BASELINE_QUESTIONS", "EXAM_VOTES", "EXAM_CALLS_PER_HOTKEY",
         "HEAD_LAM_MAX", "Y_SCALE", "FAILED_CELL_MIN_VOTERS", "_NO_PICK"),
+    "neurons.validator": ("V5_MENU_CATEGORY",),
 }
 for _module, _names in _V5_NAMES.items():
     NOT_V4.setdefault(_module, {}).update(dict.fromkeys(_names, _V5_ONLY))
@@ -742,7 +743,8 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.v4_replay": ("4acd41d1fd7315e3", "4f53cda18c2baa0c"),
     "fugal_subnet.validator_setup": ("9af859d9fe09d19f", "4f53cda18c2baa0c"),
     "neurons.miner": ("cd54bd02c0ef3108", "4f53cda18c2baa0c"),
-    "neurons.validator": ("fc0d1bd92ad244c9", "4f53cda18c2baa0c"),
+    # V5_MENU_CATEGORY (v5's one menu-step category) joins NOT_V4: a v5-only name.
+    "neurons.validator": ("4eae4af7339adc1d", "4f53cda18c2baa0c"),
 }
 
 # Every module whose constants are classified above: the v4 modules, and the

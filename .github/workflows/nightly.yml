@@ -73,3 +73,41 @@ jobs:
           name: dress-rehearsal-report-${{ strategy.job-index }}-${{ matrix.scenario }}
           path: results/
           if-no-files-found: ignore
+
+  capacity:
+    # The full-size v4 epoch timing and memory bounds (pytest marker
+    # `capacity`, tests/test_v4_epoch_cost.py). ci.yml runs them only on
+    # release/* pull requests and pushes to main and release/**, because at
+    # ~12 minutes a case they would be every pull request's critical path;
+    # here they run against main every night as well.
+    name: Full-size epoch capacity (Python ${{ matrix.python-version }}, ${{ matrix.shape }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+        shape: [ladder, served_last]
+    env:
+      PYTHONUTF8: "1"
+      FUGAL_SKIP_BENCHMARKS: mmlu,math,gsm8k,humaneval,livecode,gpqa,ifeval,aime
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Full-size v4 epoch within its time and memory bounds
+        run: uv run pytest -q -m capacity -k "${{ matrix.shape }}" --durations=5 tests/test_v4_epoch_cost.py

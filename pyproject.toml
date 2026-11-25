@@ -42,6 +42,9 @@ Changelog = "https://github.com/fugal-ai/fugal-subnet/blob/main/CHANGELOG.md"
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    # CI runs the suite with -n auto and shards it across jobs
+    # (scripts/ci_test_shards.py); see .github/workflows/ci.yml.
+    "pytest-xdist>=3.6.0",
     "ruff>=0.11.0",
     "pip-audit>=2.7.0",
     "hypothesis>=6.100.0",
@@ -104,9 +107,15 @@ include = ["fugal_subnet*", "neurons*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# CI and scripts/gate.sh run everything. `-m "not slow"` skips the few
-# statistical tests that dominate the runtime, for a quick local loop only.
-markers = ["slow: statistical property tests over hundreds of epochs (minutes)"]
+# scripts/gate.sh runs everything. CI runs everything on every pull request
+# except `capacity` (see .github/workflows/ci.yml, job `capacity`), which runs
+# on release/* pull requests, on pushes to main and release/**, and nightly.
+# `-m "not slow"` skips the statistical tests that dominate the runtime, for a
+# quick local loop only.
+markers = [
+    "slow: statistical property tests over hundreds of epochs (minutes)",
+    "capacity: full-size timing and memory bounds (~12 min and up to 4 GiB each)",
+]
 
 [tool.ruff]
 # Immutable test-only core projection, checked against Git objects in CI.

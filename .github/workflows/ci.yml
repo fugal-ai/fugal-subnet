@@ -15,11 +15,128 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Shape of this workflow (it used to run the whole suite three times over,
+# serially, ~50 minutes a run):
+#
+#   changes      decides whether this is a Markdown-only pull request.
+#   tests        the pytest suite, split into four shards file-wise
+#                (scripts/ci_test_shards.py) and run with xdist, per Python.
+#   checks       everything else the old `test` job ran: invariants, the Axon
+#                smoke test, the four attack suites, the determinism check.
+#   capacity     the two full-size epoch timing tests (marker `capacity`,
+#                ~12 min each): on release/* pull requests and on pushes to
+#                main and release/** only, plus nightly.yml. Every other
+#                pull request's shards deselect them.
+#   test         one job per Python version, named exactly "Python 3.11" /
+#                "Python 3.12" because branch protection requires those names.
+#                It does no work: it fails unless every shard, the checks job
+#                and (where it runs) the capacity job succeeded. It must never
+#                be skipped, because a skipped matrix job reports its name
+#                unexpanded and the required check would then never arrive.
+#
+# Required check names (branch protection on main; renaming one blocks every
+# PR): "Python 3.11", "Python 3.12", "Lint, audit, and package",
+# "Attack suites with the DCAP verifier installed", "Docker build smoke test",
+# "Shared success contract conformance" (here) and "Analyze Python"
+# (codeql.yml).
+#
+# Markdown-only pull requests skip the shards, the DCAP job, the container
+# and the success contract (a skipped job satisfies a required check). They
+# still run lint and packaging (the README is the package's readme),
+# check_safety_invariants.py (which checks the commands and claims the docs
+# make) and the tests marked `docs` (tests that read a Markdown file). Pushes
+# to main and release/** always run everything, the capacity job included.
+
 jobs:
-  test:
-    name: Python ${{ matrix.python-version }}
+  changes:
+    name: Classify the change
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - name: Check out repository
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR merge commit and its first parent (the base it merges into).
+          fetch-depth: 2
+
+      - name: Markdown-only pull request?
+        id: classify
+        # Anything other than a pull request whose every changed file is a
+        # Markdown file outside the code, data and test trees counts as code.
+        # Any failure to tell also counts as code: the full run is the default.
+        run: |
+          code=true
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if changed=$(git diff --name-only HEAD^1 HEAD) && [ -n "$changed" ]; then
+              printf 'changed files:\n%s\n' "$changed"
+              if ! printf '%s\n' "$changed" | grep -Ev '\.md$' | grep -q . \
+                 && ! printf '%s\n' "$changed" | grep -Eq '^(fugal_subnet|neurons|tests|data|scripts)/'; then
+                code=false
+              fi
+            fi
+          fi
+          echo "code=$code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+  tests:
+    name: Python ${{ matrix.python-version }} tests ${{ matrix.shard }}/4
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+        # Four shards: keep this list, the "/4" in the name and the 4 passed to
+        # ci_test_shards.py below in step.
+        shard: [1, 2, 3, 4]
+    env:
+      PYTHONUTF8: "1"
+      FUGAL_SKIP_BENCHMARKS: mmlu,math,gsm8k,humaneval,livecode,gpqa,ifeval,aime
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Run this shard of the unit, regression and integration tests
+        # The assignment fails the step if the split does (bash -e): an empty
+        # file list would make pytest run the whole suite instead.
+        run: |
+          files=$(uv run python scripts/ci_test_shards.py ${{ matrix.shard }} 4 --summary)
+          uv run pytest -q -n auto --dist loadgroup -m "not capacity" --durations=25 \
+            --junitxml=results/junit-py${{ matrix.python-version }}-${{ matrix.shard }}.xml $files
+
+      - name: Keep the shard's timings (tests/ci_durations.json is recorded from these)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-py${{ matrix.python-version }}-${{ matrix.shard }}
+          path: results/junit-*.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  checks:
+    name: Python ${{ matrix.python-version }} invariants, attack suites, determinism
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -48,19 +165,24 @@ jobs:
       - name: Check security invariants
         run: uv run python scripts/check_safety_invariants.py
 
+      - name: Tests that read the Markdown docs (a Markdown-only change can break them)
+        if: needs.changes.outputs.code != 'true'
+        run: uv run pytest -q -m docs
+
       - name: Smoke-test real Bittensor Axon annotations
+        if: needs.changes.outputs.code == 'true'
         run: uv run python scripts/check_bittensor_axon.py
 
-      - name: Run unit, regression and integration tests
-        run: uv run pytest -q
-
       - name: Run grader attack suite
+        if: needs.changes.outputs.code == 'true'
         run: uv run python -m fugal_subnet.attacks.run_attacks
 
       - name: Run code grader attack suite (v3 exec_stdio / exec_func sandbox)
+        if: needs.changes.outputs.code == 'true'
         run: uv run python -m fugal_subnet.attacks.run_code_attacks
 
       - name: Run adversarial miner suite (I2, I6)
+        if: needs.changes.outputs.code == 'true'
         run: uv run python -m fugal_subnet.attacks.run_miner_attacks
 
       # I8/I3. Every case here verified against production code before the
@@ -68,14 +190,105 @@ jobs:
       # modelled as owning real Intel TDX hardware, so DCAP genuinely passes
       # and only the bindings can stop them.
       - name: Run adversarial TEE suite (I8, I3)
+        if: needs.changes.outputs.code == 'true'
         run: uv run python -m fugal_subnet.attacks.run_tee_attacks
 
       # I1. --perturb unpins kernel dispatch and thread counts to stand in for
       # a second host; the thread lever is what makes it bite on one runner.
       - name: Check scoring determinism (I1)
+        if: needs.changes.outputs.code == 'true'
         run: |
           uv run python scripts/check_determinism.py
           uv run python scripts/check_determinism.py --perturb
+
+  capacity:
+    # tests/test_v4_epoch_cost.py's full-size epoch: a timing and memory bound
+    # (15 minutes, 4 GiB) on the validator's v4 epoch at 256 UIDs. About 12
+    # minutes per case, which would make it every pull request's critical
+    # path. It guards performance, not what the epoch computes: the same code's
+    # results are checked at small sizes in the shards, and that file's
+    # line-count tests (in the shards) catch the per-label Python loop the
+    # bound was written for. So it runs where a slow epoch must not ship:
+    # release/* pull requests (which `test` then waits for), pushes to main and
+    # release/**, and nightly.yml. One job per case, alone on its runner, as
+    # it ran before (a timing bound should share no CPU with other tests).
+    name: Python ${{ matrix.python-version }} full-size epoch capacity (${{ matrix.shape }})
+    needs: changes
+    if: >-
+      needs.changes.outputs.code == 'true' &&
+      (github.event_name == 'push' || startsWith(github.head_ref, 'release/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+        shape: [ladder, served_last]
+    env:
+      PYTHONUTF8: "1"
+      FUGAL_SKIP_BENCHMARKS: mmlu,math,gsm8k,humaneval,livecode,gpqa,ifeval,aime
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Full-size v4 epoch within its time and memory bounds
+        run: uv run pytest -q -m capacity -k "${{ matrix.shape }}" --durations=5 tests/test_v4_epoch_cost.py
+
+  test:
+    # The required check. See the note at the top: never skipped, no work of
+    # its own, red unless everything it stands for is green.
+    name: Python ${{ matrix.python-version }}
+    needs: [changes, tests, checks, capacity]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Every shard and the checks passed
+        # `needs.tests.result` covers every leg of the shard matrix, both
+        # Python versions included: a red shard on either turns both of these
+        # red, which is stricter than necessary and never looser.
+        env:
+          CODE: ${{ needs.changes.outputs.code }}
+          CHANGES: ${{ needs.changes.result }}
+          TESTS: ${{ needs.tests.result }}
+          CHECKS: ${{ needs.checks.result }}
+          CAPACITY: ${{ needs.capacity.result }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          echo "changes=$CHANGES code=$CODE tests=$TESTS checks=$CHECKS capacity=$CAPACITY"
+          [ "$CHANGES" = success ] || { echo "::error::could not classify the change"; exit 1; }
+          [ "$CHECKS" = success ] || { echo "::error::the checks job did not pass"; exit 1; }
+          if [ "$CODE" = true ]; then
+            [ "$TESTS" = success ] || { echo "::error::a test shard did not pass"; exit 1; }
+          else
+            [ "$TESTS" = skipped ] || { echo "::error::Markdown-only, yet the shards ran and did not pass"; exit 1; }
+          fi
+          # The capacity job's own condition, restated: where it should have
+          # run it must have passed, and nowhere else may it have run at all.
+          if [ "$CODE" = true ] && { [ "$EVENT" = push ] || [[ "$HEAD_REF" == release/* ]]; }; then
+            [ "$CAPACITY" = success ] || { echo "::error::the full-size capacity job did not pass"; exit 1; }
+          else
+            [ "$CAPACITY" = skipped ] || { echo "::error::unexpected capacity result $CAPACITY"; exit 1; }
+          fi
 
   quality:
     name: Lint, audit, and package
@@ -112,14 +325,19 @@ jobs:
 
   tee-verifier:
     name: Attack suites with the DCAP verifier installed
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    # The main `test` job installs --extra dev, so dcap-qvl is ABSENT there and
-    # verify_dcap raises ImportError instead of running. That is a different code
-    # path, and two tests once "passed" in CI purely because the library was
-    # missing — one of them an attack test that therefore never attempted its
-    # attack. Running the suites in both environments is what makes a green tick
-    # mean the code was exercised rather than skipped.
+    timeout-minutes: 30
+    # The `tests` shards install --extra dev, so dcap-qvl is ABSENT there and
+    # verify_dcap raises ImportError instead of running. That is a different
+    # code path, and two tests once "passed" in CI purely because the library
+    # was missing — one of them an attack test that therefore never attempted
+    # its attack. So the tests whose behaviour depends on the verifier (marker
+    # `tee`, applied in tests/conftest.py) run again here with it installed,
+    # and so do the attack suites. The rest of the suite does not touch
+    # dcap_qvl and already ran in the shards; tests/conftest.py explains how
+    # the marker is kept complete.
     env:
       PYTHONUTF8: "1"
       FUGAL_SKIP_BENCHMARKS: mmlu,math,gsm8k,humaneval,livecode,gpqa,ifeval,aime
@@ -145,8 +363,10 @@ jobs:
         # Without this the job silently degrades into a duplicate of `test`.
         run: uv run python -c "import dcap_qvl; print('dcap-qvl present')"
 
-      - name: Unit and regression tests
-        run: uv run pytest -q
+      - name: Tests that depend on the DCAP verifier
+        # -n 4, not auto: the runner has four vCPUs, and scripts/gate.sh runs this
+        # line as written on machines with many more cores than memory for them.
+        run: uv run pytest -q -n 4 --dist loadgroup -m tee
 
       - name: Adversarial TEE suite against the real DCAP path
         run: uv run python -m fugal_subnet.attacks.run_tee_attacks
@@ -156,6 +376,8 @@ jobs:
 
   container:
     name: Docker build smoke test
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -173,6 +395,8 @@ jobs:
 
   success-contract:
     name: Shared success contract conformance
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

@@ -35,9 +35,10 @@ from fugal_subnet.tee.attestation import (
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
-# `dcap_qvl` is an OPTIONAL extra, and CI runs pytest twice on purpose: the
-# `test` job installs `--extra dev` only, the `tee-verifier` job adds
-# `--extra tee` and asserts the module is importable before running. The two
+# `dcap_qvl` is an OPTIONAL extra, and CI runs this file twice on purpose: the
+# `tests` shards install `--extra dev` only, the `tee-verifier` job adds
+# `--extra tee`, asserts the module is importable, and reruns every test marked
+# `tee` (this file is, by tests/conftest.py, for naming dcap_qvl). The two
 # environments differ deliberately, because `verify_dcap` takes a different
 # path when the verifier is absent.
 #

@@ -41,9 +41,23 @@ that drifts from the lockfile hides exactly the failures CI exists to find.
   this document cannot fall behind CI again the way it just did.
 
 `scripts/gate.sh test|tee|quality|success` runs one job if you are iterating.
-Exit status is 0 only if every step of every selected job passed. For a faster
-inner loop, `uv run pytest -q -m "not slow"` skips the few statistical tests
-that take most of the suite's time; the gate and CI always run them.
+Exit status is 0 only if every step of every selected job passed. The gate runs
+pytest with four xdist workers (`GATE_WORKERS` to change it; each worker loads
+its own torch, so size it by memory, not cores). For a faster inner loop,
+`uv run pytest -q -n 4 -m "not slow"` skips the few statistical tests that take
+most of the suite's time; the gate and CI always run them.
+
+CI splits the suite into four shards per Python version
+(`scripts/ci_test_shards.py`, balanced on the per-file timings in
+`tests/ci_durations.json`), runs each with xdist, and reports one required
+check per Python version that is green only when every shard is. The two
+full-size epoch timing tests (marker `capacity`, ~12 minutes each) run in their
+own jobs on `release/*` pull requests, on pushes to `main` and `release/**`,
+and nightly, not on every pull request; the gate runs them. The DCAP job
+reruns only the tests marked `tee` (applied automatically in
+`tests/conftest.py`). A pull request that changes only Markdown skips the
+shards, the DCAP job, the image build and the success contract; it still runs
+lint, packaging, `check_safety_invariants.py` and the tests marked `docs`.
 
 It does not run the backbone-download half of CI's `success-contract` job or
 the `docker build`. A change to the backbone path, the vendored contract or the

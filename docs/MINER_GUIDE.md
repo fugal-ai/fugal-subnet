@@ -250,7 +250,7 @@ model, all of it burns.
    (predicted success − lam × the entry's pick cost), with your head's own
    `lam` (a float in (0, 10000]). v4 ignored it and used 1, which values a
    correct answer at $1, far more accuracy-heavy than RouterArena.
-   RouterArena's trade-off (+1 accuracy point ≈ a 1/1.83 halving of cost)
+   RouterArena's trade-off (halving cost is worth about 1.8 accuracy points)
    gives lam ≈ 0.026 / c̄, where c̄ is your router's own mean pick cost in $
    per question: about 40 at $0.6 per 1K questions, about 90 at $0.3 per
    1K. That assumes calibrated success estimates; a head's best lam can

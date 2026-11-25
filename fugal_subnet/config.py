@@ -1763,7 +1763,7 @@ FINNEY_V5_ACTIVATION_BLOCK: int | None = 9585720
 # divided by EPOCH_INTERVAL, which is seconds). Before it, v0.8.0's arithmetic,
 # so every earlier v5 epoch replays as published. Another chain applies the
 # fix from its v5 block (v5_commit_fix_block).
-FINNEY_V5_COMMIT_FIX_BLOCK: int | None = 9591840
+FINNEY_V5_COMMIT_FIX_BLOCK: int | None = 9587520
 _v5_activation = os.getenv("FUGAL_V5_ACTIVATION_BLOCK", "").strip()
 V5_ACTIVATION_BLOCK_ENV: int | None = None
 V5_ACTIVATION_BLOCK_MALFORMED: str | None = None

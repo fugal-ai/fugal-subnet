@@ -582,7 +582,8 @@ _V5_NAMES: dict[str, tuple[str, ...]] = {
         "FINNEY_V5_ACTIVATION_BLOCK", "V5_ACTIVATION_BLOCK_ENV", "V5_ACTIVATION_BLOCK_MALFORMED",
         "ARENA_A_REF_V5", "EXAM_QUESTIONS_V5", "EXAM_BASELINE_QUESTIONS_V5", "EXAM_VOTES_V5",
         "EXAM_CALLS_PER_HOTKEY_V5", "COVERAGE_CALLS_V5", "WINDOW_EPOCHS_V5", "N_MIN_V5", "N0_V5",
-        "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5", "CONTENDERS_MAX_V5", "SPEC_LAG_V5",
+        "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5", "MINER_PAID_FRACTION_V5", "CONTENDERS_MAX_V5",
+        "SPEC_LAG_V5",
         "HEAD_LAM_MAX_V5", "Y_SCALE_V5", "EXAM_BUDGET_S_V5", "EXAM_CALL_DEADLINE_S_V5",
         "BASELINE_MIN_PAIRS_V5", "FRESH_RESERVE_EPOCHS_V5", "COVERAGE_PARTITION_V5",
         "EMBEDDINGS_V5_SHA256", "EMBEDDINGS_V5_URL",
@@ -698,7 +699,8 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     # and (lane W4) COVERAGE_PARTITION_V5, EMBEDDINGS_V5_SHA256, EMBEDDINGS_V5_URL
     # and CONSENSUS_ENV_INPUTS_V5, OPERATIONAL_ENV_VARS_V5 (v5's env names moved
     # out of the two v4-registered lists, so the v4 digest stays v0.7.0's)
-    "fugal_subnet.config": ("c962f1128e44f594", "2b9b61905b4c5c4f"),
+    # and MINER_PAID_FRACTION_V5 (v0.8.0: half the miner emission burns)
+    "fugal_subnet.config": ("aab579140bcb7c4c", "2b9b61905b4c5c4f"),
     "fugal_subnet.copy_rule": ("5191ef53fd3d75ce", "4f53cda18c2baa0c"),
     "fugal_subnet.determinism": ("ea226adaa11ca2b1", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_logger": ("eaa876bbf2003294", "4f53cda18c2baa0c"),

@@ -85,7 +85,9 @@ The bound is `seat_bound.lower_bound` (valid at every look, α = 1%),
 stratified by dataset, at least 2,000 paired questions, window 48 epochs.
 Measured spread: picks differ on 60–98% of questions with a per-question
 SD of about 28 points, so an edge of 2 S-points is seated after about 4,000
-paired questions and an edge of 1 after about 18,000. Pay stays 85/10/5.
+paired questions and an edge of 1 after about 18,000. Pay stays 85/10/5,
+scaled by 1/2: half the miner emission burns every epoch
+(MINER_PAID_FRACTION_V5, owner decision 2026-11-24).
 
 ## 5. What was removed, and why
 

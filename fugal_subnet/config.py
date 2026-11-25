@@ -1798,6 +1798,11 @@ N0_V5 = 2000
 # payable (its bound over the best single entry passes 0).
 TAKE_MARGIN_V5 = "1/4"
 UPGRADE_MARGIN_V5 = "-1/4"
+# The share of the miner emission v5 pays out (owner decision 2026-11-24):
+# the seat vector (85/10/5 to the holder and history) is scaled by this, and
+# the rest goes to the burn uid every epoch. 1/2 = miners keep half of their
+# 41%; the other half burns.
+MINER_PAID_FRACTION_V5 = "1/2"
 # Contenders scored per epoch (the newest standing head per coldkey).
 CONTENDERS_MAX_V5 = 24
 # The spec of epoch E's exam is published in the root's reveal of E - this.

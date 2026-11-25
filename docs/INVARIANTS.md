@@ -6706,6 +6706,10 @@ recomputation differs from the root's treats that epoch's exam as void
   seat is paid only while its head is live this epoch and its bound over B*
   passes 0. Every unpaid share burns. While no head beats
   the best single model, the whole weight burns.
+- **Half burns.** The seat vector is scaled by MINER_PAID_FRACTION_V5 = 1/2
+  (`seat_v5.PAID_FRACTION`, registered in the v5 digest): miners are paid at
+  most half the miner emission and the rest goes to the burn uid every epoch
+  (owner decision 2026-11-24).
 
 Check: `tests/test_seat_v5.py`, the `seat_v5` determinism stage, the attack
 world `fugal_subnet/attacks/seat_v5_world.py`.

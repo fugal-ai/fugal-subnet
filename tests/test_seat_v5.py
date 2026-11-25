@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from fractions import Fraction
 
 import pytest
 
@@ -40,7 +41,20 @@ def test_better_challenger_takes_and_holder_goes_to_history():
     assert d.event == "take" and d.holder == c.hash and d.history == (h.hash,)
     assert d.holder_since == 100
     uids, weights = seat_v5.weights(d, {c.hash: 7, h.hash: 8}, burn_uid=0)
-    assert dict(zip(uids, weights)) == pytest.approx({7: 0.90, 8: 0.10})   # the empty third seat goes to the holder
+    # the empty third seat goes to the holder; half the miner emission burns
+    assert dict(zip(uids, weights)) == pytest.approx({0: 0.50, 7: 0.45, 8: 0.05})
+
+
+def test_half_the_miner_emission_burns_every_epoch():
+    # Owner decision 2026-11-24: v5 pays miners half their share, the rest burns.
+    assert seat_v5.PAID_FRACTION == Fraction(1, 2)
+    w = World()
+    h = w.add(Head("holder", "ck-h", 10, 0.92))
+    d = w.decide(S())
+    assert d.holder == h.hash and d.payable == (h.hash,)
+    uids, weights = seat_v5.weights(d, {h.hash: 7}, burn_uid=0)
+    assert dict(zip(uids, weights)) == pytest.approx({0: 0.5, 7: 0.5})
+    assert sum(weights) == pytest.approx(1.0)
 
 
 def test_near_copy_farm_cannot_pass_the_margin():

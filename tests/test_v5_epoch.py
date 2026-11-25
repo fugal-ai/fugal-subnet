@@ -125,7 +125,8 @@ def test_the_seat_fills_once_a_head_beats_the_best_single_model():
     assert res.baseline in ENTRIES
     assert res.decision.event in ("fill", "hold") and res.decision.holder == "a"
     assert res.decision.payable == ("a",)
-    assert dict(zip(res.uids, res.weights)) == {1: pytest.approx(1.0)}   # empty history seats go to the holder
+    # empty history seats go to the holder; half the miner emission burns (uid 0)
+    assert dict(zip(res.uids, res.weights)) == {0: pytest.approx(0.5), 1: pytest.approx(0.5)}
 
 
 def test_a_head_worse_than_the_single_model_never_fills():

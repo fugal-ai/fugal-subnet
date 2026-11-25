@@ -43,6 +43,9 @@ All notable changes to this project will be documented here. Releases follow [Se
   best single menu entry (B*); an empty seat fills on merit, never by a draw;
   the holder's own retrained successor replaces it unless shown worse.
   Pay stays 85/10/5; a seat that does not beat B* burns its share.
+- **Half the miner emission burns** (`MINER_PAID_FRACTION_V5` = 1/2): the
+  85/10/5 seat vector is scaled by 1/2 and the other half goes to the burn uid
+  every epoch. Validator-only; the miner image is unchanged.
 - **Removed from the v5 path:** the odds test and the reference R, the
   challenge (`--v4-challenge*` do nothing from the block), the activation
   tie draw, the cost-aware random exploration share (a small coverage share

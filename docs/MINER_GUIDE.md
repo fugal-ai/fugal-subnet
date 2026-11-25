@@ -239,6 +239,11 @@ accuracy point is worth about as much as 1/k of a halving of your cost.
 Prediction odds no longer decide anything; they are only how your head
 picks.
 
+**How much is paid.** Half of the miner emission, split 85/10/5 across the
+holder and the last two champions; the other half burns every epoch
+(`MINER_PAID_FRACTION_V5` = 1/2). While no router beats the best single
+model, all of it burns.
+
 **What to change.**
 
 1. **Your head's `lam` is now read.** A v5 pick is argmax over entries of

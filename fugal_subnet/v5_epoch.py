@@ -49,10 +49,15 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 
 from fugal_subnet import arena_score, config, exam_v5, seat_v5
+from fugal_subnet.benchmarks.slicer import blocks_per_epoch
 from fugal_subnet.exam_v5 import ExamSpec, Vote
 
 WINDOW_EPOCHS = int(config.WINDOW_EPOCHS_V5)
 EPOCH_INTERVAL = int(config.EPOCH_INTERVAL)
+BLOCKS_PER_EPOCH = blocks_per_epoch(EPOCH_INTERVAL)
+# A raw commitment block is below this; the v1 seniority key v0.8.0 recorded
+# (registration x 10^10 + commit) is above it, and key % SENIORITY_BASE is its block.
+SENIORITY_BASE = 10**10
 FRESH_RESERVE_EPOCHS = int(config.FRESH_RESERVE_EPOCHS_V5)
 SPEC_LAG = int(config.SPEC_LAG_V5)
 STANDING_EPOCHS = int(config.STANDING_EPOCHS_V4)
@@ -352,8 +357,24 @@ def serving_uids(heads: Mapping[str, HeadFacts], served: Sequence[Served]) -> di
 
 
 def commit_epoch(block: int) -> int:
-    """The epoch a commitment at `block` was made in."""
+    """The epoch a commitment at `block` was made in (slicer's epoch index,
+    the epochs `first_published` counts in)."""
+    return int(block) // BLOCKS_PER_EPOCH
+
+
+def commit_epoch_v080(block: int) -> int:
+    """v0.8.0's arithmetic (block // EPOCH_INTERVAL, seconds), kept only so
+    the v5 epochs before the v0.8.1 fix block replay as published."""
     return int(block) // EPOCH_INTERVAL
+
+
+def raw_commit_book(heads: Mapping[str, HeadFacts]) -> dict[str, HeadFacts]:
+    """The head book with every first commitment as a raw block: a v1
+    seniority key recorded by v0.8.0 becomes its commit block (key %
+    SENIORITY_BASE); a raw block is unchanged."""
+    return {h: f if f.first_commit_block < SENIORITY_BASE else HeadFacts(
+        f.head, f.coldkey, f.hotkey, f.first_commit_block % SENIORITY_BASE, f.last_seen)
+        for h, f in heads.items()}
 
 
 def eligible_after(first_published: Callable[[str], int | None],
@@ -405,7 +426,8 @@ def _baseline_cost(records: Sequence[EpochRecord]) -> dict[str, int]:
 
 def item_sources(records: Sequence[EpochRecord], heads: Mapping[str, HeadFacts],
                  stratum_of: Callable[[str], str],
-                 first_published: Callable[[str], int | None]):
+                 first_published: Callable[[str], int | None],
+                 epoch_of: Callable[[int], int] = commit_epoch):
     """(items(x, y), baseline_items(x)) for seat_v5.decide over the window,
     each on the questions eligible for that comparison (`eligible_after`)."""
     specs = [r.spec for r in records if r.spec is not None]
@@ -420,7 +442,7 @@ def item_sources(records: Sequence[EpochRecord], heads: Mapping[str, HeadFacts],
     base_cost = _baseline_cost(records)
 
     def committed(h: str) -> int:
-        return commit_epoch(heads[h].first_commit_block)
+        return epoch_of(heads[h].first_commit_block)
 
     def items(x: str, y: str):
         ex = frozenset({heads[x].coldkey, heads[y].coldkey})
@@ -453,16 +475,24 @@ class V5Result:
 def score_epoch(*, epoch: int, state: seat_v5.SeatStateV5, heads: Mapping[str, HeadFacts],
                 record: EpochRecord, window: Sequence[EpochRecord], served: Sequence[Served],
                 full_entries: Iterable[str], stratum_of: Callable[[str], str], burn_uid: int,
-                first_published: Callable[[str], int | None]) -> V5Result:
+                first_published: Callable[[str], int | None],
+                raw_commit_blocks: bool = True) -> V5Result:
     """Epoch `epoch`'s seat and weights. `window` is the earlier epochs'
     records (this epoch's `record` is added); `heads` the book before this
     epoch; `first_published` the published set as of this epoch
     (`published_reader`). Epochs A and A + 1 have no spec: the seat is
-    decided on the window as it is (empty at activation: every share burns)."""
+    decided on the window as it is (empty at activation: every share burns).
+
+    `raw_commit_blocks` (v0.8.1, from config.v5_commit_fix_block): `served`
+    carries raw commitment blocks, the book's v0.8.0 seniority keys are read
+    as their blocks, and a block's epoch is slicer's. False replays v0.8.0."""
+    if raw_commit_blocks:
+        heads = raw_commit_book(heads)
     book = observe(heads, served, epoch)
     recs = window_of([*[r for r in window if r.epoch != record.epoch], record], epoch)
     base, table = baseline_entry(recs, full_entries)
-    items, base_items = item_sources(recs, book, stratum_of, first_published)
+    items, base_items = item_sources(recs, book, stratum_of, first_published,
+                                     commit_epoch if raw_commit_blocks else commit_epoch_v080)
     decision = seat_v5.decide(state, epoch, contenders(book, served, epoch), items, base_items)
     uids, weights = seat_v5.weights(decision, serving_uids(book, served), burn_uid=burn_uid)
     reveal = {

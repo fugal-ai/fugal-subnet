@@ -717,6 +717,12 @@ validator does:
 
 ## Protocol v5 (from block 9,585,720, epoch e00026627)
 
+**v0.8.1 (before block 9,591,840, ~Thu 2026-11-26 10:16 ET):** update and
+restart (`git pull && uv sync --locked --extra tee`, `--check`, restart).
+From that block v5 records a head's raw commitment block, so the seat can
+fill (CHANGELOG 0.8.1). Nothing to set: approved entries, embeddings and the
+archive endpoint come from the release.
+
 v0.8.0 switches finney to protocol v5 at block 9,585,720; until then
 everything runs v4. Design record: `docs/decisions/ARENA_V5.md`.
 

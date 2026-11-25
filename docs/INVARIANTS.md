@@ -6734,6 +6734,18 @@ reveal's exam and coverage votes are published outcomes too,
   from epoch f + 1, so a head committed in epoch c can have read it only if
   f ≤ c − 1. This covers what the draw cannot see, a question published by
   another path between the draw and the exam.
+- **Commit epochs are block epochs (v0.8.1).** A head's commit block is the
+  RAW block of its hotkey's commitment (never the v1 seniority key), and its
+  commit epoch is slicer's epoch index of that block (`v5_epoch.commit_epoch`
+  = block // blocks_per_epoch), the unit `memo_v4.Published` counts in.
+  v0.8.0 recorded the seniority key (registration × 10^10 + commit) and
+  divided by EPOCH_INTERVAL (seconds): every earlier exam dropped out and the
+  seat could not fill; dividing a raw block by seconds would instead have
+  admitted every published question. From `config.v5_commit_fix_block`
+  (finney: FINNEY_V5_COMMIT_FIX_BLOCK) the head book holds raw blocks (a
+  v0.8.0 key reads as key % 10^10) and the book's owner and the walk order
+  are by the earliest raw commitment; before it, v0.8.0's arithmetic, so
+  those epochs replay as published. Check: `tests/test_v5_commit_blocks.py`.
 
 - **Coverage never touches the exam.** The v5 pool is split once, by a keyed
   hash of each question id (`arena_sets.in_coverage`, COVERAGE_PARTITION_V5

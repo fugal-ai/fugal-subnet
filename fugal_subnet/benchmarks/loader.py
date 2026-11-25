@@ -574,6 +574,8 @@ def load_pool(protocol_version: int, strict: bool = True) -> list[dict]:
         return load_all_v2(strict=strict)
     if protocol_version == 3:
         return load_all_v3(strict=strict)
+    if protocol_version == 5:
+        return load_all_v5(strict=strict)
     raise ValueError(f"unknown protocol version {protocol_version!r}")
 
 
@@ -746,4 +748,55 @@ def load_all_v3(strict: bool = True) -> list[dict]:
     _verify_pool_is_large_enough_to_be_unmemorisable(pool, strict)
     if cache:
         _write_pool_cache_v2(pool, cache, protocol=3)
+    return pool
+
+
+# --- Protocol v5 pool --------------------------------------------------------
+# RouterArena's source datasets in RouterArena's proportions, RouterArena's own questions
+# excluded (benchmarks/arena_sets.py). Verified against pool_manifest_v5.json, whose content
+# hash covers every field the arena grader, the prompt and the router (route_text) read.
+
+DEFAULT_POOL_FILE_V5 = os.path.join("data", "benchmarks", "pool_v5.json.gz")
+
+
+def _verify_against_manifest_v5(pool: list[dict]) -> None:
+    from fugal_subnet.benchmarks import arena_sets
+    want = arena_sets.manifest()
+    got = arena_sets.content_hash(pool)
+    if len(pool) != int(want["n_questions"]) or got != want["content_hash"]:
+        raise ValueError(f"the v5 pool ({len(pool)} questions, content hash {got[:16]}) is not "
+                         f"the pinned one ({want['n_questions']}, {want['content_hash'][:16]})")
+
+
+def load_all_v5(strict: bool = True) -> list[dict]:
+    """The v5 pool: from FUGAL_BENCHMARK_POOL_V5 or data/benchmarks/pool_v5.json.gz, else the
+    verified cache (FUGAL_POOL_CACHE_V5), else built from the pinned revisions
+    (arena_sets.build_pool, the code questions from the v3 pool). Always verified against
+    pool_manifest_v5.json: a pool that differs in any graded, prompted or routed byte is
+    refused, `strict` or not (there is no unpinned v5 pool)."""
+    path = os.getenv("FUGAL_BENCHMARK_POOL_V5", "").strip()
+    if not path and os.path.isfile(os.getenv("FUGAL_POOL_FILE_V5", DEFAULT_POOL_FILE_V5)):
+        path = os.getenv("FUGAL_POOL_FILE_V5", DEFAULT_POOL_FILE_V5)
+    cache = "" if path else os.getenv("FUGAL_POOL_CACHE_V5", "").strip()
+    if cache and os.path.isfile(cache):
+        try:
+            cached = _read_pool_file(cache)
+            _verify_against_manifest_v5(cached)
+            logger.info("v5 pool read from the verified cache %s (%d questions)", cache, len(cached))
+            return cached
+        except Exception as e:  # noqa: BLE001 - an unverifiable cache is rebuilt, never trusted
+            logger.warning("v5 pool cache %s failed verification (%s); rebuilding", cache, str(e)[:200])
+            try:
+                os.remove(cache)
+            except OSError:
+                pass
+    if path:
+        pool = _read_pool_file(path)
+    else:
+        from fugal_subnet.benchmarks import arena_sets
+        pool, _excluded, _weights = arena_sets.build_pool(
+            arena_sets.Fetcher(os.getenv("FUGAL_ARENA_CACHE_DIR") or None), load_all_v3(strict))
+    _verify_against_manifest_v5(pool)
+    if cache:
+        _write_pool_cache_v2(pool, cache, protocol=5)
     return pool

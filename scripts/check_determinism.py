@@ -78,6 +78,10 @@ STAGES = (
     "memo_v4",
     "v4_replay",
     "published_v4",
+    "exam_spec_v5",
+    "arena_items_v5",
+    "seat_v5",
+    "v5_epoch",
 )
 
 
@@ -426,7 +430,145 @@ def run_pipeline(seed: int) -> dict:
         "memo_v4": _digest(_memo_v4(seed)),
         "v4_replay": _digest(_v4_replay(seed)),
         "published_v4": _digest(_published_v4(seed)),
+        **{stage: _digest(value) for stage, value in _exam_v5(seed).items()},
+        "seat_v5": _digest(_seat_v5(seed)),
+        "v5_epoch": _digest(_v5_epoch(seed)),
     }
+
+
+def _v5_epoch(seed: int) -> list:
+    """Protocol v5's epoch end to end (fugal_subnet/v5_epoch.py) over six
+    synthetic epochs: specs built by exam_v5 for three heads, votes cast by
+    the assigned hotkeys (one operator lying), coverage votes, the seat, the
+    weights, the reveal, and the rebuild of the last epoch's state from the
+    reveals. Under --perturb the served heads, the votes and the window are
+    fed in reverse. Digested per epoch: the reveal fields and the weights."""
+    import hashlib as _h
+
+    from fugal_subnet import exam_v5, seat_v5, v5_epoch
+    from fugal_subnet.exam_v5 import Vote
+
+    perturb = bool(os.environ.get("FUGAL_PERTURB"))
+
+    def fed(xs):
+        return list(reversed(list(xs))) if perturb else list(xs)
+
+    entries = ("m/base", "m/cheap", "m/good", "m/best")
+    acc = {"m/base": 50, "m/cheap": 60, "m/good": 90, "m/best": 97}
+    cost = {"m/base": 1500, "m/cheap": 500, "m/good": 2000, "m/best": 2100}
+    heads = {"a": ("ck-a", 1, 10, "m/good"), "b": ("ck-b", 2, 20, "m/cheap"),
+             "c": ("ck-c", 3, 30, "m/best")}
+    voters = [(f"hk-v{i}", f"ck-v{i}") for i in range(5)]
+
+    def right(q, e):
+        d = _h.sha256(f"{seed}|{q}|{e}".encode()).digest()
+        return int.from_bytes(d[:2], "big") % 100 < acc[e]
+
+    state, book, records, reveals, out = seat_v5.SeatStateV5(), {}, [], {}, []
+
+    def published(q):
+        # One question in seven was published before every head's commit
+        # (the memorisation rule leaves it out of every comparison).
+        return -1 if _h.sha256(f"{seed}|pub|{q}".encode()).digest()[0] % 7 == 0 else None
+    for i in range(6):
+        epoch = 100 + i
+        names = ["a", "b"] + (["c"] if i >= 3 else [])
+        ring = voters + [(f"hk-{n}", heads[n][0]) for n in names]
+        hk_ck = dict(ring)
+        pool = [f"q{epoch}-{j}" for j in range(80)]
+        spec = exam_v5.build_spec(epoch, bytes([seed % 256, epoch % 256]),
+                                  {n: [heads[n][3]] * len(pool) for n in names}, entries, pool,
+                                  ring, "m/base")
+        votes = []
+        for (q, e), hks in spec.assignment.items():
+            for hk in hks:
+                y = 10000 if right(q, e) else 0
+                if hk_ck[hk] == "ck-v0":
+                    y = 10000 - y
+                votes.append(Vote(epoch, q, e, hk, hk_ck[hk], y, cost[e], False))
+        cover = [Vote(epoch, f"c{epoch}-{k}-{e}", e, hk, ck,
+                      10000 if right(f"c{epoch}-{k}", e) else 0, cost[e], False)
+                 for e in entries for k in range(10) for hk, ck in voters[1:3]]
+        votes = fed(votes)
+        rec = v5_epoch.EpochRecord(epoch, spec, dict(cost), tuple(votes), tuple(fed(cover)),
+                                   frozenset(v5_epoch.implausible(votes)))
+        served = fed([v5_epoch.Served(n, heads[n][1], f"hk-{n}", heads[n][0], heads[n][2])
+                      for n in names])
+        old_n, old_n0, old_b = seat_v5.N_MIN, seat_v5.N0, v5_epoch.BASELINE_MIN_PAIRS
+        seat_v5.N_MIN = seat_v5.N0 = 100
+        v5_epoch.BASELINE_MIN_PAIRS = 10
+        try:
+            res = v5_epoch.score_epoch(epoch=epoch, state=state, heads=book, record=rec,
+                                       window=fed(records), served=served,
+                                       full_entries=entries, stratum_of=lambda q: q[-1],
+                                       burn_uid=0, first_published=published)
+        finally:
+            seat_v5.N_MIN, seat_v5.N0, v5_epoch.BASELINE_MIN_PAIRS = old_n, old_n0, old_b
+        state, book = res.decision.state, res.heads
+        records.append(rec)
+        reveals[epoch] = res.reveal
+        reveals[epoch - v5_epoch.SPEC_LAG] = {**reveals.get(epoch - v5_epoch.SPEC_LAG, {}),
+                                              **v5_epoch.spec_reveal(spec, cost)}
+        out.append({"epoch": epoch, "reveal": res.reveal,
+                    "weights": [list(res.uids), [repr(w) for w in res.weights]]})
+    seat, rebuilt, recs = v5_epoch.rebuild(reveals, 105)
+    out.append({"rebuilt": [seat.to_reveal(), {h: f.to_reveal() for h, f in rebuilt.items()},
+                            [r.to_reveal() for r in recs]]})
+    return out
+
+
+def _seat_v5(seed: int) -> list:
+    """Protocol v5's seat (fugal_subnet/seat_v5.py) over twelve epochs of its
+    synthetic world (fugal_subnet/attacks/seat_v5_world.py): every head below
+    the best single model at first (empty, all burned), a fill the first
+    epoch a head beats it, a same-coldkey upgrade, a near-copy farm held off
+    by the margin, a better head taking the seat, and a holder that stops
+    standing. Under --perturb the contenders and the item strata are fed in
+    reverse. Digested per epoch: the decision, the evidence and the weights."""
+    from fugal_subnet import seat_v5
+    from fugal_subnet.attacks.seat_v5_world import Head, World
+
+    perturb = bool(os.environ.get("FUGAL_PERTURB"))
+
+    def fed(items):
+        return list(reversed(items)) if perturb else list(items)
+
+    w = World(questions=3000, baseline_accuracy=0.84, seed=seed)
+    plan = {1: [("low1", "ck-l1", 10, 0.80, 0.2, 0), ("low2", "ck-l2", 11, 0.82, 0.2, 1)],
+            3: [("good", "ck-g", 20, 0.92, 0.0, 2)],
+            5: [("good2", "ck-g", 25, 0.93, 0.0, 3)],
+            6: [(f"farm{i}", f"ck-f{i}", 30 + i, 0.93, 0.0, 10 + i) for i in range(4)],
+            8: [("best", "ck-b", 40, 0.99, 0.2, 4)]}
+    state, out, events = seat_v5.SeatStateV5(), [], []
+    for e in range(1, 13):
+        for name, ck, block, acc, noise, sd in plan.get(e, []):
+            w.add(Head(name, ck, block, acc, noise=noise, seed=sd))
+        if e >= 11:
+            w.heads[next(h for h in w.heads if w.heads[h].name == "best")].standing = False
+        heads = fed([h.contender() for h in w.heads.values()])
+
+        def items(x, y):
+            return dict(fed(w.items(x, y).items()))
+
+        def base(x):
+            return dict(fed(w.baseline_items(x).items()))
+
+        d = seat_v5.decide(state, e, heads, items, base)
+        state = d.state
+        uids, weights = seat_v5.weights(
+            d, {h: i + 1 for i, h in enumerate(sorted(w.heads))}, burn_uid=0)
+        names = {h: w.heads[h].name for h in w.heads}
+        events.append((d.event, names.get(d.holder)))
+        out.append({"event": d.event, "state": state.to_reveal(), "payable": list(d.payable),
+                    "evidence": d.evidence,
+                    "weights": [list(map(int, uids)), [repr(float(x)) for x in weights]]})
+    want = [("empty", None), ("empty", None), ("fill", "good"), ("hold", "good"),
+            ("upgrade", "good2"), ("hold", "good2"), ("hold", "good2"), ("take", "best"),
+            ("hold", "best"), ("hold", "best")]
+    if events[:10] != want or events[10][1] == "best":
+        raise SystemExit(f"the seat_v5 stage no longer burns, fills, upgrades, holds off a "
+                         f"farm, takes and lapses: {events}")
+    return out
 
 
 def _seat_confirmation(seed: int) -> list:
@@ -2590,6 +2732,101 @@ def _child(seed: int) -> dict:
     # check that a differing v4 constant moves only it.
     result["_consensus_digest_v4"] = _v4_digest_isolation()["v4"]
     return result
+
+
+def _exam_v5(seed: int) -> dict:
+    """Protocol v5's exam (exam_v5, arena_score) over three epochs: a draw on
+    a four-dataset mix, six contenders' picks over five entries (two always
+    equal, one with off-menu and no picks), a ring of 13 hotkeys on 7
+    coldkeys, B* on the first questions, a budget that stops the exam early in
+    one epoch; then votes from assigned and unassigned hotkeys, failures, a
+    double vote and fractional medians, read as paired items for every pair
+    of contenders (both operators excluded) and against B*; plus
+    arena_score's log2, logarithmic mean, k and items on edge values.
+
+    Under --perturb every input collection arrives reversed (the datasets and
+    their questions, the contenders, the menu, the ring, the votes and the
+    specs) and the process has another hash seed."""
+    import random as _random
+
+    from fugal_subnet import arena_score, exam_v5
+
+    perturb = bool(os.environ.get("FUGAL_PERTURB"))
+
+    def seq(xs):
+        return list(reversed(list(xs))) if perturb else list(xs)
+
+    def dct(d):
+        return dict(reversed(list(d.items()))) if perturb else dict(d)
+
+    rng = _random.Random(f"exam-v5-{seed}")
+    menu = ["lab/a@low", "lab/a@high", "lab/b", "lab/c", "lab/d"]
+    by = {f"set{k}": [f"set{k}-q{i}" for i in range(400)] for k in range(4)}
+    weights = {"set0": 500_000, "set1": 250_000, "set2": 150_000, "set3": 100_000}
+    ring = [(f"5Hk{i:02d}", f"5Ck{i % 7}") for i in range(13)]
+    owner = {f"head{h}": f"5Ck{h}" for h in range(6)}
+    specs, spec_docs = [], {}
+    budget = exam_v5.EXAM_CALLS_PER_HOTKEY
+    for e in range(3):
+        nonce = hashlib.sha256(f"exam-v5-{seed}-{e}".encode()).digest()
+        pool = exam_v5.draw_exam(nonce, dct({k: seq(v) for k, v in by.items()}), dct(weights), 600)
+        picks = {}
+        for h in range(6):
+            if h == 1:
+                picks[f"head{h}"] = list(picks["head0"])
+            elif h == 5:
+                picks[f"head{h}"] = [rng.choice(menu + ["off/x", ""]) for _ in pool]
+            else:
+                picks[f"head{h}"] = [rng.choice(menu[:3] if rng.random() < 0.7 else menu)
+                                     for _ in pool]
+        exam_v5.EXAM_CALLS_PER_HOTKEY = 12 if e == 1 else budget
+        try:
+            spec = exam_v5.build_spec(26_600 + e, nonce, dct({h: list(p) for h, p in picks.items()}),
+                                      seq(menu), pool, seq(ring), "lab/b")
+        finally:
+            exam_v5.EXAM_CALLS_PER_HOTKEY = budget
+        specs.append(spec)
+        spec_docs[f"epoch_{e}"] = {"hash": spec.spec_hash(), "json": spec.to_json(),
+                                   "assigned": {hk: exam_v5.assigned_cells(spec, hk)
+                                                for hk, _ in ring}}
+    ck = dict(ring)
+    votes = []
+    for spec in specs:
+        for cell in spec.cells:
+            for hk in spec.assignment[cell]:
+                votes.append(exam_v5.Vote(spec.epoch, cell[0], cell[1], hk, ck[hk],
+                                          rng.choice([0, exam_v5.Y_SCALE, 3_333]),
+                                          rng.randint(0, 2_000_000), rng.random() < 0.08))
+            if rng.random() < 0.05:
+                votes.append(exam_v5.Vote(spec.epoch, cell[0], cell[1], "5Hstranger", "5Cx", 0, 1,
+                                          False))
+    if votes:
+        votes.append(votes[0])                     # a double vote: both copies drop
+    cost = {e: 1_000 * (i + 1) ** 3 for i, e in enumerate(menu)}
+    heads = sorted(owner)
+    mean = {h: exam_v5.mean_pick_cost_nd(specs, h, cost) for h in heads}
+    mean.update(cost)
+    items = {}
+    for x in heads:
+        for y in heads:
+            if x < y:
+                got = exam_v5.comparison_items(seq(specs), seq(votes), x, y,
+                                               frozenset({owner[x], owner[y]}), mean,
+                                               lambda q: q.split("-")[0])
+                items[f"{x}~{y}"] = {k: sorted(v) for k, v in sorted(got.items())}
+        got = exam_v5.baseline_items(seq(specs), seq(votes), x, frozenset({owner[x]}), mean,
+                                     lambda q: q.split("-")[0])
+        items[f"{x}~B*"] = {k: sorted(v) for k, v in sorted(got.items())}
+    if not any(v for d in items.values() for v in d.values()) or "head0~head1" not in items:
+        raise SystemExit("the exam_v5 stage no longer produces paired items")
+    edges = [str(arena_score.log2_fixed(n, d)) for n, d in
+             ((1, 1), (3, 1), (500_000, 11), (7, 1024), (10**30 + 7, 3))]
+    edges += [arena_score.log_mean_nd(a, b) for a, b in ((0, 0), (1, 10**9), (440_000, 1_200_000))]
+    edges += [str(arena_score.k_pair(a, b)) for a, b in ((1, 1), (620_000, 1_204_000),
+                                                         (10**12, 10**12))]
+    edges += [arena_score.item_units(exam_v5.Y_SCALE, 0, 5, 7, arena_score.value_scale_nd(a, b))
+              for a, b in ((620_000, 1_204_000), (1, 1), (10**12, 10**12))]
+    return {"exam_spec_v5": spec_docs, "arena_items_v5": {"items": items, "edges": edges}}
 
 
 def run_in_subprocess(seed: int, perturb: bool) -> dict:

@@ -4,6 +4,55 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+## [0.8.0] - unreleased
+
+### Upgrade BEFORE block 9,587,880 (e00026633): protocol v5
+- **Protocol v5 switches on at block 9,587,880** (compiled as
+  `FINNEY_V5_ACTIVATION_BLOCK`; the finney compose sets
+  `FUGAL_V5_ACTIVATION_BLOCK` to the same value). Until that block everything
+  runs v4 exactly.
+- **Validators:** update, `uv sync --locked --extra tee`, `python
+  neurons/validator.py --check`, restart, before the block. Keep an archive
+  endpoint behind the connection (`FUGAL_ARCHIVE_ENDPOINTS`).
+- **Miners:** a new TD on the v0.8.0 image with its frozen finney compose
+  before the block; keep the v4 TD serving until then. Retune your head's
+  `lam` (it is now read) and retrain for the new exam (`docs/MINER_GUIDE.md`,
+  "Moving to protocol v5").
+- At the block the seat and the evidence window start empty, and every share
+  burns until a router beats the best single model.
+
+### Changed — protocol v5: routers are paid for RouterArena's score (consensus)
+- **The score is RouterArena's own trade-off.** A head is judged on the
+  answers its real picks get and what they cost, on fresh questions:
+  S = accuracy − ln(mean cost per query)/k, with k taken from RouterArena's
+  formula at the two compared routers' costs (`fugal_subnet/arena_score.py`,
+  `docs/decisions/ARENA_V5.md`). Prediction odds no longer decide the seat.
+- **A RouterArena-like exam pool:** questions from the same public source
+  datasets RouterArena samples, none of RouterArena's own items, weighted to
+  its dataset mix and graded the way it grades them (`graders_arena.py`,
+  pinned).
+- **Heads pick with their own `lam`** (in (0, 10000]): argmax of the
+  predicted success minus lam × the entry's pick cost.
+- **The exam.** Each epoch the root publishes, two epochs ahead, the exam
+  questions, every contender's picks and the cells (question, entry) where
+  picks differ (`fugal_subnet/exam_v5.py`); every validator recomputes it.
+  Each cell is answered by three miners of different coldkeys inside their
+  TDs; neither compared operator's votes ever judge a comparison.
+- **The seat** (`fugal_subnet/seat_v5.py`): a contender takes it by a bound
+  over the holder above +1/4 S-points; every payable seat must also beat the
+  best single menu entry (B*); an empty seat fills on merit, never by a draw;
+  the holder's own retrained successor replaces it unless shown worse.
+  Pay stays 85/10/5; a seat that does not beat B* burns its share.
+- **Removed from the v5 path:** the odds test and the reference R, the
+  challenge (`--v4-challenge*` do nothing from the block), the activation
+  tie draw, the cost-aware random exploration share (a small coverage share
+  stays, so new entries still get labels).
+- **Spend:** about $0.9 an epoch of measured calls per hotkey (exam cells
+  plus coverage), plus the confidential VM.
+- **Release tooling:** `scripts/set_v5_activation_block.py`,
+  `check_safety_invariants.py --release-v5`, `scripts/rehearsal_v5.py` and
+  `dress_rehearsal.py --scenario v5_flip`.
+
 ## [0.7.0] - 2026-11-22
 
 ### Upgrade BEFORE block 9,572,760 (epoch 26591): protocol v4

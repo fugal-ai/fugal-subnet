@@ -165,8 +165,9 @@ def validate_activation_block(activation_block: int | None, blocks_per_epoch: in
 
 def protocol_version_for_boundary(boundary_block: int, activation_block: int | None,
                                   v3_activation_block: int | None = None, *,
-                                  v4_activation_block: int | None = None) -> int:
-    """The protocol version an epoch is scored under: 1, 2, 3 or 4.
+                                  v4_activation_block: int | None = None,
+                                  v5_activation_block: int | None = None) -> int:
+    """The protocol version an epoch is scored under: 1, 2, 3, 4 or 5.
 
     Consensus-critical, and deliberately keyed on the epoch's BOUNDARY block:
     every block inside one epoch maps to the same boundary, so a retried
@@ -174,8 +175,16 @@ def protocol_version_for_boundary(boundary_block: int, activation_block: int | N
     every peer. Each version applies from its activation boundary itself
     onward. v3 is never before v2: a v3 block with no v2 block is refused;
     likewise v4 before v3 (no release schedules v4 on finney:
-    config.v4_activation_block).
+    config.v4_activation_block), and v5 before v4 (config.v5_activation_block).
     """
+    if v5_activation_block is not None:
+        if v4_activation_block is None or int(v5_activation_block) < int(v4_activation_block):
+            raise ValueError("protocol v5 cannot activate before protocol v4")
+        if int(boundary_block) >= int(v5_activation_block):
+            # The v4 and earlier checks still run on their blocks.
+            protocol_version_for_boundary(boundary_block, activation_block, v3_activation_block,
+                                          v4_activation_block=v4_activation_block)
+            return 5
     if v4_activation_block is not None:
         if v3_activation_block is None or int(v4_activation_block) < int(v3_activation_block):
             raise ValueError("protocol v4 cannot activate before protocol v3")

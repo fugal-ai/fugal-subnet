@@ -340,6 +340,89 @@ def expected_v4(state, *, epoch: int, nonce: bytes, pool: list[dict], scored_ids
                       challenge=tuple(challenge_ids))
 
 
+@dataclass(frozen=True)
+class V5Expected:
+    """What one hotkey's protocol v5 proof must hold for epoch E: the menu
+    and coverage cells as a v4 expectation with no shared, cost-aware or
+    challenge part (`v4`), the root's exam spec hash it answers (None on a
+    coverage-only epoch) and the exam cells it must call: the spec's cells
+    assigned to it whose question is in the pool and whose entry is on the
+    epoch's menu (the TD calls no other: tee/harness, td_v5)."""
+
+    v4: V4Expected
+    spec_hash: str | None
+    exam_cells: frozenset
+
+
+def expected_v5(state, *, epoch: int, nonce: bytes, pool: list[dict], hotkey: str,
+                spec=None, index=None) -> V5Expected:
+    """`V5Expected` for `hotkey` in v5 epoch `epoch` on menu `state`, with
+    `spec` the exam spec the root published for the epoch (None: coverage
+    only). The coverage cells are td_v5.coverage_v5's, drawn outside the
+    spec's questions, exactly as the TD draws them. Pure."""
+    from fugal_subnet import menu_state as ms
+    from fugal_subnet.exam_v5 import assigned_cells
+    from fugal_subnet.tee import td_v5
+
+    if not isinstance(state, ms.MenuState):
+        raise ValueError("a v5 expectation is read from the epoch's menu (a menu_state.MenuState)")
+    ms.validate(state)
+    if state.epoch != int(epoch):
+        raise ValueError(f"the menu given is the menu of epoch {state.epoch}, not of {epoch}")
+    if not hotkey:
+        raise ValueError("a v5 expectation is drawn for a hotkey")
+    if spec is not None and int(spec.epoch) != int(epoch):
+        raise ValueError(f"the exam spec given is for epoch {spec.epoch}, not {epoch}")
+    spec_q = set(spec.questions) if spec is not None else set()
+    cells: frozenset = frozenset()
+    if spec is not None:
+        in_pool = {str(q["question_id"]) for q in pool}
+        on_menu = set(state.ids())
+        cells = frozenset((q, e) for q, e in assigned_cells(spec, hotkey)
+                          if q in in_pool and e in on_menu)
+    coverage = td_v5.coverage_v5(nonce, pool, spec_q, state, hotkey, index=index)
+    v4 = V4Expected(state=state, menu_hash=ms.menu_hash(state), hotkey=hotkey, shared={},
+                    cost_aware={}, coverage=dict(coverage), challenge=())
+    return V5Expected(v4=v4, spec_hash=(spec.spec_hash() if spec is not None else None),
+                      exam_cells=cells)
+
+
+def questions_hash_v5(v5: V5Expected) -> str:
+    """The questions hash a v5 proof carries: the sorted, distinct question ids
+    of its exam cells (`compute_questions_hash`), exactly as the TD computes it
+    (tee/harness, v5 path: `compute_questions_hash(sorted(set(exam_qids)))` over
+    the assigned cells it calls). A coverage-only epoch's is the hash of []. It
+    is never the v4 scored slice's hash: a v5 TD answers no slice."""
+    return compute_questions_hash(sorted({str(q) for q, _e in v5.exam_cells}))
+
+
+def _v5_exam_check(proof: BenchmarkProof, v5: V5Expected) -> str | None:
+    """A v5 proof answers no challenge and its exam calls are exactly its
+    assigned cells (I8): each once, each to the cell's entry, the spec's hash
+    bound into the proof; on a coverage-only epoch, no exam call at all."""
+    if proof.scored is not False or proof.challenge is not None:
+        return "A v5 proof answers no challenge (`scored` false, no `challenge`)"
+    if proof.holder_results:
+        return "A v5 proof makes no holder-side call"
+    exam = [r for r in proof.results if r.exam]
+    if v5.spec_hash is None:
+        if exam or getattr(proof, "spec_hash", None) is not None:
+            return "This epoch is coverage only: the proof carries exam calls or a spec hash"
+        return None
+    if getattr(proof, "spec_hash", None) != v5.spec_hash:
+        return (f"The proof answers exam spec {str(getattr(proof, 'spec_hash', None))[:16]}, "
+                f"not this epoch's {v5.spec_hash[:16]}")
+    got = [(r.question_id, r.routed_model) for r in exam]
+    if len(got) != len(set(got)):
+        return f"{len(got) - len(set(got))} exam cells answered twice"
+    if set(got) != set(v5.exam_cells):
+        missing = len(set(v5.exam_cells) - set(got))
+        extra = len(set(got) - set(v5.exam_cells))
+        return (f"The exam calls are not this hotkey's assigned cells ({missing} missing, "
+                f"{extra} not assigned)")
+    return None
+
+
 def _v4_menu_check(proof: BenchmarkProof, v4: V4Expected) -> str | None:
     """The proof ran on the epoch's menu: it names its hash, and its
     namespace is identity_v4 of that hash (section 4.1; A7). A proof made on
@@ -497,6 +580,7 @@ def verify_proof(
     protocol_version: int = 1,
     menu: str | None = None,
     v4: V4Expected | None = None,
+    v5: V5Expected | None = None,
 ) -> VerifyResult:
     """Verify a miner's TEE-attested benchmark proof.
 
@@ -533,6 +617,20 @@ def verify_proof(
         VerifyResult with pass/fail and reason.
     """
     warnings: list[str] = []
+    if int(protocol_version) >= 5:
+        # Protocol v5: the menu, routes, coverage and head are v4's checks on
+        # the coverage-only V4Expected inside `v5`; the exam replaces the
+        # challenge (_v5_exam_check).
+        if not isinstance(v5, V5Expected) or v4 is not None:
+            raise ValueError("verify_proof under protocol v5 needs this hotkey's V5Expected "
+                             "(expected_v5) and no V4Expected")
+        v4 = v5.v4
+        # A v5 proof's questions hash is its own exam cells' questions, not the
+        # epoch's slice: it is read from `v5` and from nothing else, so a caller
+        # cannot hold every v5 proof to a v4 slice hash (questions_hash_v5).
+        expected_questions_hash = questions_hash_v5(v5)
+    elif v5 is not None:
+        raise ValueError("a V5Expected is for a protocol v5 epoch")
     if int(protocol_version) >= 4:
         # Protocol v4: the namespace is identity_v4 of the epoch's menu hash,
         # so it is read from the epoch's menu and from nothing else.
@@ -663,7 +761,11 @@ def verify_proof(
     #    questions_hash alone proves nothing here: it is a public value, so a
     #    miner can copy it while grading an easier set entirely of its own
     #    choosing. Only comparing the result ids against the slice closes that.
-    if v4 is not None:
+    if v5 is not None:
+        why = _v5_exam_check(proof, v5)
+        if why:
+            return VerifyResult(False, why)
+    elif v4 is not None:
         # Protocol v4: the scored questions are optional, all or none, and
         # the proof says which (_v4_scored_check).
         why = _v4_scored_check(proof, v4, expected_question_ids)

@@ -126,6 +126,7 @@ def run_benchmark(
     protocol_version: int = 1,
     menu: str | None = None,
     v4=None,
+    v5=None,
 ) -> BenchmarkProof:
     """Execute the routing benchmark inside the TEE.
 
@@ -147,10 +148,16 @@ def run_benchmark(
 
         v4: protocol v4 only, the epoch's `td_v4.V4EpochInputs` (its menu
             inputs, question plan, endpoint reader and proposal settings).
+        v5: protocol v5 only, the epoch's `td_v5.V5EpochInputs` (its v4 menu
+            inputs and its exam task, or None: coverage only).
 
     Returns:
         BenchmarkProof with routing results and attestation.
     """
+    if protocol_version >= 5:
+        return _run_benchmark_v5(
+            nonce=nonce, head_bytes=head_bytes, benchmark_pool=benchmark_pool, proxy=proxy,
+            epoch_id=epoch_id, source_hash=source_hash, hotkey=hotkey, v5=v5)
     if protocol_version >= 4:
         return _run_benchmark_v4(
             nonce=nonce, head_bytes=head_bytes, benchmark_pool=benchmark_pool, proxy=proxy,
@@ -567,6 +574,135 @@ def _run_benchmark_v4(*, nonce, head_bytes, benchmark_pool, proxy, hidden_states
                    if challenge is not None else None))
 
 
+# --- protocol v5 (~/projects/fugal-v2-handoff/v5/DESIGN.md section 5; td_v5) -------------
+
+
+def _run_benchmark_v5(*, nonce, head_bytes, benchmark_pool, proxy, epoch_id, source_hash,
+                      hotkey, v5) -> BenchmarkProof:
+    """One protocol v5 epoch inside the TD.
+
+    1. The menu, exactly as under v4 (`v5.menu()`: td_v4.epoch_menu on the
+       v4 session's inputs); the head is checked against it as under v4 and
+       bound into the proof by its hash. The TD makes no picks.
+    2. Endpoint reads before any call; an overpriced provisional entry is
+       not called (as under v4).
+    3. The calls: this hotkey's exam cells (`v5.exam.cells`, the root's spec
+       checked in td_v5.ExamPolicy), then its coverage cells
+       (td_v5.coverage_v5, disjoint from the spec's questions), started in
+       that order. None is started more than `v5.budget_s` after the first
+       (`not_started`) and every one is held to at most `v5.call_deadline_s`,
+       so the proof is ready before the validators' collection whatever a
+       host does. A provisional entry's coverage calls stay within v4's
+       provisional spend cap.
+    4. Each reply is labelled 0..Y_SCALE (td_v5.grade_y; a failed call is 0)
+       and the proof carries the spec's hash (`spec_hash`, None for a
+       coverage-only epoch). `scored` is False: v5 has no challenge.
+    """
+    from fugal_subnet import menu_state as ms
+    from fugal_subnet.head_eval import v4_head_verdict
+    from fugal_subnet.routing_protocol import identity_v4
+    from fugal_subnet.tee import endpoint_reads as er
+    from fugal_subnet.tee import td_v4, td_v5
+
+    if not isinstance(v5, td_v5.V5EpochInputs):
+        raise ValueError("a protocol v5 epoch needs its td_v5.V5EpochInputs")
+    if not hotkey:
+        raise ValueError("a protocol v5 proof is produced for a hotkey")
+
+    # 1. The menu and the head.
+    state = v5.menu()
+    menu_hash = ms.menu_hash(state)
+    requests = {e.id: td_v4.entry_request(state, e.id) for e in state.entries}
+    why = v4_head_verdict(head_bytes, state)
+    if why:
+        raise ValueError(why)
+    weights_hash = hashlib.sha256(head_bytes).hexdigest()
+    nonce_bytes = bytes.fromhex(nonce) if len(nonce) == 64 else nonce.encode()
+    # Every v5 call is on the v5 pool (arena_sets); `benchmark_pool` is the v3
+    # pool the v4 menu plan draws on, used only when no v5 pool is given.
+    v5_pool = list(v5.pool) or list(benchmark_pool)
+    pool_by_id = {q["question_id"]: q for q in v5_pool}
+
+    # 2. Endpoint reads, before any model call.
+    reads = er.read_endpoints(td_v4.wanted_reads(state), v5.v4.fetch_listing)
+    provisional = frozenset(e.id for e in state.entries if e.provisional)
+    skipped = td_v4.overpriced(state, reads)
+
+    # 3. The exam cells, then the coverage cells.
+    scheduled: list[tuple[dict, str, str, dict, str]] = []   # (q, entry, kind, request, price key)
+    exam = v5.exam
+    exam_qids: list[str] = []
+    spec_questions: set[str] = set()
+    if exam is not None:
+        spec_questions = {str(q) for q in getattr(exam.spec, "questions", ())}
+        missing = 0
+        for qid, eid in exam.cells:
+            q = pool_by_id.get(qid)
+            if q is None or eid not in requests:
+                missing += 1
+                continue
+            scheduled.append((q, eid, "exam", requests[eid], eid))
+            exam_qids.append(qid)
+        if missing:
+            logger.warning("Epoch %d: %d of this hotkey's %d exam cells name a question not in "
+                           "this TD's pool or an entry not on the epoch's menu: not called",
+                           v5.epoch, missing, len(exam.cells))
+    coverage = td_v5.coverage_v5(nonce_bytes, v5_pool, spec_questions | set(exam_qids),
+                                 state, hotkey)
+    for qid in sorted(coverage):
+        eid = coverage[qid]
+        if eid not in requests:
+            raise td_v4.MenuRejected(f"coverage names {eid!r}, which is not on the menu")
+        if qid in pool_by_id:
+            scheduled.append((pool_by_id[qid], eid, "coverage", requests[eid], eid))
+
+    if any(s[0].get("grader_id") in SANDBOXED_CODE_CHECKERS
+           or (s[0].get("metadata") or {}).get("checker") for s in scheduled):
+        require_code_sandbox()
+
+    proxy.prices = td_v4.proxy_prices(state)
+    proxy.clear()
+    outcomes = _call_all_v4(
+        proxy, scheduled, epoch_id, budget_s=v5.budget_s, provisional=provisional,
+        skipped=skipped, spend=_ProvisionalSpend(provisional_prices(state, reads)),
+        cut_kinds=td_v5.EXAM_KINDS, call_deadline_s=v5.call_deadline_s)
+    cut = sum(1 for o in outcomes if o.not_started)
+    if cut:
+        logger.warning("Epoch %d: %d of %d calls were not started inside the %ds budget "
+                       "(reported not started)", v5.epoch, cut, len(outcomes), int(v5.budget_s))
+
+    # 4. Label, in the proof's order: exam cells, then coverage.
+    results: list[QuestionResult] = []
+    kept: set[str] = set()
+    for (q, eid, kind, _req, _key), o in zip(scheduled, outcomes):
+        kept.update(o.rids)
+        y = 0 if o.failed else td_v5.grade_y(q, o.text)
+        results.append(QuestionResult(
+            question_id=q["question_id"], routed_model=eid,
+            correct=(y == td_v5.Y_SCALE), cost_usd=float(o.cost),
+            response_hash=hashlib.sha256(o.text.encode()).hexdigest(),
+            prompt_tokens=int(o.prompt_tokens), completion_tokens=int(o.completion_tokens),
+            is_exploration=(kind == "coverage"), failed=o.failed, latency_ms=int(o.latency_ms),
+            provider_cost=o.billed, served_by=o.served_by,
+            not_started=True if o.not_started else None,
+            exam=(kind == "exam"), y=y))
+
+    records = [r for r in proxy.records if r.request_id in kept]
+    by_key: dict[str, list] = {}
+    for r in records:
+        by_key.setdefault(r.model_id, []).append(r.cost_usd)
+    return BenchmarkProof(
+        hotkey=hotkey, epoch_id=epoch_id, nonce=nonce,
+        questions_hash=compute_questions_hash(sorted(set(exam_qids))),
+        weights_hash=weights_hash, source_hash=source_hash,
+        routing_protocol=identity_v4(menu_hash), results=results,
+        total_cost_usd=math.fsum(r.cost_usd for r in records),
+        per_model_costs={k: math.fsum(v) for k, v in sorted(by_key.items())},
+        attestation_quote=b"", timestamp=time.time(),
+        menu_hash=menu_hash, endpoint_reads=reads, scored=False, challenge=None,
+        spec_hash=exam.spec_hash if exam is not None else None)
+
+
 class _ProvisionalSpend:
     """PROVISIONAL_SPEND_CAP_USD over one epoch's provisional exploration
     calls: `hold(worst)` before an attempt (False: not made), `settle(worst,
@@ -650,7 +786,7 @@ def reported_size(size: int, own_started) -> int | None:
 
 def _call_all_v4(proxy, items, epoch_id, *, budget_s=None, provisional=frozenset(),
                  skipped=frozenset(), clock=None, spend_cap=None, call_estimate=None,
-                 spend=None) -> list[_Outcome]:
+                 spend=None, cut_kinds=CHALLENGE_KINDS, call_deadline_s=None) -> list[_Outcome]:
     """Make v4 calls, HARNESS_CONCURRENCY at a time, and return their outcomes
     in the order given. `items` are (question, entry id, kind, request, price
     key); kind is "scored" or "holder" (a challenge's calls) or "explore".
@@ -673,7 +809,12 @@ def _call_all_v4(proxy, items, epoch_id, *, budget_s=None, provisional=frozenset
     once PROVISIONAL_BUDGET_S has passed since the first call; with `spend`
     (a `_ProvisionalSpend`), each attempt of a provisional entry's
     exploration call is held within its cap. A call to an entry in
-    `skipped` is not made. A call not made is failed."""
+    `skipped` is not made. A call not made is failed.
+
+    Protocol v5 (`_run_benchmark_v5`) passes `cut_kinds` ("exam",
+    "coverage"): the budget then cuts those kinds instead of a challenge's,
+    and `call_deadline_s` holds every call to at most that deadline (a
+    provisional entry's to the shorter of it and its own)."""
     from fugal_subnet.tee import td_v4
 
     clock = _clock if clock is None else clock
@@ -690,7 +831,7 @@ def _call_all_v4(proxy, items, epoch_id, *, budget_s=None, provisional=frozenset
 
     def challenge_cut(kind: str, eid: str):
         """(not started, the estimate held for the call while in flight)."""
-        if kind not in CHALLENGE_KINDS:
+        if kind not in cut_kinds:
             return False, None
         if not cut[0] and budget_s is not None and clock() - started_at > budget_s:
             cut[0] = True
@@ -720,6 +861,8 @@ def _call_all_v4(proxy, items, epoch_id, *, budget_s=None, provisional=frozenset
             base = f"{base}:c"
         elif kind == "holder":
             base = f"{base}:h"
+        elif kind == "exam":
+            base = f"{base}:x"
         return base if attempt == 0 else f"{base}:retry"
 
     def attempt(item, n: int, i: int | None = None):
@@ -749,7 +892,7 @@ def _call_all_v4(proxy, items, epoch_id, *, budget_s=None, provisional=frozenset
         if eid in skipped or (eid in provisional and clock() - started_at > PROVISIONAL_BUDGET_S):
             return rid, None, 0, False
         held = None
-        if spend is not None and kind == "explore" and eid in provisional:
+        if spend is not None and kind in ("explore", "coverage") and eid in provisional:
             held = spend.worst(eid, q)
             if not spend.hold(held, lambda: clock() - started_at <= PROVISIONAL_BUDGET_S):
                 logger.warning("A provisional call (%s) is not made: the epoch's provisional "
@@ -758,10 +901,14 @@ def _call_all_v4(proxy, items, epoch_id, *, budget_s=None, provisional=frozenset
         _request_ctx.request_id = rid
         t0 = clock()
         try:
-            # Only a provisional entry's call asks for a deadline of its own.
+            # Only a provisional entry's call asks for a deadline of its own
+            # under v4; under v5 every call is held to `call_deadline_s`.
+            deadline = PROVISIONAL_CALL_DEADLINE_S if eid in provisional else None
+            if call_deadline_s is not None:
+                deadline = (int(call_deadline_s) if deadline is None
+                            else min(deadline, int(call_deadline_s)))
             text = _call_model(proxy, price_key, q, request=request,
-                               **({"deadline_s": PROVISIONAL_CALL_DEADLINE_S}
-                                  if eid in provisional else {}))
+                               **({"deadline_s": deadline} if deadline is not None else {}))
         finally:
             _request_ctx.request_id = ""
             if held is not None:

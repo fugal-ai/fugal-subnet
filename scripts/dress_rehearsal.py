@@ -29,6 +29,8 @@ Scenarios
            scripts/dress_rehearsal_v4.py, and scripts/rehearsal_v4.py)
   v4_seat_menu  the v4 fast crown and chain proposals (not part of "all"; see
            scripts/dress_rehearsal_v4_seat.py)
+  v5_flip  protocol v5 across its activation block (not part of "all"; see
+           scripts/dress_rehearsal_v5.py, and scripts/rehearsal_v5.py)
 
 No API spend is possible: model replies are stubbed deterministically and
 priced through the real pinned table.
@@ -657,7 +659,7 @@ def run_scenarios(args, report: Report) -> int:
     if "v3_flip" in want:
         # A third validator, started late from the root's reveals.
         coldkeys.append("dr_val3")
-    if "v4_flip" in want or "v4_seat_menu" in want:
+    if "v4_flip" in want or "v4_seat_menu" in want or "v5_flip" in want:
         # A fourth miner: the seat needs two contenders and two labellers.
         coldkeys.append("dr_m4")
     netuid, wallets = setup_subnet(subtensor, coldkeys)
@@ -677,6 +679,7 @@ def run_scenarios(args, report: Report) -> int:
         "v4_flip": lambda p: _scenario_v4_flip(report, subtensor, netuid, wallets, p, args),
         "v4_seat_menu": lambda p: _scenario_v4_seat_menu(report, subtensor, netuid, wallets, p,
                                                          args),
+        "v5_flip": lambda p: _scenario_v5_flip(report, subtensor, netuid, wallets, p, args),
     }
 
     try:
@@ -710,6 +713,13 @@ def _scenario_v4_seat_menu(report, subtensor, netuid, wallets, procs, args):
 
     dress_rehearsal_v4_seat.scenario_v4_seat_menu(sys.modules[__name__], report, subtensor,
                                                   netuid, wallets, procs, args)
+
+
+def _scenario_v5_flip(report, subtensor, netuid, wallets, procs, args):
+    from scripts import dress_rehearsal_v5
+
+    dress_rehearsal_v5.scenario_v5_flip(sys.modules[__name__], report, subtensor, netuid,
+                                        wallets, procs, args)
 
 
 def _stop(procs) -> None:
@@ -1893,7 +1903,7 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scenario", default="all",
                     choices=["a", "b", "c", "d", "e", "v2_flip", "v3_flip", "v4_flip",
-                             "v4_seat_menu", "all"])
+                             "v4_seat_menu", "v5_flip", "all"])
     ap.add_argument("--keep-chain", action="store_true",
                     help="Leave the chain container running afterwards")
     ap.add_argument("--epochs", type=int, default=12,
@@ -1920,7 +1930,8 @@ def main() -> int:
 
     try:
         from scripts.dress_rehearsal_v4 import ARCHIVE_PORT
-        v4 = args.scenario in ("v4_flip", "v4_seat_menu")
+        # v5_flip reuses v4_flip's world: its archive node and epoch length.
+        v4 = args.scenario in ("v4_flip", "v4_seat_menu", "v5_flip")
         start_chain((ARCHIVE_PORT,) if v4 else ())
         subtensor0 = wait_for_chain()
         from scripts.setup_local_testnet import calibrate_epoch_interval

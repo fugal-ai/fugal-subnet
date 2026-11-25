@@ -32,7 +32,7 @@
 # kept in the frozen app-compose files beside this one.
 services:
   miner:
-    image: ghcr.io/fugal-ai/fugal-miner@sha256:3bb518d0a0b2934c87ea37f31c12695672d6b8ed3530ef44b85b032241245ea1
+    image: ghcr.io/fugal-ai/fugal-miner@sha256:6607ec0e37430859e2131153dda89e5e4f32e38ba857015079807f90f2dada87
     restart: unless-stopped
     ports:
       - "8091:8091"   # axon: validators reach the miner here (open to the world)

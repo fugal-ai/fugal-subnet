@@ -218,6 +218,10 @@ _V1_V3_ONLY = (
     "2.3 item 32); a v4 epoch's plausibility minimum is EXPLORE_PRIVATE_MIN_SAMPLES_V4",
     "v1's copy detection (dedup.find_duplicates), which a v4 epoch does not run",
 )
+# Protocol v5's names (~/projects/fugal-v2-handoff/v5/DESIGN.md): no v4 epoch
+# reads them (a v5 proof field is absent from every v4 proof, and the v5 TD
+# path runs only from the v5 activation); the v5 digest registers them.
+_V5_ONLY = "protocol v5 only, registered by the v5 digest (consensus_v5); no v4 epoch reads it"
 NOT_V4: dict[str, dict[str, str]] = {
     "fugal_subnet.config": {
         "V4_ACTIVATION_BLOCK_ENV": "recorded in the section's `activation` part",
@@ -361,6 +365,18 @@ NOT_V4: dict[str, dict[str, str]] = {
     "fugal_subnet.tee.proof": {
         "TPM_INTERMEDIATES_MAX": "the TPM half of attestation, v1-v3 verification",
         "TPM_INTERMEDIATE_MAX_BYTES": "the TPM half of attestation, v1-v3 verification",
+        "V5_RESULT_KEYS": _V5_ONLY,
+        "V5_PROOF_KEYS": _V5_ONLY,
+    },
+    "fugal_subnet.tee.td_v5": {
+        "SPEC_LAG": _V5_ONLY,
+        "COVERAGE_CALLS": _V5_ONLY,
+        "Y_SCALE": _V5_ONLY,
+        "EXAM_BUDGET_S": _V5_ONLY,
+        "EXAM_CALL_DEADLINE_S": _V5_ONLY,
+        "REVEAL_SPEC_KEY": _V5_ONLY,
+        "MAX_SPEC_REVEAL_BYTES": _V5_ONLY,
+        "EXAM_KINDS": _V5_ONLY,
     },
     # Read by v1-v3's seat and not by v4's (seat_v4 replaces it; the seat
     # package's deletions, SEAT_MINIMAL_V4.md 12).
@@ -557,6 +573,35 @@ for _module, _names in _CLOSURE_REGISTERED.items():
 for _module, _reasons in _CLOSURE_NOT_V4.items():
     NOT_V4.setdefault(_module, {}).update(_reasons)
 
+# Protocol v5's names: read only by a v5 epoch (from config.v5_activation_block),
+# which consensus_v5 registers; a v4 epoch reads none of them.
+_V5_ONLY = ("a protocol v5 constant: read only from the v5 activation block on and "
+            "registered by consensus_v5; a v4 epoch reads none of it")
+_V5_NAMES: dict[str, tuple[str, ...]] = {
+    "fugal_subnet.config": (
+        "FINNEY_V5_ACTIVATION_BLOCK", "V5_ACTIVATION_BLOCK_ENV", "V5_ACTIVATION_BLOCK_MALFORMED",
+        "ARENA_A_REF_V5", "EXAM_QUESTIONS_V5", "EXAM_BASELINE_QUESTIONS_V5", "EXAM_VOTES_V5",
+        "EXAM_CALLS_PER_HOTKEY_V5", "COVERAGE_CALLS_V5", "WINDOW_EPOCHS_V5", "N_MIN_V5", "N0_V5",
+        "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5", "CONTENDERS_MAX_V5", "SPEC_LAG_V5",
+        "HEAD_LAM_MAX_V5", "Y_SCALE_V5", "EXAM_BUDGET_S_V5", "EXAM_CALL_DEADLINE_S_V5",
+        "BASELINE_MIN_PAIRS_V5", "FRESH_RESERVE_EPOCHS_V5", "COVERAGE_PARTITION_V5",
+        "EMBEDDINGS_V5_SHA256", "EMBEDDINGS_V5_URL",
+        # v5's own env lists: kept out of CONSENSUS_ENV_INPUTS / OPERATIONAL_ENV_VARS
+        # (registered above) so the v4 digest stays the v0.7.0 value.
+        "CONSENSUS_ENV_INPUTS_V5", "OPERATIONAL_ENV_VARS_V5"),
+    "fugal_subnet.benchmarks.loader": ("DEFAULT_POOL_FILE_V5",),
+    "fugal_subnet.arena_score": (
+        "Y_SCALE", "UNITS_PER_POINT", "A_REF", "NANO", "ARENA_BETA", "ARENA_COST_MAX_PER_1K",
+        "ARENA_COST_MIN_PER_1K", "NANO_PER_QUERY_PER_USD_PER_1K", "COST_MAX_ND", "COST_MIN_ND",
+        "LOG2_BITS", "LN2", "LOG2_SPAN"),
+    "fugal_subnet.exam_v5": (
+        "EXAM_QUESTIONS", "EXAM_BASELINE_QUESTIONS", "EXAM_VOTES", "EXAM_CALLS_PER_HOTKEY",
+        "HEAD_LAM_MAX", "Y_SCALE", "FAILED_CELL_MIN_VOTERS", "_NO_PICK"),
+    "neurons.validator": ("V5_MENU_CATEGORY",),
+}
+for _module, _names in _V5_NAMES.items():
+    NOT_V4.setdefault(_module, {}).update(dict.fromkeys(_names, _V5_ONLY))
+
 # The names each pre-v4 module had in the v3 release. They are classified
 # by the v1-v3 mechanisms (the scoring block, the protocol identity, the
 # environment lists); v4 reads them through those. A name added since is
@@ -632,11 +677,13 @@ PRE_V4: dict[str, dict[str, str]] = {
 # A name added to or moved between those classes changes a hash, and
 # problems() fails until the line here is updated in the same commit.
 CLASS_PINS: dict[str, tuple[str, str]] = {
+    "fugal_subnet.arena_score": ("1ac5026690406c9b", "4f53cda18c2baa0c"),
     "fugal_subnet.axon_allowlist": ("250f7ed2869c7fa2", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.code_sets": ("74febd3366d2f6df", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.gpqa": ("00069def9aadd4c0", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.livecode": ("1ac5675e8cb17526", "4f53cda18c2baa0c"),
-    "fugal_subnet.benchmarks.loader": ("d5a9f08b55acc9aa", "4f53cda18c2baa0c"),
+    # v5: DEFAULT_POOL_FILE_V5 added to NOT_V4 (v5 only)
+    "fugal_subnet.benchmarks.loader": ("973c4dc0e93d75ae", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.math_": ("d9a4e097379678c2", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.mmlu": ("35614e83f6cc1105", "4f53cda18c2baa0c"),
     "fugal_subnet.benchmarks.v2_sets": ("688a22339353c2e5", "4f53cda18c2baa0c"),
@@ -646,11 +693,17 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.code_gate": ("2745c98ee9a82e5e", "4f53cda18c2baa0c"),
     "fugal_subnet.collect": ("bac0db6b872fcae9", "4f53cda18c2baa0c"),
     "fugal_subnet.commit_reveal": ("353e9a600cb5d95c", "4f53cda18c2baa0c"),
-    "fugal_subnet.config": ("365127c95b54f713", "2b9b61905b4c5c4f"),
+    # v5: EXAM_BUDGET_S_V5, EXAM_CALL_DEADLINE_S_V5, BASELINE_MIN_PAIRS_V5 and
+    # FRESH_RESERVE_EPOCHS_V5 added to NOT_V4 (v5 only)
+    # and (lane W4) COVERAGE_PARTITION_V5, EMBEDDINGS_V5_SHA256, EMBEDDINGS_V5_URL
+    # and CONSENSUS_ENV_INPUTS_V5, OPERATIONAL_ENV_VARS_V5 (v5's env names moved
+    # out of the two v4-registered lists, so the v4 digest stays v0.7.0's)
+    "fugal_subnet.config": ("c962f1128e44f594", "2b9b61905b4c5c4f"),
     "fugal_subnet.copy_rule": ("5191ef53fd3d75ce", "4f53cda18c2baa0c"),
     "fugal_subnet.determinism": ("ea226adaa11ca2b1", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_logger": ("eaa876bbf2003294", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_plan": ("924655747f80455e", "4f53cda18c2baa0c"),
+    "fugal_subnet.exam_v5": ("324515b25eb537cb", "4f53cda18c2baa0c"),
     "fugal_subnet.head_archive": ("1ee99a516c64ffb9", "4f53cda18c2baa0c"),
     "fugal_subnet.head_odds": ("ae8ff68a53819d51", "4f53cda18c2baa0c"),
     "fugal_subnet.head_publisher": ("9a42d3792535d56c", "4f53cda18c2baa0c"),
@@ -674,10 +727,13 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.tee.attestation": ("1dadc7b329998b57", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.dstack_client": ("a08d24a047e69d88", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.harness": ("51a04a98ca3b4992", "778863ca476ad168"),
-    "fugal_subnet.tee.proof": ("0d0db7d0895af1c0", "4f53cda18c2baa0c"),
+    # 2026-11-24: V5_RESULT_KEYS and V5_PROOF_KEYS added NOT_V4 (protocol v5 only).
+    "fugal_subnet.tee.proof": ("1883d2ea8683f259", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.provision": ("ae01f2857fd671ae", "6bd87895b607fada"),
     "fugal_subnet.tee.runtime": ("da960f72963c78a0", "863f9b513d6a0d0e"),
     "fugal_subnet.tee.td_v4": ("f31b734466ec3059", "4f53cda18c2baa0c"),
+    # 2026-11-24: the v5 TD module; its constants are protocol v5 only (NOT_V4).
+    "fugal_subnet.tee.td_v5": ("7c1aa8462bbc9796", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.tpm": ("9bcdc262923867b7", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.v4_options": ("1ee788d99f45a154", "4f53cda18c2baa0c"),
     "fugal_subnet.tee.verify": ("4f53cda18c2baa0c", "c6becece9cf88d68"),
@@ -687,7 +743,8 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.v4_replay": ("4acd41d1fd7315e3", "4f53cda18c2baa0c"),
     "fugal_subnet.validator_setup": ("9af859d9fe09d19f", "4f53cda18c2baa0c"),
     "neurons.miner": ("cd54bd02c0ef3108", "4f53cda18c2baa0c"),
-    "neurons.validator": ("fc0d1bd92ad244c9", "4f53cda18c2baa0c"),
+    # V5_MENU_CATEGORY (v5's one menu-step category) joins NOT_V4: a v5-only name.
+    "neurons.validator": ("4eae4af7339adc1d", "4f53cda18c2baa0c"),
 }
 
 # Every module whose constants are classified above: the v4 modules, and the
@@ -712,6 +769,22 @@ NOT_SCANNED: dict[str, str] = {
                                           "fixtures no validator reads",
     "fugal_subnet.attacks.memo_seat_world": "an attack suite's world (tooling): its constants are "
                                             "fixtures no validator reads",
+    "fugal_subnet.attacks.seat_v5_world": "an attack suite's world (tooling): its constants are "
+                                          "fixtures no validator reads",
+    "fugal_subnet.seat_v5": "protocol v5 only: decides nothing a v4 epoch publishes; its constants "
+                            "are in the v5 section (consensus_v5.REGISTERED)",
+    "fugal_subnet.consensus_v5": "the v5 registry",
+    "fugal_subnet.graders_arena": "protocol v5 only, and hash-pinned whole (check_safety_invariants "
+                                  "pins its sha256; consensus_v5.PINNED_FILES puts it in the v5 "
+                                  "digest): every byte of it is covered, constants included",
+    "fugal_subnet.benchmarks.arena_sets": "protocol v5 only: the v5 pool's builder and reader; the "
+                                          "pool it builds is pinned by pool_manifest_v5.json's "
+                                          "content hash and its keyed order and exam/coverage "
+                                          "split by POOL_SALT (consensus_v5.REGISTERED)",
+    "fugal_subnet.v5_epoch": "protocol v5 only: a v5 epoch's votes, window, B*, seat and next "
+                             "exam; its constants are in the v5 section (consensus_v5.REGISTERED)",
+    "fugal_subnet.v5_node": "protocol v5 only: a validator's v5 state on disk (operational: the "
+                            "kept head files' size bound and name pattern decide no score)",
 }
 
 # The pinned files a v4 epoch reads, by role: (path under fugal_subnet/,

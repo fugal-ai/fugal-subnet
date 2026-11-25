@@ -6658,3 +6658,133 @@ Unknown or pre-transition identities fail admission; no old evidence is resumed.
 `tests/test_success_contract.py` enforces these boundaries, and the reference module
 is checked against its exact core source in CI. The candidate manifest blocks live
 startup/export pending review. See `SUCCESS_CONTRACT.md` for the reset runbook.
+
+## Protocol v5 (draft; applies only from a v5 activation block no release has set)
+
+Protocol v5 scores a head on its real picks at RouterArena's trade-off between
+accuracy and cost. An S-point is one accuracy point after the log-cost
+adjustment of RouterArena's own score (`fugal_subnet/arena_score.py`); every
+comparison below is a paired mean of per-question items in S-points, bounded
+by `seat_bound.lower_bound` (valid at every look, alpha 1%).
+
+### I1 — v5: the exam spec is a pure function of published data
+
+The exam for epoch E (its questions, each contender's pick, the cells to
+label, the baseline B* and its questions, the ring of hotkeys and the cell
+assignment) is computed from the boundary nonce, the heads verified by E−2,
+the menu state and the pool alone (`exam_v5.build_spec`). The root publishes
+it in its reveal of E−2; every validator recomputes it, and a validator whose
+recomputation differs from the root's treats that epoch's exam as void
+(nobody is scored on it). Check: determinism stages `exam_spec_v5`,
+`arena_items_v5`, `seat_v5` (`scripts/check_determinism.py --perturb`).
+
+### I3 — v5: the seat in one rule
+
+`fugal_subnet/seat_v5.py`, re-run every epoch on the window's items:
+
+- **Incumbent.** The holder, if it stands, is not an exact copy, and is not
+  shown worse than B*.
+  Otherwise there is none and the former holder joins the history.
+- **Upgrade.** A newer head of the holder's own coldkey replaces it unless it
+  is *shown* worse: the holder's bound over it passes −UPGRADE_MARGIN_V5
+  (+1/4). With fewer than N_MIN_V5 paired questions nothing is shown, so a
+  fresh retrain is not shown worse. It must also be payable itself (its bound
+  over B* passes 0). It keeps the holder's place (`holder_since`).
+- **Standing.** A holder that stops standing goes to the history and the
+  seat refills on merit the same epoch. A returning former holder has no
+  resume right: it walks as an ordinary contender in first-commit order.
+- **Walk.** The other contenders, earliest first commit first (ties by head
+  hash): C replaces the incumbent when its bound over the incumbent passes
+  TAKE_MARGIN_V5 (or there is none) and its bound over B* passes 0. A later
+  head must beat whoever holds the seat at its turn, so neither a farm of
+  near-copies nor a lucky late copy of an earlier head passes without the
+  margin. An empty seat is filled only this way: on merit, never by a draw.
+- **Contenders.** Per coldkey the newest standing head, plus the holder; at
+  most CONTENDERS_MAX_V5, the earliest commits kept. Exact copies
+  (`copy_rule` ownership) never contend.
+- **Pay.** 85/10/5 to the holder and the history (`payout.seat_weights`); a
+  seat is paid only while its head is live this epoch and its bound over B*
+  passes 0. Every unpaid share burns. While no head beats
+  the best single model, the whole weight burns.
+
+Check: `tests/test_seat_v5.py`, the `seat_v5` determinism stage, the attack
+world `fugal_subnet/attacks/seat_v5_world.py`.
+
+### I5 — v5: no head is judged on labels it could have read
+
+A head is fixed by its commitment, so it can only have learned the labels of
+questions published before it was committed. Two rules on the published set
+(`memo_v4.Published`, the chain-driven view every node holds; from v5 a
+reveal's exam and coverage votes are published outcomes too,
+`memo_v4.published_ids`):
+
+- **The exam is fresh.** Its questions are drawn from the pool's unpublished
+  reserve only, leaving out every question of a spec already built, at
+  ceil(R / FRESH_RESERVE_EPOCHS_V5) an epoch (at most EXAM_QUESTIONS_V5)
+  (`v5_epoch.next_spec`, `reserve`, `exam_size`). When a question is drawn,
+  none of its labels is public.
+- **Per-comparison eligibility.** A question counts in the comparison of X
+  with Y (or of X with B*) only when its labels were never published or were
+  first published in an epoch at or after the later of the compared heads'
+  commit epochs (`v5_epoch.eligible_after`): a reveal of epoch f is public
+  from epoch f + 1, so a head committed in epoch c can have read it only if
+  f ≤ c − 1. This covers what the draw cannot see, a question published by
+  another path between the draw and the exam.
+
+- **Coverage never touches the exam.** The v5 pool is split once, by a keyed
+  hash of each question id (`arena_sets.in_coverage`, COVERAGE_PARTITION_V5
+  of it to coverage), into an exam part and a coverage part. Exams draw only
+  the exam part; coverage (the training labels) draws only the coverage part
+  and reuses it freely (`td_v5.coverage_v5`). Coverage labels being public
+  therefore never shrinks the exam's reserve.
+
+So memorisation gains nothing by construction; v4's statistical per-head
+refusal is not used. The reserve is the evidence's budget: it shrinks by about
+1/FRESH_RESERVE_EPOCHS_V5 an epoch, and a release that adds questions raises
+it. Check: `tests/test_v5_memo_resync.py`, the `v5_epoch` determinism stage,
+`tests/test_graders_arena.py` (the partition).
+
+### v5: routers see the question, never RouterArena's template
+
+The exam pool's questions carry two texts (`benchmarks/arena_sets.py`): the
+templated `prompt` RouterArena's harness builds (the answering model gets it,
+and grading needs its answer format) and `route_text`, the row's own content
+(context when non-empty, question, options as listed) without any template
+sentence, label or format instruction. Routers are scored on picks computed
+from the embeddings of `route_text` only (the pinned EMBEDDINGS_V5_SHA256
+file), because RouterArena forbids routing on its harness's instruction text
+and a real user sends none. `route_text` is in the pool's content hash
+(pool_manifest_v5.json). Check: `tests/test_graders_arena.py`.
+
+### I4 — v5: an exam cell is a vote of operators, never of the compared ones
+
+Each exam cell (question, menu entry) is labelled by EXAM_VOTES_V5 hotkeys of
+distinct coldkeys, assigned by a keyed walk of the ring. Votes are pooled as
+exploration pairs are (failed calls dropped, the plausibility check, the
+median). In the comparison of X with Y, no vote from X's or Y's coldkey
+counts; a question left without a usable vote gives that comparison no item.
+A cell whose usable votes all failed, from at least two coldkeys
+(`exam_v5.FAILED_CELL_MIN_VOTERS`), counts as a wrong answer at zero cost, as
+the product would fail it. A cell on an entry that left the menu between the
+spec (E−2) and its exam (E) is not called and not expected
+(`tee/verify.expected_v5`, the harness): it has no vote at all, so it gives
+that comparison no item and never counts as a failure.
+So no operator's re-runs, withheld calls or own grading can move its own
+comparisons. Check: `tests/test_exam_v5.py`.
+
+### I8 — v5: a TD labels only the cells assigned to it
+
+A v5 TD answers the cells the exam spec assigns to its hotkey (checked
+against the root's committed spec hash) and its coverage share, nothing
+else; a vote for a cell not assigned to the voting hotkey is refused by
+verification. Check: `tests/test_td_v5.py`.
+
+### v5 state: rebuilt from the root's reveals
+
+A validator's v5 state (seat, head book, window records, the specs ahead) is
+a pure function of the root's reveals (`v5_epoch.rebuild`). A node with no
+state or a stale one rebuilds it before it scores (`v5_node.V5Node.resync`,
+called from the epoch loop): a fresh follower holds the root's state. The
+bytes of the heads in the book are kept beside the state, each checked
+against its sha256 when read back, so a restart still gives the holder and
+the contenders their picks. Check: `tests/test_v5_memo_resync.py`.

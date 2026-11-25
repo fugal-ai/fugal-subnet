@@ -62,6 +62,20 @@ POOL_V3_DATA_SHA256 = {
     "exclusions_v3.json": "ee346f7f486372351336a6cfb23143e927a29222d47c1d41562b9de5dc1cf26e",
     "code_keep_v3.json": "a02c71940b7765b45fcb315153f0686aeaa78d56e6180afa76aafa604a20f4bc",
 }
+# Protocol v5 (RouterArena) grading contract: fugal_subnet/graders_arena.py, RouterArena's
+# metrics ported (parity: scripts/parity_graders_arena.py). Pinned like graders_code.py.
+#   (first version) 2026-11-24, lane P.
+ARENA_GRADER_SHA256 = "e74f46a4938015395badacfb484a86f114cb6745d6fa945ddcf2d649f773c03d"
+# The v5 pool's pinned data (scripts/build_pool_v5.py writes the manifest and the exclusions;
+# arena_prompts.json is RouterArena's prompt templates, verbatim). Rebuild and re-pin together.
+POOL_V5_DATA_SHA256 = {
+    "arena_prompts.json": "00ce256570d4dc7db804ee36f511331084c850c1ad39c16040f3143189a1a65f",
+    "exclusions_routerarena.json": "73fcf11244b1df0a6f2fd8498de6be6b0b44b38da2b4e7c8fccd647d11349ea6",
+    # Re-pinned 2026-11-24 (lane W4): items gain route_text (what routers embed, without
+    # RouterArena's instruction template), so the content hash moved; prompts, golds, ids
+    # and exclusions are byte-identical.
+    "pool_manifest_v5.json": "5daf2b1aa555fe371d52aea6326b994cc680b56eb8074297813b8c3264474320",
+}
 # The price table is the consensus cost denominator: every validator prices
 # every proof against it, so an unreviewed edit silently re-scores the whole
 # subnet. Pinned for the same reason graders.py is. Changing prices is a
@@ -513,6 +527,27 @@ def check_pool_v3_data_pinned(errors: list[str]) -> None:
         if actual != pin:
             errors.append(f"fugal_subnet/benchmarks/{name}: hash {actual[:16]}... does not match "
                           f"the pin {pin[:16]}... (it decides which questions are in the v3 pool)")
+
+
+def check_pinned_arena_grader(errors: list[str]) -> None:
+    path = ROOT / "fugal_subnet" / "graders_arena.py"
+    actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    if actual != ARENA_GRADER_SHA256:
+        errors.append(
+            f"fugal_subnet/graders_arena.py: v5 grader hash {actual[:16]}... does not match "
+            f"the pin {ARENA_GRADER_SHA256[:16]}... — a v5 grader change is a consensus break")
+
+
+def check_pool_v5_data_pinned(errors: list[str]) -> None:
+    for name, pin in POOL_V5_DATA_SHA256.items():
+        path = ROOT / "fugal_subnet" / "benchmarks" / name
+        if not path.exists():
+            errors.append(f"fugal_subnet/benchmarks/{name} is missing")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != pin:
+            errors.append(f"fugal_subnet/benchmarks/{name}: hash {actual[:16]}... does not match "
+                          f"the pin {pin[:16]}... (it decides the v5 exam pool or its prompts)")
 
 
 def check_epoch_id_single_source(errors: list[str]) -> None:
@@ -1646,6 +1681,7 @@ MINER_COMPOSE_BLOCKS = (
     ("FUGAL_V2_ACTIVATION_BLOCK", "FINNEY_V2_ACTIVATION_BLOCK"),
     ("FUGAL_V3_ACTIVATION_BLOCK", "FINNEY_V3_ACTIVATION_BLOCK"),
     ("FUGAL_V4_ACTIVATION_BLOCK", "FINNEY_V4_ACTIVATION_BLOCK"),
+    ("FUGAL_V5_ACTIVATION_BLOCK", "FINNEY_V5_ACTIVATION_BLOCK"),
 )
 
 
@@ -1770,8 +1806,12 @@ def check_every_env_constant_classified(errors: list[str]) -> None:
             read.add(a or b)
     lists = {
         "CONSENSUS_ENV_VARS": set(config.CONSENSUS_ENV_VARS),
-        "CONSENSUS_ENV_INPUTS": set(config.CONSENSUS_ENV_INPUTS),
-        "OPERATIONAL_ENV_VARS": set(config.OPERATIONAL_ENV_VARS),
+        # v5's names live in their own lists (kept out of the v4 digest); a
+        # name is classified by the union, so it is in exactly one class.
+        "CONSENSUS_ENV_INPUTS": set(config.CONSENSUS_ENV_INPUTS)
+        | set(getattr(config, "CONSENSUS_ENV_INPUTS_V5", ())),
+        "OPERATIONAL_ENV_VARS": set(config.OPERATIONAL_ENV_VARS)
+        | set(getattr(config, "OPERATIONAL_ENV_VARS_V5", ())),
     }
     for name in sorted(read):
         where = [k for k, v in lists.items() if name in v]
@@ -1950,6 +1990,7 @@ try:
     fingerprint.assert_consensus_overrides_allowed(g)
     out["protocol"] = config.protocol_for_chain(g)
     out["v4_block"] = config.v4_activation_block(g)
+    out["v5_block"] = config.v5_activation_block(g)
     out["epoch_interval"] = config.EPOCH_INTERVAL
     out["root_hotkeys"] = [list(r) for r in config.root_hotkeys_v4(True)]
 except Exception as e:  # noqa: BLE001 - reported
@@ -2240,8 +2281,9 @@ def v4_release_blockers(root: Path | None = None, cfg=None, *, signers: bytes | 
                 (package / "config.py").read_text(encoding="utf-8"))}
                 | {"FINNEY_V2_ACTIVATION_BLOCK"}):
             earlier = getattr(cfg, finney_name, None)
-            if finney_name != "FINNEY_V4_ACTIVATION_BLOCK" and earlier is not None \
-                    and int(block) <= int(earlier):
+            # Only earlier protocols' blocks must precede v4's (v5's comes after).
+            if finney_name not in ("FINNEY_V4_ACTIVATION_BLOCK", "FINNEY_V5_ACTIVATION_BLOCK") \
+                    and earlier is not None and int(block) <= int(earlier):
                 out.append(f"block: FINNEY_V4_ACTIVATION_BLOCK={block} is not after "
                            f"{finney_name}={earlier}")
 
@@ -2435,6 +2477,111 @@ def check_v4_release(errors: list[str]) -> None:
     errors.extend(f"v4 release gate: {why}" for why in v4_release_blockers())
 
 
+def v5_release_blockers(root: Path | None = None, cfg=None, *, probe=None,
+                        v4_blockers=None) -> list[str]:
+    """Why a release that schedules protocol v5 on finney cannot be cut, or []:
+
+    1. v4: every v4 release condition still holds (`v4_release_blockers`):
+       v5 runs inside the v4 image's loop, so a release that breaks v4
+       breaks v5;
+    2. block: FINNEY_V5_ACTIVATION_BLOCK is set, an integer epoch boundary at
+       finney's tempo, and after every earlier compiled finney block (v4's
+       included);
+    3. pinned: consensus_v5.problems() is empty: every registered v5 constant
+       exists and every required pinned file (the arena grader, the v5 pool
+       manifest, the RouterArena exclusions, the exam pool's embeddings pin)
+       ships;
+    4. compose: the newest frozen finney app-compose sets
+       FUGAL_V5_ACTIVATION_BLOCK to the compiled block, and the miner's own
+       startup under that environment reads the same v5 block;
+    5. image: no v5 pinned file is excluded from the image by .dockerignore.
+
+    `root`, `cfg`, `probe` and `v4_blockers` exist for the tests."""
+    import fnmatch
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from fugal_subnet import consensus_v5
+    from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
+
+    if cfg is None:
+        from fugal_subnet import config as cfg
+    root = ROOT if root is None else Path(root)
+    probe = probe or _miner_selection
+    package = root / "fugal_subnet"
+    out: list[str] = []
+
+    # 1. v4 still releasable
+    v4 = v4_release_blockers(root, cfg) if v4_blockers is None else list(v4_blockers)
+    out.extend(f"v4: {why}" for why in v4)
+
+    # 2. the block
+    block = getattr(cfg, "FINNEY_V5_ACTIVATION_BLOCK", None)
+    if block is None:
+        out.append("block: FINNEY_V5_ACTIVATION_BLOCK is not set (config.py); choose an epoch "
+                   "boundary after the v4 block (scripts/set_v5_activation_block.py)")
+    elif type(block) is not int:
+        out.append(f"block: FINNEY_V5_ACTIVATION_BLOCK={block!r} is not an integer block number")
+        block = None
+    else:
+        try:
+            validate_activation_block(block, blocks_per_epoch(FINNEY_EPOCH_INTERVAL_S))
+        except (TypeError, ValueError) as e:
+            out.append(f"block: FINNEY_V5_ACTIVATION_BLOCK={block} is not an epoch boundary ({e})")
+        for finney_name in sorted({f for f, _v in _chain_block_variables(
+                (package / "config.py").read_text(encoding="utf-8"))}
+                | {"FINNEY_V2_ACTIVATION_BLOCK"}):
+            earlier = getattr(cfg, finney_name, None)
+            if finney_name != "FINNEY_V5_ACTIVATION_BLOCK" and earlier is not None \
+                    and block <= int(earlier):
+                out.append(f"block: FINNEY_V5_ACTIVATION_BLOCK={block} is not after "
+                           f"{finney_name}={earlier}")
+
+    # 3. pinned
+    out.extend(f"pinned: {why}" for why in consensus_v5.problems(package, cfg))
+
+    # 4. the frozen compose
+    frozen = sorted((root / "deploy" / "dstack").glob("app-compose.frozen-*-finney.json"))
+    compose_env: dict[str, str] = {}
+    if frozen:
+        try:
+            compose_env = _compose_environment(
+                json.loads(frozen[-1].read_text(encoding="utf-8")).get("docker_compose_file", ""))
+        except ValueError:
+            compose_env = {}
+    if not compose_env:
+        out.append("compose: no readable deploy/dstack/app-compose.frozen-*-finney.json")
+    elif block is not None:
+        rel = frozen[-1].relative_to(root)
+        have = compose_env.get("FUGAL_V5_ACTIVATION_BLOCK")
+        if have != str(block):
+            out.append(f"compose: {rel} sets FUGAL_V5_ACTIVATION_BLOCK={have or '(unset)'}, but "
+                       f"the release compiles FINNEY_V5_ACTIVATION_BLOCK={block}")
+        got = probe(root, compose_env)
+        if "error" in got:
+            out.append(f"compose: the miner refuses to start under {rel}'s environment "
+                       f"({got['error']})")
+        elif got.get("v5_block") != block:
+            out.append(f"compose: under {rel}'s environment the miner reads v5 block "
+                       f"{got.get('v5_block')}, not {block}")
+
+    # 5. the files v5 reads, in the image
+    ignore = root / ".dockerignore"
+    patterns = [ln.strip() for ln in (ignore.read_text(encoding="utf-8").splitlines()
+                                      if ignore.exists() else ())
+                if ln.strip() and not ln.strip().startswith("#")]
+    for _role, (rel, required) in sorted(consensus_v5.PINNED_FILES.items()):
+        path = f"fugal_subnet/{rel}"
+        if required and any(fnmatch.fnmatch(path, p.rstrip("/"))
+                            or path.startswith(p.rstrip("/") + "/") for p in patterns):
+            out.append(f"image: {path} is excluded by .dockerignore")
+    return out
+
+
+def check_v5_release(errors: list[str]) -> None:
+    errors.extend(f"v5 release gate: {why}" for why in v5_release_blockers())
+
+
 def main(argv: list[str] | None = None) -> None:
     """Every check is a hard failure, except the launch gate: the live composes
     must match a frozen app-compose at launch (`--release`, the MAINNET_LAUNCH
@@ -2449,13 +2596,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--release-v4", action="store_true",
                         help="the gate for a release that schedules protocol v4 (implies "
                              "--release); --release runs it too once the v4 block is compiled")
+    parser.add_argument("--release-v5", action="store_true",
+                        help="the gate for a release that schedules protocol v5 (implies "
+                             "--release); --release runs it too once the v5 block is compiled")
     args = parser.parse_args(argv)
     import sys
 
     sys.path.insert(0, str(ROOT))
     from fugal_subnet import config as _config
     v4_gate = args.release_v4 or (args.release and _config.FINNEY_V4_ACTIVATION_BLOCK is not None)
-    args.release = args.release or args.release_v4
+    v5_gate = args.release_v5 or (args.release and getattr(
+        _config, "FINNEY_V5_ACTIVATION_BLOCK", None) is not None)
+    args.release = args.release or args.release_v4 or args.release_v5
 
     errors: list[str] = []
     launch_gate: list[str] = []
@@ -2467,6 +2619,8 @@ def main(argv: list[str] | None = None) -> None:
     check_code_questions_are_graded(errors)
     check_pinned_system_prompt_v3(errors)
     check_pool_v3_data_pinned(errors)
+    check_pinned_arena_grader(errors)
+    check_pool_v5_data_pinned(errors)
     check_routing_data_mirrors_data(errors)
     check_price_table_pinned(errors)
     check_price_table_v2_pinned(errors)
@@ -2496,7 +2650,9 @@ def main(argv: list[str] | None = None) -> None:
     check_every_env_constant_classified(errors)
     check_v4_constants_in_digest(errors)
     check_documented_flags(errors)
-    if v4_gate:
+    if v5_gate:
+        check_v5_release(errors)            # every v4 condition is one of v5's
+    elif v4_gate:
         check_v4_release(errors)
     if errors:
         raise SystemExit("Safety invariant check failed:\n- " + "\n- ".join(errors))
@@ -2506,6 +2662,10 @@ def main(argv: list[str] | None = None) -> None:
         left = v4_release_blockers()
         print(f"Protocol v4 release gate: {len(left)} condition(s) open "
               "(not a failure; `--release-v4` lists them).")
+    if not v5_gate:
+        left = v5_release_blockers(v4_blockers=())
+        print(f"Protocol v5 release gate: {len(left)} condition(s) open "
+              "(not a failure; `--release-v5` lists them).")
     print("Safety invariants passed.")
 
 

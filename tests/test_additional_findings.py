@@ -169,7 +169,8 @@ def test_every_fugal_variable_read_anywhere_in_the_package_is_classified():
         for a, b in pattern.findall(path.read_text(encoding="utf-8")):
             read.add(a or b)
     listed = set(config.CONSENSUS_ENV_VARS) | set(config.CONSENSUS_ENV_INPUTS) \
-        | set(config.OPERATIONAL_ENV_VARS)
+        | set(config.OPERATIONAL_ENV_VARS) | set(config.CONSENSUS_ENV_INPUTS_V5) \
+        | set(config.OPERATIONAL_ENV_VARS_V5)
     assert read - listed == set(), read - listed
     for name in ("FUGAL_SKIP_BENCHMARKS", "FUGAL_POOL_UNPINNED", "FUGAL_OPENROUTER_BASE"):
         assert name in config.CONSENSUS_ENV_VARS, name

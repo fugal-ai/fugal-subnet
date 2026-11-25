@@ -584,7 +584,8 @@ def _epoch_to_run(current_block: int, blocks_per_epoch: int, last_epoch_index: i
 def _epoch_boundary(subtensor, epoch_index: int, blocks_per_epoch: int,
                     activation_block: int | None,
                     v3_activation_block: int | None = None, *,
-                    v4_activation_block: int | None = None) -> tuple[int, str, str, int]:
+                    v4_activation_block: int | None = None,
+                    v5_activation_block: int | None = None) -> tuple[int, str, str, int]:
     """(boundary block, its hash, epoch id, protocol version) of an epoch.
 
     All four come from the boundary block, never the current one, so every
@@ -597,7 +598,8 @@ def _epoch_boundary(subtensor, epoch_index: int, blocks_per_epoch: int,
             epoch_id_for_block(epoch_index),
             protocol_version_for_boundary(boundary_block, activation_block,
                                           v3_activation_block,
-                                          v4_activation_block=v4_activation_block))
+                                          v4_activation_block=v4_activation_block,
+                                          v5_activation_block=v5_activation_block))
 
 
 class _SlicePlan(NamedTuple):
@@ -915,9 +917,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
         # Protocol v4: no release schedules it on finney; another chain may
         # (FUGAL_V4_ACTIVATION_BLOCK, as v3's block before v3 was compiled).
         v4_block = _v4_activation_block(_cfg, genesis)
+        # Protocol v5 (config.v5_activation_block): never before v4.
+        v5_fn = getattr(_cfg, "v5_activation_block", None)
+        v5_block = v5_fn(genesis) if callable(v5_fn) else None
     except ValueError as e:
         raise click.ClickException(str(e)) from e
     _check_v3_blocks_aligned(v3_block, odds_block, EPOCH_INTERVAL, menu_b_blk, v4_block)
+    if v5_block is not None:
+        # An epoch boundary in BLOCKS (blocks_per_epoch), as the v2-v4 blocks are
+        # checked: EPOCH_INTERVAL is seconds (finney 4320 s = 360 blocks).
+        from fugal_subnet.benchmarks.slicer import blocks_per_epoch, validate_activation_block
+        try:
+            validate_activation_block(v5_block, blocks_per_epoch(EPOCH_INTERVAL))
+        except ValueError as e:
+            raise click.ClickException(f"v5 activation block: {e}") from e
+    if v5_block is not None:
+        logger.info("Protocol v5: from the first epoch whose boundary is at or after block %d",
+                    v5_block)
     if v4_block is not None:
         logger.info("Protocol v4: from the first epoch whose boundary is at or after block %d "
                     "(not a finney release: a test or local-chain override)", v4_block)
@@ -1153,8 +1169,25 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             try:
                 v4_plan = _plan_v4.plan_v4(epoch_inputs[3][0])
                 epoch_inputs[4] = (epoch_inputs[3][0], epoch_inputs[3][1], None, None, None)
+                if v5_block is not None:
+                    # Protocol v5 keeps v4's menu and its plan on the v3 pool
+                    # (the epoch's nonce and committed slice); its exam,
+                    # coverage and gold are the v5 pool's (v5_inputs below).
+                    epoch_inputs[5] = epoch_inputs[4]
             except Exception as e:  # noqa: BLE001 - a v4 reason: refused only once v4 is due
                 v4_inputs_error = f"the v4 plan cannot be built on the v3 pool ({e})"
+    # Protocol v5 inputs: the v5 pool (loader.load_pool(5), verified against
+    # pool_manifest_v5.json) and its routing embeddings (route_text, pinned by
+    # config.EMBEDDINGS_V5_SHA256). A live validator with v5 scheduled refuses
+    # to start without them; before the pin exists ("TBD") nothing can run v5.
+    v5_inputs = None
+    if v5_block is not None:
+        try:
+            v5_inputs = _v5_load_inputs(_cfg, live=live)
+        except Exception as e:  # noqa: BLE001 - any failure here is a startup refusal
+            if live:
+                raise click.ClickException(f"protocol v5 inputs could not be loaded: {e}") from e
+            logger.warning("protocol v5 inputs could not be loaded (mock): %s", e)
     role_name = ("none" if role is None else "ROOT" if role.root else
                  "follower (verified)" if role.root_hotkey else "follower")
     # Protocol v4's inputs and refusals, for the READY line and the menu
@@ -1311,6 +1344,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             role=role, my_hotkey=my_hotkey, root_hotkey=root_hotkey,
             root_hotkeys=_cfg.root_hotkeys_v4(on_finney), reference_dir=reference_dir,
             reveal_bucket=REVEAL_BUCKET, cfg=_cfg, state_path=STATE_PATH, menu_node=menu_node)
+    # Protocol v5 (fugal_subnet/v5_node.py): its state beside the validator's,
+    # and, on a follower, the reader of the root's published exam specs.
+    v5_node = None
+    if v5_block is not None:
+        v5_node = _v5_setup(subtensor=subtensor, netuid=netuid, role=role, cfg=_cfg,
+                            on_finney=on_finney, blocks_per_epoch=blocks_per_epoch,
+                            reveal_bucket=REVEAL_BUCKET, state_path=STATE_PATH)
     if check:
         # Every startup check has run; nothing has been scored, committed or set.
         print(ready_text, flush=True)
@@ -1338,10 +1378,11 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             # rules (v1 or v2).
             boundary_block, block_hash, epoch_id, protocol_version = _epoch_boundary(
                 subtensor, epoch_index, blocks_per_epoch, V2_ACTIVATION_BLOCK, v3_block,
-                v4_activation_block=v4_block,
+                v4_activation_block=v4_block, v5_activation_block=v5_block,
             )
 
             timer = EpochTimer()
+            v5_commit = None
             metagraph = subtensor.metagraph(netuid)
             logger.info("=== Epoch %s (boundary block %d, hash %s, protocol v%d) ===",
                         epoch_id, boundary_block, block_hash[:16], protocol_version)
@@ -1541,7 +1582,22 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             # first), drawn once by the epoch's plan for every hotkey's check.
             v4_challenge_list = (
                 v4_epoch_plan.challenge_list(nonce, benchmark_pool, _cfg.SLICE_SIZE_V4)
-                if protocol_version >= 4 and v4_epoch_plan is not None else [])
+                if protocol_version == 4 and v4_epoch_plan is not None else [])
+            # v5: a node with no state or a stale one (a fresh follower, a
+            # restart after a gap) first rebuilds it from the root's reveals.
+            if protocol_version >= 5 and v5_node is not None:
+                _v5_resync(v5_node, epoch_index=epoch_index,
+                           first_epoch=v5_block // blocks_per_epoch, reference_dir=reference_dir)
+            # v5: the exam the TDs answer this epoch (the root's published
+            # spec), its costs, and why its items do not count here (or None).
+            v5_exam = (v5_node.exam_for(epoch_index) if protocol_version >= 5
+                       and v5_node is not None else (None, {}, "not a v5 epoch"))
+            if protocol_version >= 5:
+                logger.info("Exam for %s: %s%s", epoch_id,
+                            v5_exam[0].spec_hash()[:16] if v5_exam[0] is not None
+                            else "none (coverage only)",
+                            f"; void here: {v5_exam[2]}" if v5_exam[0] is not None
+                            and v5_exam[2] else "")
             expected_questions_hash = plan.questions_hash
             expected_question_ids = set(question_ids)
             explore_map, slice_gold = plan.explore_map, plan.slice_gold
@@ -1650,7 +1706,25 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                     n_unverifiable += 1
                     continue
                 uid_checks = checks
-                if protocol_version >= 4 and hotkey_ss58 and _offers_proof(responses[uid]):
+                if protocol_version >= 5 and hotkey_ss58 and _offers_proof(responses[uid]):
+                    # v5: this hotkey's coverage cells on the epoch's menu and
+                    # the exam cells the root's spec assigns it (I8).
+                    try:
+                        if v5_inputs is None:
+                            raise ValueError("the v5 pool and embeddings are not loaded")
+                        exp5 = _v5_expected(
+                            v4_menu.state, epoch_index=epoch_index, nonce=nonce,
+                            pool=v5_inputs.pool, hotkey=hotkey_ss58, spec=v5_exam[0],
+                            plan=v4_epoch_plan)
+                    except Exception as e:  # noqa: BLE001 - our expectation, not the miner's proof
+                        logger.error("UID %d: no v5 expectation could be drawn (%s: %s); its "
+                                     "proof is unchecked", uid, type(e).__name__, e)
+                        outcomes[uid] = "unverifiable"
+                        n_unverifiable += 1
+                        continue
+                    v4_expected[uid] = exp5.v4
+                    uid_checks = _v5_uid_checks(checks, exp5, slice_gold, v5_inputs.gold)
+                elif protocol_version >= 4 and hotkey_ss58 and _offers_proof(responses[uid]):
                     # v4: this hotkey's exploration and measurement on the
                     # epoch's menu, and the gold for all of them.
                     try:
@@ -1932,7 +2006,23 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             # head that routes like a senior one must beat it or it is a copy.
             burn_uid = resolve_burn_uid(subtensor, netuid, boundary_block, metagraph, live)
             v2_result = None
-            if protocol_version >= 2:
+            if protocol_version >= 5:
+                # --- PROTOCOL v5: the seat on real picks (fugal_subnet/v5_epoch.py) ---
+                v2_result, uids, weights, v5_commit = _v5_score(
+                    v5_node, epoch_index=epoch_index, nonce=nonce, exam=v5_exam,
+                    state=v4_menu.state, verified_proofs=verified_proofs,
+                    verified_heads=verified_heads, head_hashes=head_hashes,
+                    coldkey_of=coldkey_of, commit_blocks=commit_blocks, v5_inputs=v5_inputs,
+                    burn_uid=burn_uid,
+                    published=v4_view,
+                    pooled=_v4_pool(v4_menu.state, verified_proofs=verified_proofs,
+                                    expected=v4_expected, coldkey_of=coldkey_of, nonce=nonce,
+                                    flagged=frozenset(), shares=v4_shares))
+                d = v2_result.decision
+                logger.info("v5 seat: %s, holder %s, history %s, paid %s, B* %s", d.event,
+                            (d.holder or "none")[:16], [h[:12] for h in d.history],
+                            sorted(h[:12] for h in d.payable), v2_result.baseline or "none")
+            elif protocol_version >= 2:
                 # --- PROTOCOL v2: the champion, its seats, and nothing else ---
                 # Shared coldkey-median cells (grades and attested tokens),
                 # the paired comparison window, the seat, and 85/10/5 across
@@ -2119,13 +2209,21 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                 # so the menu's counts and the odds never pool differently.
                 v4_pooled = list(v2_result.pooled)
                 from fugal_subnet.v2_epoch import category_of as _category_of
+                # A v5 epoch's proofs answer v5 pool questions (exam cells and
+                # coverage), never the v4 slice's. The menu step sees them as
+                # ONE category (_v5_menu_category_of): v5 prices a pick per
+                # entry, and the pick stats allow at most PICK_MAX_CATEGORIES.
+                menu_category_of = (
+                    _v5_menu_category_of(v5_inputs) if protocol_version >= 5 else
+                    {q: _category_of(g, v4_tables.bench_category)
+                     for q, g in gold_answers.items()})
                 v4_fields, published_early, v4_deferred = _v4_menu_epoch(
                     menu_node, menu_publisher, v4_menu, epoch_index=epoch_index, nonce=nonce,
                     verified_proofs=verified_proofs, coldkey_of=coldkey_of, pooled=v4_pooled,
-                    category_of={q: _category_of(g, v4_tables.bench_category)
-                                 for q, g in gold_answers.items()},
-                    counted_heads=_v4_counted_heads(v2_result.decision.state,
-                                                    v2_result.senior_bars),
+                    category_of=menu_category_of,
+                    counted_heads=(v2_result.counted_heads if protocol_version >= 5 else
+                                   _v4_counted_heads(v2_result.decision.state,
+                                                     v2_result.senior_bars)),
                     window_epochs=CHAMPION_WINDOW_EPOCHS,
                     root=role is not None and role.root, uploader=reveal_uploader,
                     reveal_delay=reveal_delay, netuid=netuid,
@@ -2267,9 +2365,13 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             )
             write_epoch_log(epoch_log)
 
-            next_v2 = _next_v2_state(v2_result, v2_window, v2_seat, v2_copy,
+            next_v2 = _next_v2_state(v2_result if protocol_version < 5 else None,
+                                     v2_window, v2_seat, v2_copy,
                                      v2_window_degraded, CHAMPION_WINDOW_EPOCHS)
-            next_rules = epoch_rules if v2_result is not None else v2_rules
+            # A v5 epoch carries the v2-v4 state unchanged (it decides nothing
+            # there); its own state is v5_node's, committed below.
+            next_rules = (epoch_rules if v2_result is not None and protocol_version < 5
+                          else v2_rules)
 
             # COMMIT. The epoch is complete; only now does it become the state
             # the next epoch (or a retry of this one) starts from.
@@ -2284,6 +2386,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                            "gap_until": v2_gap_until, "anchor_at": v2_anchor_at,
                                "rules": v2_rules},
                        v2_window=v2_window, published=pub_holder)
+            if protocol_version >= 5 and v5_commit is not None:
+                v5_commit()
 
             # --- PUBLISH HEADS ---
             # Last, after the weights, the reveal and the saved state: the due
@@ -2456,6 +2560,9 @@ class _EpochChecks(NamedTuple):
     # Protocol v4: this hotkey's expectation (tee/verify.V4Expected), passed
     # to verify_proof as `v4`; None before v4.
     v4: object | None = None
+    # Protocol v5: this hotkey's expectation (tee/verify.V5Expected), passed
+    # to verify_proof as `v5`; None before v5.
+    v5: object | None = None
 
 
 class _Checked(NamedTuple):
@@ -2542,7 +2649,8 @@ def _check_response(uid: int, resp, hotkey: str, committed: tuple, registration_
             collateral_budget=checks.collateral_budget,
             protocol_version=checks.protocol_version,
             menu=checks.menu,
-            **({"v4": checks.v4} if checks.v4 is not None else {}),
+            **({"v4": checks.v4} if checks.v4 is not None and checks.v5 is None else {}),
+            **({"v5": checks.v5} if checks.v5 is not None else {}),
         )
     except ImportError:
         raise
@@ -3781,6 +3889,253 @@ def _v4_head_publication(netuid: int):
         bucket = _cfg.REFERENCE_BUCKET or reveal_sync.FINNEY_REFERENCE_BUCKET
         return reveal_sync.fetch_head(bucket, int(netuid), h)
     return publication
+
+
+def _v5_setup(*, subtensor, netuid: int, role, cfg, on_finney: bool, blocks_per_epoch: int,
+              reveal_bucket: str, state_path: str):
+    """This validator's v5_node.V5Node: its state beside the validator's
+    (`<state>.v5`), and on a follower the reader of the root's published exam
+    specs (the root's reveal of E - SPEC_LAG, as the TD reads it)."""
+    from fugal_subnet import reveal_sync, v5_node
+
+    root = role is not None and role.root
+    read = None
+    if not root:
+        hotkeys = cfg.root_hotkeys_v4(on_finney)
+        bucket = (reveal_bucket or getattr(cfg, "REFERENCE_BUCKET", "")
+                  or (reveal_sync.FINNEY_REFERENCE_BUCKET if on_finney else "")) or None
+
+        def fetch(epoch_id, sha):
+            return reveal_sync.fetch_reveal_bytes(epoch_id, sha, bucket=bucket, netuid=netuid)
+        read = v5_node.published_spec_reader(subtensor, netuid=netuid, root_hotkey=hotkeys,
+                                             blocks_per_epoch=blocks_per_epoch, fetch_reveal=fetch)
+    return v5_node.V5Node(state_path + ".v5", root=root, read_published=read)
+
+
+def _v5_resync(node, *, epoch_index: int, first_epoch: int, reference_dir: str | None) -> bool:
+    """Rebuild `node` (v5_node.V5Node.resync) when it is stale before epoch E,
+    from the root's reveals: a follower's synced reference directory first,
+    then this validator's own epoch files (the root's own). Never the epoch's
+    failure: a node that cannot rebuild scores on what it holds, logged."""
+    from fugal_subnet import v5_node
+    from fugal_subnet.benchmarks.slicer import epoch_id_for_block
+    from fugal_subnet.commit_reveal import EPOCH_DIR
+
+    if not node.stale(epoch_index, first_epoch):
+        return False
+    dirs = [d for d in (reference_dir, EPOCH_DIR) if d]
+
+    def read(e: int):
+        for d in dirs:
+            try:
+                with open(os.path.join(d, epoch_id_for_block(e), "reveal.json"), "rb") as f:
+                    return f.read()
+            except OSError:
+                continue
+        return None
+    try:
+        done = node.resync(v5_node.reference_reveals(read, epoch_index), epoch_index)
+    except Exception as e:  # noqa: BLE001 - scored on what it holds; logged
+        logger.error("v5 state is stale before epoch %d and could not be rebuilt from the "
+                     "root's reveals (%s: %s)", epoch_index, type(e).__name__, e)
+        return False
+    if not done:
+        logger.warning("v5 state is stale before epoch %d and the root's reveal of epoch %d is "
+                       "not held: scoring on the state as it is", epoch_index, epoch_index - 1)
+    return done
+
+
+def _v5_expected(state, *, epoch_index: int, nonce: bytes, pool: list, hotkey: str, spec, plan):
+    """What one hotkey's v5 proof must hold this epoch (tee/verify.expected_v5):
+    its coverage cells and the exam cells the published spec assigns it."""
+    from fugal_subnet.tee import verify as _verify
+
+    return _verify.expected_v5(state, epoch=epoch_index, nonce=nonce, pool=pool, hotkey=hotkey,
+                               spec=spec, index=getattr(plan, "pool_index", None))
+
+
+def _v5_uid_checks(checks, expected, slice_gold: dict, gold_answers: dict):
+    """One hotkey's checks in a v5 epoch: its V5Expected, its coverage as the
+    exploration, the gold for its cells, and the questions hash and set of ITS
+    exam cells (tee/verify.questions_hash_v5; [] on a coverage-only epoch).
+    A v5 TD answers no v4 slice, so the epoch's slice hash and ids never apply."""
+    from fugal_subnet.tee.verify import questions_hash_v5
+
+    return checks._replace(
+        explore_map=expected.v4.exploration, v5=expected,
+        slice_gold=_v5_gold(slice_gold, gold_answers, expected),
+        questions_hash=questions_hash_v5(expected),
+        question_ids={str(q) for q, _e in expected.exam_cells})
+
+
+def _v5_gold(slice_gold: dict, gold_answers: dict, expected) -> dict:
+    """The gold a v5 proof is graded against: the slice's, its coverage
+    questions' and its exam cells' questions'."""
+    extra = set(expected.v4.exploration) | {q for q, _e in expected.exam_cells}
+    return {**slice_gold, **{q: gold_answers[q] for q in sorted(extra) if q in gold_answers}}
+
+
+class _V5Scored(NamedTuple):
+    """A v5 epoch's result in the shape the loop's later steps read: the
+    reveal fields, the pooled coverage pairs the menu step reads, the heads
+    whose picks count for an entry's use (holder and history)."""
+    decision: object
+    reveal: dict
+    pooled: tuple
+    counted_heads: list
+    baseline: str
+
+
+class _V5Inputs(NamedTuple):
+    """Protocol v5's pool inputs: the pool (verified against pool_manifest_v5),
+    its gold by question id, its routing embeddings (route_text rows), the
+    exam part by RouterArena dataset (arena_sets.partition) and the mix."""
+    pool: list
+    gold: dict
+    embeddings: object
+    exam_by_dataset: dict
+    weights_ppm: dict
+
+
+def _v5_category_of(v5_inputs: _V5Inputs | None) -> dict:
+    """{question id: category} for protocol v5: every v5 pool question's
+    RouterArena dataset (arena_sets.dataset_key). One source for the seat's
+    strata (_v5_score) and the menu step's categories (summarize_epoch,
+    step_inputs): a v5 proof's exam cells and coverage pairs are v5 pool
+    questions, which the v4 gold never names. The menu step's mix stays the
+    v4 one (MenuParams.mix): categories outside it carry no weight, and with
+    none in it the plain mean is used (menu_state.weighted_token_means,
+    menu_inputs.weighted_bounds), the same on every validator."""
+    from fugal_subnet.benchmarks import arena_sets
+
+    if v5_inputs is None:
+        raise RuntimeError("protocol v5 but the v5 pool was not loaded at startup")
+    return {q: arena_sets.dataset_key(g) for q, g in v5_inputs.gold.items()}
+
+
+V5_MENU_CATEGORY = "arena"
+
+
+def _v5_menu_category_of(v5_inputs: _V5Inputs | None) -> dict:
+    """{question id: category} for the menu step in protocol v5: every v5 pool
+    question in ONE category. v5 prices a pick per entry (exam_v5.exam_picks),
+    so the menu's pick stats need no split, and RouterArena's ~25 datasets
+    would exceed menu_state.PICK_MAX_CATEGORIES. The seat's strata stay the
+    datasets (_v5_category_of)."""
+    return {q: V5_MENU_CATEGORY for q in _v5_category_of(v5_inputs)}
+
+
+def _v5_load_inputs(cfg, *, live: bool) -> _V5Inputs:
+    """Load the v5 pool and its pinned routing embeddings (fetched from
+    EMBEDDINGS_V5_URL when missing or wrong). The pin must exist: "TBD" means
+    this release cannot run v5 and is refused."""
+    from fugal_subnet import validator_setup
+    from fugal_subnet.benchmarks import arena_sets
+    from fugal_subnet.benchmarks.loader import load_pool
+
+    pin = getattr(cfg, "EMBEDDINGS_V5_SHA256", "TBD")
+    if not pin or pin == "TBD":
+        raise ValueError("config.EMBEDDINGS_V5_SHA256 is not pinned (TBD): this build cannot "
+                         "run protocol v5")
+    pool = load_pool(5, strict=live)
+    path = os.getenv("FUGAL_EMBEDDINGS_V5_FILE", "data/embeddings/pool_v5.npz")
+    logger.info(validator_setup.ensure_embeddings(path, pin, getattr(cfg, "EMBEDDINGS_V5_URL", None)))
+    emb = Embeddings.load(path, pin)
+    missing = emb.covers([q["question_id"] for q in pool])
+    if missing:
+        raise ValueError(f"the v5 embeddings file has no row for {len(missing)} pool "
+                         f"question(s), e.g. {missing[0]}")
+    exam_part, _cover = arena_sets.partition(pool)
+    logger.info("Protocol v5 inputs: pool %d questions (exam part %d), embeddings for %d",
+                len(pool), sum(len(v) for v in exam_part.values()), len(emb.row))
+    return _V5Inputs(pool=pool, gold={q["question_id"]: q for q in pool}, embeddings=emb,
+                     exam_by_dataset=exam_part, weights_ppm=arena_sets.weights_ppm())
+
+
+def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_proofs: dict,
+              verified_heads: dict, head_hashes: dict, coldkey_of: dict, commit_blocks: dict,
+              v5_inputs: _V5Inputs | None, burn_uid: int, pooled, published):
+    """Protocol v5's scoring of one epoch (v5_epoch): the votes of the
+    verified proofs, the seat and weights, and the spec of epoch + SPEC_LAG.
+    `published` is the epoch's published set (memo_v4.Published, the view
+    its plan drew on): the memorisation rule reads it (v5_epoch).
+    Returns (result, uids, weights, commit): `commit` advances `node` (called
+    at the loop's commit point, after the reveal and the weights)."""
+    from fugal_subnet import menu_state as ms
+    from fugal_subnet import v5_epoch
+    from fugal_subnet.head_eval import load_head_v4
+
+    if v5_inputs is None:
+        raise RuntimeError(f"epoch {epoch_index} is protocol v5 but the v5 pool and embeddings "
+                           "were not loaded at startup")
+    spec, costs, void = exam
+    votes, cover = [], []
+    served = []
+    for uid in sorted(verified_proofs):
+        proof, ck = verified_proofs[uid], coldkey_of.get(uid, "")
+        ex, co = v5_epoch.votes_from_proof(epoch_index, proof, ck)
+        votes += ex
+        cover += co
+        h = head_hashes.get(uid)
+        if h:
+            served.append(v5_epoch.Served(h, uid, str(proof.hotkey), ck,
+                                          int(commit_blocks.get(uid, 0))))
+            if uid in verified_heads:
+                try:
+                    node.keep_head(h, verified_heads[uid])
+                except (ValueError, OSError) as e:
+                    logger.warning("UID %d: its head's bytes could not be kept (%s: %s)", uid,
+                                   type(e).__name__, e)
+    counts = spec is not None and void is None
+    record = v5_epoch.EpochRecord(
+        epoch=epoch_index, spec=spec if counts else None, costs_nd=dict(costs) if counts else {},
+        votes=tuple(votes), coverage=tuple(cover),
+        flagged=frozenset(v5_epoch.implausible(votes)),
+        void=None if counts or spec is None else void)
+    # The stratum of a question is its RouterArena dataset (arena_sets.dataset_key).
+    bench = _v5_category_of(v5_inputs)
+    full = [e.id for e in state.entries if ms.is_full(e)]
+    first_published = v5_epoch.published_reader(published)
+    result = v5_epoch.score_epoch(
+        epoch=epoch_index, state=node.seat, heads=node.heads, record=record,
+        window=node.records, served=served, full_entries=full,
+        stratum_of=lambda q: bench.get(q, ""), burn_uid=burn_uid,
+        first_published=first_published)
+    # The next exam, from the heads verified by now.
+    loaded = {}
+    for h, data in node.head_bytes.items():
+        try:
+            loaded[h] = load_head_v4(data)
+        except ValueError:
+            continue
+    # The exam draws only the pool's exam part (coverage never touches it), on
+    # RouterArena's dataset shares.
+    try:
+        next_spec, next_costs = v5_epoch.next_spec(
+            epoch=epoch_index, nonce=nonce, decision=result.decision, heads=result.heads,
+            served=served, loaded=loaded, state_menu=state,
+            hidden_of=lambda qids: v5_inputs.embeddings.aligned(list(qids)),
+            by_dataset=v5_inputs.exam_by_dataset, weights_ppm=dict(v5_inputs.weights_ppm),
+            baseline=result.baseline,
+            first_published=first_published,
+            used=v5_epoch.spec_questions([*(s for s, _c in node.specs.values()),
+                                          *(r.spec for r in node.records), spec]))
+    except Exception as e:  # noqa: BLE001 - no exam then; never the epoch
+        logger.error("Epoch %d: the exam spec of epoch %d could not be built (%s: %s); that "
+                     "epoch is coverage only", epoch_index, epoch_index + v5_epoch.SPEC_LAG,
+                     type(e).__name__, e)
+        next_spec, next_costs = None, {}
+    reveal = dict(result.reveal)
+    if next_spec is not None:
+        reveal.update(v5_epoch.spec_reveal(next_spec, next_costs))
+    d = result.decision
+    scored = _V5Scored(decision=d, reveal=reveal, pooled=tuple(pooled),
+                       counted_heads=sorted({h for h in (d.holder, *d.history) if h}),
+                       baseline=result.baseline)
+
+    def commit():
+        node.commit(epoch_index, result, record, next_spec, next_costs)
+    return scored, result.uids, result.weights, commit
 
 
 def _v4_gold(slice_gold: dict, gold_answers: dict, expected) -> dict:

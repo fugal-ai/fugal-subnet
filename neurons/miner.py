@@ -410,6 +410,21 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
             state_dir=_v4_state_dir(v4_state_dir), anchor=v4_anchor_state,
             challenge_size=int(v4_challenge), challenge_usd=v4_usd)
 
+    # Protocol v5 (td_v5.V5Session): from its activation the TD labels the
+    # exam cells the root's spec assigns it, plus coverage; the menu is still
+    # the v4 session's, and the v4 challenge answers nothing.
+    v5_session = None
+    v5_block = _v5_activation_block(genesis) if protocol >= 4 else None
+    if v5_block is not None:
+        v5_session = _v5_session(
+            subtensor, netuid=netuid, v4_session=v4_session,
+            first_epoch=int(v5_block) // blocks_per_epoch, blocks_per_epoch=blocks_per_epoch,
+            hotkey=my_hotkey, genesis=genesis)
+        logger.info("Protocol v5 from block %d (epoch %d): exam labelling plus %d coverage calls "
+                    "a epoch; the --v4-challenge options are not used from then on",
+                    int(v5_block), int(v5_block) // blocks_per_epoch,
+                    _td_v5_coverage_calls())
+
     # NOTE: the on-chain commitment is deliberately NOT made here. Chains rate
     # limit transactions per hotkey, so committing immediately before
     # axon.serve() gets the serve extrinsic rejected and leaves the miner
@@ -634,6 +649,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     tpm_intermediates=tpm_intermediates,
                     block_now=subtensor.get_current_block,
                     v4_session=v4_session,
+                    v5_session=v5_session,
                 )
                 consecutive_failures = 0
             except Exception:
@@ -1096,6 +1112,105 @@ def _v4_session(subtensor, *, netuid: int, pool, first_epoch: int, blocks_per_ep
         join_bytes=lambda h: reveal_sync.fetch_join_bytes(h, bucket=bucket, netuid=netuid))
 
 
+def _v5_activation_block(genesis):
+    """The block protocol v5 applies from on this chain, or None
+    (config.v5_activation_block)."""
+    from fugal_subnet import config as cfg
+    return cfg.v5_activation_block(genesis)
+
+
+def _td_v5_coverage_calls() -> int:
+    from fugal_subnet.tee import td_v5
+    return td_v5.COVERAGE_CALLS
+
+
+def _v5_spec_reader(subtensor, *, netuid: int, root_hk, blocks_per_epoch: int, fetch_reveal):
+    """read_spec for td_v5.ExamPolicy: (k, the exam spec) from the newest
+    root reveal, of epoch k, the one the root's on-chain commitment read
+    pinned at `epoch`'s boundary names, its bytes checked against the
+    committed sha256 (td_v5.exam_spec_from_reveal). None when there is no
+    commitment; raises when the chain or the reveal cannot be read."""
+    from fugal_subnet import menu_publish as mp
+    from fugal_subnet import reveal_sync
+    from fugal_subnet.commitments import get_commitments_with_blocks
+    from fugal_subnet.memo_v4 import epoch_index
+    from fugal_subnet.tee import td_v5
+
+    def read(epoch: int):
+        hotkey = mp.hotkey_for_epoch(root_hk, epoch)
+        data, _b = get_commitments_with_blocks(
+            subtensor, netuid, block=int(epoch) * blocks_per_epoch).get(hotkey, ("", 0))
+        got = reveal_sync.parse_commitment(data)
+        if got is None:
+            return None
+        epoch_id, sha, _menu = got
+        raw = fetch_reveal(epoch_id, sha)
+        if raw is None:
+            raise LookupError(f"the root's reveal {epoch_id} is not to be had")
+        return epoch_index(epoch_id), td_v5.exam_spec_from_reveal(raw, epoch_id, sha)
+    return read
+
+
+def _v5_session(subtensor, *, netuid: int, v4_session, first_epoch: int, blocks_per_epoch: int,
+                hotkey: str, genesis, fetch_reveal=None, read_spec=None, pool=None):
+    """The miner's td_v5.V5Session: `v4_session` for the menu (its challenge
+    gated off from `first_epoch`, td_v5.gate_challenge), an exam policy that
+    reads each epoch's spec from the root's reveals as the v4 holder reader
+    does (`_v5_spec_reader`, or `read_spec`), and the v5 pool every v5 call
+    is on (`pool`, else loader.load_pool(5): verified against its manifest)."""
+    from fugal_subnet import config as cfg
+    from fugal_subnet import reveal_sync
+    from fugal_subnet.tee import td_v5
+
+    if v4_session is None:
+        raise click.ClickException("protocol v5 reads its menu through the v4 session: this "
+                                   "image serves protocol v4 first")
+    v4_session.challenge = td_v5.gate_challenge(v4_session.challenge, first_epoch)
+    if read_spec is None:
+        on_finney = (genesis is not None
+                     and str(genesis).lower() == cfg.FINNEY_GENESIS_HASH.lower())
+        root_hk = cfg.root_hotkeys_v4(on_finney)
+        bucket = (cfg.REFERENCE_BUCKET
+                  or (reveal_sync.FINNEY_REFERENCE_BUCKET if on_finney else "")) or None
+        if fetch_reveal is None:
+            def fetch_reveal(epoch_id, sha):
+                return reveal_sync.fetch_reveal_bytes(epoch_id, sha, bucket=bucket,
+                                                      netuid=netuid)
+        read_spec = _v5_spec_reader(subtensor, netuid=netuid, root_hk=root_hk,
+                                    blocks_per_epoch=blocks_per_epoch,
+                                    fetch_reveal=_kept_reveals(fetch_reveal))
+    policy = td_v5.ExamPolicy(first_epoch=first_epoch, hotkey=hotkey, read_spec=read_spec)
+    if pool is None:
+        from fugal_subnet.benchmarks.loader import load_pool
+        pool = load_pool(5)
+        logger.info("Protocol v5 pool: %d questions (pool_manifest_v5 content hash verified)",
+                    len(pool))
+    return td_v5.V5Session(v4_session=v4_session, exam=policy, first_epoch=first_epoch,
+                           protocol_of=_protocol_of_boundary(genesis),
+                           blocks_per_epoch=blocks_per_epoch, pool=pool)
+
+
+def _protocol_of_boundary(genesis):
+    """boundary block -> protocol version, by the one source
+    (slicer.protocol_version_for_boundary) on this chain's activation blocks."""
+    from fugal_subnet import config as cfg
+    from fugal_subnet.benchmarks.slicer import protocol_version_for_boundary
+
+    on_finney = (genesis is not None
+                 and str(genesis).lower() == cfg.FINNEY_GENESIS_HASH.lower())
+    v2 = cfg.V2_ACTIVATION_BLOCK
+    if v2 is None and on_finney:
+        v2 = cfg.FINNEY_V2_ACTIVATION_BLOCK
+    v3 = cfg.v3_activation_block(genesis)
+    v4 = cfg.v4_activation_block(genesis)
+    v5 = cfg.v5_activation_block(genesis)
+
+    def protocol_of(boundary_block: int) -> int:
+        return protocol_version_for_boundary(int(boundary_block), v2, v3,
+                                             v4_activation_block=v4, v5_activation_block=v5)
+    return protocol_of
+
+
 def _kept_reveals(fetch_reveal, keep: int = 4):
     """`fetch_reveal` with the last few reveals' bytes kept by (epoch id,
     sha256): the same verified bytes serve every reader in the epoch."""
@@ -1427,6 +1542,7 @@ def _run_epoch(
     menu=None,
     tpm_intermediates=(),
     v4_session=None,
+    v5_session=None,
 ):
     """Run a single benchmark epoch; `block_now` (the chain's current block)
     lets it report whether the proof was ready by the collection block.
@@ -1434,7 +1550,11 @@ def _run_epoch(
     Protocol v4 (`protocol_version` 4, which no release activates yet) takes
     `v4_session` (fugal_subnet.tee.td_v4.V4Session): the epoch's menu inputs
     come from it, the harness checks them before any call, and a menu the TD
-    cannot read or the rules refuse ends the epoch with no proof."""
+    cannot read or the rules refuse ends the epoch with no proof.
+
+    Protocol v5: with `v5_session` (td_v5.V5Session), an epoch at or after
+    its first epoch runs the v5 path (the exam cells the root's spec assigns
+    this hotkey, plus coverage); the menu is still the v4 session's."""
     from fugal_subnet.benchmarks.slicer import derive_nonce, epoch_id_for_block
     from fugal_subnet.tee.harness import run_benchmark
 
@@ -1459,7 +1579,12 @@ def _run_epoch(
     )
 
     v4_inputs = None
-    if protocol_version >= 4:
+    v5_inputs = None
+    if v5_session is not None and v5_session.is_v5(epoch_index):
+        # Before the proxy starts, as under v4: no readable menu, no proof.
+        protocol_version = max(int(protocol_version), 5)
+        v5_inputs = v5_session.inputs_for(epoch_index)
+    elif protocol_version >= 4:
         if v4_session is None:
             raise ValueError("a protocol v4 epoch needs the miner's v4 session")
         # Before the proxy starts: a menu this TD cannot read means no proof,
@@ -1485,9 +1610,12 @@ def _run_epoch(
             protocol_version=protocol_version,
             menu=menu,
             **({"v4": v4_inputs} if v4_inputs is not None else {}),
+            **({"v5": v5_inputs} if v5_inputs is not None else {}),
         )
         if v4_inputs is not None:
             v4_session.ran(v4_inputs, proof)
+        if v5_inputs is not None:
+            v5_session.ran(v5_inputs, proof)
 
         # Before the content hash, which binds them (v2 proofs only: a v1
         # proof stays byte-identical for a validator not yet upgraded).
@@ -1505,7 +1633,15 @@ def _run_epoch(
             )
             current_proof["epoch_id"] = epoch_id
 
-        if proof.scored is False:
+        if v5_inputs is not None:
+            n_exam = sum(1 for r in proof.results if r.exam)
+            n_cut = sum(1 for r in proof.results if r.not_started)
+            logger.info("Epoch %s complete (v5): %d exam cells (spec %s), %d coverage calls, "
+                        "%d failed, %d not started, cost=$%.4f", epoch_id, n_exam,
+                        (proof.spec_hash or "none: coverage only")[:16],
+                        len(proof.results) - n_exam, sum(1 for r in proof.results if r.failed),
+                        n_cut, proof.total_cost_usd)
+        elif proof.scored is False:
             # Protocol v4 with no challenge this epoch (--v4-challenge).
             logger.info("Epoch %s complete: exploration only (%d calls, no challenge), "
                         "cost=$%.4f", epoch_id, len(proof.results),

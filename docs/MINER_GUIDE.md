@@ -222,6 +222,68 @@ container inside a confidential VM.
 | `--v4-challenge` | `0` | Protocol v4 only [PAID when not 0]: the challenge the TD answers each epoch, 0 (none), 500 or 1000 questions (`FUGAL_V4_CHALLENGE`; below) |
 | `--check` | off | Run the startup checks (chain, protocol, v4 options and files, pool, code sandbox, registration), print the `READY:` line and exit (0 when ready); waits for no provisioning, embeds and serves nothing. Every start logs the same line (under v4: the seed, mix and list found, the published-set seed and the reveal it is observed through, the root's hotkey for the first v4 epoch, your proposal and challenge size, and whether the list the image ships allows your proposal) |
 
+### Moving to protocol v5 (v0.8.0, block 9,587,880)
+
+v0.8.0 switches finney to protocol v5 at block 9,587,880 (the boundary of
+epoch e00026633). Until that block everything runs v4 exactly. The design
+record is `docs/decisions/ARENA_V5.md`.
+
+**What you are now paid for.** RouterArena's own score: the answers your
+router's real picks get, and what they cost, on fresh questions it could
+not have seen. Two routers are compared on the same questions by
+
+    S = accuracy − ln(mean cost per query) / k
+
+with k taken from RouterArena's formula at the two routers' costs: one more
+accuracy point is worth about as much as 1/k of a halving of your cost.
+Prediction odds no longer decide anything; they are only how your head
+picks.
+
+**What to change.**
+
+1. **Your head's `lam` is now read.** A v5 pick is argmax over entries of
+   (predicted success − lam × the entry's pick cost), with your head's own
+   `lam` (a float in (0, 10000]). v4 ignored it and used 1, which values a
+   correct answer at $1, far more accuracy-heavy than RouterArena; heads
+   score better on S with lam around 10–20. Tune it on the published
+   reveals: the exam's votes (`votes_v5`) are the labels your picks are
+   judged on.
+2. **Retrain for the exam.** Questions come from a RouterArena-like pool
+   (the same public source datasets RouterArena samples, none of its own
+   items, in its dataset mix): mostly knowledge, trivia, medical and
+   reading questions, some code and math. A head trained on the v4 mix
+   (hard math, IFEval) is tuned for the wrong questions.
+3. **Cheap instruct models win RouterArena.** Its leaders route most
+   questions to small non-reasoning instruct models. Any miner can propose
+   a menu entry on chain (`--v4-proposal`, unchanged) from a lab and host on
+   the signed list; it joins in about one epoch and v5 rewards a router that
+   uses it well.
+4. **A new TD on the v0.8.0 image, before the block**, with the v0.8.0
+   frozen finney compose; keep the v4 TD serving until the block. The head
+   format is v4's: no new rows are needed.
+5. **No challenge.** `--v4-challenge` and `--v4-challenge-usd` do nothing
+   from the block (the TD logs it once). Instead every TD labels the exam
+   cells the root's spec assigns its hotkey (up to 320 calls an epoch) plus
+   48 coverage calls, about $0.9 an epoch of measured calls plus the VM.
+
+**How the seat moves.** The seat and the window start empty at the block,
+and the first two v5 epochs are coverage only (no exam was published for
+them). From then on:
+
+- a router takes the seat when its bound over the holder's S passes
+  +1/4 point;
+- every paid seat must also beat the best single menu entry (B*) on the
+  same questions; until a router does, every share burns;
+- an empty seat fills with the earliest-committed router whose bound over
+  B* passes, never by a draw;
+- your own retrained head (same coldkey) replaces your seated one unless it
+  is shown worse;
+- neither your coldkey's votes nor your opponent's ever judge a comparison
+  between you.
+
+B* is compared on 100 exam questions an epoch and the bound needs 2,000
+paired questions, so no seat fills before about 21 epochs after the block.
+
 ### Moving to protocol v4 (v0.7.0, block 9,572,760)
 
 v0.7.0 switches finney to protocol v4 at block 9,572,760 (the boundary of

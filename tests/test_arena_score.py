@@ -133,8 +133,13 @@ def test_protocol_five_follows_four_and_is_never_before_it():
 
 
 def test_v5_activation_block_follows_the_v4_rule(monkeypatch):
+    compiled = config.FINNEY_V5_ACTIVATION_BLOCK
     monkeypatch.setattr(config, "V5_ACTIVATION_BLOCK_MALFORMED", None)
     monkeypatch.setattr(config, "V5_ACTIVATION_BLOCK_ENV", None)
+    # finney: the compiled block (the release sets it)
+    assert config.v5_activation_block(config.FINNEY_GENESIS_HASH) == compiled
+    # the rules below are those of a release that has not set one
+    monkeypatch.setattr(config, "FINNEY_V5_ACTIVATION_BLOCK", None)
     assert config.v5_activation_block(config.FINNEY_GENESIS_HASH) is None
     monkeypatch.setattr(config, "V5_ACTIVATION_BLOCK_ENV", 9_600_000)
     with pytest.raises(ValueError):          # finney: the variable may only repeat the release

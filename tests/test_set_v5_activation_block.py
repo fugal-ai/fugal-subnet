@@ -54,9 +54,10 @@ def test_set_refuses_a_block_that_is_not_a_later_boundary(tmp_path, bad):
     mod = _mod(tmp_path)
     v4 = mod._compiled("FINNEY_V4_ACTIVATION_BLOCK", mod.CONFIG.read_text(encoding="utf-8"))
     block = v4 + 361 if bad == "not_boundary" else v4
+    before = mod.CONFIG.read_text()
     with pytest.raises(SystemExit):
         mod.set_block(block)
-    assert "FINNEY_V5_ACTIVATION_BLOCK: int | None = None" in mod.CONFIG.read_text()
+    assert mod.CONFIG.read_text() == before          # a refused block changes nothing
 
 
 def test_the_shipped_tree_check_runs():

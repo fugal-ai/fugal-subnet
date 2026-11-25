@@ -61,6 +61,10 @@ N_MIN = int(getattr(config, "N_MIN_V5", 2000))
 N0 = int(getattr(config, "N0_V5", 2000))
 CONTENDERS_MAX = int(getattr(config, "CONTENDERS_MAX_V5", 24))
 SEAT_SHARES = tuple(config.PAYOUT_SEAT_SHARES)
+# The paid share of the miner emission; the rest burns every epoch.
+PAID_FRACTION = Fraction(getattr(config, "MINER_PAID_FRACTION_V5", "1/2"))
+if not 0 <= PAID_FRACTION <= 1:
+    raise ValueError(f"MINER_PAID_FRACTION_V5 must be in [0, 1], got {PAID_FRACTION}")
 HISTORY_MAX = len(SEAT_SHARES) - 1
 
 Items = Mapping[str, Sequence[int]]
@@ -319,9 +323,10 @@ def decide(state: SeatStateV5, epoch: int, contenders: Sequence[Contender],
 def weights(decision: SeatDecisionV5, serving_uid: Mapping[str, int], *,
             burn_uid: int) -> tuple[list[int], list[float]]:
     """The epoch's weights: 85/10/5 to the holder and history while payable
-    (payout.seat_weights), every unpaid share to `burn_uid`."""
+    (payout.seat_weights), scaled by PAID_FRACTION; every unpaid share, and
+    the unpaid fraction, to `burn_uid`."""
     from fugal_subnet import payout
 
     return payout.seat_weights(decision.holder, decision.history, serving_uid,
                                frozenset(decision.payable), shares=SEAT_SHARES,
-                               paid_fraction=1.0, burn_uid=burn_uid)
+                               paid_fraction=float(PAID_FRACTION), burn_uid=burn_uid)

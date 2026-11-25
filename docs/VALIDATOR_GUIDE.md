@@ -715,9 +715,9 @@ validator does:
   root's `Joins for epoch N committed: A admitted of C considered`, and an
   `ALARM` on a delta the check refuses (every node then runs the base menu).
 
-## Protocol v5 (from block 9,587,880, epoch e00026633)
+## Protocol v5 (from block 9,585,720, epoch e00026627)
 
-v0.8.0 switches finney to protocol v5 at block 9,587,880; until then
+v0.8.0 switches finney to protocol v5 at block 9,585,720; until then
 everything runs v4. Design record: `docs/decisions/ARENA_V5.md`.
 
 **Upgrade before the block**, the usual way:

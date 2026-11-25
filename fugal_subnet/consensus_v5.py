@@ -33,6 +33,7 @@ REGISTERED: dict[str, tuple[str, ...]] = {
         # the seat (DESIGN 3)
         "WINDOW_EPOCHS_V5", "N_MIN_V5", "N0_V5", "TAKE_MARGIN_V5", "UPGRADE_MARGIN_V5",
         "CONTENDERS_MAX_V5", "PAYOUT_SEAT_SHARES", "STANDING_EPOCHS_V4",
+        "MINER_PAID_FRACTION_V5",
         # B* and the vote plausibility test (v5_epoch)
         "BASELINE_MIN_PAIRS_V5", "EXPLORE_PRIVATE_Z", "EXPLORE_PRIVATE_MIN_SAMPLES_V4",
         # the memorisation rule: the exam's fresh draw (v5_epoch)
@@ -49,7 +50,7 @@ REGISTERED: dict[str, tuple[str, ...]] = {
     "fugal_subnet.benchmarks.arena_sets": ("POOL_SALT",),
     "fugal_subnet.seat_v5": (
         "TAKE_MARGIN", "UPGRADE_MARGIN", "N_MIN", "N0", "CONTENDERS_MAX", "SEAT_SHARES",
-        "HISTORY_MAX", "TAKE_UNITS", "UPGRADE_UNITS",
+        "HISTORY_MAX", "TAKE_UNITS", "UPGRADE_UNITS", "PAID_FRACTION",
     ),
     # The v5 menu step's one category (validator._v5_menu_category_of).
     "neurons.validator": ("V5_MENU_CATEGORY",),

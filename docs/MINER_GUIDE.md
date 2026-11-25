@@ -222,10 +222,10 @@ container inside a confidential VM.
 | `--v4-challenge` | `0` | Protocol v4 only [PAID when not 0]: the challenge the TD answers each epoch, 0 (none), 500 or 1000 questions (`FUGAL_V4_CHALLENGE`; below) |
 | `--check` | off | Run the startup checks (chain, protocol, v4 options and files, pool, code sandbox, registration), print the `READY:` line and exit (0 when ready); waits for no provisioning, embeds and serves nothing. Every start logs the same line (under v4: the seed, mix and list found, the published-set seed and the reveal it is observed through, the root's hotkey for the first v4 epoch, your proposal and challenge size, and whether the list the image ships allows your proposal) |
 
-### Moving to protocol v5 (v0.8.0, block 9,587,880)
+### Moving to protocol v5 (v0.8.0, block 9,585,720)
 
-v0.8.0 switches finney to protocol v5 at block 9,587,880 (the boundary of
-epoch e00026633). Until that block everything runs v4 exactly. The design
+v0.8.0 switches finney to protocol v5 at block 9,585,720 (the boundary of
+epoch e00026627). Until that block everything runs v4 exactly. The design
 record is `docs/decisions/ARENA_V5.md`.
 
 **What you are now paid for.** RouterArena's own score: the answers your
@@ -238,6 +238,11 @@ with k taken from RouterArena's formula at the two routers' costs: one more
 accuracy point is worth about as much as 1/k of a halving of your cost.
 Prediction odds no longer decide anything; they are only how your head
 picks.
+
+**How much is paid.** Half of the miner emission, split 85/10/5 across the
+holder and the last two champions; the other half burns every epoch
+(`MINER_PAID_FRACTION_V5` = 1/2). While no router beats the best single
+model, all of it burns.
 
 **What to change.**
 

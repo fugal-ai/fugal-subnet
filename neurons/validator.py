@@ -2209,11 +2209,17 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                 # so the menu's counts and the odds never pool differently.
                 v4_pooled = list(v2_result.pooled)
                 from fugal_subnet.v2_epoch import category_of as _category_of
+                # A v5 epoch's proofs answer v5 pool questions (exam cells and
+                # coverage), never the v4 slice's: their category is their
+                # RouterArena dataset, the exam's stratum (_v5_category_of).
+                menu_category_of = (
+                    _v5_category_of(v5_inputs) if protocol_version >= 5 else
+                    {q: _category_of(g, v4_tables.bench_category)
+                     for q, g in gold_answers.items()})
                 v4_fields, published_early, v4_deferred = _v4_menu_epoch(
                     menu_node, menu_publisher, v4_menu, epoch_index=epoch_index, nonce=nonce,
                     verified_proofs=verified_proofs, coldkey_of=coldkey_of, pooled=v4_pooled,
-                    category_of={q: _category_of(g, v4_tables.bench_category)
-                                 for q, g in gold_answers.items()},
+                    category_of=menu_category_of,
                     counted_heads=(v2_result.counted_heads if protocol_version >= 5 else
                                    _v4_counted_heads(v2_result.decision.state,
                                                      v2_result.senior_bars)),
@@ -3990,6 +3996,22 @@ class _V5Inputs(NamedTuple):
     weights_ppm: dict
 
 
+def _v5_category_of(v5_inputs: _V5Inputs | None) -> dict:
+    """{question id: category} for protocol v5: every v5 pool question's
+    RouterArena dataset (arena_sets.dataset_key). One source for the seat's
+    strata (_v5_score) and the menu step's categories (summarize_epoch,
+    step_inputs): a v5 proof's exam cells and coverage pairs are v5 pool
+    questions, which the v4 gold never names. The menu step's mix stays the
+    v4 one (MenuParams.mix): categories outside it carry no weight, and with
+    none in it the plain mean is used (menu_state.weighted_token_means,
+    menu_inputs.weighted_bounds), the same on every validator."""
+    from fugal_subnet.benchmarks import arena_sets
+
+    if v5_inputs is None:
+        raise RuntimeError("protocol v5 but the v5 pool was not loaded at startup")
+    return {q: arena_sets.dataset_key(g) for q, g in v5_inputs.gold.items()}
+
+
 def _v5_load_inputs(cfg, *, live: bool) -> _V5Inputs:
     """Load the v5 pool and its pinned routing embeddings (fetched from
     EMBEDDINGS_V5_URL when missing or wrong). The pin must exist: "TBD" means
@@ -4028,7 +4050,6 @@ def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_pro
     at the loop's commit point, after the reveal and the weights)."""
     from fugal_subnet import menu_state as ms
     from fugal_subnet import v5_epoch
-    from fugal_subnet.benchmarks import arena_sets
     from fugal_subnet.head_eval import load_head_v4
 
     if v5_inputs is None:
@@ -4059,7 +4080,7 @@ def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_pro
         flagged=frozenset(v5_epoch.implausible(votes)),
         void=None if counts or spec is None else void)
     # The stratum of a question is its RouterArena dataset (arena_sets.dataset_key).
-    bench = {q: arena_sets.dataset_key(g) for q, g in v5_inputs.gold.items()}
+    bench = _v5_category_of(v5_inputs)
     full = [e.id for e in state.entries if ms.is_full(e)]
     first_published = v5_epoch.published_reader(published)
     result = v5_epoch.score_epoch(

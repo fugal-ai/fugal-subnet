@@ -1362,6 +1362,12 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
         v5_node = _v5_setup(subtensor=subtensor, netuid=netuid, role=role, cfg=_cfg,
                             on_finney=on_finney, blocks_per_epoch=blocks_per_epoch,
                             reveal_bucket=REVEAL_BUCKET, state_path=STATE_PATH)
+    # The protocol schedule (docs/decisions/SIGNED_SCHEDULE.md): None until a
+    # release compiles its start block for this chain (finney: none yet).
+    schedule_tracker = _schedule_setup(
+        subtensor=subtensor, netuid=netuid, genesis=genesis, role=role, cfg=_cfg,
+        on_finney=on_finney, blocks_per_epoch=blocks_per_epoch, reveal_bucket=REVEAL_BUCKET,
+        state_path=STATE_PATH)
     if check:
         # Every startup check has run; nothing has been scored, committed or set.
         print(ready_text, flush=True)
@@ -1397,6 +1403,9 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             metagraph = subtensor.metagraph(netuid)
             logger.info("=== Epoch %s (boundary block %d, hash %s, protocol v%d) ===",
                         epoch_id, boundary_block, block_hash[:16], protocol_version)
+            _schedule_epoch(schedule_tracker, epoch_index,
+                            root_fields=getattr(menu_node, "root_fields", None),
+                            netuid=netuid, reveal_bucket=REVEAL_BUCKET)
 
             # --- v4: THE EPOCH'S MENU, from the root's commitment at the boundary ---
             # MenuState(E) from the root's commitment for E - MENU_LAG, read
@@ -3592,10 +3601,15 @@ def _v4_menu_setup(*, cfg, subtensor, netuid: int, my_hotkey: str, role, root_ho
                 my_hotkey, ())
         except Exception:  # noqa: BLE001 - seeded at the first reveal commitment instead
             have = ()
+        from fugal_subnet.protocol_schedule import POINTER_PREFIX
+        # The schedule pointer, when the root writes one, is the last field
+        # (join_step.RootFields); it is never seeded as the join pointer.
+        rest = [f for f in have[1:] if f]
         node.root_fields = join_step.RootFields(
             lambda fields: cp.set_commitment_fields(subtensor, wallet, netuid, fields),
             reveal=have[0] if len(have) >= 1 and have[0] else None,
-            join=have[1] if len(have) >= 2 and have[1] else None)
+            join=next((f for f in rest if not f.startswith(POINTER_PREFIX)), None),
+            sched=next((f for f in rest if f.startswith(POINTER_PREFIX)), None))
     node.v4_refusals = list(refusals) if live else []
     logger.info("Protocol v4 menu: %s, reading the commitments of %s", "ROOT (publishes it)"
                 if root else "follower (audits it)", root_hk)
@@ -3944,6 +3958,64 @@ def _v5_setup(*, subtensor, netuid: int, role, cfg, on_finney: bool, blocks_per_
         read = v5_node.published_spec_reader(subtensor, netuid=netuid, root_hotkey=hotkeys,
                                              blocks_per_epoch=blocks_per_epoch, fetch_reveal=fetch)
     return v5_node.V5Node(state_path + ".v5", root=root, read_published=read)
+
+
+def _schedule_setup(*, subtensor, netuid: int, genesis, role, cfg, on_finney: bool,
+                    blocks_per_epoch: int, reveal_bucket: str, state_path: str):
+    """The protocol schedule's tracker on this validator
+    (docs/decisions/SIGNED_SCHEDULE.md), or None while no start block applies
+    (finney compiles none yet). Kept beside the state (`<state>.schedule.json`,
+    the documents it fetched in `<state>.schedule.d`); the root's own
+    candidates are the release's signed schedules and that directory's."""
+    from fugal_subnet import protocol_schedule as ps
+    from fugal_subnet import reveal_sync
+
+    from_block = cfg.schedule_from_block(genesis)
+    if from_block is None:
+        return None
+    root = role is not None and role.root
+    bucket = ((reveal_bucket if root else "") or getattr(cfg, "REFERENCE_BUCKET", "")
+              or (reveal_sync.FINNEY_REFERENCE_BUCKET if on_finney else "")) or None
+    tracker = ps.node_tracker(
+        subtensor=subtensor, netuid=netuid, genesis=genesis,
+        root_hotkeys=cfg.root_hotkeys_v4(on_finney), blocks_per_epoch=blocks_per_epoch,
+        from_block=from_block, state_path=state_path + ".schedule.json",
+        cache_dir=state_path + ".schedule.d", bucket=bucket)
+    logger.info("Protocol schedule: folded from epoch %d (block %d), lead %d epochs",
+                tracker.params["start_epoch"], from_block, tracker.lead_epochs)
+    return tracker
+
+
+def _schedule_epoch(tracker, epoch_index: int, *, root_fields=None, netuid: int,
+                    reveal_bucket: str | None) -> None:
+    """At each boundary: fold the schedule through this epoch (logged; no
+    switch reads it yet), and on the root set the pointer its next commitment
+    writes (protocol_schedule.root_pointer: a newer signed schedule once the
+    public store serves it back, else the one in force)."""
+    from fugal_subnet import protocol_schedule as ps
+
+    if tracker is None:
+        return
+    ps.advance_quietly(tracker, epoch_index)
+    if root_fields is None:
+        return
+    try:
+        documents = dict(ps.shipped_documents())
+        cache = getattr(tracker.document, "cache_dir", None)
+        if cache:
+            documents.update(ps.shipped_documents(cache))
+        fetch = ps.store_fetch(bucket=reveal_bucket or None, netuid=netuid, mirrors=())
+        pointer = ps.root_pointer(tracker, epoch=epoch_index, documents=documents,
+                                  confirm=lambda digest: fetch(digest) is not None)
+    except Exception as e:  # noqa: BLE001 - the pointer stays as it was; never the epoch
+        logger.error("Protocol schedule: the root could not choose its pointer (%s)",
+                     type(e).__name__)
+        return
+    field = pointer.field() if pointer is not None else None
+    if field != root_fields.sched:
+        logger.info("Protocol schedule: the root's commitment names %s from its next write",
+                    field or "no schedule")
+        root_fields.sched = field
 
 
 def _v5_resync(node, *, epoch_index: int, first_epoch: int, reference_dir: str | None) -> bool:

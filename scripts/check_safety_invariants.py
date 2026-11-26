@@ -1714,6 +1714,78 @@ def check_finney_compose_carries_compiled_blocks(errors: list[str], root: Path |
                     f"from its compose; set {var}={compiled} and re-freeze.")
 
 
+def check_protocol_schedule(errors: list[str], root: Path | None = None, cfg=None, *,
+                            signers: bytes | None = None) -> None:
+    """The signed protocol schedule (docs/decisions/SIGNED_SCHEDULE.md).
+
+    1. Every file in fugal_subnet/signed_schedule/ is a `<digest>.json` with
+       its `<digest>.json.sig`, the pair hashing to the name
+       (protocol_schedule.bundle_digest), and verifies against the pinned
+       signers, for finney, at serial 1 or more. A release ships nothing a
+       node would refuse.
+    2. No compose carries FUGAL_SCHEDULE_FROM_BLOCK: the schedule's start is
+       compiled, and a block in a compose is what couples a date to a freeze.
+    3. A block this release compiles for a schedulable switch
+       (config.SCHEDULE_SWITCHES) equals the one the newest shipped schedule
+       gives it, when that schedule names it: otherwise nodes on this release
+       stop on ScheduleConflict.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from fugal_subnet import protocol_schedule as ps
+
+    if cfg is None:
+        from fugal_subnet import config as cfg
+    root = ROOT if root is None else Path(root)
+    folder = root / "fugal_subnet" / "signed_schedule"
+    newest = None
+    if folder.is_dir():
+        names = sorted(p.name for p in folder.iterdir())
+        for name in names:
+            stem = name[:-len(".json.sig")] if name.endswith(".json.sig") else (
+                name[:-len(".json")] if name.endswith(".json") else None)
+            if stem is None or not re.fullmatch(r"[0-9a-f]{64}", stem):
+                errors.append(f"fugal_subnet/signed_schedule/{name}: not <digest>.json or "
+                              "<digest>.json.sig")
+                continue
+            if f"{stem}.json" not in names or f"{stem}.json.sig" not in names:
+                errors.append(f"fugal_subnet/signed_schedule/{name}: the document and its "
+                              "signature ship together")
+        for name in names:
+            if not name.endswith(".json") or f"{name}.sig" not in names:
+                continue
+            payload = (folder / name).read_bytes()
+            sig = (folder / f"{name}.sig").read_bytes()
+            rel = f"fugal_subnet/signed_schedule/{name}"
+            if ps.bundle_digest(payload, sig) != name[:-len(".json")]:
+                errors.append(f"{rel}: the document and signature do not hash to the name "
+                              "(protocol_schedule.bundle_digest)")
+                continue
+            try:
+                doc = ps.verify(payload, sig, signers=signers)
+            except ps.ScheduleRefused as e:
+                errors.append(f"{rel}: refused ({e.code}: {e.detail})")
+                continue
+            if doc.chain != str(cfg.FINNEY_GENESIS_HASH).lower():
+                errors.append(f"{rel}: a schedule shipped in the release is for finney")
+                continue
+            if newest is None or doc.serial > newest.serial:
+                newest = doc
+    for live in sorted((root / "deploy" / "dstack").glob("docker-compose*.yaml")):
+        if "FUGAL_SCHEDULE_FROM_BLOCK" in _compose_environment(live.read_text(encoding="utf-8")):
+            errors.append(f"{live.relative_to(root)}: sets FUGAL_SCHEDULE_FROM_BLOCK; the "
+                          "schedule's start is compiled and a compose carries no block for it")
+    if newest is not None:
+        for name, compiled in sorted(getattr(cfg, "SCHEDULE_SWITCHES", {}).items()):
+            scheduled = newest.get(name)
+            if compiled is not None and scheduled is not None and scheduled != compiled:
+                errors.append(f"fugal_subnet/config.py: SCHEDULE_SWITCHES[{name!r}] compiles "
+                              f"{compiled}, the newest shipped schedule (serial {newest.serial}) "
+                              f"says {scheduled}: nodes on this release would stop "
+                              "(ScheduleConflict)")
+
+
 def check_live_requires_app_identity(errors: list[str]) -> None:
     """A live validator must refuse a bare base approved entry at startup.
 
@@ -2645,6 +2717,7 @@ def main(argv: list[str] | None = None) -> None:
     check_live_composes_are_frozen(errors if args.release else launch_gate)
     check_release_composes_target_v2(errors if args.release else launch_gate)
     check_finney_compose_carries_compiled_blocks(errors)
+    check_protocol_schedule(errors)
     check_v3_release_pins(errors if args.release else launch_gate)
     check_bootstrap_frame_pinned(errors)
     check_every_env_constant_classified(errors)

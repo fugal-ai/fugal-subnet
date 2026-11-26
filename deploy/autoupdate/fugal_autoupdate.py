@@ -706,6 +706,7 @@ class Updater:
         if problems:
             raise UpdateError("refusing to manage this validator: " + "; ".join(problems)
                               + f" (fix {self.cfg.env_file})")
+        expand_args(self.cfg.validator_args, env)    # an unset ${VAR} stops here, not mid-stage
         self._fetch()
         high_water = parse_plain_version(state["high_water"])
         target = self._select(high_water, set(state["failed"]))

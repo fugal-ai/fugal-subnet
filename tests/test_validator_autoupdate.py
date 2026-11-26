@@ -597,3 +597,10 @@ def test_install_root_under_a_directory_others_can_write_is_refused(host, tmp_pa
         assert up.run_once() == 0 and fake.uv_runs == 1
     finally:
         os.chmod(tmp_path, 0o700)
+
+
+def test_unset_argument_variable_stops_before_staging(host):
+    up, fake, cfg, origin = host
+    Path(cfg.env_file).write_text(ENV_TEXT.replace("WALLET_NAME=fugal_validator\n", ""))
+    release(origin, "1.1.0")
+    assert up.run_once() == 1 and fake.uv_runs == 0 and not os.listdir(cfg.install_root)

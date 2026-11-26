@@ -4,6 +4,18 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — opt-in validator auto-update (ops only)
+- `deploy/autoupdate/`: a timer that installs signed `validator-vX.Y.Z` release
+  tags side by side, runs `--check`, switches the service with a systemd
+  drop-in only in the idle part of an epoch, and rolls back when the READY line
+  does not appear. It trusts only tags signed by the release keys pinned at
+  install time and only moves forward. Opt-in: nothing changes for a validator
+  that does not install it, and no scoring or runtime behaviour changes
+  (`docs/VALIDATOR_GUIDE.md`, "Auto-update (optional)").
+- Releases that validators should pick up automatically get one signed
+  `validator-v*` tag on the merged commit (the signer's command is in the
+  guide).
+
 ## [0.8.1] - 2026-11-25
 
 ### Upgrade TONIGHT (by ~03:00 ET Thu): v5 commit blocks from block 9,587,520 (e00026632, ~Wed 2026-11-25 19:52 ET)

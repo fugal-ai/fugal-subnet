@@ -134,6 +134,8 @@ validator that scored the whole field zero while looking healthy):
 
 ### Upgrading (every release)
 
+(Or let the opt-in auto-updater do these steps: "Auto-update (optional)" below.)
+
 ```bash
 git pull                       # or check out the release tag
 uv sync --locked --extra tee
@@ -284,6 +286,88 @@ journalctl -u fugal-validator -f
 
 Edit **every** value in the environment file; the example ships pointed at the
 test network.
+
+### Auto-update (optional)
+
+An opt-in timer that does the "Upgrading" steps above for you when the project
+publishes a signed validator release. If you do not install it, nothing changes.
+
+**What it trusts.** Only an annotated git tag named `validator-vX.Y.Z` whose
+SSH signature verifies against the release signers pinned **when you install
+it** (a copy of `deploy/keys/allowed_signers` in
+`/etc/fugal/autoupdate/allowed_signers`; the signers file in fetched code is
+never read). The tag's own name must equal the ref's name, it must point at a
+commit, nothing may follow the signature, and the version must be newer than
+anything this host has run: it never downgrades or reinstalls. It makes no
+network call except `git fetch` of those tags from the configured remote (and
+the `uv sync` and `--check` it runs, as you would).
+
+**What it does**, every 10 minutes (`deploy/autoupdate/fugal_autoupdate.py`):
+stage the new release side by side in `/opt/fugal-releases/fugal-subnet-X.Y.Z`
+(clone at the signed commit, copy `data/benchmarks/*.json.gz` and
+`data/embeddings/*.npz` from the running directory, `uv sync --locked --extra
+tee`, `neurons/validator.py --check` as the service user with
+`/etc/fugal/validator.env`). Only on exit 0 (READY) does it switch, and only in
+the idle part of an epoch, read from the journal: after `Weights set
+successfully` and `Waiting for next epoch boundary`, or while `Waiting for
+collection block` has more than 10 minutes left; never during collection or
+scoring. The switch is a systemd drop-in
+(`/etc/systemd/system/fugal-validator.service.d/50-fugal-autoupdate.conf`)
+pointing `WorkingDirectory` and `ExecStart` at the new directory, then a
+restart. If the READY line does not appear in the journal (20 minutes), it
+restores the previous drop-in, restarts, and does not try that version again
+until a newer one is published. It keeps the running and the previous release
+directories and deletes older ones; your original checkout is never modified.
+Budget disk for two more locked venvs (about 6 GB each without uv's hardlinks).
+
+**Before installing:** the validator's state must live outside the code
+directory (`FUGAL_STATE_PATH`, `FUGAL_EPOCH_DIR`, `FUGAL_EPOCH_LOG_DIR` set to
+absolute paths, as in "Minimum mainnet environment"; it refuses otherwise),
+your checkout should run the current release, and `uv` must be installed for
+the service user.
+
+```bash
+cd /opt/fugal/fugal-subnet                       # the checkout the service runs
+sudo deploy/autoupdate/install.sh                # pins the signers, prints their fingerprints
+sudoedit /etc/fugal/autoupdate.conf              # only if your unit differs from the shipped one
+sudo python3 /usr/local/lib/fugal-autoupdate/fugal_autoupdate.py status
+journalctl -u fugal-autoupdate -f                # one line per action
+```
+
+Compare the printed fingerprints with `deploy/keys/README.md`. The first
+install records the version in your checkout's `pyproject.toml` as the
+baseline: only newer releases are installed (`--baseline X.Y.Z` to set it).
+Re-running `install.sh` from a newer checkout updates the updater and re-pins
+the signers; nothing else updates them.
+
+- **Disable:** `sudo systemctl disable --now fugal-autoupdate.timer`. The
+  validator keeps running the release it is on. To go back to your own
+  checkout, bring it to at least that release, then
+  `sudo rm /etc/systemd/system/fugal-validator.service.d/50-fugal-autoupdate.conf
+  && sudo systemctl daemon-reload && sudo systemctl restart fugal-validator`.
+- **A version that failed:** the log and `status` say why (the `--check` and
+  `uv sync` output are in `/var/lib/fugal-autoupdate/`). After fixing the cause,
+  `sudo python3 /usr/local/lib/fugal-autoupdate/fugal_autoupdate.py reset-failed`.
+- With the timer on, `git pull` in your checkout no longer changes what runs.
+
+**For the release signer.** After the release is merged, sign one tag on the
+merged commit (its `pyproject.toml` version must equal the tag's), check it
+with the updater's own verifier, and push it:
+
+```bash
+git -c gpg.format=ssh -c user.signingkey=$HOME/.ssh/fugal_release.pub \
+    tag -s validator-vX.Y.Z -m "validator vX.Y.Z" <commit>
+python3 deploy/autoupdate/fugal_autoupdate.py verify-tag validator-vX.Y.Z   # OK ... signed by ...
+git -c gpg.ssh.allowedSignersFile=deploy/keys/allowed_signers tag -v validator-vX.Y.Z
+git push origin validator-vX.Y.Z
+```
+
+A pushed tag reaches every auto-updating validator within about 10 minutes
+plus one idle window, so push it only when the release is ready to run now
+(for a release that must run before a block, early enough for the stragglers
+to update by hand). Never move or re-sign a pushed `validator-v*` tag: a
+validator that has it will not reinstall that version; publish the next patch
+version instead.
 
 ### Host reference
 

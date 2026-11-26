@@ -28,6 +28,23 @@ Verified before it was added: a `git`-namespace signature by it over a known
 message verifies against this file, and the same signature over a different
 message does not.
 
+## Validator release tags (`validator-v*`)
+
+The opt-in validator auto-updater (`deploy/autoupdate/`) installs a release
+only from an annotated tag `validator-vX.Y.Z` signed by a key in this file, in
+the `git` namespace, as the file stood when the operator installed the updater
+(a copy in `/etc/fugal/autoupdate/allowed_signers`; it never reads the file
+from fetched code). A key added or removed here reaches those validators only
+when their operators re-run `deploy/autoupdate/install.sh`; after a lost key,
+say so in the release announcement. Signing one, on the merged release commit:
+
+    git -c gpg.format=ssh -c user.signingkey=$HOME/.ssh/fugal_release.pub \
+        tag -s validator-vX.Y.Z -m "validator vX.Y.Z" <commit>
+    python3 deploy/autoupdate/fugal_autoupdate.py verify-tag validator-vX.Y.Z
+    git push origin validator-vX.Y.Z
+
+`docs/VALIDATOR_GUIDE.md`, "Auto-update (optional)", has the rules.
+
 ## Signed lists (protocol v4; nothing reads one before a v4 activation block)
 
 Since 2026-11-18 both lines read `namespaces="git,fugal-list@fugalai.com"`:

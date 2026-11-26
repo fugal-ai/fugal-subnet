@@ -1,0 +1,24 @@
+# One pass of the opt-in validator auto-updater (deploy/autoupdate/). Started by
+# fugal-autoupdate.timer; install with `sudo deploy/autoupdate/install.sh`.
+#
+# Runs as root: it writes the validator's systemd drop-in and restarts it. It
+# runs only the copy of fugal_autoupdate.py that install.sh placed in
+# /usr/local/lib/fugal-autoupdate (root-owned), never code from a directory the
+# validator user can write; git, uv and --check for the new version run as the
+# service user.
+[Unit]
+Description=Fugal validator auto-update (signed validator-v* release tags)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/fugal-autoupdate/fugal_autoupdate.py run
+# Staging a release (uv sync, --check) and a restart with rollback can take a while.
+TimeoutStartSec=4h
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/etc/systemd/system/fugal-validator.service.d

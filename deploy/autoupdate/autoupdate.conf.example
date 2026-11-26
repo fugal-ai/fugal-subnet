@@ -1,0 +1,41 @@
+# /etc/fugal/autoupdate.conf: settings for fugal-autoupdate (deploy/autoupdate/).
+# Read by fugal_autoupdate.py itself, not by systemd. Every line is optional;
+# the values below are the defaults, which match the shipped
+# deploy/systemd/fugal-validator.service and docs/VALIDATOR_GUIDE.md.
+[autoupdate]
+# The only host this program contacts: `git fetch` of refs/tags/validator-v*.
+remote = https://github.com/fugal-ai/fugal-subnet.git
+service = fugal-validator
+service_user = fugal
+# The directory the base unit runs from. Never modified or deleted.
+base_dir = /opt/fugal/fugal-subnet
+# New versions are staged here as fugal-subnet-<version>. Must be root-owned
+# and not group- or world-writable, and so must every directory above it
+# (install.sh creates it so). Outside /opt/fugal, which the service user may own.
+install_root = /opt/fugal-releases
+# The validator's EnvironmentFile: read for ${VAR} in validator_args and for
+# FUGAL_EPOCH_INTERVAL, and passed to `--check`. Never logged.
+env_file = /etc/fugal/validator.env
+# The arguments after `neurons/validator.py`, as in the base unit's ExecStart.
+# Change them here if you changed them there.
+validator_args = --network ${FUGAL_NETWORK} --netuid ${FUGAL_NETUID} --coldkey ${WALLET_NAME} --hotkey ${HOTKEY_NAME} --live
+# uv, run as service_user (install.sh fills in the path it finds).
+uv = /usr/local/bin/uv
+uv_extras = tee
+# The allowed signers pinned at install time. The copy in fetched code is never read.
+signers = /etc/fugal/autoupdate/allowed_signers
+state_dir = /var/lib/fugal-autoupdate
+dropin_dir = /etc/systemd/system/fugal-validator.service.d
+# Fallback when the environment file has no FUGAL_EPOCH_INTERVAL.
+epoch_interval = 4320
+block_seconds = 12
+# Restart while waiting for the collection block only with more than this left.
+min_minutes_before_collection = 10
+# Seconds to wait for the READY line after a restart before rolling back.
+ready_timeout = 1200
+check_timeout = 1800
+# A staged version's --check is re-run before switching when older than this.
+check_max_age = 7200
+sync_timeout = 3600
+# Managed directories kept (the running one and the one before it at least).
+keep_versions = 2

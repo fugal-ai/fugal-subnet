@@ -248,7 +248,13 @@ class ChainSet:
     - `path`: where the state is kept (HELD_FORMAT), or None;
     - `refuse`: a TD refuses to go on (PublishedUnavailable) past a reveal
       whose named view contradicts its own state; a validator logs an ALARM
-      and goes on (the root's set is the reference).
+      and goes on (the root's set is the reference);
+    - `other_pool_ids`: question ids of another pool the root's reveals
+      publish outcomes on. From protocol v5 a reveal's `votes_v5` names v5
+      pool questions (memo_v4.published_ids), which the set folds like any
+      other, so a kept state or a snapshot names them too; a node with v5
+      scheduled passes the v5 pool's ids. Only `pool` seeds the set, and an
+      id in neither is still refused.
 
     State: `held` (memo_v4.Published, folded through `at` - READ_LAG),
     `named` (the newest root reveal folded), `at` (the last boundary read)."""
@@ -256,9 +262,12 @@ class ChainSet:
     def __init__(self, *, pool, read_at: Callable[[int], str | None],
                  reveal_bytes: Callable[[str, str], bytes | None],
                  snapshot: Callable[[str], bytes | None] | None = None, path=None,
-                 refuse: bool = False, seed_doc: Mapping | None = None):
+                 refuse: bool = False, seed_doc: Mapping | None = None,
+                 other_pool_ids=()):
         self.pool = pool
-        self.pool_ids = frozenset(q["question_id"] for q in pool)
+        # What a kept state or a snapshot may name (`_load`, `_anchor`).
+        self.pool_ids = (frozenset(q["question_id"] for q in pool)
+                         | frozenset(str(q) for q in other_pool_ids))
         self.read_at, self.reveal_bytes, self.snapshot = read_at, reveal_bytes, snapshot
         self.path = None if path is None else os.fspath(path)
         self.refuse, self.seed_doc = bool(refuse), seed_doc

@@ -1353,7 +1353,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             first_epoch=v4_block // blocks_per_epoch, blocks_per_epoch=blocks_per_epoch,
             role=role, my_hotkey=my_hotkey, root_hotkey=root_hotkey,
             root_hotkeys=_cfg.root_hotkeys_v4(on_finney), reference_dir=reference_dir,
-            reveal_bucket=REVEAL_BUCKET, cfg=_cfg, state_path=STATE_PATH, menu_node=menu_node)
+            reveal_bucket=REVEAL_BUCKET, cfg=_cfg, state_path=STATE_PATH, menu_node=menu_node,
+            other_pool_ids=_v5_pool_ids(v5_inputs))
     # Protocol v5 (fugal_subnet/v5_node.py): its state beside the validator's,
     # and, on a follower, the reader of the root's published exam specs.
     v5_node = None
@@ -2024,14 +2025,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                 # --- PROTOCOL v5: the seat on real picks (fugal_subnet/v5_epoch.py) ---
                 # v0.8.1: raw commitment blocks from the fix block; v0.8.0's
                 # seniority keys before it (those epochs replay as published).
-                raw_blocks = v5_fix_block is not None and boundary_block >= v5_fix_block
+                v5_blocks, raw_blocks = _v5_commit_blocks(
+                    boundary_block, v5_fix_block, seniority=commit_blocks, raw=raw_commit_blocks)
                 v2_result, uids, weights, v5_commit = _v5_score(
                     v5_node, epoch_index=epoch_index, nonce=nonce, exam=v5_exam,
                     state=v4_menu.state, verified_proofs=verified_proofs,
                     verified_heads=verified_heads, head_hashes=head_hashes,
                     coldkey_of=coldkey_of, v5_inputs=v5_inputs,
-                    commit_blocks=(raw_commit_blocks if raw_blocks else commit_blocks),
-                    raw_commit_blocks=raw_blocks,
+                    commit_blocks=v5_blocks, raw_commit_blocks=raw_blocks,
                     burn_uid=burn_uid,
                     published=v4_view,
                     pooled=_v4_pool(v4_menu.state, verified_proofs=verified_proofs,
@@ -3603,11 +3604,14 @@ def _v4_menu_setup(*, cfg, subtensor, netuid: int, my_hotkey: str, role, root_ho
 
 def _v4_published_setup(*, subtensor, netuid: int, pool, first_epoch: int, blocks_per_epoch: int,
                         role, my_hotkey: str, root_hotkey, root_hotkeys, reference_dir,
-                        reveal_bucket: str, cfg, state_path: str, menu_node=None):
+                        reveal_bucket: str, cfg, state_path: str, menu_node=None,
+                        other_pool_ids=()):
     """Protocol v4's published set on this validator (memo_sync.ChainSet,
     kept beside the state file) and, on the root, the publisher of its
     snapshots (memo_sync.SnapshotPublisher, the store the menus go to):
-    (set, publisher or None).
+    (set, publisher or None). `other_pool_ids` are the v5 pool's question
+    ids when v5 is scheduled (`_v5_pool_ids`): v5 reveals publish votes on
+    them, so the kept set and the root's snapshots name them.
 
     The set advances by the root's reveal commitments read pinned at each
     boundary block, on the root as on every other validator. A reveal the
@@ -3660,7 +3664,8 @@ def _v4_published_setup(*, subtensor, netuid: int, pool, first_epoch: int, block
             check=lambda b: hashlib.sha256(b).hexdigest() == digest)
 
     chain_set = memo_sync.ChainSet(pool=pool, read_at=read_at, reveal_bytes=reveal_bytes,
-                                   snapshot=snapshot, path=state_path + memo_sync.STATE_SUFFIX)
+                                   snapshot=snapshot, path=state_path + memo_sync.STATE_SUFFIX,
+                                   other_pool_ids=other_pool_ids)
     publisher = (memo_sync.SnapshotPublisher(netuid=netuid, store=mp.GcsStore(reveal_bucket),
                                              held=lambda: chain_set.held)
                  if root and reveal_bucket else None)
@@ -3668,6 +3673,13 @@ def _v4_published_setup(*, subtensor, netuid: int, pool, first_epoch: int, block
                 "v4 boundary)" if chain_set.at is None else
                 f"read through boundary {chain_set.at}")
     return chain_set, publisher
+
+
+def _v5_pool_ids(v5_inputs) -> frozenset:
+    """The v5 pool's question ids (none when v5 is not scheduled or its
+    inputs are not loaded): what the published set may name besides the v3
+    pool's, since a v5 reveal's `votes_v5` publishes outcomes on them."""
+    return frozenset(v5_inputs.gold) if v5_inputs is not None else frozenset()
 
 
 def _v4_epoch_view(chain_set, epoch_index: int):
@@ -4072,6 +4084,17 @@ def _v5_load_inputs(cfg, *, live: bool) -> _V5Inputs:
                 len(pool), sum(len(v) for v in exam_part.values()), len(emb.row))
     return _V5Inputs(pool=pool, gold={q["question_id"]: q for q in pool}, embeddings=emb,
                      exam_by_dataset=exam_part, weights_ppm=arena_sets.weights_ppm())
+
+
+def _v5_commit_blocks(boundary_block: int, fix_block: int | None, *, seniority: dict,
+                      raw: dict) -> tuple[dict, bool]:
+    """(the commit block of each uid v5 scores the epoch at `boundary_block`
+    on, whether those are raw blocks). From the v0.8.1 fix block
+    (config.v5_commit_fix_block) a commitment's raw block (`raw`,
+    _Checked.commit_block); before it v0.8.0's v1 seniority keys
+    (`seniority`, _Checked.seniority), so those epochs replay as published."""
+    raw_blocks = fix_block is not None and int(boundary_block) >= int(fix_block)
+    return (raw if raw_blocks else seniority), raw_blocks
 
 
 def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_proofs: dict,

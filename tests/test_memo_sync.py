@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pathlib
 
 import pytest
 
@@ -22,6 +23,7 @@ from fugal_subnet.benchmarks.slicer import epoch_id_for_block
 from tests import v4_world
 
 SEED_AT = 8
+V5_PREFIX = "arena_"
 
 
 @pytest.fixture
@@ -37,8 +39,14 @@ def _reserve(pool, seed):
 
 
 def _reveal(k, ids, *, named=None):
-    r = {"epoch_id": epoch_id_for_block(k), "protocol_version": 4,
-         "questions": [{"question_id": q} for q in sorted(ids)]}
+    """Root reveal k publishing `ids`: v3-pool ids as scored questions, v5
+    pool ids (`arena_*`) as a v5 record's exam votes (`votes_v5`)."""
+    v5 = sorted(q for q in ids if q.startswith(V5_PREFIX))
+    r = {"epoch_id": epoch_id_for_block(k), "protocol_version": 5 if v5 else 4,
+         "questions": [{"question_id": q} for q in sorted(ids) if not q.startswith(V5_PREFIX)]}
+    if v5:
+        r["votes_v5"] = {"epoch": k, "votes": [[q, "m/x", "hk", "ck", 10000, 1, 0] for q in v5],
+                         "coverage": []}
     if named is not None:
         r["memo_v4"] = {"through": named.through, "published_digest": named.digest}
     return r
@@ -567,3 +575,96 @@ def test_an_endpoint_without_the_history_to_anchor_says_so_and_a_transient_error
                             snapshot=lambda d: None)
     with pytest.raises(ConnectionError, match="reset"):
         cs.advance_to(SEED_AT + 4)
+
+
+# --- protocol v5: the set names v5 pool questions too ----------------------------------------
+
+
+def _v5_ids(c, n=3):
+    return [f"{V5_PREFIX}MMLUPro_{hashlib.sha256(f'{c}:{i}'.encode()).hexdigest()[:16]}"
+            for i in range(n)]
+
+
+def _v5_chain(pool, seed, *, v5_from):
+    """Root reveals SEED_AT + 1 .. SEED_AT + 8 on time; from `v5_from` on
+    each also publishes three v5 pool questions (its votes_v5)."""
+    epochs = range(SEED_AT + 1, SEED_AT + 9)
+    published = _published(pool, seed, epochs)
+    for c in epochs:
+        if c >= v5_from:
+            published[c] = published[c] + _v5_ids(c)
+    root = _Root(pool, seed, {c + 2: c for c in epochs}, published)
+    v5_pool = {q for c in epochs for q in _v5_ids(c, 5)}       # the v5 pool holds more
+    return root, v5_pool
+
+
+def test_a_kept_set_naming_v5_questions_is_kept_when_the_v5_pool_is_given(tmp_path, world):
+    pool, seed = world
+    root, v5_pool = _v5_chain(pool, seed, v5_from=SEED_AT + 4)
+    e = SEED_AT + 10
+    cs = _set(root, tmp_path)
+    want = cs.view_for(e)
+    assert set(_v5_ids(SEED_AT + 5)) <= set(want.first)         # folded from votes_v5
+    cs.save()
+    # Without the v5 pool's ids the kept set is refused at every restart and
+    # re-folded from the seed (it reaches the same set, after every read).
+    root.reads.clear()
+    bare = _set(root, tmp_path)
+    assert bare.at is None and bare.view_for(e).digest == want.digest
+    assert len(root.reads) == e - SEED_AT - 2
+    # With them it is kept: no read at all to serve the same epoch.
+    root.reads.clear()
+    kept = memo_sync.ChainSet(pool=pool, read_at=root.read_at, reveal_bytes=root.reveal_bytes,
+                              path=tmp_path / "held.json", other_pool_ids=v5_pool)
+    assert kept.at == e and kept.view_for(e).digest == want.digest and root.reads == []
+    # Anything in neither pool is still set aside.
+    held = memo_v4.Published({**want.first, "zz-in-no-pool": SEED_AT}, want.through)
+    cs.held = held
+    cs.save()
+    alien = memo_sync.ChainSet(pool=pool, read_at=root.read_at, reveal_bytes=root.reveal_bytes,
+                               path=tmp_path / "held.json", other_pool_ids=v5_pool)
+    assert alien.at is None
+
+
+def test_a_snapshot_naming_v5_questions_is_anchored_on_when_the_v5_pool_is_given(world):
+    pool, seed = world
+    root, v5_pool = _v5_chain(pool, seed, v5_from=SEED_AT + 1)
+    e, c = SEED_AT + 10, SEED_AT + 8
+    named = root.reveals[c]["memo_v4"]
+    good = memo_v4.snapshot_bytes(_rule(root, c).view(c - 2))
+    assert hashlib.sha256(good).hexdigest() == named["published_digest"]
+    assert V5_PREFIX.encode() in good
+    snapshots = {named["published_digest"]: good}
+    # Refused as naming questions outside the pool: the node replays from the seed.
+    root.reads.clear()
+    bare = _set(root, snapshots=snapshots)
+    assert bare.view_for(e).digest == _rule(root, e).digest
+    assert len(set(root.reads)) > 3
+    # Given the v5 pool's ids it anchors on the snapshot.
+    root.reads.clear()
+    anchored = memo_sync.ChainSet(pool=pool, read_at=root.read_at, reveal_bytes=root.reveal_bytes,
+                                  snapshot=snapshots.get, other_pool_ids=v5_pool)
+    assert anchored.view_for(e).digest == _rule(root, e).digest
+    assert sorted(set(root.reads)) == [c, c + 1, c + 2]
+
+
+def test_the_validator_gives_its_published_set_the_v5_pools_ids(tmp_path):
+    from types import SimpleNamespace
+
+    from neurons import validator
+
+    assert validator._v5_pool_ids(None) == frozenset()
+    inputs = SimpleNamespace(gold={"arena_QANTA_00000000000000aa": {}, "arena_AIME_0b": {}})
+    ids = validator._v5_pool_ids(inputs)
+    assert ids == {"arena_QANTA_00000000000000aa", "arena_AIME_0b"}
+    chain_set, publisher = validator._v4_published_setup(
+        subtensor=None, netuid=70, pool=[{"question_id": "q1"}], first_epoch=10,
+        blocks_per_epoch=360, role=None, my_hotkey="5Me", root_hotkey="5Root",
+        root_hotkeys=(), reference_dir=None, reveal_bucket="",
+        cfg=SimpleNamespace(MENU_MIRRORS=(), REFERENCE_BUCKET=""),
+        state_path=str(tmp_path / "state.json"), other_pool_ids=ids)
+    assert publisher is None
+    assert chain_set.pool_ids == {"q1"} | ids
+    # The run loop passes the v5 inputs it loaded at startup.
+    src = (pathlib.Path(validator.__file__)).read_text(encoding="utf-8")
+    assert "other_pool_ids=_v5_pool_ids(v5_inputs))" in src

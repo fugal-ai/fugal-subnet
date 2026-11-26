@@ -1353,7 +1353,8 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
             first_epoch=v4_block // blocks_per_epoch, blocks_per_epoch=blocks_per_epoch,
             role=role, my_hotkey=my_hotkey, root_hotkey=root_hotkey,
             root_hotkeys=_cfg.root_hotkeys_v4(on_finney), reference_dir=reference_dir,
-            reveal_bucket=REVEAL_BUCKET, cfg=_cfg, state_path=STATE_PATH, menu_node=menu_node)
+            reveal_bucket=REVEAL_BUCKET, cfg=_cfg, state_path=STATE_PATH, menu_node=menu_node,
+            other_pool_ids=_v5_pool_ids(v5_inputs))
     # Protocol v5 (fugal_subnet/v5_node.py): its state beside the validator's,
     # and, on a follower, the reader of the root's published exam specs.
     v5_node = None
@@ -3603,11 +3604,14 @@ def _v4_menu_setup(*, cfg, subtensor, netuid: int, my_hotkey: str, role, root_ho
 
 def _v4_published_setup(*, subtensor, netuid: int, pool, first_epoch: int, blocks_per_epoch: int,
                         role, my_hotkey: str, root_hotkey, root_hotkeys, reference_dir,
-                        reveal_bucket: str, cfg, state_path: str, menu_node=None):
+                        reveal_bucket: str, cfg, state_path: str, menu_node=None,
+                        other_pool_ids=()):
     """Protocol v4's published set on this validator (memo_sync.ChainSet,
     kept beside the state file) and, on the root, the publisher of its
     snapshots (memo_sync.SnapshotPublisher, the store the menus go to):
-    (set, publisher or None).
+    (set, publisher or None). `other_pool_ids` are the v5 pool's question
+    ids when v5 is scheduled (`_v5_pool_ids`): v5 reveals publish votes on
+    them, so the kept set and the root's snapshots name them.
 
     The set advances by the root's reveal commitments read pinned at each
     boundary block, on the root as on every other validator. A reveal the
@@ -3660,7 +3664,8 @@ def _v4_published_setup(*, subtensor, netuid: int, pool, first_epoch: int, block
             check=lambda b: hashlib.sha256(b).hexdigest() == digest)
 
     chain_set = memo_sync.ChainSet(pool=pool, read_at=read_at, reveal_bytes=reveal_bytes,
-                                   snapshot=snapshot, path=state_path + memo_sync.STATE_SUFFIX)
+                                   snapshot=snapshot, path=state_path + memo_sync.STATE_SUFFIX,
+                                   other_pool_ids=other_pool_ids)
     publisher = (memo_sync.SnapshotPublisher(netuid=netuid, store=mp.GcsStore(reveal_bucket),
                                              held=lambda: chain_set.held)
                  if root and reveal_bucket else None)
@@ -3668,6 +3673,13 @@ def _v4_published_setup(*, subtensor, netuid: int, pool, first_epoch: int, block
                 "v4 boundary)" if chain_set.at is None else
                 f"read through boundary {chain_set.at}")
     return chain_set, publisher
+
+
+def _v5_pool_ids(v5_inputs) -> frozenset:
+    """The v5 pool's question ids (none when v5 is not scheduled or its
+    inputs are not loaded): what the published set may name besides the v3
+    pool's, since a v5 reveal's `votes_v5` publishes outcomes on them."""
+    return frozenset(v5_inputs.gold) if v5_inputs is not None else frozenset()
 
 
 def _v4_epoch_view(chain_set, epoch_index: int):

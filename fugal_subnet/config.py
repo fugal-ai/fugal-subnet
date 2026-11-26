@@ -1732,6 +1732,9 @@ OPERATIONAL_ENV_VARS = (
 CONSENSUS_ENV_INPUTS_V5 = (
     # Off finney only, as v4's: finney compiles FINNEY_V5_ACTIVATION_BLOCK.
     "FUGAL_V5_ACTIVATION_BLOCK",
+    # Off finney only: where the schedule fold starts (finney compiles
+    # FINNEY_SCHEDULE_FROM_BLOCK; docs/decisions/SIGNED_SCHEDULE.md).
+    "FUGAL_SCHEDULE_FROM_BLOCK",
 )
 OPERATIONAL_ENV_VARS_V5 = (
     # The pool is verified against pool_manifest_v5's content hash and the
@@ -1882,3 +1885,75 @@ def v5_activation_block(genesis_hash: str | None) -> int | None:
             raise ValueError(f"the v5 activation block ({block}) must not be before the v4 "
                              f"activation block ({v4})")
     return block
+
+
+# --- The protocol schedule (docs/decisions/SIGNED_SCHEDULE.md) ---
+# A switch whose code ships in a release may take its block from a signed
+# schedule instead of this file: the owner signs the document, the root names
+# it in its commitment (`sched:<serial>:<sha256>`), and every node folds the
+# root's pointer from SCHEDULE_FROM_BLOCK on (protocol_schedule.fold), so a
+# date moves with no new image or compose. Off until a release compiles
+# FINNEY_SCHEDULE_FROM_BLOCK (None: nothing reads or writes the pointer on
+# finney); another chain reads FUGAL_SCHEDULE_FROM_BLOCK, as the activation
+# blocks above. A malformed value is kept aside, as v4's, and refused by name
+# where it is read (schedule_from_block).
+FINNEY_SCHEDULE_FROM_BLOCK: int | None = None
+_schedule_from = os.getenv("FUGAL_SCHEDULE_FROM_BLOCK", "").strip()
+SCHEDULE_FROM_BLOCK_ENV: int | None = None
+SCHEDULE_FROM_BLOCK_MALFORMED: str | None = None
+_schedule_digits = _schedule_from[1:] if _schedule_from.startswith("-") else _schedule_from
+if _schedule_digits.isascii() and _schedule_digits.isdigit():
+    SCHEDULE_FROM_BLOCK_ENV = int(_schedule_from)
+elif _schedule_from:
+    SCHEDULE_FROM_BLOCK_MALFORMED = _schedule_from
+# A schedule named at epoch e may set, move or remove only blocks at or after
+# the boundary of e + SCHEDULE_LEAD_EPOCHS (both the old and the new block),
+# so an activation that has passed, or is closer than this, never moves. It
+# is also how stale a node's schedule may be: a fold through epoch S decides
+# every epoch before S + SCHEDULE_LEAD_EPOCHS. Consensus; compiled only.
+SCHEDULE_LEAD_EPOCHS = 2
+# The switches whose block may come from the schedule: name -> the block this
+# release compiles for finney (None: the schedule decides). A compiled block
+# takes precedence, and a schedule that names it with another block stops the
+# node (switch_block). A release that ships a switch's code registers it here
+# with None; none does yet.
+SCHEDULE_SWITCHES: dict[str, int | None] = {}
+
+
+def schedule_from_block(genesis_hash: str | None) -> int | None:
+    """The block from which this chain's nodes fold the root's schedule
+    pointer, or None (off). Finney's is compiled and the variable may only
+    repeat it; another chain reads it; an epoch boundary (checked by the
+    caller, which knows the epoch length)."""
+    malformed = SCHEDULE_FROM_BLOCK_MALFORMED
+    if malformed is not None:
+        known_finney = (genesis_hash is not None
+                        and str(genesis_hash).lower() == FINNEY_GENESIS_HASH.lower())
+        if known_finney and FINNEY_SCHEDULE_FROM_BLOCK is None:
+            return None
+        raise ValueError(f"FUGAL_SCHEDULE_FROM_BLOCK={malformed!r} is not a block number "
+                         "(digits only). Unset it or set the block.")
+    return _chain_block(genesis_hash, FINNEY_SCHEDULE_FROM_BLOCK, SCHEDULE_FROM_BLOCK_ENV,
+                        "FUGAL_SCHEDULE_FROM_BLOCK")
+
+
+def switch_block(name: str, genesis_hash: str | None, view=None) -> int | None:
+    """The block switch `name` applies from on this chain: finney's compiled
+    block when SCHEDULE_SWITCHES has one, else the schedule's
+    (`view`: protocol_schedule.ScheduleView, or None when the schedule is
+    off). A compiled block the schedule contradicts raises
+    protocol_schedule.ScheduleConflict: two releases would disagree, so the
+    node stops rather than choose."""
+    if name not in SCHEDULE_SWITCHES:
+        raise KeyError(f"{name!r} is not a schedulable switch (config.SCHEDULE_SWITCHES)")
+    on_finney = (genesis_hash is not None
+                 and str(genesis_hash).lower() == FINNEY_GENESIS_HASH.lower())
+    compiled = SCHEDULE_SWITCHES[name] if on_finney else None
+    scheduled = view.block(name) if view is not None else None
+    if compiled is not None:
+        if scheduled is not None and scheduled != compiled:
+            from fugal_subnet.protocol_schedule import ScheduleConflict
+            raise ScheduleConflict(f"switch {name!r}: this release compiles block {compiled}, "
+                                   f"the schedule in force says {scheduled}")
+        return compiled
+    return scheduled

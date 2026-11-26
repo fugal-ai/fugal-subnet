@@ -113,6 +113,22 @@ Do not pass `-O hashalg=...` when signing: the verifier accepts the default
 (SHA-512) only. `-I` is `release2@fugalai.com` when the backup key signed. A
 device list is the same with `--kind devices` and `device_list.json`.
 
+## Signing a protocol schedule
+
+A protocol schedule (`docs/decisions/SIGNED_SCHEDULE.md`) is signed with the
+same keys under the lists' namespace, `fugal-list@fugalai.com`; its `kind`
+(`fugal-protocol-schedule`) inside the signed bytes keeps it apart from a
+list. `scripts/release.py` writes the bytes and checks everything else:
+
+    uv run python scripts/release.py schedule draft --set <switch>=<block> --apply
+    ssh-keygen -Y sign -f ~/.ssh/<release key> -n fugal-list@fugalai.com release-out/schedule-<N>.json
+    uv run python scripts/release.py schedule verify release-out/schedule-<N>.json --install
+
+`verify` prints the two `gsutil cp` commands that publish the pair to the
+root's bucket. Sign only with a key every deployed release lists: the neurons
+check against the signers compiled into their release and image. Never sign
+two documents with the same serial; a newer one takes the next serial.
+
 ## Rotating a key
 
 - **Planned:** add the new key's line in a reviewed pull request signed off by

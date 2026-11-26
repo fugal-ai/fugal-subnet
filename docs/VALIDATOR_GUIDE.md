@@ -369,6 +369,21 @@ to update by hand). Never move or re-sign a pushed `validator-v*` tag: a
 validator that has it will not reinstall that version; publish the next patch
 version instead.
 
+### The protocol schedule (nothing to set)
+
+From the release that switches it on (`config.FINNEY_SCHEDULE_FROM_BLOCK`;
+none yet), the block of a schedulable switch comes from a schedule the
+release key signs rather than from a release
+(`docs/decisions/SIGNED_SCHEDULE.md`). The root names it in its commitment;
+your validator reads that pointer at every boundary, fetches the document by
+its digest from the root's bucket, verifies the signature against the signers
+in your checkout, and keeps the result beside its state
+(`<state>.schedule.json`, documents in `<state>.schedule.d/`). A move needs no
+upgrade, no restart and no environment change. Log lines start `Protocol
+schedule:`; an `ERROR ... which no source serves` means the bucket did not
+serve a named document: the schedule held still decides the next two epochs,
+and the validator catches up once the document is served.
+
 ### Host reference
 
 Measured on a validator host on 2026-11-03, so the numbers are a starting

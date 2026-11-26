@@ -26,7 +26,7 @@ here, and a check that enforces it.**
 
 | | Invariant | Enforced by |
 |---|---|---|
-| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 35 stages: the live path, and `menu_derivation`, `seat_v4`, `explore_shares_v4`, `endpoint_vote`, `token_means`, `provisional_gates`, `retirement`, `menu_publication`, `head_odds_v4`, `pool_mix_v4`, `bound_v4`, `pick_cost_v4`, `picks_v4`, `memo_v4`, `v4_replay` and `published_v4` for the v4 menu state, the labels, odds and seat, exploration, the menu step's inputs, the menu's publication, heads, the question mix, the seat's one bound, the pick-cost table, the real-picks check, the memorisation check, a re-anchor's replay of its own epochs and the published set as nodes move it, built ahead of v4), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
+| **I1** | **Determinism.** Same epoch inputs ⟹ byte-identical scores on any honest validator. | `scripts/check_determinism.py` (both modes, in CI — 35 stages: the live path, and `menu_derivation`, `seat_v4`, `explore_shares_v4`, `endpoint_vote`, `token_means`, `provisional_gates`, `retirement`, `menu_publication`, `head_odds_v4`, `pool_mix_v4`, `bound_v4`, `pick_cost_v4`, `picks_v4`, `memo_v4`, `v4_replay` and `published_v4` for the v4 menu state, the labels, odds and seat, exploration, the menu step's inputs, the menu's publication, heads, the question mix, the seat's one bound, the pick-cost table, the real-picks check, the memorisation check, a re-anchor's replay of its own epochs and the published set as nodes move it, built ahead of v4; `protocol_schedule` for the signed schedule's fold), `fugal_subnet/determinism.py`, `check_safety_invariants.check_epoch_id_single_source`, `slicer.protocol_version_for_boundary` (`tests/test_v2_activation.py`), TEE proof verification (all validators verify the same attested proof) |
 | **I2** | **Bounded ingestion.** No miner-supplied bytes reach deserialization, allocation, or execution without size, shape, and value bounds. | `run_miner_attacks.py`, `tests/test_head_properties.py`, `tests/test_head_v4.py`, `check_safety_invariants.py` (no-pickle) |
 | **I3** | **Monotonic incentive.** A miner cannot raise its score except by routing better or more cheaply, and **no policy that does not read the question can score above zero**. Artifact-keyed evidence with miss=0 prevents selective publication; the burn-in ramp prevents penalty-washing by reset. | Constant-policy frontier (`frontier.py`, `tests/test_frontier.py`, `tests/test_degenerate_constant_policy.py`), the v2 copy rule (`copy_rule.py`, `tests/test_copy_rule.py`), the v2 champion rule (`champion.py`, `tests/test_champion.py`; constant policies are no longer zero by construction in v2, see its entry), commit-reveal, behavioural dedup (global model index), evidence accumulation, `run_attacks.py`, `run_tee_attacks.py` |
 | **I4** | **Non-interference.** A miner cannot lower another miner's score, prevent them being scored, or move the reference they are scored against — including by being present or absent. | `tests/test_non_interference.py`, TEE architecture (no shared model pool), nonce-derived exploration targets, reference frame pooled over time, coldkey-median shared grades from v2 (`tests/test_shared_grades.py`) |
@@ -6804,3 +6804,55 @@ called from the epoch loop): a fresh follower holds the root's state. The
 bytes of the heads in the book are kept beside the state, each checked
 against its sha256 when read back, so a restart still gives the holder and
 the contenders their picks. Check: `tests/test_v5_memo_resync.py`.
+
+## The protocol schedule (built; off until a release compiles `FINNEY_SCHEDULE_FROM_BLOCK`)
+
+### I1 — the protocol schedule is a fold over the root's pointer
+
+A schedulable switch's block (`config.SCHEDULE_SWITCHES`, compiled `None`)
+comes from a schedule the owner signs (docs/decisions/SIGNED_SCHEDULE.md).
+What must be true:
+
+1. **Every node folds the same sequence or stops.** The schedule in force for
+   epoch E is a pure function of the root's pointer `sched:<serial>:<digest>`
+   read pinned at every boundary from `SCHEDULE_FROM_BLOCK` through E, the
+   bytes each pointer names, and compiled constants (`SCHEDULE_LEAD_EPOCHS`,
+   the document format, the pinned signers). The digest covers the document
+   **and its signature**, so a source can only serve or not serve; bytes that
+   do not match are "not served", never a refusal. A node with no bytes for a
+   named pointer stops its fold there (`ScheduleUnresolved`) and never folds
+   past it on a guess. Validators and TDs run the same `ScheduleTracker`.
+2. **Forward only.** A document is adopted only with a serial above the one
+   in force; a replay of an older one stays refused for as long as it is
+   named. An absent or unparseable pointer carries the schedule in force.
+3. **History is frozen.** A document first seen at epoch e may set, move or
+   remove only blocks at or after `(e + SCHEDULE_LEAD_EPOCHS) x
+   blocks_per_epoch`, on both sides; "first seen" is the chain's, not the
+   document's. So whether a switch applies to any epoch before
+   `e + SCHEDULE_LEAD_EPOCHS` is the same under every later schedule, and a
+   node may replay a past epoch on today's schedule. A fold through S decides
+   every epoch through `S + SCHEDULE_LEAD_EPOCHS` (`certain_through`); a
+   switch's consumer refuses an epoch past it.
+4. **Compiled blocks win, loudly.** `config.switch_block` returns a compiled
+   block when there is one; a schedule that contradicts it raises
+   `ScheduleConflict` (the release check refuses such a release first). The
+   fold never reads compiled blocks, so it is the same on every version.
+5. **Trust is in the image.** The signature is checked in process against
+   `signed_lists/allowed_signers` (pinned by `menu_rules.LIST_SIGNERS_SHA256`),
+   under the lists' namespace; `kind` inside the signed bytes keeps a schedule
+   and a list apart. Nothing fetched decides trust.
+
+The root writes the pointer as the last field of its commitment
+(`join_step.RootFields`): field 0 (the reveal pointer) and field 1 (the join
+pointer) are where v0.8.1 readers look, unchanged.
+
+Checks: `tests/test_protocol_schedule.py` (refusals: unsigned, wrong signer,
+git-namespace key, tampered, draft, other chain, replayed and equal serial,
+too soon, a passed or near block moved or removed; a validator and a TD,
+restarting and missing the store, agree at every boundary; a fresh node folds
+what a long-running one did), `check_determinism.py` stage
+`protocol_schedule` (the fold in pieces with restarts, under `--perturb`),
+`check_safety_invariants.check_protocol_schedule` (shipped schedules verify
+and are named by their digest, no compose sets `FUGAL_SCHEDULE_FROM_BLOCK`,
+compiled blocks agree with the newest shipped schedule), and the constants in
+`consensus_v5.REGISTERED`.

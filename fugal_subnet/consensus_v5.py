@@ -46,6 +46,15 @@ REGISTERED: dict[str, tuple[str, ...]] = {
         "COVERAGE_PARTITION_V5", "EMBEDDINGS_V5_SHA256",
         # v0.8.1: raw commitment blocks from this block
         "FINNEY_V5_COMMIT_FIX_BLOCK",
+        # the protocol schedule (docs/decisions/SIGNED_SCHEDULE.md): where the
+        # fold starts, its lead and the switches it may set
+        "FINNEY_SCHEDULE_FROM_BLOCK", "SCHEDULE_LEAD_EPOCHS", "SCHEDULE_SWITCHES",
+    ),
+    # The schedule document's format and the commitment pointer's form: every
+    # node must parse and refuse a schedule alike (protocol_schedule.fold).
+    "fugal_subnet.protocol_schedule": (
+        "KIND", "FORMAT", "DRAFT_SERIAL", "MAX_SERIAL", "MAX_BLOCK", "MAX_DOCUMENT_BYTES",
+        "MAX_SIGNATURE_BYTES", "MAX_ACTIVATIONS", "NAME_PATTERN", "POINTER_PREFIX",
     ),
     # The v5 pool's keyed order and exam/coverage split (its content is pinned
     # by pool_manifest_v5.json's content hash, below).

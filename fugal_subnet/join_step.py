@@ -55,22 +55,28 @@ AUDIT_FIELD = "join_audit"
 
 
 class RootFields:
-    """The root's commitment as two fields written together: the reveal
-    pointer (as before) and the join pointer (`chain_proposals.join_field`).
-    Each write carries the newest of both, so committing one never drops the
-    other. `write(fields) -> bool` makes the one transaction
-    (chain_proposals.set_commitment_fields)."""
+    """The root's commitment as fields written together: the reveal pointer
+    (as before), the join pointer (`chain_proposals.join_field`) and, when the
+    root names one, the protocol schedule pointer (`sched:<serial>:<digest>`,
+    protocol_schedule; always last). Each write carries the newest of each,
+    so committing one never drops another. `write(fields) -> bool` makes the
+    one transaction (chain_proposals.set_commitment_fields). `sched` None (no
+    schedule named, the case until a release switches the schedule on) writes
+    exactly the two fields it always has."""
 
     def __init__(self, write: Callable[[list[str]], bool], *, reveal: str | None = None,
-                 join: str | None = None):
-        self.write, self.reveal, self.join = write, reveal, join
+                 join: str | None = None, sched: str | None = None):
+        self.write, self.reveal, self.join, self.sched = write, reveal, join, sched
+
+    def _with(self, reveal: str | None, join: str | None) -> list[str]:
+        return [f for f in (reveal, join, self.sched) if f]
 
     def fields(self) -> list[str]:
-        return [f for f in (self.reveal, self.join) if f]
+        return self._with(self.reveal, self.join)
 
     def commit_reveal(self, data: str) -> bool:
         """The reveal commitment (reveal_publisher's `commit` hook)."""
-        ok = bool(self.write([data] + ([self.join] if self.join else [])))
+        ok = bool(self.write(self._with(data, self.join)))
         if ok:
             self.reveal = data
         return ok
@@ -83,7 +89,7 @@ class RootFields:
             logger.warning("The root has no reveal pointer on chain yet to keep beside the join "
                            "pointer; the joins wait for its first reveal")
             return False
-        ok = bool(self.write([self.reveal, field]))
+        ok = bool(self.write(self._with(self.reveal, field)))
         if ok:
             self.join = field
         return ok

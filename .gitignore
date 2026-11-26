@@ -18,6 +18,8 @@ data/*.npz
 # docs/decisions/HEAD_EFFICACY.md; the inputs do not belong in git.
 data/experiments/
 results/
+# scripts/release.py's drafts: schedules to sign, tag messages, release notes.
+release-out/
 
 # Environment
 .env

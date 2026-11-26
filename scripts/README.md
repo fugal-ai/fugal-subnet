@@ -48,6 +48,7 @@ Each script's docstring is its manual: `python scripts/<name>.py --help`.
 |---|---|
 | `provision_subnet.py` | Launch and configure a subnet; a dry run without `--yes`; `--status` reads only |
 | `compute_app_identity.py` | The compose-hash half of an approved entry, from the repo |
+| `release.py` | One command for a release: `plan`, `status`, `check-block`, `blocks` (compiled), `schedule draft`/`verify` (the signed protocol schedule), `build-tag`, `freeze` (dstack-cloud prepare), `entries`, `verify-tag` (the auto-updater's strict verifier), `validator-tag`, `notice`. Dry run by default; never signs, pushes or uploads: it prints those commands for the owner |
 | `publish_approved_entry.py` | The signed tag message and release note carrying both networks' entries |
 | `fetch_approved_entries.py` | Validator side: verify the signed tag, print one network's entry |
 | `provision_td.py` | `--inspect` a TD; push the head and keys to it over the attested channel |

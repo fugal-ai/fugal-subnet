@@ -908,6 +908,31 @@ def _verify_signature(payload: bytes, signature: bytes, signers: bytes) -> str:
     return "SHA256:" + base64.b64encode(hashlib.sha256(public).digest()).decode("ascii").rstrip("=")
 
 
+def verify_list_signature(payload: bytes, signature: bytes, *,
+                          signers: bytes | None = None) -> str:
+    """The signature check of `verify_signed_list`, alone, for another signed
+    document under the same namespace (protocol_schedule, whose `kind` inside
+    the signed bytes keeps it apart from a list). Sizes, then the signature:
+    well-formed, LIST_NAMESPACE, a listed key, verifies over exactly these
+    bytes. Returns the signer's key fingerprint; raises ListRefused. The
+    caller parses `payload` and refuses any kind but its own."""
+    if type(payload) is not bytes:
+        raise ListRefused("malformed", "a signed document is bytes")
+    if type(signature) is not bytes:
+        raise _malformed("a signature is bytes")
+    if len(signature) > MAX_SIGNATURE_BYTES:
+        raise ListRefused("oversized", f"signature of {len(signature)} bytes, at most "
+                                       f"{MAX_SIGNATURE_BYTES}")
+    if signers is None:
+        signers = list_signers()
+    elif type(signers) is not bytes:
+        raise ValueError("the signers file is bytes")
+    if len(signers) > MAX_SIGNERS_BYTES:
+        raise ListRefused("oversized", f"signers file of {len(signers)} bytes, at most "
+                                       f"{MAX_SIGNERS_BYTES}")
+    return _verify_signature(payload, signature, signers)
+
+
 def verify_signed_list(payload: bytes, signature: bytes, *, kind: str, held_serial: int,
                        signers: bytes | None = None) -> MenuAllowlist | DeviceList:
     """The one way a list becomes trusted. Returns the list, with `signer`

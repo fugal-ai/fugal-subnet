@@ -1071,6 +1071,17 @@ python scripts/axon_firewall.py --network finney --netuid 70 --project <gcp-proj
   connects to its published address) fails and warns: it is not a validator.
   Check from a validator, or temporarily `--extra-cidr` your own IP.
 
+### The protocol schedule: dates move without a redeploy
+
+From the release that switches it on (none yet), a protocol switch whose code
+is in the image takes its block from a schedule signed by the release key
+(`docs/decisions/SIGNED_SCHEDULE.md`), not from the image or the compose. The
+TD reads the root's on-chain pointer at every boundary, fetches the document
+by its digest, and verifies the signature against the signers inside the
+measured image, so no operator input reaches it. When a date moves you do
+nothing: no new image, no freeze, no approved entry, no re-provisioning. Only
+a switch whose code is not yet in your image still needs a new image.
+
 ## Updating Your Head
 
 Retrain on newer data, then re-provision: `dstack-cloud stop` and `start`

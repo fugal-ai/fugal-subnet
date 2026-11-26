@@ -604,6 +604,26 @@ _V5_NAMES: dict[str, tuple[str, ...]] = {
 for _module, _names in _V5_NAMES.items():
     NOT_V4.setdefault(_module, {}).update(dict.fromkeys(_names, _V5_ONLY))
 
+# The protocol schedule (docs/decisions/SIGNED_SCHEDULE.md): read only from
+# config.schedule_from_block, which no finney release sets yet, and only by a
+# schedulable switch (none is registered); its consensus constants are in the
+# v5 section (consensus_v5.REGISTERED), never in the v4 one.
+_SCHEDULE_ONLY = ("the protocol schedule: read only from its start block "
+                  "(config.FINNEY_SCHEDULE_FROM_BLOCK, None on finney) by schedulable switches, "
+                  "none of which is v4's; its constants are registered by consensus_v5")
+_SCHEDULE_NAMES: dict[str, tuple[str, ...]] = {
+    "fugal_subnet.config": (
+        "FINNEY_SCHEDULE_FROM_BLOCK", "SCHEDULE_FROM_BLOCK_ENV", "SCHEDULE_FROM_BLOCK_MALFORMED",
+        "SCHEDULE_LEAD_EPOCHS", "SCHEDULE_SWITCHES"),
+    "fugal_subnet.protocol_schedule": (
+        "KIND", "FORMAT", "DRAFT_SERIAL", "MAX_SERIAL", "MAX_BLOCK", "MAX_DOCUMENT_BYTES",
+        "MAX_SIGNATURE_BYTES", "MAX_ACTIVATIONS", "NAME_PATTERN", "POINTER_PREFIX",
+        "SHIPPED_DIR", "STATE_FORMAT", "EMPTY", "_GENESIS", "_NAME", "_POINTER", "_SHA256",
+        "_MAX_EVENTS"),
+}
+for _module, _names in _SCHEDULE_NAMES.items():
+    NOT_V4.setdefault(_module, {}).update(dict.fromkeys(_names, _SCHEDULE_ONLY))
+
 # The names each pre-v4 module had in the v3 release. They are classified
 # by the v1-v3 mechanisms (the scoring block, the protocol identity, the
 # environment lists); v4 reads them through those. A name added since is
@@ -702,7 +722,9 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     # out of the two v4-registered lists, so the v4 digest stays v0.7.0's)
     # and MINER_PAID_FRACTION_V5 (v0.8.0: half the miner emission burns)
     # and FINNEY_V5_COMMIT_FIX_BLOCK (v0.8.1: raw commitment blocks in v5)
-    "fugal_subnet.config": ("1b7231e93d85874e", "2b9b61905b4c5c4f"),
+    # and the protocol schedule's five names (SIGNED_SCHEDULE.md; off on finney,
+    # registered by consensus_v5)
+    "fugal_subnet.config": ("e84ee856ef19fbdd", "2b9b61905b4c5c4f"),
     "fugal_subnet.copy_rule": ("5191ef53fd3d75ce", "4f53cda18c2baa0c"),
     "fugal_subnet.determinism": ("ea226adaa11ca2b1", "4f53cda18c2baa0c"),
     "fugal_subnet.epoch_logger": ("eaa876bbf2003294", "4f53cda18c2baa0c"),
@@ -721,6 +743,9 @@ CLASS_PINS: dict[str, tuple[str, str]] = {
     "fugal_subnet.menu_state": ("619b58eb22d883b1", "4f53cda18c2baa0c"),
     "fugal_subnet.odds_score": ("0152d266727f25dc", "4f53cda18c2baa0c"),
     "fugal_subnet.payout": ("4f53cda18c2baa0c", "4f53cda18c2baa0c"),
+    # 2026-11-26: the protocol schedule (SIGNED_SCHEDULE.md); NOT_V4, registered by
+    # consensus_v5.
+    "fugal_subnet.protocol_schedule": ("1c5a3faa5f5c0fb3", "4f53cda18c2baa0c"),
     "fugal_subnet.reference_frame": ("9676975d97467997", "4f53cda18c2baa0c"),
     "fugal_subnet.reveal_publisher": ("5839d7d7dcd91d30", "4f53cda18c2baa0c"),
     "fugal_subnet.reveal_sync": ("54b76052a244ca58", "9227ff058e52688c"),

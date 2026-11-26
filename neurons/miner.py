@@ -425,6 +425,16 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     int(v5_block), int(v5_block) // blocks_per_epoch,
                     _td_v5_coverage_calls())
 
+    # The protocol schedule (docs/decisions/SIGNED_SCHEDULE.md): the TD folds
+    # the root's schedule pointer at every boundary, as validators do, and
+    # verifies each document against the signers inside this image. None
+    # until a release compiles its start block (finney: none yet); no switch
+    # reads it yet, so it is logged only.
+    schedule_tracker = (_schedule_tracker(subtensor, netuid=netuid, genesis=genesis,
+                                          blocks_per_epoch=blocks_per_epoch,
+                                          state_dir=_v4_state_dir(v4_state_dir))
+                        if protocol >= 4 else None)
+
     # NOTE: the on-chain commitment is deliberately NOT made here. Chains rate
     # limit transactions per hotkey, so committing immediately before
     # axon.serve() gets the serve extrinsic rejected and leaves the miner
@@ -606,6 +616,7 @@ def main(network, netuid, coldkey, hotkey, wallet_path, port, head_path,
                     continue
 
                 last_epoch_index = epoch_index
+                _advance_schedule(schedule_tracker, epoch_index)
                 if protocol >= 4:
                     # v4: the epoch's menu, entries and prices are the
                     # session's (V4Session.inputs_for), not a pinned table.
@@ -1110,6 +1121,48 @@ def _v4_session(subtensor, *, netuid: int, pool, first_epoch: int, blocks_per_ep
         read_join=lambda e: mp.read_join_pointer(subtensor, netuid, root_hk, e,
                                                  e * blocks_per_epoch),
         join_bytes=lambda h: reveal_sync.fetch_join_bytes(h, bucket=bucket, netuid=netuid))
+
+
+def _schedule_tracker(subtensor, *, netuid: int, genesis, blocks_per_epoch: int, state_dir):
+    """The TD's protocol_schedule.ScheduleTracker, or None while no start
+    block applies on this chain (config.schedule_from_block). Kept in the v4
+    state directory; documents from the image, that directory or the root's
+    public store, each verified against the signers inside the image."""
+    import os
+
+    from fugal_subnet import config as cfg
+    from fugal_subnet import protocol_schedule as ps
+    from fugal_subnet import reveal_sync
+
+    try:
+        from_block = cfg.schedule_from_block(genesis)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    if from_block is None:
+        return None
+    on_finney = (genesis is not None
+                 and str(genesis).lower() == cfg.FINNEY_GENESIS_HASH.lower())
+    bucket = (cfg.REFERENCE_BUCKET
+              or (reveal_sync.FINNEY_REFERENCE_BUCKET if on_finney else "")) or None
+    folder = os.fspath(state_dir)
+    try:
+        tracker = ps.node_tracker(
+            subtensor=subtensor, netuid=netuid, genesis=genesis,
+            root_hotkeys=cfg.root_hotkeys_v4(on_finney), blocks_per_epoch=blocks_per_epoch,
+            from_block=from_block, state_path=os.path.join(folder, "schedule.json"),
+            cache_dir=os.path.join(folder, "schedule.d"), bucket=bucket)
+    except ValueError as e:
+        raise click.ClickException(f"protocol schedule: {e}") from e
+    logger.info("Protocol schedule: folded from epoch %d (block %d)",
+                tracker.params["start_epoch"], from_block)
+    return tracker
+
+
+def _advance_schedule(tracker, epoch_index: int):
+    """Fold the TD's schedule through this epoch; logged, never the epoch's
+    failure (no switch reads it yet)."""
+    from fugal_subnet import protocol_schedule as ps
+    return ps.advance_quietly(tracker, epoch_index)
 
 
 def _v5_activation_block(genesis):

@@ -2024,14 +2024,14 @@ def main(network, netuid, coldkey, hotkey, wallet_path, once, log_level, live, c
                 # --- PROTOCOL v5: the seat on real picks (fugal_subnet/v5_epoch.py) ---
                 # v0.8.1: raw commitment blocks from the fix block; v0.8.0's
                 # seniority keys before it (those epochs replay as published).
-                raw_blocks = v5_fix_block is not None and boundary_block >= v5_fix_block
+                v5_blocks, raw_blocks = _v5_commit_blocks(
+                    boundary_block, v5_fix_block, seniority=commit_blocks, raw=raw_commit_blocks)
                 v2_result, uids, weights, v5_commit = _v5_score(
                     v5_node, epoch_index=epoch_index, nonce=nonce, exam=v5_exam,
                     state=v4_menu.state, verified_proofs=verified_proofs,
                     verified_heads=verified_heads, head_hashes=head_hashes,
                     coldkey_of=coldkey_of, v5_inputs=v5_inputs,
-                    commit_blocks=(raw_commit_blocks if raw_blocks else commit_blocks),
-                    raw_commit_blocks=raw_blocks,
+                    commit_blocks=v5_blocks, raw_commit_blocks=raw_blocks,
                     burn_uid=burn_uid,
                     published=v4_view,
                     pooled=_v4_pool(v4_menu.state, verified_proofs=verified_proofs,
@@ -4072,6 +4072,17 @@ def _v5_load_inputs(cfg, *, live: bool) -> _V5Inputs:
                 len(pool), sum(len(v) for v in exam_part.values()), len(emb.row))
     return _V5Inputs(pool=pool, gold={q["question_id"]: q for q in pool}, embeddings=emb,
                      exam_by_dataset=exam_part, weights_ppm=arena_sets.weights_ppm())
+
+
+def _v5_commit_blocks(boundary_block: int, fix_block: int | None, *, seniority: dict,
+                      raw: dict) -> tuple[dict, bool]:
+    """(the commit block of each uid v5 scores the epoch at `boundary_block`
+    on, whether those are raw blocks). From the v0.8.1 fix block
+    (config.v5_commit_fix_block) a commitment's raw block (`raw`,
+    _Checked.commit_block); before it v0.8.0's v1 seniority keys
+    (`seniority`, _Checked.seniority), so those epochs replay as published."""
+    raw_blocks = fix_block is not None and int(boundary_block) >= int(fix_block)
+    return (raw if raw_blocks else seniority), raw_blocks
 
 
 def _v5_score(node, *, epoch_index: int, nonce: bytes, exam, state, verified_proofs: dict,

@@ -648,11 +648,22 @@ def read_pointer(subtensor, netuid: int, root_hotkeys, epoch: int,
 
     hotkey = hotkey_for_epoch(root_hotkeys, int(epoch))
     block = int(epoch) * int(blocks_per_epoch)
+
+    def empty(raw) -> bool:
+        return not chain_proposals.commitment_fields(raw)
+
     raw = chain_reads.pinned(
         subtensor, block, lambda s: s.query_module("Commitments", "CommitmentOf",
                                                    params=[int(netuid), hotkey], block=block),
-        what="Schedule pointer")
-    return pointer_in_fields(chain_proposals.commitment_fields(raw))
+        what="Schedule pointer", refused=empty)
+    fields = chain_proposals.commitment_fields(raw)
+    if not fields:
+        # The root writes a commitment every epoch, so none at all is an
+        # unreadable block (a pruned endpoint can answer the storage default),
+        # never "no pointer": absence would carry, and an archive node would
+        # read the pointer and adopt.
+        raise LookupError(f"the root has no commitment at block {block}")
+    return pointer_in_fields(fields)
 
 
 def first_epoch(from_block: int, blocks_per_epoch: int) -> int:

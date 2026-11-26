@@ -226,7 +226,7 @@ class FakeChain:
             raise ConnectionError("node unreachable")
         self.reads += 1
         at = [b for b in self.changes if b <= block]
-        return self.changes[max(at)] if at else ()
+        return self.changes[max(at)] if at else ("reveal:e00000000:" + "0" * 64,)
 
 
 class Store:
@@ -374,6 +374,18 @@ def test_a_pointer_whose_serial_is_not_the_documents_is_refused(keys):
     t = tracker(chain, store, signers)
     assert t.advance(20).in_force is ps.EMPTY
     assert t.state.events[0][2] == "refused:serial_mismatch"
+
+
+def test_no_commitment_at_all_is_unresolved_not_absent(keys):
+    """A pruned endpoint can answer the storage default: the root always has
+    a commitment, so none at all is an unreadable block, never a carry."""
+    owner, _, _, signers = keys
+    chain, store = FakeChain(), Store()
+    chain.changes[14 * BPE] = ()
+    t = tracker(chain, store, signers)
+    with pytest.raises(ps.ScheduleUnresolved):
+        t.advance(20)
+    assert t.state.through == 13
 
 
 def test_an_unreadable_chain_is_unresolved_not_absent(keys):

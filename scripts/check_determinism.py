@@ -505,7 +505,7 @@ def _protocol_schedule(seed: int) -> list:
     class Chain:
         def query_module(self, module, name, params=None, block=None):
             got = [b for b in at if b <= block]
-            return at[max(got)] if got else ()
+            return at[max(got)] if got else ("reveal",)
 
     out = []
     with tempfile.TemporaryDirectory() as d:

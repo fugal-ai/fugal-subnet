@@ -127,7 +127,11 @@ commitment exactly as before (requirement 5).
 
 `P(e)` is the pointer in the root's commitment read pinned at epoch e's
 boundary block, under the root hotkey of epoch e (`hotkey_for_epoch`). A field
-that is not exactly a pointer, or no such field, is `None`.
+that is not exactly a pointer, or no such field, is `None`. No commitment at
+all is not `None` but an unreadable block: the root commits every epoch, and
+a pruned endpoint can answer the storage default for a block it no longer
+keeps (the read then falls back to the archive endpoint, as other pinned
+reads do).
 
 The bytes are found by the digest: in the release
 (`fugal_subnet/signed_schedule/<digest>.json` and `.sig`, in the checkout and

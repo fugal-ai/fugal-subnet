@@ -82,6 +82,7 @@ STAGES = (
     "arena_items_v5",
     "seat_v5",
     "v5_epoch",
+    "protocol_schedule",
 )
 
 
@@ -433,7 +434,109 @@ def run_pipeline(seed: int) -> dict:
         **{stage: _digest(value) for stage, value in _exam_v5(seed).items()},
         "seat_v5": _digest(_seat_v5(seed)),
         "v5_epoch": _digest(_v5_epoch(seed)),
+        "protocol_schedule": _digest(_protocol_schedule(seed)),
     }
+
+
+def _protocol_schedule(seed: int) -> list:
+    """The protocol schedule's fold (fugal_subnet/protocol_schedule.py) over
+    90 boundaries of a root's pointer: adoption, a replayed older serial, an
+    absent field, a refused move of a passed switch, an unsigned pointer and
+    a later move. A key derived from the seed signs (Ed25519 is deterministic,
+    so both processes hold the same bytes). Under --perturb the fold runs in
+    pieces, restarted from its state file each time, and the documents come
+    from the store instead of the shipped directory, as a TD that restarts
+    and fetches. The stage is the schedule in force and every switch's status
+    at every boundary, and the events."""
+    import base64
+    import tempfile
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from fugal_subnet import protocol_schedule as ps
+
+    perturb = bool(os.environ.get("FUGAL_PERTURB"))
+    key = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(f"sched{seed}".encode()).digest())
+    raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+
+    def wire(b: bytes) -> bytes:
+        return len(b).to_bytes(4, "big") + b
+
+    ns = b"fugal-list@fugalai.com"
+    public = wire(b"ssh-ed25519") + wire(raw)
+    signers = (b'release@example.test namespaces="fugal-list@fugalai.com" ssh-ed25519 '
+               + base64.b64encode(public) + b"\n")
+
+    def sign(payload: bytes) -> bytes:
+        signed = (b"SSHSIG" + wire(ns) + wire(b"") + wire(b"sha512")
+                  + wire(hashlib.sha512(payload).digest()))
+        blob = (b"SSHSIG" + (1).to_bytes(4, "big") + wire(public) + wire(ns) + wire(b"")
+                + wire(b"sha512") + wire(wire(b"ssh-ed25519") + wire(key.sign(signed))))
+        b64 = base64.b64encode(blob).decode()
+        return ("-----BEGIN SSH SIGNATURE-----\n"
+                + "\n".join(b64[i:i + 70] for i in range(0, len(b64), 70))
+                + "\n-----END SSH SIGNATURE-----\n").encode()
+
+    chain_id, bpe, lead = "0x" + "ab" * 32, 360, 2
+    store: dict = {}
+
+    def publish(serial, acts):
+        payload = ps.canonical_bytes(serial, chain_id, acts)
+        sig = sign(payload)
+        d = ps.bundle_digest(payload, sig)
+        store[d] = (payload, sig)
+        return ps.Pointer(serial, d).field()
+
+    s1 = publish(1, {"v6": bpe * 30})
+    s2 = publish(2, {"v6": bpe * 26})
+    s3 = publish(3, {"v6": bpe * 70})                    # moves a passed switch: refused
+    s4 = publish(4, {"v6": bpe * 26, "v7": bpe * 80})
+    s5 = publish(5, {"v6": bpe * 26, "v7": bpe * 95})
+    junk = ps.canonical_bytes(9, chain_id, {"v6": bpe * 200})
+    store[ps.bundle_digest(junk, b"garbage")] = (junk, b"garbage")
+    s9 = ps.Pointer(9, ps.bundle_digest(junk, b"garbage")).field()
+    changes = [(12, s1), (18, s2), (22, None), (24, s1), (33, s3), (40, s4), (45, s9),
+               (50, s4), (60, s5), (70, None)]
+    if perturb:
+        changes = list(reversed(changes))
+    at = {e * bpe: ("reveal", "join") + ((p,) if p else ()) for e, p in changes}
+
+    class Chain:
+        def query_module(self, module, name, params=None, block=None):
+            got = [b for b in at if b <= block]
+            return at[max(got)] if got else ()
+
+    out = []
+    with tempfile.TemporaryDirectory() as d:
+        shipped = os.path.join(d, "shipped")
+        os.makedirs(shipped)
+        if not perturb:
+            for digest, (payload, sig) in store.items():
+                with open(os.path.join(shipped, f"{digest}.json"), "wb") as f:
+                    f.write(payload)
+                with open(os.path.join(shipped, f"{digest}.json.sig"), "wb") as f:
+                    f.write(sig)
+
+        def tracker():
+            src = ps.DocumentSource(directories=[shipped], cache_dir=os.path.join(d, "cache"),
+                                    fetch=(store.get if perturb else None))
+            return ps.ScheduleTracker(
+                chain=chain_id, start_epoch=10, blocks_per_epoch=bpe, lead_epochs=lead,
+                pointer_at=lambda e: ps.read_pointer(Chain(), 70, "root", e, bpe),
+                document=src, state_path=os.path.join(d, "state.json"),
+                signers=signers)
+
+        t = tracker()
+        for e in range(10, 101):
+            if perturb and e % 17 == 0:
+                t = tracker()
+            view = t.advance(e)
+            out.append([e, view.in_force.serial, view.in_force.digest,
+                        [list(a) for a in view.in_force.activations],
+                        [view.active(n, e) for n in ("v6", "v7")]])
+        out.append([list(ev) for ev in t.state.events])
+    return out
 
 
 def _v5_epoch(seed: int) -> list:

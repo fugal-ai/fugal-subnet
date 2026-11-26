@@ -4,6 +4,23 @@ All notable changes to this project will be documented here. Releases follow [Se
 
 ## [Unreleased]
 
+### Added — a signed protocol schedule (built, off) and a release tool
+- `fugal_subnet/protocol_schedule.py`: a switch whose code ships in a
+  release can take its block from a document the release key signs. The
+  root names it in its commitment (`sched:<serial>:<digest>`, a third field
+  old readers do not look at), and every validator and miner's TD folds that
+  pointer at every boundary, verifying the signature against the signers
+  inside the image. Forward only; a block may be set or moved only two epochs
+  (`SCHEDULE_LEAD_EPOCHS`) after the chain first shows it, and a passed one
+  never moves. Design and trust argument: `docs/decisions/SIGNED_SCHEDULE.md`.
+  **Off**: `FINNEY_SCHEDULE_FROM_BLOCK` is `None` and no switch is
+  schedulable, so nothing reads or writes the pointer on finney and no
+  behaviour changes. A later release switches it on.
+- `scripts/release.py`: one command for a release (blocks, the schedule,
+  build tag, freeze via `dstack-cloud prepare`, approved-entry tag message,
+  strict tag verification, validator tag, Discord notice). Dry run by
+  default; it never signs, pushes or uploads.
+
 ### Added — opt-in validator auto-update (ops only)
 - `deploy/autoupdate/`: a timer that installs signed `validator-vX.Y.Z` release
   tags side by side, runs `--check`, switches the service with a systemd
